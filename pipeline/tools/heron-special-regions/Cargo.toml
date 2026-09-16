@@ -1,0 +1,8 @@
+[package]
+name = "raw-special-regions"
+version = "0.1.0"
+edition = "2021"
+license-file = "LICENSE"
+
+[dependencies]
+docling-pdf = { git = "https://github.com/docling-project/docling.rs.git", rev = "88250172022c208ec3fec32ed2f571617b383fa0" }

@@ -1,0 +1,4612 @@
+components:
+  schemas:
+    ActiveMarkdownContextRequest:
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        target:
+          anyOf:
+          - $ref: '#/components/schemas/MarkdownEditTargetRequest'
+          - type: 'null'
+      required:
+      - markdown
+      title: ActiveMarkdownContextRequest
+      type: object
+    AgentArtifactListRequest:
+      properties:
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - run_id
+      - workspace_id
+      - user_id
+      title: AgentArtifactListRequest
+      type: object
+    AgentArtifactRegisterRequest:
+      properties:
+        artifact_id:
+          minLength: 1
+          title: Artifact Id
+          type: string
+        base_version:
+          anyOf:
+          - minimum: 1.0
+            type: integer
+          - type: 'null'
+          title: Base Version
+        content_hash:
+          maxLength: 71
+          minLength: 71
+          title: Content Hash
+          type: string
+        document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Id
+        markdown:
+          maxLength: 5242880
+          minLength: 0
+          title: Markdown
+          type: string
+        purpose:
+          minLength: 1
+          title: Purpose
+          type: string
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        target:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Target
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - run_id
+      - workspace_id
+      - user_id
+      - artifact_id
+      - content_hash
+      - purpose
+      - markdown
+      title: AgentArtifactRegisterRequest
+      type: object
+    AgentArtifactResolveRequest:
+      properties:
+        artifact_id:
+          minLength: 1
+          title: Artifact Id
+          type: string
+        base_version:
+          anyOf:
+          - minimum: 1.0
+            type: integer
+          - type: 'null'
+          title: Base Version
+        content_hash:
+          maxLength: 71
+          minLength: 71
+          title: Content Hash
+          type: string
+        document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Id
+        purpose:
+          minLength: 1
+          title: Purpose
+          type: string
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        target:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Target
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - run_id
+      - workspace_id
+      - user_id
+      - artifact_id
+      - content_hash
+      - purpose
+      title: AgentArtifactResolveRequest
+      type: object
+    AgentArtifactResolveResponse:
+      properties:
+        base_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Base Version
+        content_hash:
+          title: Content Hash
+          type: string
+        document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Id
+        id:
+          title: Id
+          type: string
+        markdown:
+          title: Markdown
+          type: string
+        purpose:
+          title: Purpose
+          type: string
+        target:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Target
+      required:
+      - id
+      - content_hash
+      - purpose
+      - markdown
+      title: AgentArtifactResolveResponse
+      type: object
+    AgentArtifactResponse:
+      properties:
+        base_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Base Version
+        content_hash:
+          title: Content Hash
+          type: string
+        document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Id
+        id:
+          title: Id
+          type: string
+        purpose:
+          title: Purpose
+          type: string
+        target:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Target
+      required:
+      - id
+      - content_hash
+      - purpose
+      title: AgentArtifactResponse
+      type: object
+    AgentConversationContextRequest:
+      properties:
+        pending_skill_proposal:
+          anyOf:
+          - $ref: '#/components/schemas/PendingSkillProposalRequest'
+          - type: 'null'
+        recent_conversation_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recent Conversation Summary
+        recent_messages:
+          items:
+            $ref: '#/components/schemas/AgentConversationMessageRequest'
+          maxItems: 6
+          title: Recent Messages
+          type: array
+        reference_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Reference Context
+      title: AgentConversationContextRequest
+      type: object
+    AgentConversationMessageRequest:
+      properties:
+        action:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          title: Action
+        agent_route:
+          anyOf:
+          - $ref: '#/components/schemas/ConversationAgentRouteRequest'
+          - type: 'null'
+        content:
+          maxLength: 4000
+          minLength: 1
+          title: Content
+          type: string
+        role:
+          enum:
+          - user
+          - assistant
+          title: Role
+          type: string
+        run_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Run Id
+      required:
+      - role
+      - content
+      title: AgentConversationMessageRequest
+      type: object
+    AgentPlanOperationResponse:
+      properties:
+        arguments:
+          additionalProperties: true
+          title: Arguments
+          type: object
+        base_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Base Version
+        depends_on:
+          items:
+            type: string
+          title: Depends On
+          type: array
+        destination_parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Destination Parent Id
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        id:
+          title: Id
+          type: string
+        reason:
+          title: Reason
+          type: string
+        sequence:
+          title: Sequence
+          type: integer
+        source_parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Parent Id
+        status:
+          title: Status
+          type: string
+        target_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Id
+        target_type:
+          title: Target Type
+          type: string
+        tool_name:
+          title: Tool Name
+          type: string
+      required:
+      - id
+      - sequence
+      - tool_name
+      - target_type
+      - target_id
+      - base_version
+      - source_parent_id
+      - destination_parent_id
+      - arguments
+      - reason
+      - depends_on
+      - status
+      - error_code
+      title: AgentPlanOperationResponse
+      type: object
+    AgentPlanResponse:
+      properties:
+        id:
+          title: Id
+          type: string
+        operation_hash:
+          title: Operation Hash
+          type: string
+        operations:
+          items:
+            $ref: '#/components/schemas/AgentPlanOperationResponse'
+          title: Operations
+          type: array
+        status:
+          title: Status
+          type: string
+        summary:
+          title: Summary
+          type: string
+        version:
+          title: Version
+          type: integer
+      required:
+      - id
+      - version
+      - summary
+      - operation_hash
+      - status
+      - operations
+      title: AgentPlanResponse
+      type: object
+    AgentRunActorRequest:
+      properties:
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      title: AgentRunActorRequest
+      type: object
+    AgentRunResponse:
+      properties:
+        action:
+          title: Action
+          type: string
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        id:
+          title: Id
+          type: string
+        plan:
+          anyOf:
+          - $ref: '#/components/schemas/AgentPlanResponse'
+          - type: 'null'
+        request_summary:
+          title: Request Summary
+          type: string
+        skill_version_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Skill Version Id
+        status:
+          title: Status
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - id
+      - workspace_id
+      - action
+      - skill_version_id
+      - status
+      - request_summary
+      - error_code
+      title: AgentRunResponse
+      type: object
+    AgentToolExecuteAuthorizationRequest:
+      properties:
+        arguments:
+          additionalProperties: true
+          title: Arguments
+          type: object
+        operation_hash:
+          maxLength: 64
+          minLength: 64
+          title: Operation Hash
+          type: string
+        operation_id:
+          minLength: 1
+          title: Operation Id
+          type: string
+        plan_id:
+          minLength: 1
+          title: Plan Id
+          type: string
+        plan_version:
+          minimum: 1.0
+          title: Plan Version
+          type: integer
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        tool_name:
+          minLength: 1
+          title: Tool Name
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - run_id
+      - plan_id
+      - plan_version
+      - operation_hash
+      - operation_id
+      - tool_name
+      - arguments
+      title: AgentToolExecuteAuthorizationRequest
+      type: object
+    AgentToolReadAuthorizationRequest:
+      properties:
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - run_id
+      title: AgentToolReadAuthorizationRequest
+      type: object
+    AgentTurnRequestBody:
+      properties:
+        active_markdown_context:
+          anyOf:
+          - $ref: '#/components/schemas/ActiveMarkdownContextRequest'
+          - type: 'null'
+        allow_web_search:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Allow Web Search
+        base_version:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Base Version
+        conversation_context:
+          anyOf:
+          - $ref: '#/components/schemas/AgentConversationContextRequest'
+          - type: 'null'
+        document_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Document Id
+        message:
+          maxLength: 1000
+          minLength: 1
+          title: Message
+          type: string
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        output_language:
+          anyOf:
+          - enum:
+            - ko
+            - en
+            - document
+            type: string
+          - type: 'null'
+          title: Output Language
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
+        response_length:
+          anyOf:
+          - enum:
+            - concise
+            - balanced
+            - detailed
+            type: string
+          - type: 'null'
+          title: Response Length
+        skill_authoring_mode:
+          default: enhance
+          enum:
+          - preserve
+          - enhance
+          title: Skill Authoring Mode
+          type: string
+        skill_draft_excluded_literals:
+          items:
+            type: string
+          title: Skill Draft Excluded Literals
+          type: array
+        skill_draft_sources:
+          items:
+            $ref: '#/components/schemas/SkillDraftSourceRunRequest'
+          title: Skill Draft Sources
+          type: array
+        skill_draft_user_directives:
+          items:
+            type: string
+          title: Skill Draft User Directives
+          type: array
+        skill_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Skill Id
+        skill_mode:
+          default: auto
+          enum:
+          - auto
+          - explicit
+          - 'off'
+          title: Skill Mode
+          type: string
+        skill_reference_document_ids:
+          items:
+            type: string
+          maxItems: 3
+          title: Skill Reference Document Ids
+          type: array
+        skill_scope_type:
+          anyOf:
+          - enum:
+            - personal
+            - team
+            type: string
+          - type: 'null'
+          title: Skill Scope Type
+        user_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: User Id
+        workspace_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Workspace Id
+      required:
+      - message
+      - provider
+      - model
+      title: AgentTurnRequestBody
+      type: object
+    AgentTurnResponse:
+      properties:
+        action:
+          enum:
+          - chat_answer
+          - conversation_reply
+          - markdown_edit
+          - markdown_create
+          - folder_organize
+          - workspace_workflow
+          - skill_authoring
+          - skill_draft_proposal
+          - clarify
+          - reject
+          title: Action
+          type: string
+        chat:
+          anyOf:
+          - $ref: '#/components/schemas/QueryResponse'
+          - type: 'null'
+        edit:
+          anyOf:
+          - $ref: '#/components/schemas/MarkdownEditOperationResponse'
+          - type: 'null'
+        generated_markdown:
+          anyOf:
+          - $ref: '#/components/schemas/GeneratedMarkdownResponse'
+          - type: 'null'
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+        route:
+          $ref: '#/components/schemas/AgentTurnRouteResponse'
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+        run_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Status
+        skill_authoring:
+          anyOf:
+          - $ref: '#/components/schemas/SkillAuthoringResponse'
+          - type: 'null'
+        skill_candidates:
+          items:
+            $ref: '#/components/schemas/SkillCandidateResponse'
+          title: Skill Candidates
+          type: array
+        source_markdown_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Markdown Sha256
+        updated_conversation_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated Conversation Summary
+      required:
+      - action
+      - route
+      title: AgentTurnResponse
+      type: object
+    AgentTurnRouteResponse:
+      properties:
+        action:
+          enum:
+          - chat_answer
+          - conversation_reply
+          - markdown_edit
+          - markdown_create
+          - folder_organize
+          - workspace_workflow
+          - skill_authoring
+          - skill_draft_proposal
+          - clarify
+          - reject
+          title: Action
+          type: string
+        confidence:
+          title: Confidence
+          type: number
+        document_operation:
+          enum:
+          - none
+          - create
+          - edit
+          title: Document Operation
+          type: string
+        edit_destination:
+          anyOf:
+          - enum:
+            - target
+            - document_end
+            type: string
+          - type: 'null'
+          title: Edit Destination
+        edit_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Edit Goal
+        edit_operation:
+          anyOf:
+          - enum:
+            - replace
+            - insert_after
+            type: string
+          - type: 'null'
+          title: Edit Operation
+        persist:
+          title: Persist
+          type: boolean
+        reason:
+          title: Reason
+          type: string
+        required_capabilities:
+          items:
+            enum:
+            - document-create
+            - document-edit
+            - folder-organize
+            - template
+            type: string
+          title: Required Capabilities
+          type: array
+        retrieval_source:
+          enum:
+          - none
+          - workspace
+          - web
+          title: Retrieval Source
+          type: string
+        selected_skill_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selected Skill Id
+        skill_candidates:
+          items:
+            type: string
+          title: Skill Candidates
+          type: array
+      required:
+      - action
+      - confidence
+      - reason
+      - retrieval_source
+      - document_operation
+      - persist
+      title: AgentTurnRouteResponse
+      type: object
+    ApproveAgentPlanRequest:
+      properties:
+        operation_hash:
+          maxLength: 64
+          minLength: 64
+          title: Operation Hash
+          type: string
+        plan_version:
+          minimum: 1.0
+          title: Plan Version
+          type: integer
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - plan_version
+      - operation_hash
+      title: ApproveAgentPlanRequest
+      type: object
+    CancelTaskRequest:
+      additionalProperties: false
+      properties:
+        command:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Command
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      title: CancelTaskRequest
+      type: object
+    ChatSourceBlockIn:
+      description: 채팅 문답 1쌍. block_id는 `session_id:pair_id` provenance이고 text에는 그 id가 들어가지 않는다.
+      properties:
+        block_id:
+          description: '`session_id:pair_id` 형식의 문답 provenance. source_blocks.block_id로 그대로 저장됩니다.'
+          minLength: 1
+          title: Block Id
+          type: string
+        text:
+          description: 문답 본문. id를 포함하지 않습니다.
+          minLength: 1
+          title: Text
+          type: string
+      required:
+      - block_id
+      - text
+      title: ChatSourceBlockIn
+      type: object
+    ChatWikiRunIn:
+      additionalProperties: false
+      properties:
+        chat_system_prompt:
+          default: prompts/chat_semantic_extraction.system.md
+          title: Chat System Prompt
+          type: string
+        concept_page_mode:
+          default: auto
+          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          enum:
+          - auto
+          - api
+          - full-llm
+          - skeleton
+          - section-polish
+          title: Concept Page Mode
+          type: string
+        concept_resolution_system_prompt:
+          default: prompts/concept_resolution.system.md
+          title: Concept Resolution System Prompt
+          type: string
+        concept_system_prompt:
+          default: prompts/concept_page_generation.system.md
+          title: Concept System Prompt
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+        existing_wiki_dir:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Existing Wiki Dir
+        input_blocks:
+          description: 문답 단위 source block 목록입니다. 파이프라인은 Markdown을 다시 쪼개지 않고 이 목록을 그대로 씁니다.
+          items:
+            $ref: '#/components/schemas/ChatSourceBlockIn'
+          minItems: 1
+          title: Input Blocks
+          type: array
+        input_markdown:
+          description: backend가 직렬화한 채팅 Markdown입니다. 문서 제목 추출에만 쓰이며 블록 분할에는 쓰지 않습니다.
+          minLength: 1
+          title: Input Markdown
+          type: string
+        input_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Name
+        log_callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 설정하면 pipeline.log 이벤트가 생길 때마다 이 URL로 JSON POST합니다.
+          title: Log Callback Url
+        max_eval_attempts:
+          default: 2
+          title: Max Eval Attempts
+          type: integer
+        max_packet_chars:
+          default: 7000
+          title: Max Packet Chars
+          type: integer
+        mode:
+          default: api
+          enum:
+          - api
+          - generic-chat
+          title: Mode
+          type: string
+        model:
+          title: Model
+          type: string
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        out:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Out
+        overlap_blocks:
+          default: 1
+          title: Overlap Blocks
+          type: integer
+        provider:
+          enum:
+          - openai
+          - gemini
+          - claude
+          title: Provider
+          type: string
+        save_debug_json:
+          default: false
+          description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
+          title: Save Debug Json
+          type: boolean
+        section_polish_system_prompt:
+          default: prompts/section_polish.system.md
+          title: Section Polish System Prompt
+          type: string
+        selection_mode:
+          const: partial
+          description: 채팅 Wiki export는 항상 독립 source page를 생성하므로 partial만 지원합니다.
+          title: Selection Mode
+          type: string
+        source_content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Content Hash
+        source_page_mode:
+          default: auto
+          enum:
+          - auto
+          - skeleton
+          - section-polish
+          title: Source Page Mode
+          type: string
+        source_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Source Revision
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: User Id
+        wait:
+          default: false
+          description: True이면 요청 안에서 완료까지 기다립니다. False이면 백그라운드 실행 후 로그를 조회합니다.
+          title: Wait
+          type: boolean
+        wiki_evaluation_loop:
+          default: true
+          title: Wiki Evaluation Loop
+          type: boolean
+        wiki_evaluator_system_prompt:
+          default: prompts/wiki_generation_evaluator.system.md
+          title: Wiki Evaluator System Prompt
+          type: string
+        workspace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: Workspace Id
+      required:
+      - document_id
+      - provider
+      - model
+      - selection_mode
+      - input_markdown
+      - input_blocks
+      title: ChatWikiRunIn
+      type: object
+    ConversationAgentRouteRequest:
+      properties:
+        action:
+          maxLength: 64
+          minLength: 1
+          title: Action
+          type: string
+        document_operation:
+          enum:
+          - none
+          - create
+          - edit
+          title: Document Operation
+          type: string
+        edit_destination:
+          anyOf:
+          - enum:
+            - target
+            - document_end
+            type: string
+          - type: 'null'
+          title: Edit Destination
+        edit_goal:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          title: Edit Goal
+        edit_operation:
+          anyOf:
+          - enum:
+            - replace
+            - insert_after
+            type: string
+          - type: 'null'
+          title: Edit Operation
+        persist:
+          title: Persist
+          type: boolean
+        retrieval_source:
+          enum:
+          - none
+          - workspace
+          - web
+          title: Retrieval Source
+          type: string
+        selected_skill_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Selected Skill Id
+      required:
+      - action
+      - retrieval_source
+      - document_operation
+      - persist
+      title: ConversationAgentRouteRequest
+      type: object
+    ConversationMessageRequest:
+      properties:
+        action:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          title: Action
+        content:
+          maxLength: 4000
+          minLength: 1
+          title: Content
+          type: string
+        role:
+          enum:
+          - user
+          - assistant
+          title: Role
+          type: string
+        run_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Run Id
+      required:
+      - role
+      - content
+      title: ConversationMessageRequest
+      type: object
+    CreateWikiSchemaDraftRequest:
+      properties:
+        name:
+          default: default
+          minLength: 1
+          title: Name
+          type: string
+        raw_markdown:
+          minLength: 1
+          title: Raw Markdown
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - raw_markdown
+      - workspace_id
+      - user_id
+      title: CreateWikiSchemaDraftRequest
+      type: object
+    CreateWikiSchemaDraftResponse:
+      properties:
+        wiki_schema:
+          $ref: '#/components/schemas/WikiSchemaResponse'
+      required:
+      - wiki_schema
+      title: CreateWikiSchemaDraftResponse
+      type: object
+    DocumentCleanupResponse:
+      properties:
+        cleanup_complete:
+          title: Cleanup Complete
+          type: boolean
+      required:
+      - cleanup_complete
+      title: DocumentCleanupResponse
+      type: object
+    EvidenceSnippetResponse:
+      properties:
+        rank:
+          title: Rank
+          type: integer
+        source_block_ids:
+          items:
+            type: string
+          title: Source Block Ids
+          type: array
+        source_document_id:
+          title: Source Document Id
+          type: string
+        source_refs:
+          items:
+            $ref: '#/components/schemas/SourceReferenceResponse'
+          title: Source Refs
+          type: array
+        text:
+          title: Text
+          type: string
+      required:
+      - rank
+      - source_document_id
+      - source_block_ids
+      - source_refs
+      - text
+      title: EvidenceSnippetResponse
+      type: object
+    GeneratedMarkdownResponse:
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        summary:
+          title: Summary
+          type: string
+        title:
+          title: Title
+          type: string
+      required:
+      - title
+      - summary
+      - markdown
+      title: GeneratedMarkdownResponse
+      type: object
+    GraphContextResponse:
+      properties:
+        edges:
+          items:
+            $ref: '#/components/schemas/TraversalEdgeResponse'
+          title: Edges
+          type: array
+        nodes:
+          items:
+            $ref: '#/components/schemas/RelatedPageResponse'
+          title: Nodes
+          type: array
+      required:
+      - nodes
+      - edges
+      title: GraphContextResponse
+      type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          title: Detail
+          type: array
+      title: HTTPValidationError
+      type: object
+    IngestOperationRestoreIn:
+      properties:
+        cancel_operation_ids:
+          items:
+            type: string
+          title: Cancel Operation Ids
+          type: array
+        deleted_pages:
+          items:
+            type: string
+          title: Deleted Pages
+          type: array
+        operation_id:
+          title: Operation Id
+          type: string
+        rebuild_pages:
+          items:
+            $ref: '#/components/schemas/RebuildPageIn'
+          title: Rebuild Pages
+          type: array
+        restore_to_operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Restore To Operation Id
+        source_page:
+          $ref: '#/components/schemas/SourceSnapshotRestoreIn'
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - operation_id
+      - workspace_id
+      - rebuild_pages
+      - restore_to_operation_id
+      - cancel_operation_ids
+      - source_page
+      title: IngestOperationRestoreIn
+      type: object
+    LintOperationRestoreIn:
+      properties:
+        deleted_pages:
+          items:
+            type: string
+          title: Deleted Pages
+          type: array
+        operation_id:
+          title: Operation Id
+          type: string
+        rebuild_pages:
+          items:
+            $ref: '#/components/schemas/RebuildPageIn'
+          title: Rebuild Pages
+          type: array
+        target_operation_id:
+          title: Target Operation Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - operation_id
+      - workspace_id
+      - rebuild_pages
+      - target_operation_id
+      title: LintOperationRestoreIn
+      type: object
+    MarkdownAgentRunStatusResponse:
+      properties:
+        apply_operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Apply Operation Id
+        base_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Base Version
+        document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Id
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        id:
+          title: Id
+          type: string
+        result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Result
+        status:
+          title: Status
+          type: string
+      required:
+      - id
+      - status
+      - result
+      - error_code
+      title: MarkdownAgentRunStatusResponse
+      type: object
+    MarkdownEditOperationResponse:
+      properties:
+        actual_target:
+          $ref: '#/components/schemas/MarkdownEditTargetResponse'
+        changed:
+          title: Changed
+          type: boolean
+        operation:
+          enum:
+          - replace
+          - insert_after
+          title: Operation
+          type: string
+        replacement_markdown:
+          title: Replacement Markdown
+          type: string
+        requested_target:
+          $ref: '#/components/schemas/MarkdownEditTargetResponse'
+        scope_expanded:
+          title: Scope Expanded
+          type: boolean
+        summary:
+          title: Summary
+          type: string
+      required:
+      - operation
+      - requested_target
+      - actual_target
+      - scope_expanded
+      - changed
+      - summary
+      - replacement_markdown
+      title: MarkdownEditOperationResponse
+      type: object
+    MarkdownEditTargetRequest:
+      properties:
+        end_line:
+          minimum: 1.0
+          title: End Line
+          type: integer
+        start_line:
+          minimum: 1.0
+          title: Start Line
+          type: integer
+        type:
+          enum:
+          - selection
+          - current_section
+          - whole_document
+          title: Type
+          type: string
+      required:
+      - type
+      - start_line
+      - end_line
+      title: MarkdownEditTargetRequest
+      type: object
+    MarkdownEditTargetResponse:
+      properties:
+        end_line:
+          title: End Line
+          type: integer
+        start_line:
+          title: Start Line
+          type: integer
+        type:
+          enum:
+          - selection
+          - current_section
+          - whole_document
+          title: Type
+          type: string
+      required:
+      - type
+      - start_line
+      - end_line
+      title: MarkdownEditTargetResponse
+      type: object
+    PendingSkillProposalRequest:
+      properties:
+        allowed_tools:
+          items:
+            enum:
+            - list_root_items
+            - list_folder_children
+            - search_hierarchy
+            - get_breadcrumb
+            - get_document_metadata
+            - get_document_content
+            - create_folder
+            - rename_folder
+            - move_folder
+            - move_document
+            - rename_document
+            - create_document
+            - apply_document_edit
+            type: string
+          minItems: 1
+          title: Allowed Tools
+          type: array
+        capabilities:
+          items:
+            enum:
+            - document-create
+            - document-edit
+            - folder-organize
+            - template
+            type: string
+          minItems: 1
+          title: Capabilities
+          type: array
+        description:
+          maxLength: 500
+          minLength: 1
+          title: Description
+          type: string
+        instructions_markdown:
+          maxLength: 30000
+          minLength: 1
+          title: Instructions Markdown
+          type: string
+        name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+          title: Name
+          type: string
+        scope_type:
+          enum:
+          - personal
+          - team
+          title: Scope Type
+          type: string
+      required:
+      - scope_type
+      - name
+      - description
+      - instructions_markdown
+      - capabilities
+      - allowed_tools
+      title: PendingSkillProposalRequest
+      type: object
+    PipelineRunIn:
+      additionalProperties: false
+      properties:
+        concept_page_mode:
+          default: auto
+          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          enum:
+          - auto
+          - api
+          - full-llm
+          - skeleton
+          - section-polish
+          title: Concept Page Mode
+          type: string
+        concept_resolution_system_prompt:
+          default: prompts/concept_resolution.system.md
+          title: Concept Resolution System Prompt
+          type: string
+        concept_system_prompt:
+          default: prompts/concept_page_generation.system.md
+          title: Concept System Prompt
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+        existing_wiki_dir:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Existing Wiki Dir
+        input_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Name
+        log_callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 설정하면 pipeline.log 이벤트가 생길 때마다 이 URL로 JSON POST합니다.
+          title: Log Callback Url
+        max_eval_attempts:
+          default: 2
+          title: Max Eval Attempts
+          type: integer
+        max_packet_chars:
+          default: 7000
+          title: Max Packet Chars
+          type: integer
+        mode:
+          default: api
+          enum:
+          - api
+          - generic-chat
+          title: Mode
+          type: string
+        model:
+          title: Model
+          type: string
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        out:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Out
+        overlap_blocks:
+          default: 1
+          title: Overlap Blocks
+          type: integer
+        provider:
+          enum:
+          - openai
+          - gemini
+          - claude
+          title: Provider
+          type: string
+        save_debug_json:
+          default: false
+          description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
+          title: Save Debug Json
+          type: boolean
+        section_polish_system_prompt:
+          default: prompts/section_polish.system.md
+          title: Section Polish System Prompt
+          type: string
+        source_content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Content Hash
+        source_page_mode:
+          default: auto
+          enum:
+          - auto
+          - skeleton
+          - section-polish
+          title: Source Page Mode
+          type: string
+        source_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Source Revision
+        system_prompt:
+          default: prompts/semantic_extraction.system.md
+          title: System Prompt
+          type: string
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: User Id
+        wait:
+          default: false
+          description: True이면 요청 안에서 완료까지 기다립니다. False이면 백그라운드 실행 후 로그를 조회합니다.
+          title: Wait
+          type: boolean
+        wiki_evaluation_loop:
+          default: true
+          title: Wiki Evaluation Loop
+          type: boolean
+        wiki_evaluator_system_prompt:
+          default: prompts/wiki_generation_evaluator.system.md
+          title: Wiki Evaluator System Prompt
+          type: string
+        workspace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: Workspace Id
+      required:
+      - document_id
+      - provider
+      - model
+      title: PipelineRunIn
+      type: object
+    PipelineRunOut:
+      properties:
+        log_path:
+          title: Log Path
+          type: string
+        manifest:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Manifest
+        output_dir:
+          title: Output Dir
+          type: string
+        run_id:
+          title: Run Id
+          type: string
+        status:
+          title: Status
+          type: string
+      required:
+      - run_id
+      - status
+      - output_dir
+      - log_path
+      title: PipelineRunOut
+      type: object
+    QueryRequest:
+      properties:
+        allow_web_search:
+          title: Allow Web Search
+          type: boolean
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        output_language:
+          anyOf:
+          - enum:
+            - ko
+            - en
+            - document
+            type: string
+          - type: 'null'
+          title: Output Language
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
+        question:
+          minLength: 1
+          title: Question
+          type: string
+        recent_conversation_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recent Conversation Summary
+        recent_messages:
+          items:
+            $ref: '#/components/schemas/ConversationMessageRequest'
+          maxItems: 6
+          title: Recent Messages
+          type: array
+        reference_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Reference Context
+        response_length:
+          anyOf:
+          - enum:
+            - concise
+            - balanced
+            - detailed
+            type: string
+          - type: 'null'
+          title: Response Length
+        user_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: User Id
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - question
+      - provider
+      - model
+      - allow_web_search
+      title: QueryRequest
+      type: object
+    QueryResponse:
+      properties:
+        answer:
+          title: Answer
+          type: string
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        evidence_snippets:
+          items:
+            $ref: '#/components/schemas/EvidenceSnippetResponse'
+          title: Evidence Snippets
+          type: array
+        graph_context:
+          $ref: '#/components/schemas/GraphContextResponse'
+        related_pages:
+          items:
+            $ref: '#/components/schemas/RelatedPageResponse'
+          title: Related Pages
+          type: array
+        result_count:
+          title: Result Count
+          type: integer
+        traversal_paths:
+          items:
+            $ref: '#/components/schemas/TraversalPathResponse'
+          title: Traversal Paths
+          type: array
+        updated_conversation_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated Conversation Summary
+        web_search_executed:
+          title: Web Search Executed
+          type: boolean
+        web_search_requested:
+          title: Web Search Requested
+          type: boolean
+      required:
+      - answer
+      - related_pages
+      - evidence_snippets
+      - graph_context
+      - traversal_paths
+      - web_search_requested
+      - web_search_executed
+      - result_count
+      title: QueryResponse
+      type: object
+    RebuildPageIn:
+      properties:
+        keep_contributions:
+          items:
+            $ref: '#/components/schemas/RestoreContributionIn'
+          title: Keep Contributions
+          type: array
+        page_id:
+          title: Page Id
+          type: string
+      required:
+      - page_id
+      - keep_contributions
+      title: RebuildPageIn
+      type: object
+    ReingestRunIn:
+      additionalProperties: false
+      properties:
+        concept_page_mode:
+          default: auto
+          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          enum:
+          - auto
+          - api
+          - full-llm
+          - skeleton
+          - section-polish
+          title: Concept Page Mode
+          type: string
+        concept_resolution_system_prompt:
+          default: prompts/concept_resolution.system.md
+          title: Concept Resolution System Prompt
+          type: string
+        concept_system_prompt:
+          default: prompts/concept_page_generation.system.md
+          title: Concept System Prompt
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+        existing_wiki_dir:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Existing Wiki Dir
+        input_markdown:
+          title: Input Markdown
+          type: string
+        input_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Name
+        log_callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 설정하면 pipeline.log 이벤트가 생길 때마다 이 URL로 JSON POST합니다.
+          title: Log Callback Url
+        max_eval_attempts:
+          default: 2
+          title: Max Eval Attempts
+          type: integer
+        max_packet_chars:
+          default: 7000
+          title: Max Packet Chars
+          type: integer
+        mode:
+          default: api
+          enum:
+          - api
+          - generic-chat
+          title: Mode
+          type: string
+        model:
+          title: Model
+          type: string
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        out:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Out
+        overlap_blocks:
+          default: 1
+          title: Overlap Blocks
+          type: integer
+        provider:
+          enum:
+          - openai
+          - gemini
+          - claude
+          title: Provider
+          type: string
+        save_debug_json:
+          default: false
+          description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
+          title: Save Debug Json
+          type: boolean
+        section_polish_system_prompt:
+          default: prompts/section_polish.system.md
+          title: Section Polish System Prompt
+          type: string
+        source_content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Content Hash
+        source_page_mode:
+          default: auto
+          enum:
+          - auto
+          - skeleton
+          - section-polish
+          title: Source Page Mode
+          type: string
+        source_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Source Revision
+        system_prompt:
+          default: prompts/semantic_extraction.system.md
+          title: System Prompt
+          type: string
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: User Id
+        wait:
+          default: false
+          description: True이면 요청 안에서 완료까지 기다립니다. False이면 백그라운드 실행 후 로그를 조회합니다.
+          title: Wait
+          type: boolean
+        wiki_evaluation_loop:
+          default: true
+          title: Wiki Evaluation Loop
+          type: boolean
+        wiki_evaluator_system_prompt:
+          default: prompts/wiki_generation_evaluator.system.md
+          title: Wiki Evaluator System Prompt
+          type: string
+        workspace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          title: Workspace Id
+      required:
+      - document_id
+      - provider
+      - model
+      - input_markdown
+      title: ReingestRunIn
+      type: object
+    RelatedPageResponse:
+      properties:
+        depth:
+          title: Depth
+          type: integer
+        id:
+          title: Id
+          type: string
+        page_type:
+          title: Page Type
+          type: string
+        relevance_score:
+          title: Relevance Score
+          type: number
+        role:
+          title: Role
+          type: string
+        slug:
+          title: Slug
+          type: string
+        title:
+          title: Title
+          type: string
+      required:
+      - id
+      - page_type
+      - title
+      - slug
+      - relevance_score
+      - role
+      - depth
+      title: RelatedPageResponse
+      type: object
+    RestoreContributionIn:
+      properties:
+        document_id:
+          title: Document Id
+          type: string
+        operation_id:
+          title: Operation Id
+          type: string
+      required:
+      - operation_id
+      - document_id
+      title: RestoreContributionIn
+      type: object
+    ReviseAgentPlanRequest:
+      properties:
+        instruction:
+          maxLength: 1000
+          minLength: 1
+          title: Instruction
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - instruction
+      title: ReviseAgentPlanRequest
+      type: object
+    SchemaFragmentsResponse:
+      properties:
+        concept_markdown:
+          title: Concept Markdown
+          type: string
+        edit_markdown:
+          title: Edit Markdown
+          type: string
+        global_markdown:
+          title: Global Markdown
+          type: string
+        ingest_markdown:
+          title: Ingest Markdown
+          type: string
+        query_markdown:
+          title: Query Markdown
+          type: string
+        template_markdown:
+          title: Template Markdown
+          type: string
+      required:
+      - global_markdown
+      - query_markdown
+      - ingest_markdown
+      - edit_markdown
+      - concept_markdown
+      - template_markdown
+      title: SchemaFragmentsResponse
+      type: object
+    SchemaIssueResponse:
+      properties:
+        category:
+          title: Category
+          type: string
+        reason:
+          title: Reason
+          type: string
+        section:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Section
+        severity:
+          enum:
+          - blocked
+          - unclear
+          title: Severity
+          type: string
+        text:
+          title: Text
+          type: string
+      required:
+      - severity
+      - category
+      - text
+      - reason
+      title: SchemaIssueResponse
+      type: object
+    SkillActorRequest:
+      properties:
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      title: SkillActorRequest
+      type: object
+    SkillAuthoringResponse:
+      properties:
+        allowed_tools:
+          items:
+            enum:
+            - list_root_items
+            - list_folder_children
+            - search_hierarchy
+            - get_breadcrumb
+            - get_document_metadata
+            - get_document_content
+            - create_folder
+            - rename_folder
+            - move_folder
+            - move_document
+            - rename_document
+            - create_document
+            - apply_document_edit
+            type: string
+          title: Allowed Tools
+          type: array
+        capabilities:
+          items:
+            enum:
+            - document-create
+            - document-edit
+            - folder-organize
+            - template
+            type: string
+          title: Capabilities
+          type: array
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        instructions_markdown:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Instructions Markdown
+        issues:
+          items:
+            additionalProperties: true
+            type: object
+          title: Issues
+          type: array
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Question
+        scope_type:
+          anyOf:
+          - enum:
+            - personal
+            - team
+            type: string
+          - type: 'null'
+          title: Scope Type
+        skill_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Skill Id
+        skill_markdown:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Skill Markdown
+        status:
+          enum:
+          - clarification_required
+          - blocked
+          - proposal_ready
+          - published
+          title: Status
+          type: string
+        version_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version Id
+      required:
+      - status
+      title: SkillAuthoringResponse
+      type: object
+    SkillCandidateResponse:
+      properties:
+        capabilities:
+          items:
+            type: string
+          title: Capabilities
+          type: array
+        description:
+          title: Description
+          type: string
+        id:
+          title: Id
+          type: string
+        name:
+          title: Name
+          type: string
+        version_id:
+          title: Version Id
+          type: string
+      required:
+      - id
+      - version_id
+      - name
+      - description
+      - capabilities
+      title: SkillCandidateResponse
+      type: object
+    SkillDefinitionRequest:
+      properties:
+        allowed_tools:
+          items:
+            enum:
+            - list_root_items
+            - list_folder_children
+            - search_hierarchy
+            - get_breadcrumb
+            - get_document_metadata
+            - get_document_content
+            - create_folder
+            - rename_folder
+            - move_folder
+            - move_document
+            - rename_document
+            - create_document
+            - apply_document_edit
+            type: string
+          title: Allowed Tools
+          type: array
+        capabilities:
+          items:
+            enum:
+            - document-create
+            - document-edit
+            - folder-organize
+            - template
+            type: string
+          minItems: 1
+          title: Capabilities
+          type: array
+        description:
+          minLength: 1
+          title: Description
+          type: string
+        instructions_markdown:
+          minLength: 1
+          title: Instructions Markdown
+          type: string
+        name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+          title: Name
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+      required:
+      - user_id
+      - name
+      - description
+      - instructions_markdown
+      - capabilities
+      title: SkillDefinitionRequest
+      type: object
+    SkillDraftProposalRequest:
+      properties:
+        excluded_literals:
+          items:
+            type: string
+          title: Excluded Literals
+          type: array
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
+        scope_type:
+          enum:
+          - personal
+          - team
+          title: Scope Type
+          type: string
+        source_runs:
+          items:
+            $ref: '#/components/schemas/SkillDraftSourceRunRequest'
+          minItems: 1
+          title: Source Runs
+          type: array
+        user_directives:
+          items:
+            type: string
+          title: User Directives
+          type: array
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - provider
+      - model
+      - workspace_id
+      - user_id
+      - scope_type
+      - source_runs
+      title: SkillDraftProposalRequest
+      type: object
+    SkillDraftSourceOperationRequest:
+      properties:
+        reason:
+          minLength: 1
+          title: Reason
+          type: string
+        tool_name:
+          enum:
+          - list_root_items
+          - list_folder_children
+          - search_hierarchy
+          - get_breadcrumb
+          - get_document_metadata
+          - get_document_content
+          - create_folder
+          - rename_folder
+          - move_folder
+          - move_document
+          - rename_document
+          - create_document
+          - apply_document_edit
+          title: Tool Name
+          type: string
+      required:
+      - tool_name
+      - reason
+      title: SkillDraftSourceOperationRequest
+      type: object
+    SkillDraftSourceRunRequest:
+      properties:
+        plan_summary:
+          minLength: 1
+          title: Plan Summary
+          type: string
+        request_summary:
+          minLength: 1
+          title: Request Summary
+          type: string
+        run_id:
+          minLength: 1
+          title: Run Id
+          type: string
+        status:
+          const: completed
+          title: Status
+          type: string
+        successful_operations:
+          items:
+            $ref: '#/components/schemas/SkillDraftSourceOperationRequest'
+          minItems: 1
+          title: Successful Operations
+          type: array
+      required:
+      - run_id
+      - status
+      - request_summary
+      - plan_summary
+      - successful_operations
+      title: SkillDraftSourceRunRequest
+      type: object
+    SkillPreviewResponse:
+      properties:
+        has_blocked_issues:
+          title: Has Blocked Issues
+          type: boolean
+        lint_result:
+          additionalProperties: true
+          title: Lint Result
+          type: object
+      required:
+      - lint_result
+      - has_blocked_issues
+      title: SkillPreviewResponse
+      type: object
+    SkillResponse:
+      properties:
+        enabled_version:
+          anyOf:
+          - $ref: '#/components/schemas/SkillVersionResponse'
+          - type: 'null'
+        id:
+          title: Id
+          type: string
+        latest_version:
+          anyOf:
+          - $ref: '#/components/schemas/SkillVersionResponse'
+          - type: 'null'
+        owner_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner User Id
+        scope_type:
+          title: Scope Type
+          type: string
+        slug:
+          title: Slug
+          type: string
+        status:
+          title: Status
+          type: string
+        workspace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace Id
+      required:
+      - id
+      - workspace_id
+      - scope_type
+      - owner_user_id
+      - slug
+      - status
+      - enabled_version
+      - latest_version
+      title: SkillResponse
+      type: object
+    SkillTaskRequest:
+      properties:
+        kind:
+          enum:
+          - skill_author
+          - skill_publish
+          - skill_update
+          title: Kind
+          type: string
+        payload:
+          additionalProperties: true
+          title: Payload
+          type: object
+        run_id:
+          maxLength: 120
+          minLength: 1
+          title: Run Id
+          type: string
+        skill_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Skill Id
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - run_id
+      - kind
+      - workspace_id
+      - user_id
+      - payload
+      title: SkillTaskRequest
+      type: object
+    SkillVersionResponse:
+      properties:
+        allowed_tools:
+          items:
+            type: string
+          title: Allowed Tools
+          type: array
+        capabilities:
+          items:
+            type: string
+          title: Capabilities
+          type: array
+        description:
+          title: Description
+          type: string
+        id:
+          title: Id
+          type: string
+        instructions_markdown:
+          title: Instructions Markdown
+          type: string
+        lint_result:
+          additionalProperties: true
+          title: Lint Result
+          type: object
+        name:
+          title: Name
+          type: string
+        status:
+          title: Status
+          type: string
+        version:
+          title: Version
+          type: integer
+      required:
+      - id
+      - version
+      - name
+      - description
+      - instructions_markdown
+      - capabilities
+      - allowed_tools
+      - lint_result
+      - status
+      title: SkillVersionResponse
+      type: object
+    SourceReferenceResponse:
+      properties:
+        source_block_id:
+          title: Source Block Id
+          type: string
+        source_document_id:
+          title: Source Document Id
+          type: string
+      required:
+      - source_document_id
+      - source_block_id
+      title: SourceReferenceResponse
+      type: object
+    SourceSnapshotRestoreIn:
+      properties:
+        document_id:
+          minLength: 1
+          title: Document Id
+          type: string
+        page_id:
+          title: Page Id
+          type: string
+      required:
+      - page_id
+      - document_id
+      title: SourceSnapshotRestoreIn
+      type: object
+    TaskStatusResponse:
+      properties:
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        id:
+          title: Id
+          type: string
+        status:
+          title: Status
+          type: string
+      required:
+      - id
+      - status
+      title: TaskStatusResponse
+      type: object
+    TraversalEdgeResponse:
+      properties:
+        from_page_id:
+          title: From Page Id
+          type: string
+        link_type:
+          title: Link Type
+          type: string
+        role:
+          title: Role
+          type: string
+        score:
+          title: Score
+          type: number
+        to_page_id:
+          title: To Page Id
+          type: string
+      required:
+      - from_page_id
+      - to_page_id
+      - link_type
+      - role
+      - score
+      title: TraversalEdgeResponse
+      type: object
+    TraversalPathResponse:
+      properties:
+        edges:
+          items:
+            $ref: '#/components/schemas/TraversalEdgeResponse'
+          title: Edges
+          type: array
+        nodes:
+          items:
+            type: string
+          title: Nodes
+          type: array
+        path_id:
+          title: Path Id
+          type: string
+        role:
+          title: Role
+          type: string
+        score:
+          title: Score
+          type: number
+        stop_reason:
+          title: Stop Reason
+          type: string
+        used_for_answer:
+          title: Used For Answer
+          type: boolean
+      required:
+      - path_id
+      - role
+      - used_for_answer
+      - score
+      - stop_reason
+      - nodes
+      - edges
+      title: TraversalPathResponse
+      type: object
+    ValidationError:
+      properties:
+        ctx:
+          title: Context
+          type: object
+        input:
+          title: Input
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          title: Location
+          type: array
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+      type: object
+    WikiLintIn:
+      properties:
+        dry_run:
+          default: true
+          title: Dry Run
+          type: boolean
+        materialize_promotions:
+          default: false
+          title: Materialize Promotions
+          type: boolean
+        model:
+          title: Model
+          type: string
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        provider:
+          enum:
+          - openai
+          - gemini
+          - claude
+          title: Provider
+          type: string
+        user_id:
+          default: local-user
+          title: User Id
+          type: string
+        workspace_id:
+          default: local-workspace
+          title: Workspace Id
+          type: string
+      required:
+      - provider
+      - model
+      title: WikiLintIn
+      type: object
+    WikiLintOut:
+      properties:
+        active_path:
+          title: Active Path
+          type: string
+        applied_cluster_reconciliation:
+          additionalProperties:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+          title: Applied Cluster Reconciliation
+          type: object
+        applied_reconciliations:
+          items:
+            additionalProperties: true
+            type: object
+          title: Applied Reconciliations
+          type: array
+        changed_pages:
+          items:
+            additionalProperties: true
+            type: object
+          title: Changed Pages
+          type: array
+        cluster_count:
+          title: Cluster Count
+          type: integer
+        invalid_promotions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Invalid Promotions
+          type: array
+        invalid_relations:
+          items:
+            additionalProperties: true
+            type: object
+          title: Invalid Relations
+          type: array
+        materialized_promotions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Materialized Promotions
+          type: array
+        materialized_relations:
+          items:
+            additionalProperties: true
+            type: object
+          title: Materialized Relations
+          type: array
+        merged_promotions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Merged Promotions
+          type: array
+        needs_review:
+          items:
+            type: string
+          title: Needs Review
+          type: array
+        operation_artifacts:
+          items:
+            additionalProperties: true
+            type: object
+          title: Operation Artifacts
+          type: array
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        orphan_link_candidates:
+          items:
+            additionalProperties: true
+            type: object
+          title: Orphan Link Candidates
+          type: array
+        orphan_refs:
+          items:
+            type: string
+          title: Orphan Refs
+          type: array
+        promotion_candidates:
+          items:
+            type: string
+          title: Promotion Candidates
+          type: array
+        reconciliation_candidates:
+          items:
+            additionalProperties: true
+            type: object
+          title: Reconciliation Candidates
+          type: array
+        relation_candidates:
+          items:
+            additionalProperties: true
+            type: object
+          title: Relation Candidates
+          type: array
+        removed_orphan_links:
+          items:
+            additionalProperties: true
+            type: object
+          title: Removed Orphan Links
+          type: array
+        source_ref_count:
+          title: Source Ref Count
+          type: integer
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - user_id
+      - workspace_id
+      - active_path
+      - cluster_count
+      - source_ref_count
+      - orphan_refs
+      - promotion_candidates
+      - needs_review
+      - relation_candidates
+      - invalid_relations
+      - invalid_promotions
+      - reconciliation_candidates
+      - applied_reconciliations
+      - applied_cluster_reconciliation
+      - materialized_promotions
+      - merged_promotions
+      - materialized_relations
+      title: WikiLintOut
+      type: object
+    WikiPageLookupIn:
+      additionalProperties: false
+      properties:
+        page_ids:
+          items:
+            type: string
+          title: Page Ids
+          type: array
+        workspace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workspace Id
+      required:
+      - page_ids
+      title: WikiPageLookupIn
+      type: object
+    WikiPageRenameIn:
+      additionalProperties: false
+      properties:
+        title:
+          minLength: 1
+          title: Title
+          type: string
+        update_slug:
+          default: false
+          title: Update Slug
+          type: boolean
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - user_id
+      - workspace_id
+      - title
+      title: WikiPageRenameIn
+      type: object
+    WikiSchemaPreviewRequest:
+      properties:
+        raw_markdown:
+          minLength: 1
+          title: Raw Markdown
+          type: string
+      required:
+      - raw_markdown
+      title: WikiSchemaPreviewRequest
+      type: object
+    WikiSchemaPreviewResponse:
+      properties:
+        fragments:
+          $ref: '#/components/schemas/SchemaFragmentsResponse'
+        has_blocked_issues:
+          title: Has Blocked Issues
+          type: boolean
+        issues:
+          items:
+            $ref: '#/components/schemas/SchemaIssueResponse'
+          title: Issues
+          type: array
+        preview_markdown:
+          title: Preview Markdown
+          type: string
+      required:
+      - fragments
+      - issues
+      - preview_markdown
+      - has_blocked_issues
+      title: WikiSchemaPreviewResponse
+      type: object
+    WikiSchemaResponse:
+      properties:
+        activated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activated At
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        fragments:
+          $ref: '#/components/schemas/SchemaFragmentsResponse'
+        has_blocked_issues:
+          title: Has Blocked Issues
+          type: boolean
+        id:
+          title: Id
+          type: string
+        issues:
+          items:
+            $ref: '#/components/schemas/SchemaIssueResponse'
+          title: Issues
+          type: array
+        name:
+          title: Name
+          type: string
+        preview_markdown:
+          title: Preview Markdown
+          type: string
+        raw_markdown:
+          title: Raw Markdown
+          type: string
+        schema_version:
+          title: Schema Version
+          type: string
+        status:
+          title: Status
+          type: string
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - id
+      - workspace_id
+      - user_id
+      - name
+      - raw_markdown
+      - fragments
+      - issues
+      - preview_markdown
+      - has_blocked_issues
+      - status
+      - schema_version
+      title: WikiSchemaResponse
+      type: object
+info:
+  title: Fruition Pipeline Lab API
+  version: 0.1.0
+openapi: 3.1.0
+paths:
+  /agent/runs/{run_id}:
+    get:
+      operationId: get_agent_run_agent_runs__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Agent Run
+      tags:
+      - agent-runs
+  /agent/runs/{run_id}/approve:
+    post:
+      operationId: approve_agent_run_agent_runs__run_id__approve_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveAgentPlanRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Approve Agent Run
+      tags:
+      - agent-runs
+  /agent/runs/{run_id}/cancel:
+    post:
+      operationId: cancel_agent_run_agent_runs__run_id__cancel_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRunActorRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cancel Agent Run
+      tags:
+      - agent-runs
+  /agent/runs/{run_id}/reject:
+    post:
+      operationId: reject_agent_run_agent_runs__run_id__reject_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRunActorRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reject Agent Run
+      tags:
+      - agent-runs
+  /agent/runs/{run_id}/revise:
+    post:
+      operationId: revise_agent_run_agent_runs__run_id__revise_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviseAgentPlanRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Revise Agent Run
+      tags:
+      - agent-runs
+  /agent/turn:
+    post:
+      operationId: handle_agent_turn_agent_turn_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentTurnRequestBody'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentTurnResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Handle Agent Turn
+      tags:
+      - agent
+  /chat-wiki/runs:
+    post:
+      operationId: run_chat_wiki_endpoint_chat_wiki_runs_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatWikiRunIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRunOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Chat Wiki Endpoint
+      tags:
+      - wiki-ingest
+  /documents/{document_id}:
+    get:
+      operationId: get_document_documents__document_id__get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Document Documents  Document Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Document
+  /health:
+    get:
+      operationId: health_health_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                title: Response Health Health Get
+                type: object
+          description: Successful Response
+      summary: Health
+  /internal/agent/runs/artifacts/list:
+    post:
+      operationId: list_agent_artifacts_internal_agent_runs_artifacts_list_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentArtifactListRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/AgentArtifactResponse'
+                title: Response List Agent Artifacts Internal Agent Runs Artifacts List Post
+                type: array
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Agent Artifacts
+      tags:
+      - internal-agent-runs
+  /internal/agent/runs/artifacts/register:
+    post:
+      operationId: register_agent_artifact_internal_agent_runs_artifacts_register_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentArtifactRegisterRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentArtifactResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Register Agent Artifact
+      tags:
+      - internal-agent-runs
+  /internal/agent/runs/artifacts/resolve:
+    post:
+      operationId: resolve_agent_artifact_internal_agent_runs_artifacts_resolve_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentArtifactResolveRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentArtifactResolveResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Resolve Agent Artifact
+      tags:
+      - internal-agent-runs
+  /internal/agent/runs/tool-authorizations/execute:
+    post:
+      operationId: authorize_agent_tool_execute_internal_agent_runs_tool_authorizations_execute_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentToolExecuteAuthorizationRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Authorize Agent Tool Execute
+      tags:
+      - internal-agent-runs
+  /internal/agent/runs/tool-authorizations/read:
+    post:
+      operationId: authorize_agent_tool_read_internal_agent_runs_tool_authorizations_read_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentToolReadAuthorizationRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Authorize Agent Tool Read
+      tags:
+      - internal-agent-runs
+  /internal/agent/runs/{run_id}:
+    get:
+      operationId: get_markdown_agent_run_internal_agent_runs__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarkdownAgentRunStatusResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Markdown Agent Run
+      tags:
+      - internal-agent-runs
+  /internal/ai/tasks/documents/{document_id}/cancel:
+    post:
+      operationId: cancel_document_tasks_internal_ai_tasks_documents__document_id__cancel_post
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentCleanupResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cancel Document Tasks
+      tags:
+      - ai-task-cancellation
+  /internal/ai/tasks/{run_id}:
+    get:
+      operationId: task_status_internal_ai_tasks__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskStatusResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Task Status
+      tags:
+      - ai-task-cancellation
+  /internal/ai/tasks/{run_id}/cancel:
+    post:
+      operationId: cancel_task_internal_ai_tasks__run_id__cancel_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskStatusResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cancel Task
+      tags:
+      - ai-task-cancellation
+  /internal/ai/tasks/{run_id}/rollback-backend:
+    post:
+      operationId: rollback_backend_task_internal_ai_tasks__run_id__rollback_backend_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Rollback Backend Task
+      tags:
+      - ai-task-cancellation
+  /pipeline/reingest-runs:
+    post:
+      operationId: run_reingest_pipeline_endpoint_pipeline_reingest_runs_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReingestRunIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRunOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Reingest Pipeline Endpoint
+      tags:
+      - wiki-ingest
+  /pipeline/runs:
+    post:
+      operationId: run_pipeline_endpoint_pipeline_runs_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineRunIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineRunOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Pipeline Endpoint
+      tags:
+      - wiki-ingest
+  /pipeline/runs/{run_id}:
+    get:
+      operationId: get_pipeline_run_pipeline_runs__run_id__get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Pipeline Run Pipeline Runs  Run Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Pipeline Run
+      tags:
+      - wiki-ingest
+  /pipeline/runs/{run_id}/logs:
+    get:
+      operationId: get_pipeline_logs_pipeline_runs__run_id__logs_get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            text/plain:
+              schema:
+                type: string
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Pipeline Logs
+      tags:
+      - wiki-ingest
+  /query:
+    post:
+      operationId: answer_query_query_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Answer Query
+      tags:
+      - query
+  /skills:
+    get:
+      operationId: list_skills_skills_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/SkillResponse'
+                title: Response List Skills Skills Get
+                type: array
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Skills
+      tags:
+      - skills
+  /skills/draft-from-runs/preview:
+    post:
+      operationId: propose_skill_draft_skills_draft_from_runs_preview_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillDraftProposalRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillAuthoringResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Propose Skill Draft
+      tags:
+      - skills
+  /skills/preview:
+    post:
+      operationId: preview_skill_skills_preview_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillDefinitionRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillPreviewResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Preview Skill
+      tags:
+      - skills
+  /skills/tasks:
+    post:
+      operationId: execute_skill_task_skills_tasks_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillTaskRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Execute Skill Task
+      tags:
+      - skills
+  /skills/{skill_id}:
+    get:
+      operationId: get_skill_skills__skill_id__get
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Skill
+      tags:
+      - skills
+  /skills/{skill_id}/disable:
+    post:
+      operationId: disable_skill_skills__skill_id__disable_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillActorRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Disable Skill
+      tags:
+      - skills
+  /skills/{skill_id}/enable:
+    post:
+      operationId: enable_skill_skills__skill_id__enable_post
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillActorRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Enable Skill
+      tags:
+      - skills
+  /wiki-schema/active:
+    get:
+      operationId: get_active_wiki_schema_wiki_schema_active_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/WikiSchemaResponse'
+                - type: 'null'
+                title: Response Get Active Wiki Schema Wiki Schema Active Get
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Active Wiki Schema
+      tags:
+      - wiki-schema
+  /wiki-schema/drafts:
+    post:
+      operationId: create_wiki_schema_draft_wiki_schema_drafts_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWikiSchemaDraftRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWikiSchemaDraftResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Wiki Schema Draft
+      tags:
+      - wiki-schema
+  /wiki-schema/preview:
+    post:
+      operationId: preview_wiki_schema_wiki_schema_preview_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiSchemaPreviewRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WikiSchemaPreviewResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Preview Wiki Schema
+      tags:
+      - wiki-schema
+  /wiki-schema/{schema_id}/activate:
+    post:
+      operationId: activate_wiki_schema_wiki_schema__schema_id__activate_post
+      parameters:
+      - in: path
+        name: schema_id
+        required: true
+        schema:
+          title: Schema Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WikiSchemaResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Activate Wiki Schema
+      tags:
+      - wiki-schema
+  /wiki/documents/{document_id}/context:
+    get:
+      operationId: get_document_wiki_context_wiki_documents__document_id__context_get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Document Wiki Context Wiki Documents  Document Id  Context Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Document Wiki Context
+      tags:
+      - wiki
+  /wiki/graph:
+    get:
+      operationId: get_wiki_graph_wiki_graph_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Wiki Graph Wiki Graph Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Wiki Graph
+      tags:
+      - wiki
+  /wiki/ingest-restore-runs:
+    post:
+      operationId: restore_ingest_operation_wiki_ingest_restore_runs_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestOperationRestoreIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Restore Ingest Operation Wiki Ingest Restore Runs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Restore Ingest Operation
+      tags:
+      - wiki
+  /wiki/lint-restore-runs:
+    post:
+      operationId: restore_lint_operation_wiki_lint_restore_runs_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LintOperationRestoreIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Restore Lint Operation Wiki Lint Restore Runs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Restore Lint Operation
+      tags:
+      - wiki
+  /wiki/maintenance/lint:
+    post:
+      operationId: lint_wiki_workspace_wiki_maintenance_lint_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiLintIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WikiLintOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lint Wiki Workspace
+      tags:
+      - wiki
+  /wiki/pages/lookup:
+    post:
+      operationId: lookup_wiki_pages_wiki_pages_lookup_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiPageLookupIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  additionalProperties: true
+                  type: object
+                title: Response Lookup Wiki Pages Wiki Pages Lookup Post
+                type: array
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lookup Wiki Pages
+      tags:
+      - wiki
+  /wiki/pages/{page_id}:
+    get:
+      operationId: get_wiki_page_wiki_pages__page_id__get
+      parameters:
+      - in: path
+        name: page_id
+        required: true
+        schema:
+          title: Page Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Wiki Page Wiki Pages  Page Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Wiki Page
+      tags:
+      - wiki
+  /wiki/pages/{page_id}/rename:
+    patch:
+      operationId: rename_wiki_page_wiki_pages__page_id__rename_patch
+      parameters:
+      - in: path
+        name: page_id
+        required: true
+        schema:
+          title: Page Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiPageRenameIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Rename Wiki Page Wiki Pages  Page Id  Rename Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Rename Wiki Page
+      tags:
+      - wiki
+  /wiki/workspaces/{workspace_id}/documents/{document_id}:
+    delete:
+      operationId: delete_document_wiki_data_wiki_workspaces__workspace_id__documents__document_id__delete
+      parameters:
+      - in: path
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Document Wiki Data
+      tags:
+      - wiki
+  /wiki/workspaces/{workspace_id}/last-updated:
+    get:
+      operationId: get_last_wiki_updated_wiki_workspaces__workspace_id__last_updated_get
+      parameters:
+      - in: path
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Last Wiki Updated Wiki Workspaces  Workspace Id  Last Updated Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Last Wiki Updated
+      tags:
+      - wiki

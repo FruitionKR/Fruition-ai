@@ -1,0 +1,3 @@
+# BGE-M3 dependency alias kept for existing local setup commands.
+# Ingest always starts the embedding job, so the runtime requirement is shared.
+-r requirements.txt

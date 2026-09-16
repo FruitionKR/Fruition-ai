@@ -1,0 +1,5 @@
+# 테스트 전용 의존성. 런타임 이미지(Dockerfile)는 requirements.txt만 설치한다.
+-r requirements.txt
+pytest>=8.0
+# OpenAPI 스냅샷 테스트가 직접 쓴다. 전이 의존에 기대지 않도록 명시한다.
+pyyaml>=6.0

@@ -1,0 +1,9 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "query_evaluator": "./app/modules/query/infrastructure/query_evaluator_studio_graph.py:graph",
+    "wiki_ingest_evaluator": "./app/modules/wiki_generation/infrastructure/wiki_generation_evaluator_studio_graph.py:graph"
+  },
+  "env": "../infra/.env",
+  "python_version": "3.12"
+}

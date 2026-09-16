@@ -1,0 +1,6 @@
+-r requirements.txt
+
+docling>=2.0
+Pillow>=10.0
+PyMuPDF>=1.24
+pix2tex>=0.1.4
