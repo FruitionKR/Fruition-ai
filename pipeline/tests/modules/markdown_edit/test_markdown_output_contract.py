@@ -432,6 +432,24 @@ class MarkdownOutputContractTest(unittest.TestCase):
 
         self.assertEqual(validate_markdown_output(request, "# 안내\n\n수정한 내용과 배포 절차입니다."), [])
 
+    def test_heading_addition_with_explicit_format_change_is_not_addition_only(self) -> None:
+        for instruction in ("제목을 추가하고 회귀 테스트는 굵게 표시해줘.",
+                            "Add a heading and format 회귀 테스트 in bold."):
+            with self.subTest(instruction=instruction):
+                request = MarkdownEditRequest(
+                    instruction=instruction, markdown="회귀 테스트를 한다.",
+                    target=TARGET, edit_goal="convert_format",
+                )
+                self.assertEqual(validate_markdown_output(request, "# 릴리스\n\n**회귀 테스트**를 한다."), [])
+
+    def test_information_does_not_count_as_a_format_change(self) -> None:
+        request = MarkdownEditRequest(
+            instruction="Append information to this document.", markdown="기존 내용",
+            target=TARGET, edit_goal="convert_format",
+        )
+        self.assertIn("additive edit must preserve every existing non-empty line in order",
+                      validate_markdown_output(request, "새 정보만 남김"))
+
     def test_section_addition_preserves_existing_document_for_convert_format(self) -> None:
         request = MarkdownEditRequest(
             instruction="기존 문서에 문제 해결 섹션을 추가하고 예시를 작성해줘.",
