@@ -66,7 +66,16 @@ COPY app ./app
 COPY db ./db
 COPY prompts ./prompts
 
-RUN mkdir -p runs
+# Fixed numeric identity lets Kubernetes verify runAsNonRoot without image lookup.
+RUN groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
+ENV HOME=/home/appuser
+ENV XDG_CACHE_HOME=/home/appuser/.cache
+RUN mkdir -p /app/runs /home/appuser/.cache \
+    && chown 10001:10001 /app/runs /home/appuser/.cache
+
+# Application source and installed binaries remain root-owned/read-only to appuser.
+USER 10001:10001
 
 EXPOSE 8000
 

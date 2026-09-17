@@ -23,6 +23,8 @@ from datetime import datetime
 
 from aiokafka import AIOKafkaConsumer
 
+from app.core.kafka_security import kafka_security_options
+
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
@@ -82,6 +84,7 @@ async def consume() -> None:
     consumer = AIOKafkaConsumer(
         TOPIC,
         bootstrap_servers=BOOTSTRAP_SERVERS,
+        **kafka_security_options(),
         group_id=GROUP_ID,
         enable_auto_commit=False,
         auto_offset_reset="earliest",

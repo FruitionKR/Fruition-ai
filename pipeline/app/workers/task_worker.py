@@ -15,6 +15,8 @@ from itertools import count
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+
+from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
@@ -966,6 +968,7 @@ async def consume() -> None:
     consumer = AIOKafkaConsumer(
         COMMAND_TOPIC,
         bootstrap_servers=BOOTSTRAP_SERVERS,
+        **kafka_security_options(),
         group_id=GROUP_ID,
         enable_auto_commit=False,
         max_poll_records=1,
@@ -975,6 +978,7 @@ async def consume() -> None:
     )
     producer = AIOKafkaProducer(
         bootstrap_servers=BOOTSTRAP_SERVERS,
+        **kafka_security_options(),
         enable_idempotence=True,
         value_serializer=lambda value: json.dumps(value, ensure_ascii=False).encode("utf-8"),
     )

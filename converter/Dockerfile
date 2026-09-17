@@ -47,7 +47,9 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m appuser
+# Fixed numeric identity lets Kubernetes verify runAsNonRoot without image lookup.
+RUN groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
 
 COPY converter/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -69,7 +71,11 @@ COPY converter/app.py ./converter_app.py
 COPY pipeline/app ./app
 COPY pipeline/prompts ./prompts
 
-USER appuser
+# AWS mounts writable /tmp while the root filesystem remains read-only.
+ENV HOME=/tmp
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
 
 EXPOSE 8000
 
