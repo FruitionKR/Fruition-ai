@@ -1403,6 +1403,108 @@ components:
       - end_line
       title: MarkdownEditTargetResponse
       type: object
+    MeetingNoteItem:
+      properties:
+        source_segment_ids:
+          items:
+            type: string
+          title: Source Segment Ids
+          type: array
+        text:
+          title: Text
+          type: string
+      required:
+      - text
+      - source_segment_ids
+      title: MeetingNoteItem
+      type: object
+    MeetingNotesRequest:
+      additionalProperties: false
+      properties:
+        segments:
+          items:
+            $ref: '#/components/schemas/MeetingSegment'
+          maxItems: 1000
+          minItems: 1
+          title: Segments
+          type: array
+        title:
+          default: 회의록
+          maxLength: 200
+          title: Title
+          type: string
+        user_id:
+          maxLength: 128
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          maxLength: 128
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - segments
+      title: MeetingNotesRequest
+      type: object
+    MeetingNotesResponse:
+      properties:
+        action_items:
+          items:
+            $ref: '#/components/schemas/MeetingNoteItem'
+          title: Action Items
+          type: array
+        decisions:
+          items:
+            $ref: '#/components/schemas/MeetingNoteItem'
+          title: Decisions
+          type: array
+        markdown:
+          title: Markdown
+          type: string
+        open_questions:
+          items:
+            $ref: '#/components/schemas/MeetingNoteItem'
+          title: Open Questions
+          type: array
+        summary:
+          items:
+            $ref: '#/components/schemas/MeetingNoteItem'
+          title: Summary
+          type: array
+        title:
+          title: Title
+          type: string
+      required:
+      - title
+      - markdown
+      - summary
+      - decisions
+      - action_items
+      - open_questions
+      title: MeetingNotesResponse
+      type: object
+    MeetingSegment:
+      additionalProperties: false
+      properties:
+        id:
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9_-]+$
+          title: Id
+          type: string
+        text:
+          maxLength: 10000
+          minLength: 1
+          title: Text
+          type: string
+      required:
+      - id
+      - text
+      title: MeetingSegment
+      type: object
     PendingSkillProposalRequest:
       properties:
         allowed_tools:
@@ -2514,6 +2616,35 @@ components:
       - document_id
       title: SourceSnapshotRestoreIn
       type: object
+    SpeechSynthesisRequest:
+      additionalProperties: false
+      properties:
+        action:
+          const: chat_answer
+          title: Action
+          type: string
+        answer:
+          maxLength: 4000
+          minLength: 1
+          title: Answer
+          type: string
+        user_id:
+          maxLength: 128
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          maxLength: 128
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - action
+      - answer
+      title: SpeechSynthesisRequest
+      type: object
     TaskStatusResponse:
       properties:
         error_code:
@@ -2531,6 +2662,15 @@ components:
       - id
       - status
       title: TaskStatusResponse
+      type: object
+    TranscriptionResponse:
+      properties:
+        text:
+          title: Text
+          type: string
+      required:
+      - text
+      title: TranscriptionResponse
       type: object
     TraversalEdgeResponse:
       properties:
@@ -3642,6 +3782,40 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
+  /meeting-notes/preview:
+    post:
+      operationId: preview_meeting_notes_meeting_notes_preview_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeetingNotesRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeetingNotesResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Preview Meeting Notes
+      tags:
+      - meeting-notes
   /pipeline/reingest-runs:
     post:
       operationId: run_reingest_pipeline_endpoint_pipeline_reingest_runs_post
@@ -4084,6 +4258,101 @@ paths:
       summary: Enable Skill
       tags:
       - skills
+  /speech/synthesis:
+    post:
+      operationId: synthesize_speech_synthesis_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeechSynthesisRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            audio/mpeg: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Synthesize
+      tags:
+      - speech
+  /speech/transcriptions:
+    post:
+      operationId: transcribe_speech_transcriptions_post
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          maxLength: 128
+          minLength: 1
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          maxLength: 128
+          minLength: 1
+          title: User Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          audio/mp4:
+            schema:
+              format: binary
+              type: string
+          audio/mpeg:
+            schema:
+              format: binary
+              type: string
+          audio/wav:
+            schema:
+              format: binary
+              type: string
+          audio/webm:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Transcribe
+      tags:
+      - speech
   /wiki-schema/active:
     get:
       operationId: get_active_wiki_schema_wiki_schema_active_get
