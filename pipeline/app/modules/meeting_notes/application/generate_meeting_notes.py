@@ -9,7 +9,7 @@ class GenerateMeetingNotes:
     def __init__(self, generator: MeetingNotesGeneratorPort) -> None:
         self._generator = generator
 
-    def execute(self, title: str, segments: list[TranscriptSegment]) -> dict:
+    def execute(self, display_name: str, segments: list[TranscriptSegment]) -> dict:
         ids = {segment.id for segment in segments}
         if (
             not segments
@@ -17,7 +17,7 @@ class GenerateMeetingNotes:
             or not any(s.text.strip() for s in segments)
         ):
             raise ValueError("중복 없는 확정 전사 구간이 필요합니다.")
-        result = self._generator.generate(title, segments)
+        result = self._generator.generate(display_name, segments)
         if not isinstance(result, dict):
             raise InvalidMeetingNotesError("회의록 형식이 올바르지 않습니다.")
         # 요약·결정·할 일은 모두 실제 구간을 근거로 가져야 한다.
@@ -27,7 +27,7 @@ class GenerateMeetingNotes:
             ("action_items", "할 일"),
             ("open_questions", "미결 사항"),
         ]
-        lines = [f"# {title.strip() or '회의록'}"]
+        lines = [f"# {display_name.strip() or '회의록'}"]
         for key, heading in sections:
             items = result.get(key)
             if not isinstance(items, list) or len(items) > 100:
@@ -54,7 +54,7 @@ class GenerateMeetingNotes:
                     )
                 lines.append(f"- {text.strip()} ({', '.join(refs)})")
         return {
-            "title": title.strip() or "회의록",
+            "display_name": display_name.strip() or "회의록",
             "markdown": "\n".join(lines),
             **{key: result[key] for key, _ in sections},
         }

@@ -88,7 +88,7 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 {
   "workspace_id":"workspace-id",
   "user_id":"user-id",
-  "title":"출시 회의",
+  "display_name":"출시 회의",
   "segments":[{"id":"item_1","text":"출시는 다음 주 금요일로 확정하겠습니다."}]
 }
 ```
@@ -97,7 +97,7 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면 `422`이며
 내용을 조용히 자르지 않는다.
 
-결과: title, markdown, summary, decisions, action_items, open_questions.
+결과: display_name, markdown, summary, decisions, action_items, open_questions.
 네 배열의 각 항목은 text와 source_segment_ids를 가진다. 존재하지 않는 구간을
 참조하거나 근거가 없으면 `502`로 실패한다. 이는 참조 유효성 검증이며 의미적 정확성을
 보장하지 않는다. 모델은 기존 보안·개인정보 마스킹 경로의 `gpt-5-nano`다.
@@ -112,6 +112,42 @@ Agent의 `GenerateMarkdownEditUseCase`나 편집 평가·재시도 로직을 호
 반환할 뿐 DB·S3에 저장하거나 문서 본문을 변경하지 않는다.
 
 ## 연동 범위와 검증
+
+### Document 저장 경로 재사용
+
+Document 저장소의 `main` 커밋 `99d4b55f` 기준으로 다음 기존 API를 사용할 수 있다.
+AI의 요청·응답 이름은 문서 생성 DTO에 맞춰 `display_name`, `markdown`을 사용한다.
+이전 `title` 입력은 지원하지 않는다.
+
+| 목적 | 기존 Document API | 호출자가 전달할 내용 |
+|---|---|---|
+| 새 문서로 저장 | `POST /api/workspaces/{workspace_id}/documents/markdown` | JSON `display_name`, `markdown`, 선택 `folder_id`; 필수 `Idempotency-Key` 헤더 |
+| 열린 문서에 반영 | `PUT /api/workspaces/{workspace_id}/documents/{document_id}/content` | multipart `markdown`(반영 후 전체 본문), `base_revision`, `revision_write_id` |
+
+새 문서 생성에는 응답 중 `display_name`, `markdown`만 골라 전달한다. `folder_id`와
+멱등 키는 호출자가 관리한다. 같은 저장 재시도에는 같은 키와 같은 본문을 사용한다.
+`summary` 등 근거 배열은 저장 요청의 필드가 아니므로 통째로 전달하지 않는다.
+
+열린 문서에는 현재 본문과 회의록을 사용자 선택 위치에서 합친 **전체 Markdown**을 저장한다.
+AI 응답의 회의록만 전체 본문으로 보내 기존 내용을 덮어쓰면 안 된다. 본문을 읽을 때의
+`edit_revision`을 `base_revision`으로 전달하고 같은 저장 재시도에는 같은 `revision_write_id`를
+사용한다. 충돌 `409`는 본문을 재조회하고 변경 내용을 다시 확인해야 한다.
+
+Document는 workspace/문서 소유권·편집 가능 여부·잠금·revision을 검사한다. AI의 workspace
+membership 검증만으로 문서 저장 권한이 보장되지 않는다. 새 문서의 편집 본문은 PostgreSQL
+`document_edit_states`에 저장되며, 생성 시 원본 Markdown은 기존 S3/MinIO 경로에도 저장된다.
+본문 변경 역시 기존 PostgreSQL 편집 저장 경로를 따른다. AI가 직접 저장소에 쓰지 않는다.
+
+Agent 작업 이력 연결용 `apply_operation_id`는 Backend가 발급·검증하는 적용 표다.
+회의록 API는 이 표를 발급하지 않으므로 임의 값을 만들거나 `source=agent`만 붙여 Agent
+승인 이력이 남는다고 간주하면 안 된다. 기존 저장 API로 사용자가 수락한 본문을 저장하는 것과
+Agent 승인·감사 경로에 회의록 작업을 등록하는 것은 별도 연동이다.
+
+확인한 구현: [생성 DTO](https://github.com/FruitionKR/Fruition-document/blob/99d4b55fbbfa4ffd0bbdc50e2931873c2889dd2f/src/main/java/fruition/core/document/dto/MarkdownDocumentCreateRequest.java),
+[저장 API](https://github.com/FruitionKR/Fruition-document/blob/99d4b55fbbfa4ffd0bbdc50e2931873c2889dd2f/src/main/java/fruition/core/document/controller/DocumentController.java),
+[생성·저장 서비스](https://github.com/FruitionKR/Fruition-document/blob/99d4b55fbbfa4ffd0bbdc50e2931873c2889dd2f/src/main/java/fruition/core/document/service/DocumentService.java).
+
+### 별도 연동과 검증
 
 이 저장소는 AI API만 제공한다. 마이크 권한·녹음 표시·참석자 고지·음성 재생·회의록 UI,
 사용자용 Gateway, 전사/녹음 저장과 문서 반영은 프런트엔드·Document의 연동 범위다.

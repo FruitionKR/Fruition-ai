@@ -10,7 +10,7 @@ class MeetingSegment(BaseModel):
 
 
 class MeetingNotesRequest(SpeechScope):
-    title: str = Field(default="회의록", max_length=200)
+    display_name: str = Field(default="회의록", min_length=1, max_length=200)
     segments: list[MeetingSegment] = Field(min_length=1, max_length=1000)
 
     @model_validator(mode="after")
@@ -28,7 +28,7 @@ class MeetingNoteItem(BaseModel):
 
 
 class MeetingNotesResponse(BaseModel):
-    title: str
+    display_name: str
     markdown: str
     summary: list[MeetingNoteItem]
     decisions: list[MeetingNoteItem]

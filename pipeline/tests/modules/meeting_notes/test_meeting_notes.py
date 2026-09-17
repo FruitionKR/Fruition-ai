@@ -86,6 +86,7 @@ def test_preview_is_authenticated_and_returns_draft(monkeypatch):
         payload = {
             "workspace_id": "w",
             "user_id": "u",
+            "display_name": "출시 회의",
             "segments": [{"id": "s1", "text": "기록"}],
         }
         assert http.post("/meeting-notes/preview", json=payload).status_code == 401
@@ -95,6 +96,18 @@ def test_preview_is_authenticated_and_returns_draft(monkeypatch):
             headers={"X-Internal-Token": "test-internal"},
         )
         assert response.status_code == 200
+        draft = response.json()
+        assert draft["display_name"] == "출시 회의"
+        assert draft["markdown"].startswith("# 출시 회의\n")
+        assert "title" not in draft
+        assert (
+            http.post(
+                "/meeting-notes/preview",
+                json={**payload, "title": "이전 필드"},
+                headers={"X-Internal-Token": "test-internal"},
+            ).status_code
+            == 422
+        )
         assert response.json()["summary"][0]["source_segment_ids"] == ["s1"]
     finally:
         api.app.dependency_overrides.pop(routes.get_meeting_notes, None)

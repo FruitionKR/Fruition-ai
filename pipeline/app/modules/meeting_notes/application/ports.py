@@ -4,4 +4,6 @@ from app.modules.meeting_notes.domain.entities import TranscriptSegment
 
 
 class MeetingNotesGeneratorPort(Protocol):
-    def generate(self, title: str, segments: list[TranscriptSegment]) -> dict: ...
+    def generate(
+        self, display_name: str, segments: list[TranscriptSegment]
+    ) -> dict: ...

@@ -27,7 +27,8 @@ def preview_meeting_notes(
     authorize_speech(payload.workspace_id, payload.user_id)
     try:
         result = use_case.execute(
-            payload.title, [TranscriptSegment(s.id, s.text) for s in payload.segments]
+            payload.display_name,
+            [TranscriptSegment(s.id, s.text) for s in payload.segments],
         )
     except InvalidMeetingNotesError as exc:
         raise HTTPException(

@@ -1421,6 +1421,12 @@ components:
     MeetingNotesRequest:
       additionalProperties: false
       properties:
+        display_name:
+          default: 회의록
+          maxLength: 200
+          minLength: 1
+          title: Display Name
+          type: string
         segments:
           items:
             $ref: '#/components/schemas/MeetingSegment'
@@ -1428,11 +1434,6 @@ components:
           minItems: 1
           title: Segments
           type: array
-        title:
-          default: 회의록
-          maxLength: 200
-          title: Title
-          type: string
         user_id:
           maxLength: 128
           minLength: 1
@@ -1461,6 +1462,9 @@ components:
             $ref: '#/components/schemas/MeetingNoteItem'
           title: Decisions
           type: array
+        display_name:
+          title: Display Name
+          type: string
         markdown:
           title: Markdown
           type: string
@@ -1474,11 +1478,8 @@ components:
             $ref: '#/components/schemas/MeetingNoteItem'
           title: Summary
           type: array
-        title:
-          title: Title
-          type: string
       required:
-      - title
+      - display_name
       - markdown
       - summary
       - decisions
