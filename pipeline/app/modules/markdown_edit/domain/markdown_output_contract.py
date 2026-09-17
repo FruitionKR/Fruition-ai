@@ -19,7 +19,7 @@ STRUCTURE_WORDS = (
 ADDITION_WORDS = ("추가", "덧붙", "보강", "보충", "add", "append", "supplement")
 ADDITIVE_EDIT_GOALS = {"other", "convert_format"}
 CONTENT_CHANGE_WORDS = (
-    "삭제", "제거", "지워", "수정", "변경", "바꿔", "교체", "대체", "요약", "축약", "줄여",
+    "삭제", "제거", "지워", "수정", "변경", "바꿔", "교체", "대체", "요약", "축약", "줄여", "표시",
     "delete", "remove", "edit", "change", "replace", "rewrite", "summarize", "shorten",
 )
 TASK_LIST_MARKER_PATTERN = r"(?m)^[ \t]*[-*+][ \t]+\[[ xX]\](?:[ \t]+|[ \t]*\r?$)"
@@ -380,7 +380,10 @@ def _asks_for_addition_only(request: MarkdownEditRequest) -> bool:
     asks_to_preserve = any(word in instruction for word in PRESERVE_WORDS) or bool(
         re.search(r"(?:변경|수정|삭제|제거).{0,6}(?:않|말)", instruction)
     )
-    return asks_to_add and (asks_to_preserve or not any(word in instruction for word in CONTENT_CHANGE_WORDS))
+    asks_to_change = any(word in instruction for word in CONTENT_CHANGE_WORDS) or bool(
+        re.search(r"\bformat\b", instruction)
+    )
+    return asks_to_add and (asks_to_preserve or not asks_to_change)
 
 
 def _literal_anchors(markdown: str) -> set[str]:

@@ -2,7 +2,7 @@ import json
 import os
 import re
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,7 @@ from app.modules.wiki_schema.infrastructure.active_schema_prompt import (
 DEFAULT_MARKDOWN_EDIT_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_edit.system.md"
 DEFAULT_MARKDOWN_CREATE_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_create.system.md"
 DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_source_edit.system.md"
+DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_edit_evaluator.system.md"
 JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
 
 
@@ -79,6 +80,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
     ) -> None:
         self._client = client
         self._system_prompt = system_prompt
+        self._evaluation_system_prompt = DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8")
         self._create_system_prompt = create_system_prompt or system_prompt
         self._source_edit_system_prompt = source_edit_system_prompt or DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT.read_text(
             encoding="utf-8"
@@ -202,6 +204,8 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         }
         if raw is not None:
             retry_payload["previous_source_range_response"] = raw
+        if result is not None:
+            retry_payload["previous_assembled_markdown"] = result.edit.replacement_markdown
         try:
             retried, retry_failures, _ = self._complete_source_range_edit(system_prompt, retry_payload, request, plan)
         except JsonParseError as exc:
@@ -234,6 +238,9 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
                 replacement_markdown=replacement,
             )
         )
+        if not failures:
+            context = payload.get("read_only_context")
+            failures.extend(self._evaluate_edit(request, result, context if isinstance(context, dict) else None))
         return result, failures, raw
 
     def _complete_edit(
@@ -285,7 +292,54 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
                 replacement_markdown=restored,
             )
         )
+        if not failures:
+            failures.extend(self._evaluate_edit(actual_request, restored_result, {
+                "before": scope.context_before, "after": scope.context_after,
+            }))
         return restored_result, failures, protected_replacement
+
+    def _evaluate_edit(
+        self,
+        request: MarkdownEditRequest,
+        result: MarkdownEditResult,
+        surrounding_context: dict[str, object] | None = None,
+    ) -> list[str]:
+        payload = {
+            "instruction": request.instruction,
+            "edit_goal": request.edit_goal,
+            "conversation_summary": request.conversation_summary,
+            "reference_context": request.reference_context or {},
+            "skill_instructions": request.skill_instructions or "",
+            "output_language": request.output_language,
+            "workspace_editing_rules": self._schema_prompt_provider(
+                "edit", request.workspace_id, request.user_id,
+            ),
+            "requested_operation": request.edit_operation,
+            "edit_destination": request.edit_destination,
+            "original_markdown": request.markdown,
+            "proposal": asdict(result.edit),
+            "replacement_lines": result.edit.replacement_markdown.splitlines(),
+        }
+        if surrounding_context and any(surrounding_context.values()):
+            payload["surrounding_context"] = surrounding_context
+        invalid = ["LLM evaluation must return a boolean passed and consistent string-list failures"]
+        try:
+            raw = self._client.complete_json(
+                self._evaluation_system_prompt,
+                json.dumps(payload, ensure_ascii=False, indent=2),
+            )
+        except JsonParseError:
+            return invalid
+        if not isinstance(raw, dict) or type(raw.get("passed")) is not bool:
+            return invalid
+        failures = raw.get("failures")
+        if not isinstance(failures, list) or any(
+            not isinstance(item, str) or not item.strip() for item in failures
+        ):
+            return invalid
+        if raw["passed"] != (not failures):
+            return invalid
+        return [f"LLM evaluation: {item.strip()}" for item in failures]
 
     def generate_markdown(self, request: MarkdownCreateRequest) -> MarkdownCreateResult:
         payload = {

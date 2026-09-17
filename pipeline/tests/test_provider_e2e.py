@@ -16,6 +16,8 @@ class _Client:
         trusted_identifiers: tuple[str, ...] = (),
     ) -> dict[str, object]:
         self.system_prompts.append(system_prompt)
+        if "Markdown edit evaluator" in system_prompt:
+            return {"passed": True, "failures": []}
         if "Stage=ChunkSemanticExtraction" in system_prompt:
             return {
                 "chunk_id": "provider-e2e",
@@ -199,6 +201,7 @@ def test_uses_markdown_create_prompt() -> None:
         "Markdown document creation executor" in prompt
         for prompt in client.system_prompts
     )
+    assert any("Markdown edit evaluator" in prompt for prompt in client.system_prompts)
 
 
 def test_records_safe_failure_and_continues_other_probes() -> None:
