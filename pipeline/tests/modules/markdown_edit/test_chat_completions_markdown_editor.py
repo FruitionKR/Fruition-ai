@@ -16,6 +16,7 @@ from app.modules.markdown_edit.domain.markdown_output_contract import (
 )
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import (
     DEFAULT_MARKDOWN_CREATE_PROMPT,
+    DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT,
     DEFAULT_MARKDOWN_EDIT_PROMPT,
     DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT,
     ChatCompletionsMarkdownEditor,
@@ -30,8 +31,12 @@ class SequenceJsonClient:
     def __init__(self, responses: list[dict[str, object] | Exception]) -> None:
         self.responses = responses
         self.calls: list[tuple[str, str]] = []
+        self.evaluation_calls: list[tuple[str, str]] = []
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, object]:
+        if system_prompt == DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8"):
+            self.evaluation_calls.append((system_prompt, user_prompt))
+            return {"passed": True, "failures": []}
         self.calls.append((system_prompt, user_prompt))
         response = self.responses.pop(0)
         if isinstance(response, Exception):

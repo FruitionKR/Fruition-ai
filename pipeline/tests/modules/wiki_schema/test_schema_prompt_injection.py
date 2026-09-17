@@ -1,7 +1,7 @@
 import unittest
 
 from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
-from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import ChatCompletionsMarkdownEditor
+from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import ChatCompletionsMarkdownEditor, DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT
 from app.modules.query.domain.entities import GraphContext, QueryContext
 from app.modules.query.infrastructure.query_chat_answer_generator import QueryChatAnswerGenerator
 from app.modules.wiki_generation.domain.entities import SemanticPacket, SourceBlock
@@ -28,6 +28,8 @@ class FakeJsonClient:
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
         self.calls.append((system_prompt, user_prompt))
+        if system_prompt == DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8"):
+            return {"passed": True, "failures": []}
         return self.response
 
     def complete_text(self, system_prompt: str, user_prompt: str) -> str:
