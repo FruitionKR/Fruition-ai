@@ -50,7 +50,9 @@ python -m pytest -q tests/modules/speech tests/modules/meeting_notes
 python -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-전사에 보낼 파일은 multipart가 아닌 원본 bytes다. 실시간 음성은 PCM16 mono 24 kHz와
+Agent 마이크 발화는 multipart가 아닌 오디오 bytes로 전사한다. 이는 채팅 파일 첨부 기능이 아니다.
+명령용 마이크 발화의 전사만 기존 Agent 입력으로 전달한다. 회의 실시간 음성은 PCM16 mono 24 kHz와
 명시적인 commit/finish를 사용한다. [요청 형식과 호출 순서](api/speech.md)를 참고한다.
-Query 답변에서만 TTS를 호출하고, 회의록은 초안 반환 후 기존 문서 승인 경로에 연결한다.
+Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행하지 않고 회의록 작성 자료로 전달하며,
+회의록은 초안 반환 후 기존 문서 승인 경로에 연결한다.
 테스트는 가짜 제공자를 사용하며 원본 음성 파일이나 실제 비밀정보를 저장소에 추가하지 않는다.
