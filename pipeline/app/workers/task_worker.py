@@ -271,7 +271,7 @@ def _agent_failure_result(error: Exception) -> dict[str, object]:
         "error_code": _agent_failure_code(error),
         "failure_type": type(error).__name__,
     }
-    if isinstance(error, AgentTurnRouteContractError):
+    if isinstance(error, (AgentTurnRouteContractError, MarkdownOutputContractError, MarkdownCreateOutputContractError)):
         result["contract_failures"] = error.failures
     return result
 
