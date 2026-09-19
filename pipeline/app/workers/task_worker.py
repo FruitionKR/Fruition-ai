@@ -958,6 +958,18 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         return False
 
 
+async def _publish_session_title(producer, command: dict[str, Any], result: dict[str, Any]) -> None:
+    try:
+        title = await asyncio.to_thread(generate_chat_session_title, command, result)
+        if title:
+            await producer.send_and_wait(
+                RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),
+                key=command["run_id"].encode("utf-8"),
+            )
+    except Exception as exc:
+        logger.warning("채팅 제목 생성 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+
+
 async def consume() -> None:
     database.ensure_ai_schema()
     if COMMAND_TOPIC.endswith("agent.command"):
@@ -981,6 +993,7 @@ async def consume() -> None:
     )
     await consumer.start()
     await producer.start()
+    title_tasks: set[asyncio.Task[None]] = set()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1033,17 +1046,13 @@ async def consume() -> None:
                         )
                     await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
                     if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"}:
-                        try:
-                            title = await asyncio.to_thread(generate_chat_session_title, command, result)
-                            if title:
-                                await producer.send_and_wait(
-                                    RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),
-                                    key=event["run_id"].encode("utf-8"),
-                                )
-                        except Exception as exc:
-                            logger.warning("채팅 제목 생성 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+                        # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
+                        task = asyncio.create_task(_publish_session_title(producer, command, result))
+                        title_tasks.add(task)
+                        task.add_done_callback(title_tasks.discard)
                     await consumer.commit()
     finally:
+        await asyncio.gather(*title_tasks, return_exceptions=True)
         await producer.stop()
         await consumer.stop()
 
