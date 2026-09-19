@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from app.modules.query.application.query_answer_assembler import QueryAnswerAssembler
 from app.modules.query.domain.entities import EvidenceSnippet, GeneratedAnswer, GraphContext, QueryContext, QueryEvaluation
@@ -143,13 +144,29 @@ class QueryEvaluatorGraphTest(unittest.TestCase):
             answer_context="[1] LangSmith tracing과 query evaluator mode를 켜면 evaluator graph 실행이 기록됩니다.",
         )
 
+        timeline = []
+        publisher = Mock()
+        publisher.publish.side_effect = lambda stage, message, data: timeline.append(stage)
+        original_evaluate = query_evaluator.evaluate
+        def evaluate(*args, **kwargs):
+            self.assertEqual(timeline[-1], "query_evaluating")
+            return original_evaluate(*args, **kwargs)
+        query_evaluator.evaluate = evaluate
+        original_generate = answer_generator.generate_answer
+        def generate(context):
+            if answer_generator.contexts:
+                self.assertEqual(timeline[-1], "answer_retrying")
+            return original_generate(context)
+        answer_generator.generate_answer = generate
         answer, evidence_snippets, evaluated_context, evaluation = graph.run(
             question="LangSmith evaluator graph는 어떻게 확인하나요?",
             query_context=context,
             stop_reason="answer_context_selected",
-            event_publisher=None,
+            event_publisher=publisher,
         )
 
+        self.assertEqual(timeline.count("query_evaluating"), 2)
+        self.assertEqual(timeline.count("answer_retrying"), 1)
         self.assertEqual(len(query_evaluator.calls), 2)
         self.assertEqual(len(answer_generator.contexts), 2)
         self.assertIn("근거 문장을 직접 반영하세요.", answer_generator.contexts[1].answer_context)

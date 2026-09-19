@@ -16,6 +16,8 @@ from app.core.llm_env import (
 )
 from app.core.llm_prompt import with_schema_and_skill_prompt
 from app.core.response_preferences import with_response_preferences
+from app.modules.query.application.ports import QueryEventPublisherPort
+from app.modules.query.application.query_event import publish_query_event
 from app.modules.markdown_edit.application.ports import MarkdownEditorPort
 from app.modules.markdown_edit.domain.entities import (
     EditOperationType,
@@ -76,8 +78,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         create_system_prompt: str | None = None,
         source_edit_system_prompt: str | None = None,
         context_lines: int = 20,
+        event_publisher: QueryEventPublisherPort | None = None,
         schema_prompt_provider: Callable[[str, str | None, str | None], str] | None = None,
     ) -> None:
+        self._event_publisher = event_publisher
         self._client = client
         self._system_prompt = system_prompt
         self._evaluation_system_prompt = DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8")
@@ -134,6 +138,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         if result is not None and not result[1]:
             return result[0]
 
+        publish_query_event(
+            self._event_publisher, "agent.retrying",
+            "검사에서 보완할 부분을 발견해 다시 작성하고 있어요.",
+        )
         retry_payload = {
             **payload,
             "contract_failures": result[1] if result is not None else [JSON_OBJECT_CONTRACT_FAILURE],
@@ -197,6 +205,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         if result is not None and not failures:
             return result
 
+        publish_query_event(
+            self._event_publisher, "agent.retrying",
+            "검사에서 보완할 부분을 발견해 다시 작성하고 있어요.",
+        )
         retry_payload = {
             **payload,
             "contract_failures": failures,
@@ -322,6 +334,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         }
         if surrounding_context and any(surrounding_context.values()):
             payload["surrounding_context"] = surrounding_context
+        publish_query_event(
+            self._event_publisher, "agent.evaluating",
+            "편집안이 요청에 맞는지 확인하고 있어요.",
+        )
         invalid = ["LLM evaluation must return a boolean passed and consistent string-list failures"]
         try:
             raw = self._client.complete_json(
@@ -374,6 +390,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         if result is not None and not failures:
             return result
 
+        publish_query_event(
+            self._event_publisher, "agent.retrying",
+            "검사에서 보완할 부분을 발견해 다시 작성하고 있어요.",
+        )
         retry_payload = {
             **payload,
             "contract_failures": failures,
@@ -411,6 +431,7 @@ def build_markdown_editor(
     *,
     provider: str | None = None,
     model: str | None = None,
+    event_publisher: QueryEventPublisherPort | None = None,
 ) -> MarkdownEditorPort:
     resolved_provider, resolved_model = resolve_llm_selection(provider, model)
     api_key = _api_key(resolved_provider)
@@ -438,6 +459,7 @@ def build_markdown_editor(
         source_edit_system_prompt=source_edit_prompt_path.read_text(encoding="utf-8"),
         context_lines=_int_env("MARKDOWN_EDIT_CONTEXT_LINES", 20),
         schema_prompt_provider=get_active_schema_prompt,
+        event_publisher=event_publisher,
     )
 
 
