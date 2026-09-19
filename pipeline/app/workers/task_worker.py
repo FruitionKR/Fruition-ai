@@ -18,6 +18,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from psycopg.types.json import Json
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
+from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
 from app.core.pipeline_control import PipelineRunCancelledError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
@@ -1031,6 +1032,16 @@ async def consume() -> None:
                             with_request=command.get("kind") != "post_ingest",
                         )
                     await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
+                    if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"}:
+                        try:
+                            title = await asyncio.to_thread(generate_chat_session_title, command, result)
+                            if title:
+                                await producer.send_and_wait(
+                                    RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),
+                                    key=event["run_id"].encode("utf-8"),
+                                )
+                        except Exception as exc:
+                            logger.warning("채팅 제목 생성 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
                     await consumer.commit()
     finally:
         await producer.stop()
