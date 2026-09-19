@@ -50,6 +50,10 @@ Agent turn과 run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 `edit_goal`은 내용 변환, `edit_operation`은 교체·추가 방식, `edit_destination`은 적용 위치를 각각 나타냅니다. `insert_after`는 기존 Markdown을 교체하지 않고 대상 뒤에 새 Markdown만 삽입합니다.
 
+문서 편집·생성 결과의 `message`에는 실제 스킬 사용 여부와 변경 요약, 미적용 상태 안내가 담깁니다. 문서에 적용할 `edit.replacement_markdown`·`generated_markdown.markdown`에는 이 안내를 섞지 않습니다.
+
+비동기 worker 실행에서는 기존 진행 이벤트 경로로 `agent.routing`(요청·스킬 확인), `agent.routed`(처리 유형 결정), `agent.generating`(편집안·초안 작성), `agent.retrying`(검증 실패 후 재작성), `agent.evaluating`(편집안 AI 검토), `agent.finalizing`(결과 정리)을 발행합니다. 생성 단계는 실제 Markdown 생성 직전에만 발행하며, 완료 여부는 기존 최종 결과 이벤트로 판단합니다.
+
 #### 1. Method + Path
 
 `POST /agent/turn`
@@ -1536,3 +1540,5 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 [↑ 요약으로 돌아가기](#summary-get-internal-agent-runs-run-id)
 
 </details>
+
+질의 답변은 평가자가 활성화된 경우에만 `query_evaluating`(답변 검토)을 평가 호출 직전에 발행하고, 검토 후 재작성하는 경우 `answer_retrying`을 발행합니다. 일반 대화 등 평가자를 호출하지 않는 경로에는 검토 단계를 표시하지 않습니다.

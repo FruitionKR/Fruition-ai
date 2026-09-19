@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.modules.markdown_edit.application.generate_markdown_edit import (
     GenerateMarkdownEditUseCase,
@@ -120,7 +120,15 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 response("안전한 Markdown 결과"),
             ]
         )
-        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
+        timeline = []
+        publisher = Mock()
+        publisher.publish.side_effect = lambda stage, message, data: timeline.append(stage)
+        complete = client.complete_json
+        def record_call(system_prompt, user_prompt):
+            timeline.append("model")
+            return complete(system_prompt, user_prompt)
+        client.complete_json = record_call
+        editor = ChatCompletionsMarkdownEditor(client, "system", event_publisher=publisher)  # type: ignore[arg-type]
         request = MarkdownEditRequest(
             instruction="문장을 정리해줘.",
             markdown="원문",
@@ -131,6 +139,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         result = editor.generate_edit(request)
 
         self.assertEqual(result.edit.replacement_markdown, "안전한 Markdown 결과")
+        self.assertEqual(timeline, ["model", "agent.retrying", "model", "agent.evaluating", "model"])
         retry_payload = json.loads(client.calls[1][1])
         self.assertEqual(
             retry_payload["contract_failures"],
@@ -145,7 +154,15 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 source_range_response("text-0001", "정리한 문장"),
             ]
         )
-        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
+        timeline = []
+        publisher = Mock()
+        publisher.publish.side_effect = lambda stage, message, data: timeline.append(stage)
+        complete = client.complete_json
+        def record_call(system_prompt, user_prompt):
+            timeline.append("model")
+            return complete(system_prompt, user_prompt)
+        client.complete_json = record_call
+        editor = ChatCompletionsMarkdownEditor(client, "system", event_publisher=publisher)  # type: ignore[arg-type]
         request = MarkdownEditRequest(
             instruction="문장을 자연스럽게 다듬어줘.",
             markdown="정리할 문장",
@@ -156,6 +173,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         result = editor.generate_edit(request)
 
         self.assertEqual(result.edit.replacement_markdown, "정리한 문장")
+        self.assertEqual(timeline, ["model", "agent.retrying", "model", "agent.evaluating", "model"])
         retry_payload = json.loads(client.calls[1][1])
         self.assertEqual(
             retry_payload["contract_failures"],
@@ -173,15 +191,25 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 },
             ]
         )
+        timeline = []
+        publisher = Mock()
+        publisher.publish.side_effect = lambda stage, message, data: timeline.append(stage)
+        complete = client.complete_json
+        def record_call(system_prompt, user_prompt):
+            timeline.append("model")
+            return complete(system_prompt, user_prompt)
+        client.complete_json = record_call
         editor = ChatCompletionsMarkdownEditor(
             client,
             "system",
             create_system_prompt="create",
+            event_publisher=publisher,
         )  # type: ignore[arg-type]
 
         result = editor.generate_markdown(MarkdownCreateRequest(instruction="대화를 문서로 만들어줘."))
 
         self.assertEqual(result.document.title, "대화 정리")
+        self.assertEqual(timeline, ["model", "agent.retrying", "model"])
         retry_payload = json.loads(client.calls[1][1])
         self.assertEqual(
             retry_payload["contract_failures"],
