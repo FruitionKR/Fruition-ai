@@ -3959,6 +3959,47 @@ paths:
       tags:
       - skills
   /skills/{skill_id}:
+    delete:
+      operationId: delete_skill_skills__skill_id__delete
+      parameters:
+      - in: path
+        name: skill_id
+        required: true
+        schema:
+          title: Skill Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Skill
+      tags:
+      - skills
     get:
       operationId: get_skill_skills__skill_id__get
       parameters:

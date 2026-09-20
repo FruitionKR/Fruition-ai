@@ -4,9 +4,9 @@
 
 Skill 조회·작성·게시·설정 내부 API다. 공개 Gateway 계약은
 [`document-svc Skills API`](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/skills.md)다. Backend가 사용자·워크스페이스·모델 정보를
-검증해 추가한 뒤 5개 관리 API를 내부 HTTP로 호출한다. draft-from-runs·preview는 ai-svc 내부 기능이다.
+검증해 추가한 뒤 6개 관리 API를 내부 HTTP로 호출한다. draft-from-runs·preview는 ai-svc 내부 기능이다.
 
-- API 수: 7
+- API 수: 8
 
 ## API 목차
 
@@ -17,10 +17,11 @@ Skill 조회·작성·게시·설정 내부 API다. 공개 Gateway 계약은
 | [`POST /skills/draft-from-runs/preview`](#summary-post-skills-draft-from-runs-preview) | 완료된 Agent 실행 결과로 게시 전 Skill 초안을 만듭니다. |
 | [`POST /skills/preview`](#summary-post-skills-preview) | Skill 지침과 권한을 게시 전에 미리 검증합니다. |
 | [`GET /skills/{skill_id}`](#summary-get-skills-skill-id) | Skill 상세 정보를 조회합니다. |
+| [`DELETE /skills/{skill_id}`](#delete-skill) | Skill과 버전을 삭제하고 실행 기록을 보존합니다. |
 | [`POST /skills/{skill_id}/disable`](#summary-post-skills-skill-id-disable) | Skill을 비활성화합니다. |
 | [`POST /skills/{skill_id}/enable`](#summary-post-skills-skill-id-enable) | Skill을 활성화합니다. |
 
-실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 6개 API는
+실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 7개 API는
 `SKILL_API_ENABLED=true`일 때 노출된다. 모두 `X-Agent-Service-Token`으로 보호한다.
 Skill 작성 분류는 완성된 동작에 필요한 capability를 모두 반환하며, 서버가 각 capability의
 canonical Tool 집합을 합쳐 `allowed_tools`를 확정한다. 따라서 문서 편집 후 이동처럼 복합적인
@@ -1081,3 +1082,14 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
 [↑ 요약으로 돌아가기](#summary-post-skills-skill-id-enable)
 
 </details>
+
+<a id="delete-skill"></a>
+## `DELETE /skills/{skill_id}`
+
+- `SKILL_API_ENABLED=true`에서 노출하며 `X-Agent-Service-Token` 인증이 필요하다.
+- Query: `workspace_id`, `user_id` 필수. 공개 API에서 검증한 actor를 Document 서비스가 전달한다.
+- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER만 삭제할 수 있다. 기존 관리 권한으로 행을 잠근 뒤 같은 트랜잭션에서 삭제한다.
+- 성공: `204`, 응답 본문 없음. 존재하지 않거나 삭제할 수 없는 스킬: `404`.
+- 스킬의 모든 버전과 버전 출처는 CASCADE로 삭제한다. 과거 `agent_runs`는 유지하고 `skill_version_id`만 NULL로 바뀐다. 실행 중 작업을 취소하는 API는 아니다.
+- 삭제 후 목록·커맨드 검색·새 에이전트 스킬 선택에서 제외되며, 같은 커맨드로 새 스킬을 만들 수 있다.
+- PostgreSQL 권한·삭제 검증: `SKILL_TEST_DSN`을 지정하고 `pytest tests/modules/skill/test_delete_skill_postgres.py` 실행. 임시 스키마에서 검증한 뒤 전체 롤백한다.
