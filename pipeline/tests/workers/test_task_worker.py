@@ -1420,3 +1420,61 @@ def test_repeated_identical_agent_command_reuses_completed_result() -> None:
     assert state == "completed"
     assert result == {"edit": {"changed": True}}
     assert connection.execute.call_count == 2
+
+
+@pytest.mark.parametrize("title_fails", [False, True])
+def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(title_fails) -> None:
+    async def run_test() -> None:
+        release_title = asyncio.Event()
+        title_started = asyncio.Event()
+        stop_callbacks = []
+        events = []
+        commands = [{"kind": "query", "run_id": f"run-{i}"} for i in (1, 2)]
+        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock())
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+
+        async def getmany(**kwargs):
+            if commands:
+                command = commands.pop(0)
+                if command["run_id"] == "run-2":
+                    await title_started.wait()
+                return {"partition": [SimpleNamespace(value=command)]}
+            stop_callbacks[0]()
+            return {}
+
+        async def send(topic, event, **kwargs):
+            producer.stop.assert_not_awaited()
+            events.append((event["run_id"], event["status"]))
+
+        async def to_thread(function, *args):
+            if function is task_worker.generate_chat_session_title:
+                if args[0]["run_id"] != "run-1":
+                    return None
+                title_started.set()
+                await release_title.wait()
+                if title_fails:
+                    raise RuntimeError("title unavailable")
+                return "첫 문답 제목"
+            if function is task_worker._handle_controlled:
+                if args[0]["run_id"] == "run-2":
+                    release_title.set()
+                return {"answer": "답변"}
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(task_worker.database, "ensure_ai_schema"), \
+                patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
+                patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            await asyncio.wait_for(task_worker.consume(), timeout=1)
+        assert events[:2] == [("run-1", "succeeded"), ("run-2", "succeeded")]
+        assert events[2:] == ([] if title_fails else [("run-1", "session_title")])
+        assert consumer.commit.await_count == 2
+        producer.stop.assert_awaited_once()
+        consumer.stop.assert_awaited_once()
+
+    asyncio.run(run_test())

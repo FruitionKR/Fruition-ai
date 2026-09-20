@@ -79,6 +79,12 @@ def generate_answer_step(
     event_publisher: QueryEventPublisherPort | None,
 ) -> QueryEvaluationGraphState:
     attempt = int(state.get("attempt", 1))
+    if attempt > 1:
+        publish_query_event(
+            event_publisher, "answer_retrying",
+            "검토 결과를 반영해 답변을 다시 작성하고 있어요.",
+            {"attempt": attempt},
+        )
     context = query_context_with_evaluator_feedback(query_context, state.get("evaluation"), attempt)
     answer, evidence_snippets = query_answer_assembler.generate_supported_answer(context)
     evaluated_context = replace(context, evidence_snippets=evidence_snippets)
@@ -109,6 +115,9 @@ def evaluate_answer_step(
         return {**state, "evaluation": None}
     answer = state["answer"]
     evaluated_context = state["evaluated_context"]
+    publish_query_event(
+        event_publisher, "query_evaluating", "답변이 질문과 근거에 맞는지 검토하고 있어요.",
+    )
     try:
         evaluation = query_evaluator.evaluate(
             question,

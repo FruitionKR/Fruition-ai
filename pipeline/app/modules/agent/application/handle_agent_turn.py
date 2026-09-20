@@ -47,7 +47,8 @@ from app.modules.query.application.conversation_context_resolver import (
     conversation_messages_text,
     update_conversation_summary,
 )
-from app.modules.query.application.ports import ConversationSummarizerPort
+from app.modules.query.application.ports import ConversationSummarizerPort, QueryEventPublisherPort
+from app.modules.query.application.query_event import publish_query_event
 from app.modules.query.domain.entities import ConversationContext, QueryAnswer
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
@@ -103,7 +104,9 @@ class HandleAgentTurnUseCase:
         web_search_query_use_case_factory: Callable[[], AnswerQueryUseCase] | None = None,
         conversation_replier: ConversationReplierPort | None = None,
         markdown_turn_repository: AgentRunManagementRepositoryPort | None = None,
+        event_publisher: QueryEventPublisherPort | None = None,
     ) -> None:
+        self._event_publisher = event_publisher
         self._router = router
         self._query_use_case = query_use_case
         self._markdown_edit_use_case = markdown_edit_use_case
@@ -121,7 +124,9 @@ class HandleAgentTurnUseCase:
         if not request.message.strip():
             raise ValueError("message is required.")
 
+        publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
         result = self._execute(request)
+        publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
             if result.query_answer is not None
@@ -138,6 +143,19 @@ class HandleAgentTurnUseCase:
         resolved = selection.resolve_route(self._router.route(request))
         route = resolved.route
         selected_skill = resolved.skill
+        action_message = {
+            "markdown_edit": "문서 편집 요청으로 확인했어요.",
+            "markdown_create": "새 문서 작성 요청으로 확인했어요.",
+            "chat_answer": "질문에 답할 근거를 찾고 있어요.",
+            "conversation_reply": "대화 맥락에 맞는 답변을 작성하고 있어요.",
+            "folder_organize": "폴더 정리 계획을 준비하고 있어요.",
+            "workspace_workflow": "문서 작업 계획을 준비하고 있어요.",
+            "skill_authoring": "스킬 작성 요청을 처리하고 있어요.",
+            "skill_draft_proposal": "완료한 작업을 바탕으로 스킬 제안을 준비하고 있어요.",
+            "clarify": "추가로 확인할 내용을 정리하고 있어요.",
+            "reject": "요청의 지원 범위를 확인하고 있어요.",
+        }[route.action]
+        publish_query_event(self._event_publisher, "agent.routed", action_message)
         if selection.explicit_skill_id is not None and selected_skill is None:
             return AgentTurnResult(
                 action="clarify",
@@ -535,6 +553,7 @@ class HandleAgentTurnUseCase:
                 CLARIFY_INSERT_AFTER_TARGET_MESSAGE,
             )
         reference_context = self._resolve_reference_context(request, route)
+        publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
         result = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
                 instruction=request.message,
@@ -556,6 +575,7 @@ class HandleAgentTurnUseCase:
             action="markdown_edit",
             route=resolved_route,
             edit=result.edit,
+            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
             source_markdown_sha256=_markdown_sha256(markdown_context.markdown),
         )
 
@@ -566,6 +586,7 @@ class HandleAgentTurnUseCase:
         selected_skill: Skill | None,
     ) -> AgentTurnResult:
         reference_context = self._resolve_reference_context(request, route)
+        publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
         result = self._markdown_create_use_case.execute(
             MarkdownCreateRequest(
                 instruction=request.message,
@@ -581,6 +602,7 @@ class HandleAgentTurnUseCase:
             action="markdown_create",
             route=route,
             generated_markdown=result.document,
+            message=f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
         )
 
     def _resolve_reference_context(
@@ -933,6 +955,12 @@ def _skill_authoring_message(result: SkillAuthoringResult) -> str:
     if result.status == "published" and result.proposal is not None:
         return f"게시했습니다: /{result.proposal.name}"
     return "Skill 제안을 만들었습니다. Markdown과 보안 결과를 확인한 뒤 게시해 주세요."
+
+
+def _markdown_basis(skill: Skill | None) -> str:
+    if skill is not None and skill.enabled_version is not None:
+        return f"‘{skill.enabled_version.name}’ 스킬을 사용해"
+    return "스킬 없이 요청 내용을 바탕으로"
 
 
 def _skill_instructions(skill: Skill | None) -> str | None:
