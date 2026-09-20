@@ -126,6 +126,9 @@ class ManageSkillUseCase:
             raise ValueError("Publish a Skill version before enabling it.")
         return self._repository.set_enabled(workspace_id, user_id, skill_id, enabled)
 
+    def delete(self, workspace_id: str, user_id: str, skill_id: str) -> None:
+        self._repository.delete(workspace_id, user_id, skill_id)
+
     def get_manageable(self, workspace_id: str, user_id: str, skill_id: str) -> Skill:
         skill = self._repository.get_manageable(workspace_id, user_id, skill_id)
         if skill is None:

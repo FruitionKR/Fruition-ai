@@ -20,6 +20,9 @@ class SkillRepositoryPort(Protocol):
 
 
 class ManageSkillRepositoryPort(Protocol):
+    def delete(self, workspace_id: str, user_id: str, skill_id: str) -> None:
+        ...
+
     def create_published(self, skill: Skill, version: object) -> Skill:
         ...
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -193,6 +193,20 @@ def update_skill(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillAuthoringResponse.from_domain(result)
+
+
+@router.delete("/{skill_id}", status_code=204)
+def delete_skill(
+    skill_id: str,
+    workspace_id: str,
+    user_id: str,
+    use_case: ManageSkillUseCase = Depends(get_manage_skill_use_case),
+) -> Response:
+    try:
+        use_case.delete(workspace_id, user_id, skill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Skill not found or not manageable.") from exc
+    return Response(status_code=204)
 
 
 @router.post("/{skill_id}/enable", response_model=SkillResponse)
