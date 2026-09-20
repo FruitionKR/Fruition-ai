@@ -1023,6 +1023,16 @@ def test_agent_route_contract_failure_keeps_specific_error_code() -> None:
     assert task_worker._agent_failure_code(error) == "agent_turn_route_contract_failed"
 
 
+@pytest.mark.parametrize("error", [
+    task_worker.MarkdownOutputContractError(["missing section"], "private document body"),
+    task_worker.MarkdownCreateOutputContractError(["missing title"], {"markdown": "private document body"}),
+])
+def test_markdown_contract_failure_preserves_reasons_without_document_body(error: Exception) -> None:
+    result = task_worker._agent_failure_result(error)
+    assert result["contract_failures"] == error.failures
+    assert "private document body" not in str(result)
+
+
 def test_disabled_agent_feature_is_not_an_invalid_user_request() -> None:
     from app.modules.agent_run.application.start_agent_run import StartAgentRunUseCase
     from app.modules.agent_run.domain.entities import StartAgentRunRequest
