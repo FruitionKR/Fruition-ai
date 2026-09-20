@@ -38,3 +38,21 @@ python review_markdown_edit_results.py --results /tmp/markdown-edit-paired.json 
 평가자 제거 대조군은 실험 코드에서만 사용하며 서비스에는 평가 우회 옵션이 없다. 별도 평가자는 버전 정보를 받지 않고 동일한 출력은 한 번만 평가한다. 성공 건수는 결과 반환·코드 검사·별도 모델 평가를 모두 통과한 경우만 센다. 평가자 자체의 통과율을 정답률로 세지 않는다.
 
 초안을 새로 수집하려면 `--replay`를 빼고 `--repeat 3`으로 실행한다. [측정 결과와 한계](adr/0011-user-approved-markdown-edits.md#검증)를 함께 확인한다.
+
+## 음성 대화·회의록 API 검증
+
+`OPENAI_API_KEY`, `INTERNAL_CALLBACK_TOKEN`, `ACCESS_INTERNAL_BASE_URL`을 서버 환경에
+주입한다. 기존 Access workspace 권한 조회가 가능해야 한다. 실제 모델 호출에는 비용이 발생한다.
+`pipeline/`에서 실행한다.
+
+```bash
+python -m pytest -q tests/modules/speech tests/modules/meeting_notes
+python -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+Agent 마이크 발화는 multipart가 아닌 오디오 bytes로 전사한다. 이는 채팅 파일 첨부 기능이 아니다.
+명령용 마이크 발화의 전사만 기존 Agent 입력으로 전달한다. 회의 실시간 음성은 PCM16 mono 24 kHz와
+명시적인 commit/finish를 사용한다. [요청 형식과 호출 순서](api/speech.md)를 참고한다.
+Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행하지 않고 회의록 작성 자료로 전달하며,
+회의록은 초안 반환 후 기존 문서 승인 경로에 연결한다.
+테스트는 가짜 제공자를 사용하며 원본 음성 파일이나 실제 비밀정보를 저장소에 추가하지 않는다.

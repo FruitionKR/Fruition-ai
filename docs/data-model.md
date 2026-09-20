@@ -23,3 +23,7 @@ Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 `(user
 LLM provider/model은 workspace 설정 또는 chat/request에서 snapshot되어 command와 실행에 전달된다. API key는 DB·Kafka payload·log에 저장하지 않고 ai-svc secret env에서만 읽으며, 기존 AI 작업 로그 조회/결과 경로에는 LLM 설정 컬럼이 없다.
 
 문서 편집 저장은 document-svc가 소유한 `core_db` PostgreSQL transaction에서 본문·편집 상태·write receipt·content version·asset/reference·Agent 적용 감사·`document_edit_outbox`를 함께 commit 또는 rollback한다. V39는 `document_edit_states`와 `document_content_versions`가 모두 빈 상태에서 시작하는 fresh cutover이며, 기존 Mongo 편집 데이터와 두 PostgreSQL table의 폐기는 대상별 승인을 전제로 한다. 기존 편집 데이터 import, fallback, dual-write를 사용하지 않는다. 결정 근거: [adr/0016](https://github.com/FruitionKR/Fruition-document/blob/main/docs/adr/0016-consolidate-document-body-into-postgres.md). S3/MinIO object upload는 transaction 밖이므로 실패·무변경 저장 시 업로드 호출자가 object를 정리한다. outbox publisher는 `created_at,event_id` 순으로 처리하고 첫 실패에서 cycle을 중단하며 현재 1 replica 전제를 둔다.
+
+음성 API는 새 테이블을 만들지 않는다. 음성 bytes·실시간 미확정 전사는 요청/연결 안에서만
+처리한다. 확정 전사와 원본 녹음의 영구 저장은 호출 서비스가 소유하며 AI는 회의록 초안을
+반환한다. 연결 종료 전에 `completed` 구간을 저장하는 계약은 [음성 API](api/speech.md)를 따른다.
