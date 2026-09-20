@@ -12,6 +12,8 @@ from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
 from app.modules.task_cancellation.interfaces.http.routes import router as task_cancellation_router
 from app.modules.agent.interfaces.http.routes import router as agent_router
+from app.modules.speech.interfaces.http.routes import router as speech_router
+from app.modules.meeting_notes.interfaces.http.routes import router as meeting_notes_router
 from app.modules.agent_run.interfaces.http.routes import internal_router as agent_run_status_router
 from app.modules.agent_run.interfaces.http.routes import router as agent_run_router
 from app.modules.query.interfaces.http.routes import router as query_router
@@ -131,6 +133,8 @@ include_internal_router(
     else internal_token_dependencies,
 )
 include_internal_router(query_router, internal_token_dependencies)
+include_internal_router(speech_router, internal_token_dependencies)
+include_internal_router(meeting_notes_router, internal_token_dependencies)
 include_internal_router(pipeline_router, internal_token_dependencies)
 include_internal_router(task_cancellation_router, internal_token_dependencies)
 include_internal_router(wiki_schema_router, internal_token_dependencies)

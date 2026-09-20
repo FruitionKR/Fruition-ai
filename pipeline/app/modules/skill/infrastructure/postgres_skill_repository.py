@@ -225,6 +225,14 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             raise ValueError("Updated Skill could not be loaded.")
         return saved
 
+    def delete(self, workspace_id: str, user_id: str, skill_id: str) -> None:
+        team_owner = _is_team_owner(workspace_id, user_id)
+        with database.connect_ai() as conn:
+            if _lock_manageable(conn, workspace_id, user_id, skill_id, team_owner) is None:
+                raise ValueError("Skill not found or not manageable.")
+            # 버전은 CASCADE로 삭제하고, 과거 실행 기록의 버전 참조는 SET NULL로 보존한다.
+            conn.execute("DELETE FROM skills WHERE id = %s", (skill_id,))
+
     def _get_with_access_filter(
         self,
         workspace_id: str | None,

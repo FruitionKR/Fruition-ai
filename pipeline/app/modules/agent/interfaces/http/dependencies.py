@@ -43,14 +43,17 @@ def build_handle_agent_turn_use_case(
     event_publisher: QueryEventPublisherPort | None = None,
     parent_run_id: str | None = None,
 ) -> HandleAgentTurnUseCase:
-    """`event_publisher`는 질의 갈래에만 전달한다. markdown·skill 갈래는 진행 이벤트를 내지 않는다."""
-    markdown_editor = build_markdown_editor(provider=provider, model=model)
+    """Agent 처리 단계와 질의 진행 단계를 같은 publisher로 전달한다."""
+    markdown_editor = build_markdown_editor(
+        provider=provider, model=model, event_publisher=event_publisher
+    )
     query_use_case = build_answer_query_use_case(
         provider=provider, model=model, event_publisher=event_publisher
     )
     feature_enabled = os.environ.get("AGENT_SKILLS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
     agent_run_repository = PostgresAgentRunRepository(parent_run_id=parent_run_id)
     return HandleAgentTurnUseCase(
+        event_publisher=event_publisher,
         router=build_agent_turn_router(provider=provider, model=model),
         query_use_case=query_use_case,
         web_search_query_use_case_factory=lambda: build_answer_query_use_case(

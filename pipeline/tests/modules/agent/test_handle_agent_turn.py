@@ -1,5 +1,6 @@
 import hashlib
 import unittest
+from unittest.mock import Mock
 from dataclasses import replace
 
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
@@ -1794,7 +1795,9 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
                 )
             )
         )
+        publisher = Mock()
         use_case = HandleAgentTurnUseCase(
+            event_publisher=publisher,
             router=FixedRouter(
                 AgentTurnRoute(
                     action="markdown_create",
@@ -1822,6 +1825,10 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
             editor.create_requests[0].skill_instructions,
             "핵심 내용을 세 문단 이내로 작성한다.",
         )
+
+        self.assertIn("‘brief’ 스킬을 사용해", result.message)
+        self.assertEqual(result.generated_markdown, editor.create_result.document)
+        self.assertIn("‘brief’ 스킬을 사용해", publisher.publish.call_args_list[2].args[1])
 
     def test_explicit_skill_does_not_fall_back_when_one_composite_capability_is_missing(self) -> None:
         editor = RecordingMarkdownEditor(
@@ -1951,7 +1958,14 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
                 )
             )
         )
+        publisher = Mock()
+        original_generate = editor.generate_edit
+        def generate_with_progress(request):
+            self.assertEqual(publisher.publish.call_args.args[0], "agent.generating")
+            return original_generate(request)
+        editor.generate_edit = generate_with_progress
         use_case = HandleAgentTurnUseCase(
+            event_publisher=publisher,
             router=FixedRouter(
                 AgentTurnRoute(
                     action="markdown_edit",
@@ -1994,6 +2008,13 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         self.assertEqual(editor.requests[0].workspace_id, "workspace-1")
         self.assertEqual(editor.requests[0].user_id, "user-1")
         self.assertEqual(editor.requests[0].output_language, "en")
+
+        self.assertIn("스킬 없이 요청 내용을 바탕으로", result.message)
+        self.assertIn("선택 영역을 줄였습니다.", result.message)
+        self.assertIn("아직 문서에 적용하지 않았어요", result.message)
+        self.assertEqual(result.edit.replacement_markdown, "짧은 문장입니다.")
+        self.assertEqual([call.args[0] for call in publisher.publish.call_args_list],
+                         ["agent.routing", "agent.routed", "agent.generating", "agent.finalizing"])
 
     def test_executes_markdown_create_action(self) -> None:
         target = MarkdownEditTarget(type="selection", start_line=1, end_line=1)
