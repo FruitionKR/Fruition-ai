@@ -114,3 +114,40 @@ def test_concept_index_cache_is_scoped_by_user_and_workspace(monkeypatch) -> Non
         "wiki:concept-index:user-1:workspace-1",
         "wiki:concept-index:user-1:workspace-1",
     ]
+
+
+def test_nested_same_run_reuses_connection_until_outer_exit(monkeypatch) -> None:
+    connections = []
+
+    def connect():
+        connection = FakeConnection()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(workspace_concept_lock, "_connect", connect)
+    with workspace_concept_lock.concept_write_lock("nested-workspace", "run-1"):
+        with workspace_concept_lock.concept_write_lock("nested-workspace", "run-1"):
+            assert len(connections) == 1
+        assert not any("pg_advisory_unlock" in sql for sql, _ in connections[0].calls)
+    assert "pg_advisory_unlock" in connections[0].calls[-1][0]
+
+
+def test_nested_exception_and_unlock_failure_do_not_leave_reentry_state(monkeypatch) -> None:
+    class BrokenUnlock(FakeConnection):
+        def execute(self, query, params=None):
+            super().execute(query, params)
+            if "pg_advisory_unlock" in query:
+                raise RuntimeError("unlock failed")
+
+    connection = BrokenUnlock()
+    monkeypatch.setattr(workspace_concept_lock, "_connect", lambda: connection)
+    with pytest.raises(RuntimeError, match="unlock failed"):
+        with workspace_concept_lock.concept_write_lock("cleanup-workspace", "run-1"):
+            with workspace_concept_lock.concept_write_lock("cleanup-workspace", "run-1"):
+                raise ValueError("body failed")
+
+    recovered = FakeConnection()
+    monkeypatch.setattr(workspace_concept_lock, "_connect", lambda: recovered)
+    with workspace_concept_lock.concept_write_lock("cleanup-workspace", "run-1"):
+        pass
+    assert any("pg_advisory_lock" in query for query, _ in recovered.calls)
