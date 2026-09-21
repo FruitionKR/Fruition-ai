@@ -382,7 +382,8 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
                 """,
                 (run_id,),
             )
-            raise RuntimeError("Agent run was interrupted before it finished")
+            # with 블록 안에서 raise하면 psycopg가 UPDATE를 ROLLBACK한다. commit 뒤에 던진다.
+            deferred_error = RuntimeError("Agent run was interrupted before it finished")
         else:
             conn.execute(
                 "UPDATE agent_runs SET status = 'executing', updated_at = now() WHERE id = %s",
