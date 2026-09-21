@@ -8,6 +8,7 @@ import os
 import shutil
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -634,8 +635,8 @@ def _resolve_pipeline_concepts(
 
     parallel_started = monotonic()
     with ThreadPoolExecutor(max_workers=2) as executor:
-        resolution_future = executor.submit(resolve_concepts)
-        update_future = executor.submit(judge_updates)
+        resolution_future = executor.submit(copy_context().run, resolve_concepts)
+        update_future = executor.submit(copy_context().run, judge_updates)
         raw_resolution, resolution_seconds = resolution_future.result()
         concept_update_decisions, update_seconds = update_future.result()
     parallel_seconds = monotonic() - parallel_started
@@ -1205,8 +1206,8 @@ def run_pipeline(
 
             parallel_started = monotonic()
             with ThreadPoolExecutor(max_workers=2) as executor:
-                resolution_future = executor.submit(resolve_concepts_for_pages)
-                source_future = executor.submit(prepare_source_for_pages)
+                resolution_future = executor.submit(copy_context().run, resolve_concepts_for_pages)
+                source_future = executor.submit(copy_context().run, prepare_source_for_pages)
                 normalized, resolution_seconds = resolution_future.result()
                 source_preparation, source_seconds = source_future.result()
             parallel_seconds = monotonic() - parallel_started

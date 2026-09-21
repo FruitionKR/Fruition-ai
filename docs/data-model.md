@@ -27,3 +27,7 @@ LLM provider/model은 workspace 설정 또는 chat/request에서 snapshot되어 
 음성 API는 새 테이블을 만들지 않는다. 음성 bytes·실시간 미확정 전사는 요청/연결 안에서만
 처리한다. 확정 전사와 원본 녹음의 영구 저장은 호출 서비스가 소유하며 AI는 회의록 초안을
 반환한다. 연결 종료 전에 `completed` 구간을 저장하는 계약은 [음성 API](api/speech.md)를 따른다.
+
+## AI 모델 사용량 원장 (`ai_model_usage`, AI DB 소유)
+
+호출 UUID를 키로 실행·workspace·사용자·작업 종류, provider, 요청 모델과 응답 모델, 호출 상태, 입력·출력·캐시·reasoning 토큰, 시작·종료 시각과 호출 시간을 저장한다. 프롬프트·응답 본문·API 키는 저장하지 않는다. 미수신 사용량은 NULL이며 알려진 토큰 합계와 미확인 호출 수를 분리한다. 작업 취소 보상에 포함하지 않아 이미 사용한 토큰을 보존한다. 백엔드는 AI DB에 직접 접속하지 않고 내부 사용량 API를 조회한다.
