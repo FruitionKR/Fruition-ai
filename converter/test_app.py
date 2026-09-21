@@ -146,3 +146,96 @@ class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LargePdfRangeBatchTest(unittest.TestCase):
+    def reader(self, size):
+        from threading import Event
+        with mock.patch.dict("os.environ", {"CONVERTER_SOURCE_HOSTS": "storage.example.test"}):
+            return converter_app.S3RangeReader("https://storage.example.test/object?signature=private", size, Event())
+
+    def test_more_than_2gib_seek_fetches_only_one_range(self):
+        import io
+        size = 3 * 1024**3
+        reader = self.reader(size)
+        requests = []
+        class Response(io.BytesIO):
+            status = 206
+        def open_range(request, timeout):
+            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
+            requests.append((first, last))
+            response = Response(b"x" * (last - first + 1))
+            response.headers = {"Content-Range": f"bytes {first}-{last}/{size}"}
+            return response
+        reader.opener.open = open_range
+        reader.seek(-12, 2)
+        self.assertEqual(reader.read(12), b"x" * 12)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][1] - requests[0][0] + 1, 1024**2)
+        reader.seek(-6, 2)
+        self.assertEqual(reader.read(6), b"x" * 6)
+        self.assertEqual(len(requests), 1)
+
+    def test_unapproved_host_and_ignored_range_are_rejected(self):
+        from threading import Event
+        with self.assertRaises(ValueError):
+            converter_app.S3RangeReader("http://169.254.169.254/latest/meta-data", 100, Event())
+        reader = self.reader(100)
+        response = mock.MagicMock()
+        response.__enter__.return_value.status = 200
+        reader.opener.open = mock.Mock(return_value=response)
+        with self.assertRaisesRegex(ValueError, "Could not read"):
+            reader.read(1)
+
+    def test_page_batches_resume_without_reconverting_previous_pages(self):
+        import io
+        from threading import Event
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        for _ in range(23): writer.add_blank_page(width=72, height=72)
+        raw = io.BytesIO(); writer.write(raw)
+        def convert(path, *args):
+            self.assertIsInstance(path, Path)
+            return {"markdown": f"pages={len(PdfReader(path).pages)}"}
+        with mock.patch.object(converter_app, "S3RangeReader", side_effect=lambda *args: io.BytesIO(raw.getvalue())), \
+             mock.patch.object(converter_app, "process_pdf", side_effect=convert), \
+             mock.patch.dict("os.environ", {"PDF_PAGES_PER_BATCH": "10"}):
+            first = converter_app.process_source_batch("signed", len(raw.getvalue()), 10, "gemini", "model", Event())
+            last = converter_app.process_source_batch("signed", len(raw.getvalue()), 20, "gemini", "model", Event())
+        self.assertEqual((first["page_start"], first["page_end"], first["markdown"], first["done"]), (11, 20, "pages=10", False))
+        self.assertEqual((last["page_start"], last["page_end"], last["markdown"], last["done"]), (21, 23, "pages=3", True))
+
+
+class SparseLargePdfTest(unittest.TestCase):
+    def test_valid_three_gib_pdf_is_parsed_using_only_remote_ranges(self):
+        import io, re
+        from threading import Event
+        from pypdf import PdfWriter, PdfReader
+        writer = PdfWriter()
+        for _ in range(12): writer.add_blank_page(width=72, height=72)
+        output = io.BytesIO(); writer.write(output); raw = output.getvalue()
+        split = raw.index(b"\nxref\n") + 1
+        prefix = raw[:split]
+        xref_offset = 3 * 1024**3
+        suffix = re.sub(rb"startxref\n[0-9]+", f"startxref\n{xref_offset}".encode(), raw[split:])
+        size = xref_offset + len(suffix)
+        fetched = []
+        class Response(io.BytesIO): status = 206
+        def open_range(request, timeout):
+            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
+            data = bytearray(b" " * (last - first + 1))
+            for start, value in [(0, prefix), (xref_offset, suffix)]:
+                lo, hi = max(start, first), min(start + len(value), last + 1)
+                if lo < hi: data[lo-first:hi-first] = value[lo-start:hi-start]
+            fetched.append(len(data))
+            response = Response(data); response.headers = {"Content-Range": f"bytes {first}-{last}/{size}"}
+            return response
+        opener = mock.Mock(); opener.open.side_effect = open_range
+        def convert(path, *args): return {"markdown": f"pages={len(PdfReader(path).pages)}"}
+        with mock.patch("urllib.request.build_opener", return_value=opener), \
+             mock.patch.object(converter_app, "process_pdf", side_effect=convert), \
+             mock.patch.dict("os.environ", {"CONVERTER_SOURCE_HOSTS": "storage.example.test", "PDF_PAGES_PER_BATCH": "10"}):
+            result = converter_app.process_source_batch("https://storage.example.test/large.pdf", size, 10, "gemini", "model", Event())
+        self.assertEqual(result["markdown"], "pages=2")
+        self.assertTrue(result["done"])
+        self.assertLess(sum(fetched), 4 * 1024**2)

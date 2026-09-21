@@ -1187,6 +1187,100 @@ def test_agent_command_without_document_registers_run_with_null_targets() -> Non
     assert insert_params[-4:-1] == (None, None, None)
 
 
+def test_redelivered_executing_agent_run_is_closed_as_failed() -> None:
+    # 결과 없이 중단된 실행의 Kafka 재전달은 durable 실패로 닫혀야 worker가 재시작을 반복하지 않는다.
+    command = {
+        "run_id": "agent_interrupted",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "문서를 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+    connection = MagicMock()
+    inserted = MagicMock()
+    inserted.fetchone.return_value = None
+    locked = MagicMock()
+    locked.fetchone.return_value = {
+        "status": "executing",
+        "result": None,
+        "command_envelope_hash": task_worker._agent_command_hash(command),
+    }
+    def execute(query: str, *args: object) -> MagicMock:
+        if "INSERT INTO agent_runs" in query:
+            return inserted
+        if "FOR UPDATE" in query:
+            return locked
+        return MagicMock()
+
+    connection.execute.side_effect = execute
+    context = MagicMock()
+    context.__enter__.return_value = connection
+
+    with patch.object(task_worker.database, "connect_ai", return_value=context):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            task_worker._register_agent_command(command)
+
+    updates = [call.args for call in connection.execute.call_args_list if "SET status = 'failed'" in call.args[0]]
+    assert len(updates) == 2
+    assert "agent_turn_interrupted" in updates[0][0]
+    assert updates[0][1] == (command["run_id"],)
+    # 예외는 연결 context가 정상 종료(commit)된 뒤에 던져져야 UPDATE가 롤백되지 않는다.
+    context.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_postgres_redelivered_executing_agent_run_failure_is_durable(monkeypatch) -> None:
+    """TEST_AGENT_DATABASE_URL을 지정하면 실제 PostgreSQL에서 failed 상태가 commit되는지 검증한다."""
+    import os
+    from pathlib import Path
+    from uuid import uuid4
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    dsn = os.environ.get("TEST_AGENT_DATABASE_URL")
+    if not dsn:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    schema = "test_turn_interrupted_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    try:
+        with connect() as conn:
+            conn.execute((Path(__file__).parents[2] / "db/ai_schema.sql").read_text())
+        monkeypatch.setattr(task_worker.database, "connect_ai", connect)
+        command = dict(kind="agent", run_id="turn", workspace_id="ws", user_id="user",
+                       message="문서를 정리해 줘", provider="openai", model="gpt-5-nano")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO agent_runs (id, workspace_id, user_id, action, status, request_summary, "
+                "provider, model, command_envelope_hash) "
+                "VALUES ('turn', 'ws', 'user', 'markdown_turn', 'executing', '요청', 'openai', 'gpt-5-nano', %s)",
+                (task_worker._agent_command_hash(command),),
+            )
+            conn.execute("INSERT INTO agent_jobs (id, run_id, job_type, status) "
+                         "VALUES ('turn:markdown_turn', 'turn', 'markdown_turn', 'executing')")
+        with pytest.raises(RuntimeError, match="interrupted"):
+            task_worker._handle_controlled(command)
+        with connect() as conn:
+            run = conn.execute("SELECT status, error_code, finished_at FROM agent_runs WHERE id = 'turn'").fetchone()
+            job = conn.execute("SELECT status FROM agent_jobs WHERE id = 'turn:markdown_turn'").fetchone()
+        assert (run["status"], run["error_code"]) == ("failed", "agent_turn_interrupted")
+        assert run["finished_at"] is not None and job["status"] == "failed"
+        # durable 실패이므로 consumer는 실패 이벤트를 내고 offset을 commit한다(재시작 반복 없음).
+        assert task_worker._failure_is_durable(command)
+        # 같은 메시지가 또 재전달돼도 failed로 종료된 run은 재실행되지 않는다.
+        with pytest.raises(ValueError, match="already failed"):
+            task_worker._handle_controlled(command)
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
 def test_replayed_invalid_agent_selection_reuses_failed_run_without_new_job() -> None:
     command = {
         "run_id": "agent_invalid_replay",

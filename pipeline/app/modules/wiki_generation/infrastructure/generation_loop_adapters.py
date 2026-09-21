@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from contextvars import copy_context
 from pathlib import Path
 from time import perf_counter
@@ -90,11 +91,18 @@ class SemanticGenerationAdapter:
             started_at = perf_counter()
             return extractor.extract(packet), perf_counter() - started_at
 
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_workers, len(packets_to_extract) or 1)
-        ) as executor:
-            futures = [executor.submit(copy_context().run, extract, packet) for packet in packets_to_extract]
-            extracted = iter(future.result() for future in futures)
+        # 대형 문서에서도 future를 전체 패킷 수만큼 만들지 않는다.
+        def extracted_results():
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                iterator = iter(packets_to_extract)
+                pending = deque()
+                for packet in iterator:
+                    pending.append(executor.submit(copy_context().run, extract, packet))
+                    if len(pending) == self.max_workers:
+                        yield pending.popleft().result()
+                while pending:
+                    yield pending.popleft().result()
+        extracted = extracted_results()
 
         notes = []
         for packet, previous_note in work:

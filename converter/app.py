@@ -123,7 +123,7 @@ def run(command: list[str], working_dir: Path, timeout_seconds: int,
 
 
 def process_pdf(
-    content: bytes,
+    content: bytes | Path,
     provider: str = "gemini",
     model: str = "gemini-3.1-flash-lite",
     cancelled: Event | None = None,
@@ -150,7 +150,10 @@ def process_pdf(
         repair_summary = output_dir / "final" / "selective_repair_summary.json"
         process_log = job_dir / "process.log"
 
-        input_pdf.write_bytes(content)
+        if isinstance(content, Path):
+            shutil.copyfile(content, input_pdf)
+        else:
+            input_pdf.write_bytes(content)
 
         run_to_file(
             ["pdfinfo", input_pdf.name],
@@ -240,3 +243,140 @@ async def convert(
         "content_type": file.content_type or "application/pdf",
         **result,
     }
+
+
+class S3RangeReader:
+    """PDF의 seek/read를 S3 Range GET으로 변환한다. 캐시는 파일 크기와 무관하게 16MiB이다."""
+    def __init__(self, url: str, size: int, cancelled: Event):
+        from collections import OrderedDict
+        from urllib.request import build_opener, HTTPRedirectHandler
+        parsed = urlsplit(url)
+        allowed = set(filter(None, os.getenv("CONVERTER_SOURCE_HOSTS", "").split(",")))
+        if parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username or parsed.password:
+            raise ValueError("PDF source must use an approved HTTPS storage host")
+        class NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        self.opener = build_opener(NoRedirect())
+        self.url, self.size, self.cancelled = url, size, cancelled
+        self.position = 0
+        self.cache = OrderedDict()
+        self.block_size = 1024 * 1024
+
+    def seek(self, offset, whence=0):
+        target = offset if whence == 0 else self.position + offset if whence == 1 else self.size + offset
+        if target < 0 or whence not in (0, 1, 2):
+            raise ValueError("Invalid PDF seek")
+        self.position = target
+        return target
+
+    def tell(self):
+        return self.position
+
+    def read(self, size=-1):
+        from urllib.request import Request as HttpRequest
+        size = max(0, min(self.size - self.position, self.size if size < 0 else size))
+        # 파일 전체가 아닌 PDF 단일 object의 파서 메모리 한도. 손상된 xref의 전체 파일 재탐색을 막는다.
+        if size > 64 * 1024 * 1024:
+            raise ValueError("A PDF object exceeds the parser working-memory limit")
+        output = bytearray()
+        while size:
+            if self.cancelled.is_set():
+                raise HTTPException(status_code=499, detail="Conversion cancelled")
+            index = self.position // self.block_size
+            if index not in self.cache:
+                first = index * self.block_size
+                last = min(first + self.block_size, self.size) - 1
+                try:
+                    with self.opener.open(HttpRequest(self.url, headers={"Range": f"bytes={first}-{last}"}), timeout=30) as response:
+                        if response.status != 206 or response.headers.get("Content-Range") != f"bytes {first}-{last}/{self.size}":
+                            raise ValueError("Storage must return the exact requested PDF byte range")
+                        block = response.read(self.block_size + 1)
+                except Exception as error:
+                    # 서명 URL에는 임시 credentials가 들어 있으므로 로그·응답에 원문을 노출하지 않는다.
+                    raise ValueError("Could not read the PDF storage range") from None
+                if len(block) != last - first + 1:
+                    raise ValueError("Incomplete PDF storage range")
+                self.cache[index] = block
+                if len(self.cache) > 16:
+                    self.cache.popitem(last=False)
+            self.cache.move_to_end(index)
+            offset = self.position % self.block_size
+            value = self.cache[index][offset:offset + size]
+            output.extend(value)
+            size -= len(value)
+            self.position += len(value)
+        return bytes(output)
+
+    def close(self):
+        self.cache.clear()
+
+    def readable(self): return True
+    def seekable(self): return True
+
+
+def process_source_batch(source_url: str, byte_size: int, start_page: int,
+                         provider: str, model: str, cancelled: Event):
+    from pypdf import PdfReader, PdfWriter
+    stream = S3RangeReader(source_url, byte_size, cancelled)
+    try:
+        reader = PdfReader(stream, strict=True)
+        if reader.is_encrypted:
+            raise ValueError("Password-protected PDFs must be unlocked before conversion")
+        total = len(reader.pages)
+        if total == 0:
+            raise ValueError("PDF contains no pages")
+        if start_page < 0 or start_page > total:
+            raise ValueError("Invalid conversion checkpoint")
+        if start_page == total:
+            return {"page_start": start_page + 1, "page_end": total, "total_pages": total, "markdown": "", "done": True}
+        count = max(1, min(50, int(os.getenv("PDF_PAGES_PER_BATCH", "10"))))
+        end = min(start_page + count, total)
+        with tempfile.TemporaryDirectory(prefix="fruition-pdf-range-") as directory:
+            pdf = Path(directory) / "batch.pdf"
+            writer = PdfWriter()
+            for index in range(start_page, end):
+                writer.add_page(reader.pages[index])
+            with pdf.open("wb") as output:
+                writer.write(output)
+            writer.close()
+            result = process_pdf(pdf, provider, model, cancelled)
+        return {"page_start": start_page + 1, "page_end": end, "total_pages": total,
+                "markdown": result["markdown"], "done": end == total}
+    finally:
+        stream.close()
+
+
+from pydantic import BaseModel, Field
+
+class SourceBatchRequest(BaseModel):
+    source_url: str
+    byte_size: int = Field(gt=0)
+    start_page: int = Field(ge=0, default=0)
+    provider: str = "gemini"
+    model: str = "gemini-3.1-flash-lite"
+
+
+_source_conversion_slots = asyncio.Semaphore(max(1, int(os.getenv("PDF_BATCH_CONCURRENCY", "1"))))
+
+@app.post("/convert-source-batch")
+async def convert_source_batch(body: SourceBatchRequest, request: Request):
+    async with _source_conversion_slots:
+        return await _convert_source_batch(body, request)
+
+async def _convert_source_batch(body: SourceBatchRequest, request: Request):
+    cancelled = Event()
+    worker = asyncio.create_task(asyncio.to_thread(process_source_batch, body.source_url,
+        body.byte_size, body.start_page, body.provider, body.model, cancelled))
+    try:
+        while not worker.done():
+            if await request.is_disconnected(): cancelled.set()
+            await asyncio.wait({worker}, timeout=0.1)
+        return worker.result()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    finally:
+        cancelled.set()
+        if not worker.done():
+            try: await asyncio.shield(worker)
+            except Exception: pass
