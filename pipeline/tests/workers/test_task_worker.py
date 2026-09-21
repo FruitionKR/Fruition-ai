@@ -1187,6 +1187,47 @@ def test_agent_command_without_document_registers_run_with_null_targets() -> Non
     assert insert_params[-4:-1] == (None, None, None)
 
 
+def test_redelivered_executing_agent_run_is_closed_as_failed() -> None:
+    # 결과 없이 중단된 실행의 Kafka 재전달은 durable 실패로 닫혀야 worker가 재시작을 반복하지 않는다.
+    command = {
+        "run_id": "agent_interrupted",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "문서를 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+    connection = MagicMock()
+    inserted = MagicMock()
+    inserted.fetchone.return_value = None
+    locked = MagicMock()
+    locked.fetchone.return_value = {
+        "status": "executing",
+        "result": None,
+        "command_envelope_hash": task_worker._agent_command_hash(command),
+    }
+    def execute(query: str, *args: object) -> MagicMock:
+        if "INSERT INTO agent_runs" in query:
+            return inserted
+        if "FOR UPDATE" in query:
+            return locked
+        return MagicMock()
+
+    connection.execute.side_effect = execute
+    context = MagicMock()
+    context.__enter__.return_value = connection
+
+    with patch.object(task_worker.database, "connect_ai", return_value=context):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            task_worker._register_agent_command(command)
+
+    updates = [call.args for call in connection.execute.call_args_list if "SET status = 'failed'" in call.args[0]]
+    assert len(updates) == 2
+    assert "agent_turn_interrupted" in updates[0][0]
+    assert updates[0][1] == (command["run_id"],)
+
+
 def test_replayed_invalid_agent_selection_reuses_failed_run_without_new_job() -> None:
     command = {
         "run_id": "agent_invalid_replay",

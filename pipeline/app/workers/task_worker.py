@@ -363,7 +363,26 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
         elif run["status"] in {"cancel_requested", "rolling_back", "rollback_failed", "cancelled"}:
             raise PipelineRunCancelledError("Agent run cancellation has been requested.")
         elif run["status"] == "executing":
-            raise RuntimeError("Agent run is already executing")
+            # 실행 잠금을 이미 보유한 상태이므로 다른 worker가 아니라, 결과를 남기지 못하고
+            # 중단된 이전 실행의 Kafka 재전달이다. 편집 부작용을 두 번 내지 않도록 실패로 닫고
+            # offset을 진행시킨다. 예외를 그대로 두면 worker가 종료·재시작을 반복한다.
+            conn.execute(
+                """
+                UPDATE agent_runs
+                SET status = 'failed', error_code = 'agent_turn_interrupted',
+                    updated_at = now(), finished_at = now()
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            conn.execute(
+                """
+                UPDATE agent_jobs SET status = 'failed', updated_at = now()
+                WHERE run_id = %s AND job_type = 'markdown_turn'
+                """,
+                (run_id,),
+            )
+            raise RuntimeError("Agent run was interrupted before it finished")
         else:
             conn.execute(
                 "UPDATE agent_runs SET status = 'executing', updated_at = now() WHERE id = %s",
