@@ -14,6 +14,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langsmith import traceable, tracing_context
 
+from app.modules.model_usage.infrastructure.usage_ledger import track_call
 from app.core.pipeline_control import ensure_task_active
 from app.core.langsmith_tracing import langsmith_tracing_enabled
 from app.core.llm_env import inference_profile, resolve_llm_selection
@@ -181,8 +182,9 @@ class ChatCompletionsJsonClient:
         try:
             # LangChain 내부 trace는 마스킹 전 provider 응답을 기록할 수 있으므로,
             # 이 호출만 끄고 바깥의 sanitized wrapper trace만 남긴다.
-            with tracing_context(enabled=False):
+            with tracing_context(enabled=False), track_call(self.provider, self.config.model) as receipt:
                 response = self._model.invoke(messages)
+                receipt["response"] = response
         except Exception as exc:
             detail = redact_numeric_personal_data(str(exc))
             status_code = getattr(exc, "status_code", None)

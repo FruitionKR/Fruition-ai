@@ -77,6 +77,9 @@ Agent 요청을 분류하고 Query·문서 생성·편집 작업을 실행합니
 
 - Content-Type: `application/json` (`AgentTurnRequestBody`)
 
+`message`는 비어 있지 않은 문자열이며 질문 전용 1,000자 제한은 없다.
+전체 요청에 적용되는 크기·중첩 깊이·제어문자 검증은 유지한다.
+
 아래 예시는 직전 Markdown 편집 미리보기를 그대로 저장하는 요청입니다.
 
 ```json
@@ -181,6 +184,9 @@ Workspace 작업 기능이 비활성화된 경우에는 사용자 요청 오류�
 생성 요청에서 같은 흐름을 사용하며 `allow_web_search=true`일 때만 실행한다. 생성 결과는
 `create_document`, 편집 결과는 `apply_document_edit` 아티팩트로 `workspace_workflow` 승인 계획에
 전달한다.
+
+열린 문서 본문은 편집 입력으로 사용하며, `chat_answer`의 Query 참조 문맥에는 자동으로 첨부하지 않는다.
+라우터에도 본문 대신 문서 유무와 선택 범위만 전달한다. Query의 대화 이력과 검색 근거는 유지한다.
 
 #### 5. Response body
 

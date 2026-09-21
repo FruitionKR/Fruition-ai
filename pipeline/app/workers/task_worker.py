@@ -842,6 +842,12 @@ def _handle(
 
 
 def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
+    from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+    with usage_scope(command):
+        return _execute_controlled(command, event_publisher)
+
+
+def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command["kind"] != "agent":
         return journal.execute(command, lambda: _handle(command, event_publisher))
@@ -982,7 +988,9 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
 
 async def _publish_session_title(producer, command: dict[str, Any], result: dict[str, Any]) -> None:
     try:
-        title = await asyncio.to_thread(generate_chat_session_title, command, result)
+        from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+        with usage_scope({**command, "kind": "session_title"}):
+            title = await asyncio.to_thread(generate_chat_session_title, command, result)
         if title:
             await producer.send_and_wait(
                 RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),

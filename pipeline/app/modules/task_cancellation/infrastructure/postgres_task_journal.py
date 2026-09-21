@@ -185,6 +185,7 @@ def _require_no_references(conn, table_name: str, value: dict[str, Any]) -> None
 
 def execute(command: dict[str, Any], handle) -> dict[str, Any]:
     from app.core.pipeline_control import task_cancellation_scope, ensure_task_active
+    from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
     run_id = str(command["run_id"])
     with execution_lock(run_id):
         row = register(command)
@@ -204,7 +205,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
             raise PipelineRunCancelledError("Interrupted task changes were sent for rollback.")
         token = task_run_id.set(run_id)
         try:
-            with task_cancellation_scope(lambda: active(run_id)):
+            with task_cancellation_scope(lambda: active(run_id)), usage_scope(command):
                 result = handle()
                 ensure_task_active()
                 complete(run_id, result)

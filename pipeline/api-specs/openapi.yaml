@@ -530,7 +530,6 @@ components:
           - type: 'null'
           title: Document Id
         message:
-          maxLength: 1000
           minLength: 1
           title: Message
           type: string
@@ -1505,6 +1504,102 @@ components:
       - id
       - text
       title: MeetingSegment
+      type: object
+    ModelUsage:
+      properties:
+        calls:
+          minimum: 0.0
+          title: Calls
+          type: integer
+        failed_calls:
+          minimum: 0.0
+          title: Failed Calls
+          type: integer
+        known_cache_creation_tokens:
+          minimum: 0.0
+          title: Known Cache Creation Tokens
+          type: integer
+        known_cached_input_tokens:
+          minimum: 0.0
+          title: Known Cached Input Tokens
+          type: integer
+        known_input_tokens:
+          minimum: 0.0
+          title: Known Input Tokens
+          type: integer
+        known_output_tokens:
+          minimum: 0.0
+          title: Known Output Tokens
+          type: integer
+        known_reasoning_tokens:
+          minimum: 0.0
+          title: Known Reasoning Tokens
+          type: integer
+        model:
+          title: Model
+          type: string
+        provider:
+          title: Provider
+          type: string
+        requested_model:
+          title: Requested Model
+          type: string
+        unfinished_calls:
+          minimum: 0.0
+          title: Unfinished Calls
+          type: integer
+        unknown_cache_usage_calls:
+          minimum: 0.0
+          title: Unknown Cache Usage Calls
+          type: integer
+        unknown_usage_calls:
+          minimum: 0.0
+          title: Unknown Usage Calls
+          type: integer
+      required:
+      - provider
+      - requested_model
+      - model
+      - calls
+      - failed_calls
+      - unfinished_calls
+      - unknown_usage_calls
+      - known_input_tokens
+      - known_output_tokens
+      - known_cached_input_tokens
+      - known_cache_creation_tokens
+      - known_reasoning_tokens
+      - unknown_cache_usage_calls
+      title: ModelUsage
+      type: object
+    ModelUsageResponse:
+      properties:
+        from_at:
+          format: date-time
+          title: From At
+          type: string
+        models:
+          items:
+            $ref: '#/components/schemas/ModelUsage'
+          title: Models
+          type: array
+        to_at:
+          format: date-time
+          title: To At
+          type: string
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - workspace_id
+      - user_id
+      - from_at
+      - to_at
+      - models
+      title: ModelUsageResponse
       type: object
     PendingSkillProposalRequest:
       properties:
@@ -4395,6 +4490,66 @@ paths:
       summary: Transcribe
       tags:
       - speech
+  /usage/models:
+    get:
+      operationId: read_usage_usage_models_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          minLength: 1
+          title: User Id
+          type: string
+      - in: query
+        name: from_at
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From At
+      - in: query
+        name: to_at
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To At
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelUsageResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read Usage
+      tags:
+      - model-usage
   /wiki-schema/active:
     get:
       operationId: get_active_wiki_schema_wiki_schema_active_get
