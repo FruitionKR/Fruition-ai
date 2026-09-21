@@ -185,6 +185,9 @@ Workspace 작업 기능이 비활성화된 경우에는 사용자 요청 오류�
 `create_document`, 편집 결과는 `apply_document_edit` 아티팩트로 `workspace_workflow` 승인 계획에
 전달한다.
 
+열린 문서 본문은 편집 입력으로 사용하며, `chat_answer`의 Query 참조 문맥에는 자동으로 첨부하지 않는다.
+라우터에도 본문 대신 문서 유무와 선택 범위만 전달한다. Query의 대화 이력과 검색 근거는 유지한다.
+
 #### 5. Response body
 
 - HTTP `200`: `AgentTurnResponse`

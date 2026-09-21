@@ -40,7 +40,6 @@ from app.modules.markdown_edit.domain.entities import (
 from app.modules.markdown_edit.domain.markdown_target_scope import (
     apply_markdown_edit,
     markdown_line_count,
-    markdown_line_range,
 )
 from app.modules.query.application.answer_query import AnswerQueryUseCase
 from app.modules.query.application.conversation_context_resolver import (
@@ -514,7 +513,7 @@ class HandleAgentTurnUseCase:
             action="chat_answer",
             route=route,
             query_answer=self._answer_query(
-                _with_active_markdown_reference(request),
+                request,
                 route.retrieval_source,
             ),
         )
@@ -877,30 +876,6 @@ def _missing_current_section(
         route.edit_operation == "insert_after"
         and route.edit_destination == "target"
         and target.type != "current_section"
-    )
-
-
-def _with_active_markdown_reference(request: AgentTurnRequest) -> AgentTurnRequest:
-    markdown_context = request.active_markdown_context
-    if markdown_context is None:
-        return request
-    target = markdown_context.target or _whole_document_target(markdown_context.markdown)
-    conversation_context = request.conversation_context or AgentConversationContext()
-    reference_context = dict(conversation_context.reference_context)
-    reference_context["active_markdown"] = {
-        "target_type": target.type,
-        "markdown": markdown_line_range(
-            markdown_context.markdown,
-            target.start_line,
-            target.end_line,
-        ),
-    }
-    return replace(
-        request,
-        conversation_context=replace(
-            conversation_context,
-            reference_context=reference_context,
-        ),
     )
 
 

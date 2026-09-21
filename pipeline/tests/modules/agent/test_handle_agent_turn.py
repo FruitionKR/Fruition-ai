@@ -2350,18 +2350,27 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
 
         result = use_case.execute(
             AgentTurnRequest(
-                message="이 문서는 무엇을 설명해?",
+                message="PMA를 설명해줄래",
                 workspace_id="workspace-1",
                 user_id="user-1",
                 output_language="document",
                 response_length="balanced",
                 allow_web_search=False,
+                active_markdown_context=ActiveMarkdownContext(markdown="# 질문과 무관한 문서 본문"),
+                conversation_context=AgentConversationContext(
+                    recent_conversation_summary="이전 대화 요약",
+                    recent_messages=(ConversationMessage(role="user", content="개념을 공부하고 있어"),),
+                ),
             )
         )
 
         self.assertEqual(result.action, "chat_answer")
         self.assertIsNotNone(result.query_answer)
-        self.assertEqual(query_use_case.questions, ["이 문서는 무엇을 설명해?"])
+        self.assertEqual(query_use_case.questions, ["PMA를 설명해줄래"])
+        context = query_use_case.kwargs[0]["conversation_context"]
+        self.assertEqual(context.reference_context, {})
+        self.assertEqual(context.recent_conversation_summary, "이전 대화 요약")
+        self.assertEqual(context.recent_messages[0].content, "개념을 공부하고 있어")
         self.assertEqual(query_use_case.kwargs[0]["workspace_id"], "workspace-1")
         self.assertEqual(query_use_case.kwargs[0]["user_id"], "user-1")
         self.assertEqual(query_use_case.kwargs[0]["output_language"], "document")
@@ -2397,12 +2406,18 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         )
 
         use_case.execute(
-            AgentTurnRequest(message="최신 정보를 찾아줘", workspace_id="workspace-1", allow_web_search=True)
+            AgentTurnRequest(
+                message="최신 정보를 찾아줘",
+                workspace_id="workspace-1",
+                allow_web_search=True,
+                active_markdown_context=ActiveMarkdownContext(markdown="# 질문과 무관한 문서 본문"),
+            )
         )
 
         self.assertEqual(default_query_use_case.questions, [])
         self.assertEqual(web_search_query_use_case.questions, ["최신 정보를 찾아줘"])
         self.assertTrue(web_search_query_use_case.kwargs[0]["allow_web_search"])
+        self.assertIsNone(web_search_query_use_case.kwargs[0]["conversation_context"])
 
 if __name__ == "__main__":
     unittest.main()
