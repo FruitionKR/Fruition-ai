@@ -53,6 +53,7 @@ class ConverterCpuOnlyImageTest(unittest.TestCase):
                 "torch": "2.14.0",
                 "torchvision": "0.29.0+cpu",
                 "nvidia-cudnn-cu13": "9.24.0.43",
+                "nvidia_nccl_cu13": "2.30.7",
                 "cuda-toolkit": "13.0.3",
                 "triton": "3.8.0",
             }
@@ -62,7 +63,7 @@ class ConverterCpuOnlyImageTest(unittest.TestCase):
             errors,
             [
                 "torch==2.14.0 is not a +cpu wheel",
-                "GPU packages present: cuda-toolkit, nvidia-cudnn-cu13, triton",
+                "GPU packages present: cuda-toolkit, nvidia-cudnn-cu13, nvidia_nccl_cu13, triton",
             ],
         )
 

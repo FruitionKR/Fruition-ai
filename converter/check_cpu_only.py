@@ -15,8 +15,12 @@ from pathlib import Path
 GPU_PREFIXES = ("nvidia-", "cuda-", "triton")
 
 
+def normalize(name: str) -> str:
+    return name.lower().replace("_", "-")
+
+
 def gpu_packages(names: list[str]) -> list[str]:
-    return sorted(n for n in names if n.lower().startswith(GPU_PREFIXES))
+    return sorted(n for n in names if normalize(n).startswith(GPU_PREFIXES))
 
 
 def check_versions(installed: dict[str, str]) -> list[str]:
@@ -62,7 +66,7 @@ def runtime_errors() -> list[str]:
 def installed_from_report(path: Path) -> dict[str, str]:
     report = json.loads(path.read_text(encoding="utf-8"))
     return {
-        item["metadata"]["name"].lower(): item["metadata"]["version"]
+        normalize(item["metadata"]["name"]): item["metadata"]["version"]
         for item in report["install"]
     }
 
@@ -71,7 +75,7 @@ def installed_from_environment() -> dict[str, str]:
     import importlib.metadata as metadata
 
     return {
-        dist.metadata["Name"].lower(): dist.version for dist in metadata.distributions()
+        normalize(dist.metadata["Name"]): dist.version for dist in metadata.distributions()
     }
 
 
