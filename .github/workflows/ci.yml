@@ -53,3 +53,13 @@ jobs:
         run: |
           pip install "pypdf>=6.13,<7" python-multipart
           pytest -q converter/test_app.py
+
+      # converter 이미지 의존성을 linux/amd64 기준으로 dry-run 해석해 +cpu torch만 선택되고
+      # nvidia/cuda/triton 패키지가 끼어들지 않는지 확인한다. 실제 설치·이미지 빌드는 하지 않는다.
+      - name: Verify converter resolves CPU-only torch
+        working-directory: .
+        run: |
+          pip install --dry-run --ignore-installed --only-binary=:all: \
+            --target /tmp/converter-dry-run --report /tmp/converter-report.json \
+            -r converter/requirements.txt
+          python converter/check_cpu_only.py --report /tmp/converter-report.json

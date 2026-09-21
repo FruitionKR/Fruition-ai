@@ -1,6 +1,8 @@
 import base64
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -14,6 +16,79 @@ assert SPEC is not None and SPEC.loader is not None
 converter_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(converter_app)
 process_pdf = converter_app.process_pdf
+
+
+CHECK_SPEC = importlib.util.spec_from_file_location(
+    "check_cpu_only", Path(__file__).with_name("check_cpu_only.py")
+)
+assert CHECK_SPEC is not None and CHECK_SPEC.loader is not None
+check_cpu_only = importlib.util.module_from_spec(CHECK_SPEC)
+CHECK_SPEC.loader.exec_module(check_cpu_only)
+
+
+class ConverterCpuOnlyImageTest(unittest.TestCase):
+    def test_requirements_pin_cpu_torch_wheels_from_official_index(self) -> None:
+        requirements = Path(__file__).with_name("requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("--extra-index-url https://download.pytorch.org/whl/cpu\n", requirements)
+        self.assertRegex(requirements, r"(?m)^torch==\d+\.\d+\.\d+\+cpu$")
+        self.assertRegex(requirements, r"(?m)^torchvision==\d+\.\d+\.\d+\+cpu$")
+
+    def test_dockerfile_runs_cpu_only_check_after_pip_install(self) -> None:
+        dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("check_cpu_only.py", dockerfile)
+        self.assertLess(dockerfile.index("pip install"), dockerfile.index("python check_cpu_only.py"))
+
+    def test_check_accepts_cpu_wheels_without_gpu_packages(self) -> None:
+        errors = check_cpu_only.check_versions(
+            {"torch": "2.14.0+cpu", "torchvision": "0.29.0+cpu", "docling": "2.129.0"}
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_check_rejects_pypi_torch_and_nvidia_packages(self) -> None:
+        errors = check_cpu_only.check_versions(
+            {
+                "torch": "2.14.0",
+                "torchvision": "0.29.0+cpu",
+                "nvidia-cudnn-cu13": "9.24.0.43",
+                "cuda-toolkit": "13.0.3",
+                "triton": "3.8.0",
+            }
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                "torch==2.14.0 is not a +cpu wheel",
+                "GPU packages present: cuda-toolkit, nvidia-cudnn-cu13, triton",
+            ],
+        )
+
+    def test_check_reads_pip_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "report.json"
+            report.write_text(
+                json.dumps(
+                    {
+                        "install": [
+                            {"metadata": {"name": "Torch", "version": "2.14.0+cpu"}},
+                            {"metadata": {"name": "torchvision", "version": "0.29.0+cpu"}},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(check_cpu_only.main(["--report", str(report)]), 0)
+
+            report.write_text(
+                json.dumps({"install": [{"metadata": {"name": "torch", "version": "2.14.0"}}]}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(check_cpu_only.main(["--report", str(report)]), 1)
 
 
 class ConverterCropFirstBoundaryTest(unittest.TestCase):
