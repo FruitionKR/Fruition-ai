@@ -255,12 +255,20 @@ class AgentRoutesTest(unittest.TestCase):
             ["list_root_items", "list_folder_children", "create_document"],
         )
 
+    def test_agent_turn_accepts_message_longer_than_1000_characters(self) -> None:
+        message = "긴 질문입니다. " * 1000
+        request = _AgentTurnRequestBody.model_validate(
+            {"message": message, "provider": "openai", "model": "gpt-5-nano"}
+        )
+        self.assertEqual(request.to_domain().message, message)
+
     def test_agent_turn_rejects_oversized_or_obfuscated_input(self) -> None:
         deeply_nested_reference: dict[str, object] = {"value": "document"}
         for _ in range(13):
             deeply_nested_reference = {"nested": deeply_nested_reference}
         invalid_payloads = (
-            {"message": "a" * 1001},
+            {"message": ""},
+            {"message": "a" * 200_001},
             {
                 "message": "문서를 요약해줘",
                 "conversation_context": {

@@ -21,9 +21,6 @@ from app.modules.skill.interfaces.http.schemas import (
 )
 
 
-MAX_AGENT_MESSAGE_LENGTH = 1000
-
-
 class MarkdownEditTargetRequest(BaseModel):
     type: Literal["selection", "current_section", "whole_document"]
     start_line: int = Field(..., ge=1)
@@ -121,7 +118,7 @@ class AgentConversationContextRequest(BaseModel):
 
 
 class AgentTurnRequestBody(BaseModel):
-    message: str = Field(..., min_length=1, max_length=MAX_AGENT_MESSAGE_LENGTH)
+    message: str = Field(..., min_length=1)
     provider: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
     workspace_id: str | None = Field(default=None, min_length=1)

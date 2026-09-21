@@ -77,6 +77,9 @@ Agent 요청을 분류하고 Query·문서 생성·편집 작업을 실행합니
 
 - Content-Type: `application/json` (`AgentTurnRequestBody`)
 
+`message`는 비어 있지 않은 문자열이며 질문 전용 1,000자 제한은 없다.
+전체 요청에 적용되는 크기·중첩 깊이·제어문자 검증은 유지한다.
+
 아래 예시는 직전 Markdown 편집 미리보기를 그대로 저장하는 요청입니다.
 
 ```json
