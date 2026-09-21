@@ -43,6 +43,7 @@ RUN apt-get update \
         tesseract-ocr-eng \
         tesseract-ocr-kor \
         unpaper \
+        libgl1 \
         ca-certificates \
         curl \
     && rm -rf /var/lib/apt/lists/*
