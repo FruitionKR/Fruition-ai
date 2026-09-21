@@ -51,8 +51,12 @@ RUN apt-get update \
 RUN groupadd --gid 10001 appuser \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
 
-COPY converter/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY converter/requirements.txt converter/check_cpu_only.py ./
+# requirements.txt pins +cpu torch wheels from the official CPU index; the check
+# fails the build if any nvidia/cuda/triton package or a non-CPU torch slipped in.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python check_cpu_only.py \
+    && pip check
 
 COPY --from=heron-builder /build/heron-special-regions/target/release/raw-special-regions /usr/local/bin/raw-special-regions
 COPY --from=anydoc /usr/local/bin/node /usr/local/bin/node
@@ -70,6 +74,9 @@ RUN mkdir -p /opt/docling-rs/models \
 COPY converter/app.py ./converter_app.py
 COPY pipeline/app ./app
 COPY pipeline/prompts ./prompts
+
+# Converter route and restoration CLI must import on the CPU runtime.
+RUN python -c "import converter_app, app.modules.document_restoration.interfaces.cli"
 
 # AWS mounts writable /tmp while the root filesystem remains read-only.
 ENV HOME=/tmp

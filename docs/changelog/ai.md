@@ -1,5 +1,12 @@
 # AI 변경 기록
 
+## 2026-09-21 (converter CPU 전용 torch)
+
+- converter 이미지가 PyPI linux torch 2.14.0 wheel의 의존성으로 `cuda-toolkit 13`, `nvidia-cudnn-cu13`, `nvidia-nccl-cu13`, `nvidia-cusparselt-cu13`, `nvidia-nvshmem-cu13`, `triton` 등 수 GiB의 GPU 패키지를 함께 설치해, 운영 EKS CPU 노드(20GiB)에서 이미지 압축 해제 중 디스크가 고갈되던 문제를 수정했습니다. 기존 converter는 계속 운영 중이며 이 변경은 이미지 빌드·의존성만 바꿉니다.
+- `converter/requirements.txt`가 공식 CPU index(`https://download.pytorch.org/whl/cpu`)의 `torch==2.14.0+cpu`·`torchvision==0.29.0+cpu`를 고정합니다. pipeline 이미지가 이미 쓰던 CPU index 방식과 같고, `docling-ibm-models`(torch>=2.2.2,<3)·`pix2tex`(torch>=1.7.1)의 요구 범위 안이며 PyPI에서 해석되던 버전과 동일해 OCR·문서 복원 동작은 그대로입니다. x86_64·aarch64 wheel이 모두 있어 로컬 arm64 빌드도 됩니다.
+- 새 `converter/check_cpu_only.py`가 이미지 빌드 중 설치 환경을 검사해 `+cpu`가 아닌 torch/torchvision, `nvidia-*`·`cuda-*`·`triton` 패키지, CUDA 가용성이 있으면 빌드를 실패시키고 `pip check`도 실행합니다. CI는 같은 스크립트로 linux/amd64 dry-run 해석 결과(`pip --report`)를 검사합니다.
+- 검증: linux/amd64 컨테이너에서 requirements 설치 후 검사 통과, converter 테스트 13개(신규 5개) 통과. DB schema·API 변경은 없습니다.
+
 ## 2026-09-21
 
 - converter에 `/convert-source-batch`를 추가했습니다. 승인된 S3 HTTPS 호스트(`CONVERTER_SOURCE_HOSTS`)에서 1MiB Range 요청과 16MiB 캐시로 PDF를 읽고 pypdf로 페이지 묶음(`PDF_PAGES_PER_BATCH` 기본 10, 1~50)만 추출해 기존 복원 엔진에 전달합니다. 원본 전체를 디스크·메모리에 내려받지 않으며 단일 PDF object 읽기는 64MiB로 제한합니다. `PDF_BATCH_CONCURRENCY`(기본 1)로 동시 배치 수를 제한합니다.

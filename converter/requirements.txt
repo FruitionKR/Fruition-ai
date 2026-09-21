@@ -8,6 +8,12 @@ python-multipart
 markitdown[pdf]
 
 # document-restoration runtime
+# CPU-only torch: PyPI linux wheels pull ~6GiB of nvidia/cuda/triton packages
+# that exhausted EKS node disk during image extraction. The official CPU index
+# ships +cpu wheels for x86_64 and aarch64; docling-ibm-models needs torch>=2.2.2,<3.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+torchvision==0.29.0+cpu
 docling>=2.0
 Pillow>=10.0
 PyMuPDF>=1.24
