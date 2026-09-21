@@ -178,7 +178,12 @@ class AgentWorker:
             ):
                 return
             graph_input = {"run_id": job.run_id, "event": job.job_type}
-        with tracing_context(enabled=False):
+        from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+        run = self._repository.load_context(job.run_id).run
+        with tracing_context(enabled=False), usage_scope({
+            "run_id": job.run_id, "workspace_id": run.workspace_id,
+            "user_id": run.user_id, "kind": "agent_" + job.job_type,
+        }):
             self._graph.invoke(graph_input, config=config, durability="sync")
 
     def _plan_node(self, state: AgentRunGraphState) -> AgentRunGraphState:
@@ -308,7 +313,12 @@ class AgentWorker:
         return tuple(_content_artifact(item) for item in items)
 
     def _execute(self, job: AgentJob) -> None:
-        with tracing_context(enabled=False):
+        from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+        run = self._repository.load_context(job.run_id).run
+        with tracing_context(enabled=False), usage_scope({
+            "run_id": job.run_id, "workspace_id": run.workspace_id,
+            "user_id": run.user_id, "kind": "agent_execution",
+        }):
             self._graph.invoke(
                 {"run_id": job.run_id, "event": "execution"},
                 config={

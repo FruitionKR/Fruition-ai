@@ -476,6 +476,7 @@ _AI_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[4] / "db" / "ai_schema.sq
 
 # ai_db는 python이 소유한다 — db/ai_schema.sql이 원본 DDL
 AI_DB_REQUIRED_TABLES = (
+    "ai_model_usage",
     "ai_task_runs",
     "ai_task_changes",
     *REQUIRED_TABLES,

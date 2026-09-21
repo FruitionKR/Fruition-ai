@@ -513,3 +513,25 @@ DROP TRIGGER IF EXISTS ai_task_change ON skill_versions;
 CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_versions FOR EACH ROW EXECUTE FUNCTION record_ai_task_change('id');
 DROP TRIGGER IF EXISTS ai_task_change ON skill_version_sources;
 CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_version_sources FOR EACH ROW EXECUTE FUNCTION record_ai_task_change('id');
+
+CREATE TABLE IF NOT EXISTS ai_model_usage (
+    id uuid PRIMARY KEY,
+    run_id text NOT NULL,
+    workspace_id text NOT NULL,
+    user_id text NOT NULL,
+    kind text NOT NULL,
+    provider text NOT NULL,
+    requested_model text NOT NULL,
+    model text NOT NULL,
+    status text NOT NULL CHECK (status IN ('started', 'succeeded', 'failed')),
+    input_tokens bigint CHECK (input_tokens >= 0),
+    output_tokens bigint CHECK (output_tokens >= 0),
+    cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
+    cache_creation_tokens bigint CHECK (cache_creation_tokens >= 0),
+    reasoning_tokens bigint CHECK (reasoning_tokens >= 0),
+    duration_ms double precision,
+    started_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_actor_time ON ai_model_usage (workspace_id, user_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_run ON ai_model_usage (run_id);

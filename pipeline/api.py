@@ -199,3 +199,6 @@ Instrumentator(excluded_handlers=["/metrics"]).add(
         latency_lowr_buckets=_LATENCY_BUCKETS,
     )
 ).instrument(app).expose(app, include_in_schema=False)
+
+from app.modules.model_usage.interfaces.http.routes import router as model_usage_router
+include_internal_router(model_usage_router, internal_token_dependencies)

@@ -810,6 +810,8 @@ class AgentWorkerTest(unittest.TestCase):
         executing_context = _executing_context()
         repository.load_context.side_effect = [
             planning_context,
+            planning_context,
+            executing_context,
             executing_context,
             executing_context,
             executing_context,
@@ -866,7 +868,7 @@ class AgentWorkerTest(unittest.TestCase):
             _executing_context(),
             run=replace(_executing_context().run, status="queued"),
         )
-        repository.load_context.side_effect = [queued_context, queued_context, queued_context]
+        repository.load_context.side_effect = [queued_context] * 5
         run_repository = MagicMock()
         gateway = MagicMock()
         gateway.read.return_value = {"items": []}
