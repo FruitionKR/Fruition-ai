@@ -94,7 +94,6 @@ class PipelineRunCommand:
     system_prompt: str = "prompts/semantic_extraction.system.md"
     concept_system_prompt: str = "prompts/concept_page_generation.system.md"
     concept_resolution_system_prompt: str = "prompts/concept_resolution.system.md"
-    section_polish_system_prompt: str = "prompts/section_polish.system.md"
     wiki_evaluator_system_prompt: str = "prompts/wiki_generation_evaluator.system.md"
     wiki_patch_system_prompt: str = "prompts/wiki_generation_patch.system.md"
     existing_wiki_dir: str | None = None

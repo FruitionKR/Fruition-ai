@@ -1,16 +1,13 @@
 import os
 from pathlib import Path
-from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
 from app.modules.wiki_ingestion.application.models import PipelineRunCommand
 from run_lab import (
     PipelineConfigurationError,
-    _SourcePagePreparation,
     _prepare_api_client,
     load_api_client,
     parse_args,
@@ -174,88 +171,3 @@ def test_read_prompt_missing_file_raises_configuration_error(tmp_path: Path) -> 
     # read_prompt도 worker 경로에서 호출되므로 SystemExit이 아닌 일반 예외를 던져야 한다.
     with pytest.raises(PipelineConfigurationError):
         read_prompt(str(tmp_path / "no-such-prompt.md"))
-
-
-@pytest.mark.skip(reason="Source page polish was removed; concept resolution parallelism is covered separately.")
-def test_run_pipeline_parallelizes_concept_resolution_and_source_polish(
-    tmp_path: Path,
-) -> None:
-    command = PipelineRunCommand(
-        run_id="run-parallel",
-        input="input.md",
-        input_name="input.md",
-        out=str(tmp_path / "run"),
-        user_id="local-user",
-        workspace_id="local-workspace",
-        provider="openai",
-        model="gpt-5-nano",
-        source_page_mode="skeleton",
-        concept_page_mode="skeleton",
-    )
-    document = SourceDocument("doc-1", "문서", "input.md", "hash")
-    block = SourceBlock("doc-1", "B0001", "B0001", "본문", 0, 2)
-    normalized = {
-        "document": {
-            "document_id": "doc-1",
-            "title": "문서",
-            "source_path": "input.md",
-        },
-        "semantic_notes": [],
-        "concept_ledger": [],
-        "section_candidates": [],
-        "mentions": [],
-        "categories": [],
-        "evidence_units": [],
-        "warnings": [],
-    }
-    barrier = Barrier(1)
-
-    def resolve(*_args, **_kwargs):
-        barrier.wait(timeout=1)
-        return {**normalized, "resolved": True, "warnings": []}
-
-    def prepare(*_args, **kwargs):
-        barrier.wait(timeout=1)
-        source_normalized = kwargs["normalized"]
-        source_normalized["warnings"].append("source warning")
-        return _SourcePagePreparation(
-            normalized=source_normalized,
-            existing_context_blocks=[],
-            polish={},
-            key_points_for_concepts=[],
-            mode="section-polish",
-            section_polisher=None,
-            raw_polish_dir=None,
-            invalid_polish_dir=tmp_path / "invalid",
-        )
-
-    page_outputs = SimpleNamespace(
-        source_page={},
-        source_page_normalized={},
-        concept_pages=[],
-        links=[],
-        source_page_mode="skeleton",
-        concept_page_mode="skeleton",
-    )
-    with (
-        patch("run_lab.PipelineLog"),
-        patch("run_lab._prepare_api_client", return_value=object()),
-        patch(
-            "run_lab._extract_pipeline_source",
-            return_value=(document, [block], [{"document_id": "doc-1", "block_id": "B0001", "text": "본문"}]),
-        ),
-        patch(
-            "run_lab._run_wiki_generation_loop",
-            return_value=([], normalized, []),
-        ),
-        patch("run_lab._resolve_pipeline_concepts", side_effect=resolve),
-        patch("run_lab._prepare_source_page_assembly", side_effect=prepare),
-        patch("run_lab._assemble_wiki_pages", return_value=page_outputs) as assemble,
-        patch("run_lab._prepare_post_ingest_clusters", return_value=({}, {})),
-    ):
-        manifest = run_pipeline(command)
-
-    preparation = assemble.call_args.kwargs["source_preparation"]
-    assert preparation.normalized["resolved"] is True
-    assert preparation.normalized["warnings"] == ["source warning"]
-    assert manifest["warnings"] == ["source warning"]

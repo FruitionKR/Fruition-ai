@@ -29,11 +29,6 @@ class ConceptResolver(Protocol):
         ...
 
 
-class SectionPolisher(Protocol):
-    def polish(self, payload: JsonDict, source_blocks: Sequence[SourceBlock]) -> JsonDict:
-        ...
-
-
 class JsonCompletionPort(Protocol):
     def complete_json(self, system_prompt: str, user_prompt: str) -> JsonDict:
         ...

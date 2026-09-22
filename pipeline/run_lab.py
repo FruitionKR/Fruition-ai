@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import shutil
@@ -17,9 +16,6 @@ from typing import Any
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
-)
-from app.modules.wiki_generation.application.section_polish_mapping import (
-    map_polish_output as _map_polish_output,
 )
 from app.modules.wiki_generation.application.judge_candidates import (
     judge_concept_update_candidates,
@@ -45,10 +41,8 @@ from app.modules.wiki_generation.infrastructure.wiki_generation_evaluator_graph 
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ApiConceptResolver,
     ApiConceptPageGenerator,
-    ApiSectionPolisher,
     ChatClientConfig,
     ChatCompletionsJsonClient,
-    SectionPolishParseError,
 )
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
@@ -97,7 +91,6 @@ class PipelinePrompts:
     semantic: str
     concept: str
     concept_resolution: str
-    section_polish: str
     wiki_evaluator: str
     wiki_patch: str
 
@@ -116,12 +109,8 @@ class WikiPageOutputs:
 class _SourcePagePreparation:
     normalized: dict[str, Any]
     existing_context_blocks: list[SourceBlock]
-    polish: dict[str, Any]
     key_points_for_concepts: list[dict[str, Any]]
     mode: str
-    section_polisher: ApiSectionPolisher | None
-    raw_polish_dir: Path | None
-    invalid_polish_dir: Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -160,7 +149,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--system-prompt", default="prompts/semantic_extraction.system.md")
     ap.add_argument("--concept-system-prompt", default="prompts/concept_page_generation.system.md")
     ap.add_argument("--concept-resolution-system-prompt", default="prompts/concept_resolution.system.md")
-    ap.add_argument("--section-polish-system-prompt", default="prompts/section_polish.system.md")
     ap.add_argument("--wiki-evaluator-system-prompt", default="prompts/wiki_generation_evaluator.system.md")
     ap.add_argument("--wiki-patch-system-prompt", default="prompts/wiki_generation_patch.system.md")
     ap.add_argument("--existing-wiki-dir", help="Optional existing wiki directory. If set, existing wiki/concepts/*.md pages are used for concept resolution before page generation.")
@@ -172,8 +160,6 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--max-eval-attempts", type=int, default=2)
     return ap.parse_args()
-
-
 
 
 def resolve_api_defaults(command: PipelineRunCommand) -> PipelineRunCommand:
@@ -288,162 +274,6 @@ def _run_wiki_generation_loop(
     )
 
 
-def _prepare_source_page_polish(
-    args: PipelineRunCommand,
-    normalized: dict[str, Any],
-    blocks: list[Any],
-    section_polisher: ApiSectionPolisher | None,
-    raw_polish_dir: Path | None,
-    invalid_polish_dir: Path,
-    log: PipelineLog,
-) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
-    source_polish: dict[str, Any] = {}
-    raw_source_key_points_for_concepts: list[dict[str, Any]] = [
-        kp
-        for note in normalized.get("semantic_notes", [])
-        for kp in note.get("key_points", [])
-    ]
-    source_key_points_for_concepts = list(raw_source_key_points_for_concepts)
-    sp_mode = source_page_mode(args)
-    if sp_mode != "section-polish":
-        return source_polish, source_key_points_for_concepts, sp_mode
-
-    assert section_polisher is not None
-    source_payload = {
-        "page_type": "source",
-        "section": "source_summary_and_key_points",
-        "context": {
-            "document": normalized["document"],
-            "concept_slugs": [concept["slug"] for concept in normalized["concept_ledger"]],
-            "existing_source_summary": normalized.get("existing_source_context", {}).get("summary", ""),
-            "existing_source_markdown": normalized.get("existing_source_context", {}).get("source_markdown", ""),
-            "summary_instruction": "기존 source page 문맥과 새 SOURCE BLOCKS를 함께 반영해 전체 source page 요약을 새로 작성한다. 기존 요약 뒤에 새 요약을 붙이는 append 형식으로 쓰지 않는다.",
-        },
-        "draft": {
-            "new_summary_candidates": [n.get("semantic_summary", "") for n in normalized["semantic_notes"] if n.get("semantic_summary")],
-            "key_points": [kp for note in normalized["semantic_notes"] for kp in note.get("key_points", [])],
-        },
-        "evidence": normalized["evidence_units"],
-    }
-    try:
-        raw_source_polish = section_polisher.polish(source_payload, blocks)
-    except SectionPolishParseError as exc:
-        invalid_path = invalid_polish_dir / "source_page.txt"
-        if args.save_debug_json:
-            ensure_dir(invalid_polish_dir)
-            write_text(invalid_path, exc.raw_content)
-        normalized.setdefault("warnings", []).append("source_page: section polish output was not repairable; used backend skeleton")
-        log.emit(
-            "5-보조. Source Section Polish",
-            "Source page section polish가 복구 불가능해 backend skeleton으로 대체했습니다.",
-            {"invalid_raw": invalid_path if args.save_debug_json else "not_saved"},
-        )
-        return source_polish, source_key_points_for_concepts, sp_mode
-
-    if raw_polish_dir is not None:
-        write_json(raw_polish_dir / "source_page.json", raw_source_polish)
-    mapped_source_polish = _map_polish_output(raw_source_polish, blocks, normalized.setdefault("warnings", []), "source_page")
-    source_polish = {
-        "title": mapped_source_polish.get("title"),
-        "summary": mapped_source_polish,
-        "key_points": mapped_source_polish,
-    }
-    source_key_points_for_concepts = [
-        *mapped_source_polish.get("items", []),
-        *raw_source_key_points_for_concepts,
-    ]
-    log.emit(
-        "5-보조. Source Section Polish",
-        "Source page의 summary/key points 섹션만 LLM으로 다듬었습니다.",
-        {"confidence": mapped_source_polish.get("confidence"), "항목 수": len(mapped_source_polish.get("items", []))},
-    )
-    return source_polish, source_key_points_for_concepts, sp_mode
-
-
-def _prepare_concept_section_polish(
-    args: PipelineRunCommand,
-    normalized: dict[str, Any],
-    concept_source_blocks_by_slug: dict[str, list[Any]],
-    source_key_points_for_concepts: list[dict[str, Any]],
-    section_polisher: ApiSectionPolisher,
-    raw_polish_dir: Path | None,
-    invalid_polish_dir: Path,
-    log: PipelineLog,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    concept_polish_by_slug: dict[str, Any] = {}
-    generated_concept_pages: list[dict[str, Any]] = []
-
-    for concept in normalized["concept_ledger"]:
-        source_blocks = concept_source_blocks_by_slug.get(concept["slug"], [])
-        related_evidence = [ev for ev in normalized["evidence_units"] if concept["slug"] in ev.get("related_concept_slugs", [])]
-        resolution_links = [
-            target
-            for resolution in normalized.get("concept_resolutions", [])
-            if (resolution.get("canonical_slug") or resolution.get("incoming_slug")) == concept["slug"]
-            for target in resolution.get("link_targets", [])
-        ]
-        payload = {
-            "page_type": "concept",
-            "section": "concept_definition_key_points_and_related",
-            "context": {
-                "title": concept.get("title"),
-                "slug": concept.get("slug"),
-                "aliases": concept.get("aliases", []),
-                "why_page_worthy": concept.get("why_page_worthy"),
-                "resolution_link_targets": resolution_links,
-            },
-            "draft": {
-                "definition": concept.get("definition"),
-            },
-            "evidence": related_evidence,
-        }
-        try:
-            raw_polish = section_polisher.polish(payload, source_blocks)
-        except SectionPolishParseError as exc:
-            invalid_path = invalid_polish_dir / f"concept_{concept['slug']}.txt"
-            if args.save_debug_json:
-                ensure_dir(invalid_polish_dir)
-                write_text(invalid_path, exc.raw_content)
-            normalized.setdefault("warnings", []).append(f"concept:{concept['slug']}: section polish output was not repairable; used backend skeleton")
-            log.emit(
-                "6-보조. Concept Section Polish",
-                "Concept section polish가 복구 불가능해 해당 concept은 backend skeleton으로 대체했습니다.",
-                {"개념": concept["slug"], "invalid_raw": invalid_path if args.save_debug_json else "not_saved"},
-            )
-            continue
-
-        if raw_polish_dir is not None:
-            write_json(raw_polish_dir / f"concept_{concept['slug']}.json", raw_polish)
-        mapped = _map_polish_output(raw_polish, source_blocks, normalized.setdefault("warnings", []), f"concept:{concept['slug']}")
-        concept_polish_by_slug[concept["slug"]] = {
-            "definition": mapped,
-            "key_points": mapped,
-            "related_concept_hints": mapped.get("related_concept_hints", []),
-        }
-        generated_concept_pages.append(
-            {
-                "slug": concept["slug"],
-                "title": concept.get("title"),
-                "confidence": mapped.get("confidence"),
-                "related_concept_hints": mapped.get("related_concept_hints", []),
-            }
-        )
-        log.emit(
-            "6-보조. Concept Section Polish",
-            "Concept page의 definition/key points/related hint 섹션만 LLM으로 다듬었습니다.",
-            {"개념": concept["slug"], "근거 블록 수": len(source_blocks), "confidence": mapped.get("confidence")},
-        )
-
-    concept_pages = ConceptPageAssembler().build_top(
-        normalized,
-        top_n=None,
-        polish_by_slug=concept_polish_by_slug,
-        source_key_points=source_key_points_for_concepts,
-    )
-    log.emit("6. Concept Page 생성", "백엔드 조립과 섹션 polish로 concept page markdown 데이터를 생성했습니다.", {"페이지 수": len(concept_pages)})
-    return concept_pages, generated_concept_pages
-
-
 def _load_pipeline_prompts(args: PipelineRunCommand, log: PipelineLog) -> PipelinePrompts:
     wiki_patch_path = getattr(
         args,
@@ -454,7 +284,6 @@ def _load_pipeline_prompts(args: PipelineRunCommand, log: PipelineLog) -> Pipeli
         semantic=read_prompt(args.system_prompt),
         concept=read_prompt(args.concept_system_prompt),
         concept_resolution=read_prompt(args.concept_resolution_system_prompt),
-        section_polish=read_prompt(args.section_polish_system_prompt),
         wiki_evaluator=read_prompt(args.wiki_evaluator_system_prompt),
         wiki_patch=read_prompt(wiki_patch_path),
     )
@@ -465,7 +294,6 @@ def _load_pipeline_prompts(args: PipelineRunCommand, log: PipelineLog) -> Pipeli
             "semantic": args.system_prompt,
             "concept": args.concept_system_prompt,
             "concept_resolution": args.concept_resolution_system_prompt,
-            "section_polish": args.section_polish_system_prompt,
             "wiki_evaluator": args.wiki_evaluator_system_prompt,
             "wiki_patch": wiki_patch_path,
         },
@@ -708,16 +536,10 @@ def _resolve_pipeline_concepts(
 
 
 def _prepare_source_page_assembly(
-    args: PipelineRunCommand,
     *,
-    api_client: ChatCompletionsJsonClient | None,
-    prompts: PipelinePrompts,
     normalized: dict[str, Any],
-    blocks: list[SourceBlock],
     existing_source_artifact: dict[str, Any] | None,
     existing_source_markdown: str | None,
-    out: Path,
-    log: PipelineLog,
 ) -> _SourcePagePreparation:
     existing_source_artifact_with_markdown = (
         {**existing_source_artifact, "source_markdown": existing_source_markdown}
@@ -728,38 +550,15 @@ def _prepare_source_page_assembly(
     existing_source_context_blocks = source_context_blocks(
         existing_source_artifact_with_markdown
     )
-    section_polisher = (
-        ApiSectionPolisher(api_client, prompts.section_polish)
-        if api_client is not None
-        else None
-    )
-    raw_polish_dir = (
-        ensure_dir(out / "raw_llm_outputs" / "section_polish")
-        if args.save_debug_json
-        else None
-    )
-    invalid_polish_dir = out / "raw_llm_outputs" / "section_polish_invalid"
-    source_polish, source_key_points_for_concepts, source_mode = (
-        _prepare_source_page_polish(
-            args,
-            source_page_normalized,
-            [*existing_source_context_blocks, *blocks],
-            section_polisher,
-            raw_polish_dir,
-            invalid_polish_dir,
-            log,
-        )
-    )
-
     return _SourcePagePreparation(
         normalized=source_page_normalized,
         existing_context_blocks=existing_source_context_blocks,
-        polish=source_polish,
-        key_points_for_concepts=source_key_points_for_concepts,
-        mode=source_mode,
-        section_polisher=section_polisher,
-        raw_polish_dir=raw_polish_dir,
-        invalid_polish_dir=invalid_polish_dir,
+        key_points_for_concepts=[
+            point
+            for note in normalized.get("semantic_notes", [])
+            for point in note.get("key_points", [])
+        ],
+        mode="skeleton",
     )
 
 
@@ -799,7 +598,6 @@ def _assemble_source_page(
 ) -> dict[str, Any]:
     source_page = SourcePageAssembler().build(
         preparation.normalized,
-        polish=preparation.polish,
     )
     log.emit(
         "5. Source Page 생성",
@@ -823,9 +621,6 @@ def _assemble_concept_pages(
     normalized: dict[str, Any],
     concept_source_blocks_by_slug: dict[str, list[SourceBlock]],
     source_key_points_for_concepts: list[dict[str, Any]],
-    section_polisher: ApiSectionPolisher | None,
-    raw_polish_dir: Path | None,
-    invalid_polish_dir: Path,
     out: Path,
     log: PipelineLog,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
@@ -836,19 +631,7 @@ def _assemble_concept_pages(
         else None
     )
     concept_mode = concept_page_mode(args)
-    if concept_mode == "section-polish":
-        assert section_polisher is not None
-        concept_pages, generated_concept_pages = _prepare_concept_section_polish(
-            args,
-            normalized,
-            concept_source_blocks_by_slug,
-            source_key_points_for_concepts,
-            section_polisher,
-            raw_polish_dir,
-            invalid_polish_dir,
-            log,
-        )
-    elif concept_mode in {"api", "full-llm"}:
+    if concept_mode in {"api", "full-llm"}:
         assert api_client is not None
         concept_generator = ApiConceptPageGenerator(api_client, prompts.concept)
         generator_assembler = GeneratedConceptPageAssembler()
@@ -903,18 +686,11 @@ def _assemble_wiki_pages(
     existing_source_markdown: str | None,
     out: Path,
     log: PipelineLog,
-    source_preparation: _SourcePagePreparation | None = None,
 ) -> WikiPageOutputs:
-    source_preparation = source_preparation or _prepare_source_page_assembly(
-        args,
-        api_client=api_client,
-        prompts=prompts,
+    source_preparation = _prepare_source_page_assembly(
         normalized=normalized,
-        blocks=blocks,
         existing_source_artifact=existing_source_artifact,
         existing_source_markdown=existing_source_markdown,
-        out=out,
-        log=log,
     )
     concept_source_blocks_by_slug = _prepare_concept_source_blocks(
         normalized,
@@ -931,9 +707,6 @@ def _assemble_wiki_pages(
         normalized=normalized,
         concept_source_blocks_by_slug=concept_source_blocks_by_slug,
         source_key_points_for_concepts=source_preparation.key_points_for_concepts,
-        section_polisher=source_preparation.section_polisher,
-        raw_polish_dir=source_preparation.raw_polish_dir,
-        invalid_polish_dir=source_preparation.invalid_polish_dir,
         out=out,
         log=log,
     )
@@ -1162,82 +935,23 @@ def run_pipeline(
         },
     )
 
-    # 4a. Resolve concepts while polishing the independent source page sections.
+    # 개념 병합과 연결 판단을 완료한 뒤 페이지를 조립한다.
     assert api_client is not None
-    source_preparation: _SourcePagePreparation | None = None
     if extraction_blocks:
-        if source_page_mode(args) == "section-polish":
-            source_normalized = copy.deepcopy(normalized)
-            if args.reingest:
-                source_normalized = source_page_context_normalized(
-                    source_normalized,
-                    existing_source_artifact,
-                )
-
-            def resolve_concepts_for_pages() -> tuple[dict[str, Any], float]:
-                started = monotonic()
-                result = _resolve_pipeline_concepts(
-                    args,
-                    api_client=api_client,
-                    concept_resolution_prompt=prompts.concept_resolution,
-                    normalized=normalized,
-                    out=out,
-                    log=log,
-                )
-                return result, monotonic() - started
-
-            def prepare_source_for_pages() -> tuple[_SourcePagePreparation, float]:
-                started = monotonic()
-                result = _prepare_source_page_assembly(
-                    args,
-                    api_client=api_client,
-                    prompts=prompts,
-                    normalized=source_normalized,
-                    blocks=blocks,
-                    existing_source_artifact=existing_source_artifact,
-                    existing_source_markdown=existing_source_markdown,
-                    out=out,
-                    log=log,
-                )
-                return result, monotonic() - started
-
-            parallel_started = monotonic()
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                resolution_future = executor.submit(copy_context().run, resolve_concepts_for_pages)
-                source_future = executor.submit(copy_context().run, prepare_source_for_pages)
-                normalized, resolution_seconds = resolution_future.result()
-                source_preparation, source_seconds = source_future.result()
-            parallel_seconds = monotonic() - parallel_started
-            for warning in source_preparation.normalized.get("warnings", []):
-                if warning not in normalized.setdefault("warnings", []):
-                    normalized["warnings"].append(warning)
-            log.emit(
-                "4-보조. Concept/Source 병렬 준비",
-                "Concept 판단과 source section polish를 병렬 실행했습니다.",
-                {
-                    "concept 판단 소요 시간(초)": f"{resolution_seconds:.2f}",
-                    "source polish 소요 시간(초)": f"{source_seconds:.2f}",
-                    "병렬 wall 시간(초)": f"{parallel_seconds:.2f}",
-                    "병렬 절감 시간(초)": f"{max(0.0, resolution_seconds + source_seconds - parallel_seconds):.2f}",
-                },
-            )
-        else:
-            normalized = _resolve_pipeline_concepts(
-                args,
-                api_client=api_client,
-                concept_resolution_prompt=prompts.concept_resolution,
-                normalized=normalized,
-                out=out,
-                log=log,
-            )
+        normalized = _resolve_pipeline_concepts(
+            args,
+            api_client=api_client,
+            concept_resolution_prompt=prompts.concept_resolution,
+            normalized=normalized,
+            out=out,
+            log=log,
+        )
     contribution_normalized = normalized
     if args.reingest:
         normalized = source_page_context_normalized(
             normalized,
             existing_source_artifact,
         )
-    if source_preparation is not None:
-        source_preparation = replace(source_preparation, normalized=normalized)
     if args.save_debug_json:
         write_json(out / "normalized.json", normalized)
         if generation_evaluations:
@@ -1253,7 +967,6 @@ def run_pipeline(
         existing_source_markdown=existing_source_markdown,
         out=out,
         log=log,
-        source_preparation=source_preparation,
     )
 
     meaning_cluster_artifact, post_ingest = _prepare_post_ingest_clusters(
