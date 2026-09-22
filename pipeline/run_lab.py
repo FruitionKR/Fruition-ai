@@ -136,15 +136,15 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument(
         "--source-page-mode",
-        choices=["auto", "skeleton", "section-polish"],
+        choices=["auto", "skeleton"],
         default="auto",
-        help="auto/section-polish: backend source page assembly with LLM-polished summary/key points; skeleton: backend only",
+        help="Source page는 backend skeleton으로 조립합니다.",
     )
     ap.add_argument(
         "--concept-page-mode",
-        choices=["auto", "api", "full-llm", "skeleton", "section-polish"],
+        choices=["auto", "api", "full-llm", "skeleton"],
         default="auto",
-        help="auto/skeleton: backend concept pages only; section-polish: optional LLM-polished concept sections; api/full-llm: legacy full concept page LLM writer",
+        help="auto/skeleton: backend concept pages only; api/full-llm: legacy full concept page LLM writer",
     )
     ap.add_argument("--max-packet-chars", type=int, default=7000)
     ap.add_argument("--overlap-blocks", type=int, default=1)
@@ -226,9 +226,7 @@ def concept_page_mode(args: PipelineRunCommand) -> str:
 
 
 def source_page_mode(args: PipelineRunCommand) -> str:
-    if getattr(args, "source_page_mode", "auto") != "auto":
-        return args.source_page_mode
-    return "section-polish" if args.mode in {"api", "generic-chat"} else "skeleton"
+    return "skeleton"
 
 
 def _json_safe(value: Any) -> Any:
@@ -482,8 +480,7 @@ def _prepare_api_client(
 ) -> ChatCompletionsJsonClient | None:
     requires_api = (
         args.mode in {"api", "generic-chat"}
-        or concept_page_mode(args) in {"api", "full-llm", "section-polish"}
-        or source_page_mode(args) == "section-polish"
+        or concept_page_mode(args) in {"api", "full-llm"}
     )
     if not requires_api:
         return None

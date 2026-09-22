@@ -27,16 +27,15 @@ class _PipelineRunBase(BaseModel):
     out: str | None = None
     mode: Literal["api", "generic-chat"] = "api"
     provider: Literal["openai", "gemini", "claude"]
-    source_page_mode: Literal["auto", "skeleton", "section-polish"] = "auto"
+    source_page_mode: Literal["auto", "skeleton"] = "auto"
     concept_page_mode: Literal[
         "auto",
         "api",
         "full-llm",
         "skeleton",
-        "section-polish",
     ] = Field(
         default="auto",
-        description="auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.",
+        description="auto/skeleton은 backend skeleton concept page를 생성합니다.",
     )
     max_packet_chars: int = 7000
     overlap_blocks: int = 1

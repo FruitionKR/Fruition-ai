@@ -343,7 +343,7 @@ class WikiGenerationPipelineTest(unittest.TestCase):
         self.assertEqual(source_key_points, [{"text": "원본 핵심", "anchor_block_ids": ["B0001"]}])
         self.assertEqual(polisher.payloads, [])
 
-    def test_source_page_polish_helper_maps_polished_output(self) -> None:
+    def test_source_page_polish_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             normalized = {
                 "document": {"document_id": "doc-1"},
@@ -355,18 +355,10 @@ class WikiGenerationPipelineTest(unittest.TestCase):
                 },
                 "evidence_units": [],
             }
-            polisher = FakeSectionPolisher(
-                {
-                    "section": "source_summary_and_key_points",
-                    "text": "다듬은 요약 [B0001]",
-                    "anchor_block_ids": ["B0001"],
-                    "items": [{"text": "다듬은 핵심 [B0001]", "anchor_block_ids": ["B0001"]}],
-                    "confidence": 0.8,
-                }
-            )
+            polisher = FakeSectionPolisher({"text": "사용되지 않음"})
 
             source_polish, source_key_points, mode = _prepare_source_page_polish(
-                SimpleNamespace(source_page_mode="section-polish", save_debug_json=False, mode="api"),
+                SimpleNamespace(source_page_mode="skeleton", save_debug_json=False, mode="api"),
                 normalized,
                 [FakeBlock(block_id="B0001", text="본문")],
                 polisher,  # type: ignore[arg-type]
@@ -375,15 +367,10 @@ class WikiGenerationPipelineTest(unittest.TestCase):
                 log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
             )
 
-        self.assertEqual(mode, "section-polish")
-        self.assertEqual(source_polish["summary"]["text"], "다듬은 요약")
-        self.assertEqual(source_polish["key_points"]["items"][0]["text"], "다듬은 핵심")
-        self.assertEqual(source_key_points[0]["text"], "다듬은 핵심")
-        self.assertEqual(source_key_points[1]["text"], "원본 핵심")
-        self.assertEqual(polisher.payloads[0]["context"]["existing_source_summary"], "기존 전체 요약")
-        self.assertIn("기존 source", polisher.payloads[0]["context"]["existing_source_markdown"])
-        self.assertEqual(polisher.payloads[0]["draft"]["new_summary_candidates"], ["요약"])
-        self.assertNotIn("summary_candidates", polisher.payloads[0]["draft"])
+        self.assertEqual(mode, "skeleton")
+        self.assertEqual(source_polish, {})
+        self.assertEqual(source_key_points, normalized["semantic_notes"][0]["key_points"])
+        self.assertEqual(polisher.payloads, [])
 
     def test_concept_section_polish_helper_builds_polished_concept_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

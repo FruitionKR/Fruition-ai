@@ -138,7 +138,7 @@ def test_run_pipeline_manifest_preserves_log_callback_url(tmp_path: Path) -> Non
         source_page_normalized={},
         concept_pages=[],
         links=[],
-        source_page_mode="section-polish",
+        source_page_mode="skeleton",
         concept_page_mode="skeleton",
     )
 
@@ -176,6 +176,7 @@ def test_read_prompt_missing_file_raises_configuration_error(tmp_path: Path) -> 
         read_prompt(str(tmp_path / "no-such-prompt.md"))
 
 
+@pytest.mark.skip(reason="Source page polish was removed; concept resolution parallelism is covered separately.")
 def test_run_pipeline_parallelizes_concept_resolution_and_source_polish(
     tmp_path: Path,
 ) -> None:
@@ -188,7 +189,7 @@ def test_run_pipeline_parallelizes_concept_resolution_and_source_polish(
         workspace_id="local-workspace",
         provider="openai",
         model="gpt-5-nano",
-        source_page_mode="section-polish",
+        source_page_mode="skeleton",
         concept_page_mode="skeleton",
     )
     document = SourceDocument("doc-1", "문서", "input.md", "hash")
@@ -207,7 +208,7 @@ def test_run_pipeline_parallelizes_concept_resolution_and_source_polish(
         "evidence_units": [],
         "warnings": [],
     }
-    barrier = Barrier(2)
+    barrier = Barrier(1)
 
     def resolve(*_args, **_kwargs):
         barrier.wait(timeout=1)
@@ -233,7 +234,7 @@ def test_run_pipeline_parallelizes_concept_resolution_and_source_polish(
         source_page_normalized={},
         concept_pages=[],
         links=[],
-        source_page_mode="section-polish",
+        source_page_mode="skeleton",
         concept_page_mode="skeleton",
     )
     with (
