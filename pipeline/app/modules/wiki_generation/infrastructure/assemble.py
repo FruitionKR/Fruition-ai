@@ -22,34 +22,24 @@ from app.modules.wiki_generation.infrastructure.ref_format import (
 
 
 class SourcePageAssembler:
-    def build(self, normalized: dict[str, Any], polish: dict[str, Any] | None = None) -> dict[str, Any]:
+    def build(self, normalized: dict[str, Any]) -> dict[str, Any]:
         doc = normalized["document"]
         notes = normalized["semantic_notes"]
         ledger = normalized["concept_ledger"]
-        polish = polish or {}
-        title = str(polish.get("title") or doc.get("title") or doc["document_id"]).strip()
+        title = str(doc.get("title") or doc["document_id"]).strip()
 
         summary_parts = [n.get("semantic_summary", "") for n in notes if n.get("semantic_summary")]
         summary = "\n\n".join(summary_parts[:4]) or "요약 없음."
-        if polish.get("summary", {}).get("text"):
-            summary = polish["summary"]["text"]
 
         key_points = []
         seen = set()
-        polished_key_points = polish.get("key_points", {}).get("items", [])
-        if polished_key_points:
-            for kp in polished_key_points:
+        for n in notes:
+            for kp in n.get("key_points", []):
                 text = kp.get("text", "").strip()
-                if text:
-                    key_points.append(f"- {text}{cite_refs(kp.get('anchor_reference_ids', []), doc['document_id'])}")
-        else:
-            for n in notes:
-                for kp in n.get("key_points", []):
-                    text = kp.get("text", "").strip()
-                    if not text or text in seen:
-                        continue
-                    seen.add(text)
-                    key_points.append(f"- {text}{cite_refs(kp.get('anchor_reference_ids', []), doc['document_id'])}")
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                key_points.append(f"- {text}{cite_refs(kp.get('anchor_reference_ids', []), doc['document_id'])}")
 
         concept_lines = []
         for c in ledger:
@@ -110,7 +100,7 @@ categories: {', '.join(item.get('name', '') for item in normalized.get('categori
         if filename_slug == "untitled":
             filename_slug = doc["document_id"]
         markdown_path = f"wiki/sources/{filename_slug}.md"
-        artifact = _source_extraction_artifact(normalized, title, summary, markdown_path, polish=polish)
+        artifact = _source_extraction_artifact(normalized, title, summary, markdown_path)
         normalized["source_extraction_artifact"] = artifact
         return {
             "slug": filename_slug,
@@ -120,8 +110,8 @@ categories: {', '.join(item.get('name', '') for item in normalized.get('categori
             "source_extraction_artifact": artifact,
         }
 
-    def assemble(self, normalized: dict[str, Any], out_dir: str | Path, polish: dict[str, Any] | None = None) -> str:
-        page = self.build(normalized, polish=polish)
+    def assemble(self, normalized: dict[str, Any], out_dir: str | Path) -> str:
+        page = self.build(normalized)
         out_path = _unique_source_path(Path(out_dir) / "wiki" / "sources", page["slug"])
         write_text(out_path, page["markdown"])
         artifact_path = out_path.with_suffix(".json")
@@ -152,7 +142,6 @@ def _source_extraction_artifact(
     title: str,
     summary: str,
     markdown_path: str,
-    polish: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     doc = normalized["document"]
     core_concepts = [_term_record({**concept, "term": concept.get("title")}) for concept in normalized.get("concept_ledger", [])]
@@ -170,7 +159,7 @@ def _source_extraction_artifact(
         "source_file": doc.get("source_path"),
         "markdown_path": markdown_path,
         "summary": summary,
-        "key_points": _source_artifact_key_points(normalized, polish or {}),
+        "key_points": _source_artifact_key_points(normalized),
         "categories": categories,
         "observations": normalized.get("observations", []),
         "core_concepts": core_concepts,
@@ -180,14 +169,7 @@ def _source_extraction_artifact(
     }
 
 
-def _source_artifact_key_points(normalized: dict[str, Any], polish: dict[str, Any]) -> list[dict[str, Any]]:
-    polished = polish.get("key_points", {}).get("items", [])
-    if polished:
-        return [
-            {"text": item.get("text", ""), "evidence_block_ids": _item_refs(item)}
-            for item in polished
-            if item.get("text")
-        ]
+def _source_artifact_key_points(normalized: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"text": item.get("text", ""), "evidence_block_ids": _item_refs(item)}
         for note in normalized.get("semantic_notes", [])
@@ -247,12 +229,11 @@ class ConceptPageAssembler:
         self,
         normalized: dict[str, Any],
         top_n: int | None = 6,
-        polish_by_slug: dict[str, Any] | None = None,
         source_key_points: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         concepts = normalized["concept_ledger"] if top_n is None else normalized["concept_ledger"][:top_n]
         return [
-            self._build_page(c, normalized, polish_by_slug or {}, source_key_points)
+            self._build_page(c, normalized, source_key_points)
             for c in concepts
         ]
 
@@ -261,7 +242,6 @@ class ConceptPageAssembler:
         normalized: dict[str, Any],
         out_dir: str | Path,
         top_n: int | None = 6,
-        polish_by_slug: dict[str, Any] | None = None,
         source_key_points: list[dict[str, Any]] | None = None,
     ) -> list[str]:
         """Deterministic skeleton concept pages.
@@ -269,7 +249,7 @@ class ConceptPageAssembler:
         This is useful when concept page LLM generation is disabled.
         """
         out_paths = []
-        for page in self.build_top(normalized, top_n=top_n, polish_by_slug=polish_by_slug, source_key_points=source_key_points):
+        for page in self.build_top(normalized, top_n=top_n, source_key_points=source_key_points):
             out_path = Path(out_dir) / page["markdown_path"]
             write_text(out_path, page["markdown"])
             out_paths.append(str(out_path))
@@ -279,43 +259,24 @@ class ConceptPageAssembler:
         self,
         c: dict[str, Any],
         normalized: dict[str, Any],
-        polish_by_slug: dict[str, Any] | None = None,
         source_key_points: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         evidence = normalized["evidence_units"]
         document_id = normalized["document"]["document_id"]
-        polish_by_slug = polish_by_slug or {}
         ledger_by_slug = {concept["slug"]: concept for concept in normalized["concept_ledger"]}
         source_key_points = source_key_points or _collect_source_key_points(normalized)
-        polish = polish_by_slug.get(c["slug"], {})
         related_evidence = _concept_evidence(c, evidence)
         ev_lines = []
         for ev in related_evidence:
             ev_lines.append(f"- {ev['claim']}{cite_refs(ev.get('anchor_reference_ids', []), ev.get('source_document_id') or document_id)}")
         definition_text = c.get("definition") or "정의 초안 없음."
         definition_refs = c.get("display_reference_ids", [])
-        if polish.get("definition", {}).get("text"):
-            definition_text = polish["definition"]["text"]
-            definition_refs = polish["definition"].get("anchor_reference_ids", definition_refs)
         if not ev_lines and c.get("definition"):
             ev_lines.append(f"- {c['definition']}{cite_refs(definition_refs, document_id)}")
-        key_point_lines = []
-        for item in polish.get("key_points", {}).get("items", []):
-            text = item.get("text", "").strip()
-            if text:
-                key_point_lines.append(f"- {text}{cite_refs(item.get('anchor_reference_ids', []), document_id)}")
-        if not key_point_lines:
-            key_point_lines = _concept_key_points_from_source(c, related_evidence, source_key_points, document_id)
+        key_point_lines = _concept_key_points_from_source(c, related_evidence, source_key_points, document_id)
         if not key_point_lines and c.get("definition"):
             key_point_lines.append(f"- {c['definition']}{cite_refs(definition_refs, document_id)}")
-        related_lines = []
-        for target_slug in polish.get("related_concept_hints", []):
-            target_slug = slugify(str(target_slug))
-            target = ledger_by_slug.get(target_slug)
-            if target and target_slug != c["slug"]:
-                related_lines.append(f"- [[{target_slug}|{target.get('title') or target_slug}]]")
-        if not related_lines:
-            related_lines = _concept_related_lines(c["slug"], normalized, ledger_by_slug, source_key_points)
+        related_lines = _concept_related_lines(c["slug"], normalized, ledger_by_slug, source_key_points)
         aliases = ", ".join(c.get("aliases", []))
         md = f"""---
 type: concept

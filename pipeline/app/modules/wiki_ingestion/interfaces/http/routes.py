@@ -416,7 +416,6 @@ def _build_pipeline_command(
         ),
         concept_system_prompt=payload.concept_system_prompt,
         concept_resolution_system_prompt=payload.concept_resolution_system_prompt,
-        section_polish_system_prompt=payload.section_polish_system_prompt,
         wiki_evaluator_system_prompt=payload.wiki_evaluator_system_prompt,
         existing_wiki_dir=payload.existing_wiki_dir,
         existing_concept_index=existing_concept_index,
