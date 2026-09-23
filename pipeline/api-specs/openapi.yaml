@@ -860,13 +860,12 @@ components:
           type: string
         concept_page_mode:
           default: auto
-          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          description: auto/skeleton은 backend skeleton concept page를 생성합니다.
           enum:
           - auto
           - api
           - full-llm
           - skeleton
-          - section-polish
           title: Concept Page Mode
           type: string
         concept_resolution_system_prompt:
@@ -952,10 +951,6 @@ components:
           description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
           title: Save Debug Json
           type: boolean
-        section_polish_system_prompt:
-          default: prompts/section_polish.system.md
-          title: Section Polish System Prompt
-          type: string
         selection_mode:
           const: partial
           description: 채팅 Wiki export는 항상 독립 source page를 생성하므로 partial만 지원합니다.
@@ -971,7 +966,6 @@ components:
           enum:
           - auto
           - skeleton
-          - section-polish
           title: Source Page Mode
           type: string
         source_revision:
@@ -1670,13 +1664,12 @@ components:
       properties:
         concept_page_mode:
           default: auto
-          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          description: auto/skeleton은 backend skeleton concept page를 생성합니다.
           enum:
           - auto
           - api
           - full-llm
           - skeleton
-          - section-polish
           title: Concept Page Mode
           type: string
         concept_resolution_system_prompt:
@@ -1750,10 +1743,6 @@ components:
           description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
           title: Save Debug Json
           type: boolean
-        section_polish_system_prompt:
-          default: prompts/section_polish.system.md
-          title: Section Polish System Prompt
-          type: string
         source_content_hash:
           anyOf:
           - type: string
@@ -1764,7 +1753,6 @@ components:
           enum:
           - auto
           - skeleton
-          - section-polish
           title: Source Page Mode
           type: string
         source_revision:
@@ -1976,13 +1964,12 @@ components:
       properties:
         concept_page_mode:
           default: auto
-          description: auto는 backend skeleton concept page만 생성합니다. section-polish를 명시하면 concept별 LLM polish를 수행합니다.
+          description: auto/skeleton은 backend skeleton concept page를 생성합니다.
           enum:
           - auto
           - api
           - full-llm
           - skeleton
-          - section-polish
           title: Concept Page Mode
           type: string
         concept_resolution_system_prompt:
@@ -2059,10 +2046,6 @@ components:
           description: True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.
           title: Save Debug Json
           type: boolean
-        section_polish_system_prompt:
-          default: prompts/section_polish.system.md
-          title: Section Polish System Prompt
-          type: string
         source_content_hash:
           anyOf:
           - type: string
@@ -2073,7 +2056,6 @@ components:
           enum:
           - auto
           - skeleton
-          - section-polish
           title: Source Page Mode
           type: string
         source_revision:

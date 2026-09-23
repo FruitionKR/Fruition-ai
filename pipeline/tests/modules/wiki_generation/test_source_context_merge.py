@@ -243,7 +243,7 @@ def test_source_page_context_normalized_is_stable_and_does_not_alias_inputs() ->
     assert source_page_context_normalized(normalized, source_artifact) == snapshot
 
 
-def test_source_context_blocks_exposes_existing_artifact_refs_for_source_polish() -> None:
+def test_source_context_blocks_exposes_existing_artifact_refs_for_concept_assembly() -> None:
     source_artifact = {
         "document_id": "chat_doc",
         "key_points": [{"text": "기존 핵심", "evidence_block_ids": ["chat:pair_001"]}],

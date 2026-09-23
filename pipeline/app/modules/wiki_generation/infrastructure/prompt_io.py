@@ -107,52 +107,6 @@ MISSING RELATED CONCEPT HINTS:
 """.rstrip() + "\n"
 
 
-def render_section_polish_user_prompt(payload: dict[str, Any], source_blocks: Sequence[SourceBlock]) -> str:
-    evidence_json = json.dumps(
-        [
-            {
-                "claim": ev.get("claim"),
-                "anchor_block_ids": ev.get("anchor_reference_ids", []),
-                "confidence": ev.get("confidence"),
-            }
-            for ev in payload.get("evidence", [])
-        ],
-        ensure_ascii=False,
-        indent=2,
-    )
-    draft_json = json.dumps(payload.get("draft", {}), ensure_ascii=False, indent=2)
-    context_json = json.dumps(payload.get("context", {}), ensure_ascii=False, indent=2)
-    block_lines = "\n".join(b.to_llm_line() for b in source_blocks)
-    return f"""Stage input: SectionPolish
-
-Polish only the requested section. Return JSON only.
-If PAGE TYPE is source, also return a concise human-readable title that
-summarizes the source topic. If PAGE TYPE is concept, keep title empty unless a
-title is already supplied in CONTEXT.
-For source_summary_and_key_points, write one holistic summary for the whole
-source page from existing_source_markdown/existing_source_summary and current
-SOURCE BLOCKS. Do not append a new summary after the old summary.
-
-SECTION:
-{payload.get("section")}
-
-PAGE TYPE:
-{payload.get("page_type")}
-
-CONTEXT:
-{context_json}
-
-DRAFT:
-{draft_json}
-
-EVIDENCE CLAIMS:
-{evidence_json}
-
-SOURCE BLOCKS:
-{block_lines}
-""".rstrip() + "\n"
-
-
 def _unique(items: Iterable[str]) -> list[str]:
     seen = set()
     out = []

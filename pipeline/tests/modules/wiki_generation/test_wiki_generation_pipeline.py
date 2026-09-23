@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from run_lab import (
     PipelineLog,
@@ -12,9 +12,7 @@ from run_lab import (
     _assemble_wiki_pages,
     _extract_pipeline_source,
     _load_pipeline_prompts,
-    _prepare_concept_section_polish,
     _prepare_post_ingest_clusters,
-    _prepare_source_page_polish,
     _resolve_pipeline_concepts,
     _run_wiki_generation_loop,
 )
@@ -39,16 +37,6 @@ class FakeNormalizer:
             "concept_ledger": [],
             "evidence_units": [],
         }
-
-
-class FakeSectionPolisher:
-    def __init__(self, raw: dict[str, object]) -> None:
-        self.raw = raw
-        self.payloads: list[dict[str, object]] = []
-
-    def polish(self, payload: dict[str, object], blocks: list[FakeBlock]) -> dict[str, object]:
-        self.payloads.append(payload)
-        return self.raw
 
 
 class FakeConceptResolutionClient:
@@ -78,6 +66,43 @@ class FakeConceptResolutionClient:
 
 
 class WikiGenerationPipelineTest(unittest.TestCase):
+    def test_api_page_assembly_preserves_content_without_llm_calls(self) -> None:
+        client = Mock()
+        normalized = {
+            "document": {"document_id": "doc-1", "title": "문서", "source_path": "document.md"},
+            "semantic_notes": [{
+                "semantic_summary": "추출한 요약",
+                "key_points": [{"text": "추출한 핵심", "anchor_reference_ids": ["B0001"]}],
+            }],
+            "concept_ledger": [{
+                "slug": "concept-a", "title": "개념 A", "definition": "추출한 정의",
+                "display_reference_ids": ["B0001"], "source_document_ids": ["doc-1"],
+            }],
+            "evidence_units": [{
+                "claim": "추출한 근거", "related_concept_slugs": ["concept-a"],
+                "anchor_reference_ids": ["B0001"], "source_document_id": "doc-1",
+            }],
+            "warnings": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            outputs = _assemble_wiki_pages(
+                SimpleNamespace(mode="api", source_page_mode="auto", concept_page_mode="auto",
+                                selection_mode=None, save_debug_json=False),
+                api_client=client,
+                prompts=PipelinePrompts("", "", "", "", ""),
+                normalized=normalized, blocks=[], existing_source_artifact=None,
+                existing_source_markdown=None, out=Path(tmp_dir),
+                log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
+            )
+        self.assertEqual(client.mock_calls, [])
+        self.assertEqual(outputs.source_page_mode, "skeleton")
+        self.assertEqual(outputs.concept_page_mode, "skeleton")
+        self.assertIn("추출한 요약", outputs.source_page["markdown"])
+        self.assertEqual(outputs.source_page["source_extraction_artifact"]["key_points"],
+                         [{"text": "추출한 핵심", "evidence_block_ids": ["B0001"]}])
+        for text in ("추출한 정의", "추출한 핵심", "추출한 근거", "B0001"):
+            self.assertIn(text, outputs.concept_pages[0]["markdown"])
+
     def test_prepare_post_ingest_clusters_defers_cluster_judge(self) -> None:
         normalized = {
             "document": {"document_id": "doc-1"},
@@ -138,7 +163,7 @@ class WikiGenerationPipelineTest(unittest.TestCase):
                     save_debug_json=False,
                 ),
                 api_client=None,
-                prompts=PipelinePrompts("", "", "", "", "", ""),
+                prompts=PipelinePrompts("", "", "", "", ""),
                 normalized=normalized,
                 blocks=[],
                 existing_source_artifact=None,
@@ -169,7 +194,6 @@ class WikiGenerationPipelineTest(unittest.TestCase):
                 "system_prompt",
                 "concept_system_prompt",
                 "concept_resolution_system_prompt",
-                "section_polish_system_prompt",
                 "wiki_evaluator_system_prompt",
                 "wiki_patch_system_prompt",
             ):
@@ -318,123 +342,6 @@ class WikiGenerationPipelineTest(unittest.TestCase):
         self.assertEqual(len(prompts), 2)
         self.assertIn("누락된 source anchor를 보강하세요.", prompts[1])
 
-    def test_source_page_polish_helper_keeps_skeleton_mode_without_llm_call(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            normalized = {
-                "document": {"document_id": "doc-1"},
-                "concept_ledger": [{"slug": "concept-a"}],
-                "semantic_notes": [{"key_points": [{"text": "원본 핵심", "anchor_block_ids": ["B0001"]}]}],
-                "evidence_units": [],
-            }
-            polisher = FakeSectionPolisher({})
-
-            source_polish, source_key_points, mode = _prepare_source_page_polish(
-                SimpleNamespace(source_page_mode="skeleton", save_debug_json=False, mode="api"),
-                normalized,
-                [FakeBlock(block_id="B0001", text="본문")],
-                polisher,  # type: ignore[arg-type]
-                raw_polish_dir=None,
-                invalid_polish_dir=Path(tmp_dir) / "invalid",
-                log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
-            )
-
-        self.assertEqual(mode, "skeleton")
-        self.assertEqual(source_polish, {})
-        self.assertEqual(source_key_points, [{"text": "원본 핵심", "anchor_block_ids": ["B0001"]}])
-        self.assertEqual(polisher.payloads, [])
-
-    def test_source_page_polish_helper_maps_polished_output(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            normalized = {
-                "document": {"document_id": "doc-1"},
-                "concept_ledger": [{"slug": "concept-a"}],
-                "semantic_notes": [{"semantic_summary": "요약", "key_points": [{"text": "원본 핵심", "anchor_block_ids": ["B0001"]}]}],
-                "existing_source_context": {
-                    "summary": "기존 전체 요약",
-                    "source_markdown": "# 기존 source\n\n## Summary\n기존 전체 요약",
-                },
-                "evidence_units": [],
-            }
-            polisher = FakeSectionPolisher(
-                {
-                    "section": "source_summary_and_key_points",
-                    "text": "다듬은 요약 [B0001]",
-                    "anchor_block_ids": ["B0001"],
-                    "items": [{"text": "다듬은 핵심 [B0001]", "anchor_block_ids": ["B0001"]}],
-                    "confidence": 0.8,
-                }
-            )
-
-            source_polish, source_key_points, mode = _prepare_source_page_polish(
-                SimpleNamespace(source_page_mode="section-polish", save_debug_json=False, mode="api"),
-                normalized,
-                [FakeBlock(block_id="B0001", text="본문")],
-                polisher,  # type: ignore[arg-type]
-                raw_polish_dir=None,
-                invalid_polish_dir=Path(tmp_dir) / "invalid",
-                log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
-            )
-
-        self.assertEqual(mode, "section-polish")
-        self.assertEqual(source_polish["summary"]["text"], "다듬은 요약")
-        self.assertEqual(source_polish["key_points"]["items"][0]["text"], "다듬은 핵심")
-        self.assertEqual(source_key_points[0]["text"], "다듬은 핵심")
-        self.assertEqual(source_key_points[1]["text"], "원본 핵심")
-        self.assertEqual(polisher.payloads[0]["context"]["existing_source_summary"], "기존 전체 요약")
-        self.assertIn("기존 source", polisher.payloads[0]["context"]["existing_source_markdown"])
-        self.assertEqual(polisher.payloads[0]["draft"]["new_summary_candidates"], ["요약"])
-        self.assertNotIn("summary_candidates", polisher.payloads[0]["draft"])
-
-    def test_concept_section_polish_helper_builds_polished_concept_page(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            normalized = {
-                "document": {"document_id": "doc-1"},
-                "concept_ledger": [
-                    {
-                        "slug": "concept-a",
-                        "title": "Concept A",
-                        "definition": "원본 정의",
-                        "source_document_ids": ["doc-1"],
-                        "display_reference_ids": ["B0001"],
-                    }
-                ],
-                "evidence_units": [
-                    {
-                        "related_concept_slugs": ["concept-a"],
-                        "claim": "근거",
-                        "anchor_reference_ids": ["B0001"],
-                        "source_document_id": "doc-1",
-                    }
-                ],
-                "concept_resolutions": [{"canonical_slug": "concept-a", "link_targets": ["concept-b"]}],
-                "warnings": [],
-            }
-            polisher = FakeSectionPolisher(
-                {
-                    "section": "concept_definition_key_points_and_related",
-                    "text": "다듬은 정의 [B0001]",
-                    "anchor_block_ids": ["B0001"],
-                    "items": [{"text": "다듬은 핵심 [B0001]", "anchor_block_ids": ["B0001"]}],
-                    "related_concept_hints": ["Concept B"],
-                    "confidence": 0.7,
-                }
-            )
-
-            concept_pages, generated_pages = _prepare_concept_section_polish(
-                SimpleNamespace(save_debug_json=False),
-                normalized,
-                {"concept-a": [FakeBlock(block_id="B0001", text="본문")]},
-                [{"text": "source 핵심", "anchor_reference_ids": ["B0001"]}],
-                polisher,  # type: ignore[arg-type]
-                raw_polish_dir=None,
-                invalid_polish_dir=Path(tmp_dir) / "invalid",
-                log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
-            )
-
-        self.assertEqual(polisher.payloads[0]["context"]["resolution_link_targets"], ["concept-b"])
-        self.assertEqual(generated_pages[0]["confidence"], 0.7)
-        self.assertIn("다듬은 정의", concept_pages[0]["markdown"])
-        self.assertIn("다듬은 핵심", concept_pages[0]["markdown"])
 
 if __name__ == "__main__":
     unittest.main()

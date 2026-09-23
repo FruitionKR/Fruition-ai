@@ -8,7 +8,6 @@ from app.modules.wiki_generation.domain.entities import SemanticPacket, SourceBl
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     GenericChatCompletionsConceptPageGenerator,
     GenericChatCompletionsExtractor,
-    GenericChatCompletionsSectionPolisher,
 )
 
 
@@ -194,21 +193,6 @@ class SchemaPromptInjectionTest(unittest.TestCase):
         )
 
         self.assertIn("## concept", client.calls[0][0])
-
-    def test_section_polisher_injects_edit_schema_prompt(self) -> None:
-        client = FakeJsonClient({})
-        polisher = GenericChatCompletionsSectionPolisher(
-            client=client,  # type: ignore[arg-type]
-            system_prompt="polish system",
-            schema_prompt_provider=schema_prompt,
-        )
-
-        polisher.polish(
-            payload={"section": "summary", "page_type": "source", "draft": {}, "context": {}, "evidence": []},
-            source_blocks=[],
-        )
-
-        self.assertIn("## edit", client.calls[0][0])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Fruition LLM Pipeline
 
-Spring 백엔드가 업로드한 Markdown/text 문서를 받아 LLM Wiki 산출물을 만드는 FastAPI 워커입니다. 기본 실행은 source page만 LLM으로 섹션 polish하고, concept page는 backend skeleton으로 조립합니다.
+Spring 백엔드가 업로드한 Markdown/text 문서를 받아 LLM Wiki 산출물을 만드는 FastAPI 워커입니다. 기본 실행은 Source와 Concept page를 추출·정규화한 데이터에서 backend skeleton으로 조립합니다.
 
 ## 실행방법
 
@@ -160,14 +160,14 @@ python run_lab.py \
   --mode api \
   --provider openai \
   --model gpt-5-nano \
-  --source-page-mode section-polish \
+  --source-page-mode skeleton \
   --concept-page-mode skeleton \
   --max-eval-attempts 2
 ```
 
 기본 정책:
 
-- `source-page-mode=auto`: API 모드에서는 `section-polish`
+- `source-page-mode=auto`: `skeleton`
 - `concept-page-mode=auto`: `skeleton`
 - Wiki evaluator loop는 기본 활성화되며, CLI에서 끄려면 `--no-wiki-evaluation-loop`를 사용
 - refs는 `B0001` 같은 짧은 block id로 통일
@@ -349,9 +349,8 @@ OpenAI-compatible chat completions client와 LLM stage wrapper입니다.
 
 - semantic extraction
 - concept resolution
-- optional section polish
 - legacy full concept page generation
-- JSON/section polish output 파싱과 부분 복구
+- JSON output 파싱과 부분 복구
 
 ### `app/modules/wiki_generation/infrastructure/prompt_io.py`
 
@@ -359,7 +358,6 @@ LLM user prompt를 만듭니다.
 
 - semantic extraction prompt
 - concept resolution prompt
-- source/concept section polish prompt
 - legacy concept page prompt
 - concept별 관련 source block 수집
 
@@ -388,7 +386,6 @@ concept 후보의 의미적 병합/링킹을 정규화하고 적용합니다.
 
 - source page 생성
 - concept page skeleton 생성
-- optional concept section polish 반영
 - source key point ref를 concept key point로 내려보냄
 - 같은 evidence와 source key point 기반 related concept 생성
 - `wiki/links.json`, `review_report.md` 생성
@@ -424,7 +421,6 @@ LLM stage별 system prompt입니다.
 
 - `semantic_extraction.system.md`
 - `concept_resolution.system.md`
-- `section_polish.system.md`
 - `concept_page_generation.system.md`
 
 ## 실행흐름
@@ -483,11 +479,7 @@ resolution 응답에서 빠진 concept는 신규 생성, hint는 unresolved로 �
 
 기존 wiki를 비교하려면 `--existing-wiki-dir`를 넘깁니다.
 
-### 7. Source Section Polish
-
-`source-page-mode=section-polish`이면 source summary/key points/title만 LLM이 다듬습니다. evidence는 polish하지 않습니다.
-
-### 8. Source Page Assembly
+### 7. Source Page Assembly
 
 backend가 source page markdown을 생성합니다.
 
@@ -497,7 +489,7 @@ backend가 source page markdown을 생성합니다.
 wiki/sources/{title-slug}.md
 ```
 
-### 9. Concept Page Assembly
+### 8. Concept Page Assembly
 
 기본은 `concept-page-mode=skeleton`입니다.
 
@@ -505,9 +497,9 @@ wiki/sources/{title-slug}.md
 - key points는 source key point와 concept refs가 겹치는 항목을 가져옴
 - related concepts는 shared evidence와 shared source key point 기반으로 채움
 
-`concept-page-mode=section-polish`를 명시하면 concept별 LLM polish 호출이 추가됩니다.
+`concept-page-mode=api` 또는 `full-llm`을 명시하면 별도의 Concept page 생성 LLM을 사용합니다.
 
-### 10. Link/Review/Manifest
+### 9. Link/Review/Manifest
 
 최종 산출물을 생성합니다.
 
@@ -533,7 +525,7 @@ python run_lab.py \
   --mode api \
   --provider openai \
   --model gpt-5-nano \
-  --source-page-mode section-polish \
+  --source-page-mode skeleton \
   --concept-page-mode skeleton
 ```
 
@@ -560,7 +552,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
     "model": "gpt-5-nano",
     "out": "runs/api_inline_llm_wiki",
     "mode": "api",
-    "source_page_mode": "section-polish",
+    "source_page_mode": "skeleton",
     "concept_page_mode": "skeleton",
     "wait": true
   }'
@@ -577,7 +569,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
     "provider": "openai",
     "model": "gpt-5-nano",
     "mode": "api",
-    "source_page_mode": "section-polish",
+    "source_page_mode": "skeleton",
     "concept_page_mode": "skeleton",
     "log_callback_url": "http://host.docker.internal:8080/internal/pipeline/logs"
   }'
