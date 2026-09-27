@@ -6,7 +6,7 @@ AI SW 마에스트로 17기 · 2026.04 — 현재 · [전체 서비스 구조(pl
 
 ## 1. Problem
 
-문서는 계속 쌓이지만, 저장만 해 두고 정작 필요할 때 찾지 못합니다. 팀원이 겪던 이 불편을 디자인 싱킹으로 구체화했습니다.
+문서는 계속 쌓이지만, 저장만 해 두고 정작 필요할 때 찾지 못합니다. 이 불편을 디자인 싱킹으로 구체화했습니다.
 
 - 키워드 검색은 표현이 다르면 필요한 문서를 놓칩니다.
 - 일반 RAG는 질문할 때마다 원문 조각을 다시 찾아, 문서 사이의 관계와 누적된 지식이 남지 않습니다.
@@ -68,7 +68,7 @@ flowchart LR
 | 영역 | 기술 |
 |---|---|
 | API · Worker | Python 3.12 · FastAPI · aiokafka · LangGraph (PostgreSQL checkpoint) |
-| LLM | OpenAI · Anthropic · Google Gemini (LangChain) · LangSmith |
+| LLM | OpenAI · Anthropic · Google Gemini (LangChain) · LangSmith · Jev(추후 추가)|
 | 문서 변환 | AnyDoc · Docling · PyMuPDF · pypdfium2 · pix2tex · MarkItDown |
 | 검색 | sentence-transformers 임베딩 |
 | 저장소 | PostgreSQL (ai_db) · Redis · S3 / MinIO |
