@@ -27,3 +27,18 @@ def test_model_is_reused_between_embedding_clients(monkeypatch) -> None:
     assert first._load_model() is second._load_model()
     assert loaded_models == ["test-model"]
     _load_sentence_transformer.cache_clear()
+
+
+def test_embeds_one_text_at_a_time_to_bound_padding_memory() -> None:
+    calls = []
+
+    class FakeModel:
+        def encode(self, texts, **kwargs):
+            calls.append(kwargs["batch_size"])
+            return [[1.0, 0.0] for _ in texts]
+
+    model = BgeM3EmbeddingModel("test-model")
+    model._model = FakeModel()
+
+    assert model.embed(["짧은 문단", "긴 문단 " * 100]) == [[1.0, 0.0], [1.0, 0.0]]
+    assert calls == [1]

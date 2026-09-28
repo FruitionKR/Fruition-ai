@@ -200,7 +200,7 @@ def apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
 ) -> None:
-    user_ids = _apply_restored_wiki_state(
+    user_ids, _ = _apply_restored_wiki_state(
         workspace_id,
         changed_pages,
         link_changes,
@@ -220,12 +220,13 @@ def apply_restored_wiki_state_and_cleanup(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     deleted_page_ids: list[str],
-) -> None:
+) -> list[str]:
+    """복구 상태를 반영하고, 삭제한 원본이라 되살리지 않은 페이지 ID를 돌려준다."""
     if not changed_pages and not any(link_changes.values()) and not deleted_page_ids:
-        return
+        return []
     with concept_write_lock(workspace_id, operation_id):
         with connect() as conn:
-            user_ids = _apply_restored_wiki_state(
+            user_ids, skipped_page_ids = _apply_restored_wiki_state(
                 workspace_id,
                 changed_pages,
                 link_changes,
@@ -240,6 +241,15 @@ def apply_restored_wiki_state_and_cleanup(
                 invalidate_concept_index(user_id, workspace_id)
             except Exception:
                 logger.warning("concept index cache invalidation failed", exc_info=True)
+    return sorted(skipped_page_ids)
+
+
+def _tombstoned_document_ids(conn: psycopg.Connection, workspace_id: str) -> set[str]:
+    rows = conn.execute(
+        "SELECT document_id FROM wiki_source_tombstones WHERE workspace_id = %s",
+        (workspace_id,),
+    ).fetchall()
+    return {str(row["document_id"]) for row in rows}
 
 
 def _apply_restored_wiki_state(
@@ -248,9 +258,9 @@ def _apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     conn: psycopg.Connection | None = None,
-) -> set[str]:
+) -> tuple[set[str], set[str]]:
     if not changed_pages and not any(link_changes.values()):
-        return set()
+        return set(), set()
     user_ids: set[str] = set()
     with (connect() if conn is None else nullcontext(conn)) as conn:
         page_ids = [str(page["page_id"]) for page in changed_pages]
@@ -273,13 +283,27 @@ def _apply_restored_wiki_state(
         by_id = {str(row["id"]): row for row in rows}
         if len(by_id) != len(set(page_ids)):
             raise ValueError("restored Wiki page does not match workspace")
+        deleted_document_ids = _tombstoned_document_ids(conn, workspace_id)
+        # 삭제한 원본의 source 페이지는 되살리지 않는다. 문서 삭제 정리가 이미 내렸으므로
+        # 본문·상태뿐 아니라 이 페이지를 끝점으로 하는 링크도 다시 만들지 않는다.
+        skipped_page_ids = {
+            str(page["page_id"])
+            for page in changed_pages
+            if by_id[str(page["page_id"])]["page_type"] != "concept"
+            and str(
+                page.get("source_document_id")
+                or by_id[str(page["page_id"])].get("source_document_id")
+                or ""
+            ) in deleted_document_ids
+        }
+        linkable_rows = [row for row in rows if str(row["id"]) not in skipped_page_ids]
         by_ref = {
             f'{row["page_type"]}:{row["slug"]}': row
-            for row in rows
+            for row in linkable_rows
         }
         target_by_ref = {
             (str(row["user_id"]), f'{row["page_type"]}:{row["slug"]}'): row
-            for row in rows
+            for row in linkable_rows
         }
         source_user_ids = {str(row["user_id"]) for row in rows}
         if source_user_ids and any(link_changes.values()):
@@ -299,6 +323,8 @@ def _apply_restored_wiki_state(
                     row,
                 )
         for page in changed_pages:
+            if str(page["page_id"]) in skipped_page_ids:
+                continue
             conn.execute(
                 """
                 UPDATE wiki_pages
@@ -320,6 +346,10 @@ def _apply_restored_wiki_state(
 
             source_document_ids = page.get("source_document_ids")
             if source_document_ids is not None:
+                source_document_ids = [
+                    item for item in source_document_ids
+                    if item and str(item) not in deleted_document_ids
+                ]
                 conn.execute(
                     """
                     DELETE FROM document_wiki_links
@@ -328,9 +358,7 @@ def _apply_restored_wiki_state(
                     """,
                     (page["page_id"],),
                 )
-                for document_id in dict.fromkeys(
-                    str(item) for item in source_document_ids if item
-                ):
+                for document_id in dict.fromkeys(str(item) for item in source_document_ids):
                     conn.execute(
                         """
                         INSERT INTO document_wiki_links (
@@ -441,7 +469,7 @@ def _apply_restored_wiki_state(
                     link.get("confidence"),
                     workspace_id,
                 )
-    return user_ids
+    return user_ids, skipped_page_ids
 
 
 REQUIRED_TABLES = (
@@ -482,6 +510,7 @@ AI_DB_REQUIRED_TABLES = (
     *REQUIRED_TABLES,
     "wiki_schemas",
     "document_derived_state",
+    "wiki_source_tombstones",
     *AGENT_REQUIRED_TABLES,
 )
 
@@ -709,7 +738,21 @@ def get_document_wiki_context(
 
 
 def delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
+    # 로그 되돌리기도 같은 잠금 아래서 페이지를 되살리므로, 삭제 표시와 정리를 그 사이에 끼워 넣지 않는다.
+    with concept_write_lock(workspace_id, f"document-deleted:{document_id}"):
+        _delete_document_wiki_data(workspace_id, document_id)
+
+
+def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
     with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO wiki_source_tombstones (workspace_id, document_id)
+            VALUES (%s, %s)
+            ON CONFLICT (workspace_id, document_id) DO NOTHING
+            """,
+            (workspace_id, document_id),
+        )
         scope_rows = conn.execute(
             """
             SELECT DISTINCT workspace_id
@@ -869,6 +912,11 @@ def finish_pipeline_run(
             if active is None or active["status"] != "running":
                 raise PipelineRunCancelledError("Pipeline run no longer accepts outputs.")
             if document_id:
+                # 복구한 문서를 다시 편입했으므로 되돌리기 대상에서 다시 제외하지 않는다.
+                conn.execute(
+                    "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
+                    (workspace_id, document_id),
+                )
                 embedded_page_ids = _persist_wiki_outputs(conn, document_id, manifest)
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):

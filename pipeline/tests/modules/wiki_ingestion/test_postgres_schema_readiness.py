@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 import pytest
@@ -110,11 +111,13 @@ def test_delete_document_wiki_data_rejects_wrong_workspace() -> None:
 
     with (
         patch.object(database, "connect", return_value=connection),
+        patch.object(database, "concept_write_lock", return_value=nullcontext()),
         pytest.raises(ValueError, match="does not match workspace"),
     ):
         database.delete_document_wiki_data("ws-1", "doc-1")
 
-    assert connection.execute.call_count == 1
+    # 삭제 표시 기록 뒤 범위 확인에서 멈춘다.
+    assert connection.execute.call_count == 2
 
 
 def test_delete_document_wiki_data_scopes_pipeline_update() -> None:
@@ -137,9 +140,16 @@ def test_delete_document_wiki_data_scopes_pipeline_update() -> None:
     connection.__enter__ = Mock(return_value=connection)
     connection.__exit__ = Mock(return_value=False)
 
-    with patch.object(database, "connect", return_value=connection):
+    lock = Mock(return_value=nullcontext())
+    with (
+        patch.object(database, "connect", return_value=connection),
+        patch.object(database, "concept_write_lock", lock),
+    ):
         database.delete_document_wiki_data("ws-1", "doc-1")
 
+    lock.assert_called_once_with("ws-1", "document-deleted:doc-1")
+    assert queries[0][0].startswith("INSERT INTO wiki_source_tombstones")
+    assert queries[0][1] == ("ws-1", "doc-1")
     pipeline_update = next(
         (query, params)
         for query, params in queries
