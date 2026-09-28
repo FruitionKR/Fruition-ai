@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS document_wiki_links (
 CREATE INDEX IF NOT EXISTS idx_document_wiki_links_workspace
     ON document_wiki_links (workspace_id);
 
+-- 휴지통으로 옮긴 원본 문서. 로그 되돌리기가 이 문서의 source 페이지·링크를 다시 살리지 않게 한다.
+-- 문서를 다시 편입해 ingest가 끝나면 지운다.
+CREATE TABLE IF NOT EXISTS wiki_source_tombstones (
+    workspace_id varchar(255) NOT NULL,
+    document_id varchar(255) NOT NULL,
+    deleted_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, document_id)
+);
+
 CREATE TABLE IF NOT EXISTS wiki_page_links (
     from_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
     to_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,

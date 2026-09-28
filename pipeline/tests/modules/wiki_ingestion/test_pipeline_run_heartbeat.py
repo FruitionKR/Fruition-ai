@@ -8,6 +8,16 @@ from app.modules.wiki_ingestion.infrastructure import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_tombstones(request):
+    # 삭제 표시를 다루는 테스트만 직접 값을 준다. 나머지 복구 테스트는 삭제된 원본이 없다.
+    if "tombstone" in request.node.name:
+        yield
+        return
+    with patch.object(database, "_tombstoned_document_ids", return_value=set()):
+        yield
+
+
 def test_touch_pipeline_run_updates_only_running_run() -> None:
     connection = Mock()
     connection.__enter__ = Mock(return_value=connection)
@@ -49,7 +59,7 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     }
     active_cursor = Mock()
     active_cursor.fetchone.return_value = {"status": "running"}
-    connection.execute.side_effect = [run_cursor, active_cursor, Mock()]
+    connection.execute.side_effect = [run_cursor, active_cursor, Mock(), Mock()]
 
     with (
         patch.object(database, "connect", return_value=connection),
@@ -70,6 +80,9 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     mark_derived.assert_called_once_with("doc-1", "sha256:expected")
     sql = " ".join(call.args[0] for call in connection.execute.call_args_list)
     assert "documents" not in sql
+    tombstone_clear = connection.execute.call_args_list[2].args
+    assert tombstone_clear[0].startswith("DELETE FROM wiki_source_tombstones")
+    assert tombstone_clear[1] == ("ws-1", "doc-1")
 
 
 def test_derived_state_marks_only_the_expected_hash() -> None:
@@ -636,3 +649,83 @@ def test_finish_rejects_inactive_run_before_persisting_outputs(status):
             database.finish_pipeline_run("run", {})
     persist.assert_not_called()
     derived.assert_not_called()
+
+
+def _restore_connection(page_type: str) -> Mock:
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+
+    def execute(query, params=None):
+        cursor = Mock()
+        normalized = " ".join(str(query).split())
+        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+            cursor.fetchall.return_value = [{
+                "id": "page-1",
+                "page_type": page_type,
+                "slug": "page-1",
+                "user_id": "user-1",
+            }]
+        elif normalized.startswith("SELECT document_id FROM wiki_source_tombstones"):
+            cursor.fetchall.return_value = [{"document_id": "doc-deleted"}]
+        elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
+            cursor.fetchall.return_value = []
+        return cursor
+
+    connection.execute.side_effect = execute
+    return connection
+
+
+def test_restore_skips_source_page_of_tombstoned_document(monkeypatch) -> None:
+    monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
+    connection = _restore_connection("source")
+
+    with (
+        patch.object(database, "connect", return_value=connection),
+        patch.object(database, "read_text_object", return_value="# Source\n"),
+        patch.object(database, "_persist_embedding_units") as persist_units,
+    ):
+        database.apply_restored_wiki_state(
+            "ws-1",
+            [{
+                "page_id": "page-1",
+                "markdown_key": "wiki/ws-1/pages/page-1/ops/restore-1.md",
+                "source_document_id": "doc-deleted",
+            }],
+            {"removed_links": [], "restored_links": []},
+            True,
+        )
+
+    sql = [str(call.args[0]) for call in connection.execute.call_args_list]
+    assert not any("SET markdown_uri" in query for query in sql)
+    assert not any("'source_of'" in query and "INSERT" in query for query in sql)
+    persist_units.assert_not_called()
+
+
+def test_restore_concept_drops_tombstoned_document_link(monkeypatch) -> None:
+    monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
+    connection = _restore_connection("concept")
+
+    with (
+        patch.object(database, "connect", return_value=connection),
+        patch.object(database, "read_text_object", return_value="# Concept\n"),
+        patch.object(database, "_persist_embedding_units") as persist_units,
+    ):
+        database.apply_restored_wiki_state(
+            "ws-1",
+            [{
+                "page_id": "page-1",
+                "markdown_key": "wiki/ws-1/pages/page-1/ops/restore-1.md",
+                "source_document_ids": ["doc-deleted", "doc-live"],
+            }],
+            {"removed_links": [], "restored_links": []},
+            True,
+        )
+
+    link_inserts = [
+        call.args[1]
+        for call in connection.execute.call_args_list
+        if "'extracted_concept', NULL" in str(call.args[0])
+    ]
+    assert link_inserts == [("doc-live", "page-1", "ws-1")]
+    assert persist_units.call_args.args[2] == "doc-live"
