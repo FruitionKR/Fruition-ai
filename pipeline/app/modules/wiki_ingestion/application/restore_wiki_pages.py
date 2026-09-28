@@ -40,15 +40,7 @@ class RestoreWikiPagesUseCase:
                 )
             )
         changed_pages.extend(self._rebuild_pages(command))
-        result = self._result(
-            operation_id=command.operation_id,
-            operation_type="ingest_restore",
-            restore_to_operation_id=command.restore_to_operation_id,
-            cancel_operation_ids=list(command.cancel_operation_ids),
-            changed_pages=changed_pages,
-            deleted_pages=deleted_pages,
-        )
-        self._page_restore.apply_current_state_and_cleanup(
+        skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
             command.operation_id,
             command.workspace_id,
             changed_pages,
@@ -62,6 +54,17 @@ class RestoreWikiPagesUseCase:
             },
             True,
             deleted_pages,
+        )
+        # 삭제한 원본이라 되살리지 않은 페이지는 복구 결과로 보고하지 않는다.
+        # 보고하면 document-svc가 그 페이지의 복구 버전을 기록해 AI 상태와 어긋난다.
+        changed_pages = _without_pages(changed_pages, skipped_page_ids)
+        result = self._result(
+            operation_id=command.operation_id,
+            operation_type="ingest_restore",
+            restore_to_operation_id=command.restore_to_operation_id,
+            cancel_operation_ids=list(command.cancel_operation_ids),
+            changed_pages=changed_pages,
+            deleted_pages=deleted_pages,
         )
         self._start_embeddings(command.operation_id, changed_pages)
         return result
@@ -85,6 +88,15 @@ class RestoreWikiPagesUseCase:
             ],
             supported_links,
         )
+        skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
+            command.operation_id,
+            command.workspace_id,
+            changed_pages,
+            link_changes,
+            False,
+            list(command.deleted_pages),
+        )
+        changed_pages = _without_pages(changed_pages, skipped_page_ids)
         result = self._result(
             operation_id=command.operation_id,
             operation_type="lint_restore",
@@ -93,14 +105,6 @@ class RestoreWikiPagesUseCase:
             deleted_pages=list(command.deleted_pages),
             link_changes=link_changes,
             failed_actions=[],
-        )
-        self._page_restore.apply_current_state_and_cleanup(
-            command.operation_id,
-            command.workspace_id,
-            changed_pages,
-            link_changes,
-            False,
-            list(command.deleted_pages),
         )
         self._start_embeddings(command.operation_id, changed_pages)
         return result
@@ -147,3 +151,11 @@ class RestoreWikiPagesUseCase:
             "failed_pages": [],
             **values,
         }
+
+
+def _without_pages(
+    pages: list[dict[str, Any]],
+    page_ids: list[str],
+) -> list[dict[str, Any]]:
+    excluded = set(page_ids)
+    return [page for page in pages if str(page["page_id"]) not in excluded]

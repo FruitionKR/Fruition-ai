@@ -96,6 +96,7 @@ class ArtifactStore:
         self.writes: list[tuple[str, str, str]] = []
         self.cleaned_pages: list[tuple[str, list[str]]] = []
         self.current_states: list[tuple] = []
+        self.skipped_page_ids: list[str] = []
 
     def read_text(self, key: str) -> str:
         return self.objects[key]
@@ -112,12 +113,13 @@ class ArtifactStore:
         link_changes: dict[str, list[dict]],
         replace_links: bool,
         deleted_page_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         self.current_states.append(
             (workspace_id, changed_pages, link_changes, replace_links)
         )
         if deleted_page_ids:
             self.cleaned_pages.append((workspace_id, deleted_page_ids))
+        return self.skipped_page_ids
 
 
 class EmbeddingJob:
@@ -748,3 +750,37 @@ def test_missing_source_snapshot_prevents_concept_changes_and_deletion() -> None
     assert store.current_states == []
     assert store.cleaned_pages == []
     assert embedding_job.calls == []
+
+
+def test_ingest_restore_does_not_report_source_page_of_deleted_document() -> None:
+    store = ArtifactStore(
+        {
+            "wiki/ws-1/pages/S1/ops/A2.md": "# A2 Source\n",
+            "wiki/ws-1/pages/X/ops/A2.json": _payload("A2", "X", "A2의 X"),
+        }
+    )
+    # 원본 문서가 휴지통에 있어 적용 단계가 source 페이지를 되살리지 않았다.
+    store.skipped_page_ids = ["S1"]
+    embedding_job = EmbeddingJob()
+    use_case = RestoreWikiPagesUseCase(_restore(store), embedding_job)
+
+    result = use_case.execute_ingest(
+        IngestOperationRestoreCommand(
+            operation_id="restore-1",
+            restore_to_operation_id="A2",
+            cancel_operation_ids=("A3",),
+            workspace_id="ws-1",
+            source_page=SourceSnapshotRestoreCommand("S1", "doc-deleted"),
+            rebuild_pages=(
+                RebuildPageCommand(
+                    page_id="X",
+                    keep_contributions=(RestoreContributionCommand("A2", "doc-A"),),
+                ),
+            ),
+            deleted_pages=(),
+        )
+    )
+
+    assert [item["page_id"] for item in result["changed_pages"]] == ["X"]
+    assert embedding_job.calls == [("restore-1", ["X"])]
+

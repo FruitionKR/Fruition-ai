@@ -36,6 +36,10 @@ def _connect():
     return psycopg.connect(url)
 
 
+class ConceptLockTimeout(RuntimeError):
+    """워크스페이스 개념 잠금을 lock_timeout 안에 얻지 못했다. 호출부가 다시 기다릴지 정한다."""
+
+
 def _lock_key(workspace_id: str) -> str:
     return f"wiki:concept-lock:{workspace_id}"
 
@@ -64,7 +68,7 @@ def concept_write_lock(workspace_id: str, run_id: str) -> Iterator[None]:
                 (key,),
             )
         except LockNotAvailable as exc:
-            raise RuntimeError(
+            raise ConceptLockTimeout(
                 f"workspace concept lock acquisition timed out: {workspace_id}"
             ) from exc
         scopes.add(scope)

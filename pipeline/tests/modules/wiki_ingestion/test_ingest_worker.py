@@ -6,6 +6,7 @@ import pytest
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import ConceptLockTimeout
 from app.workers import ingest_worker
 
 
@@ -377,3 +378,40 @@ def test_handle_deletes_ai_owned_document_state() -> None:
         ingest_worker._handle(command)
 
     delete.assert_called_once_with("workspace-1", "document-1")
+
+
+def test_handle_delete_waits_again_when_concept_lock_times_out() -> None:
+    command = {
+        "kind": "document_deleted",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+    }
+
+    with patch.object(
+        database,
+        "delete_document_wiki_data",
+        side_effect=[ConceptLockTimeout("busy"), None],
+    ) as delete:
+        ingest_worker._handle(command)
+
+    assert delete.call_count == 2
+
+
+def test_handle_delete_gives_up_after_bounded_lock_attempts() -> None:
+    command = {
+        "kind": "document_deleted",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+    }
+
+    with (
+        patch.object(
+            database,
+            "delete_document_wiki_data",
+            side_effect=ConceptLockTimeout("busy"),
+        ) as delete,
+        pytest.raises(ConceptLockTimeout),
+    ):
+        ingest_worker._handle(command)
+
+    assert delete.call_count == ingest_worker.DELETE_LOCK_ATTEMPTS

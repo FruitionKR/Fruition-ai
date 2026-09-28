@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import ConceptLockTimeout
 from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     get_deferred_pipeline_run_use_case,
     get_pipeline_run_repository,
@@ -59,6 +60,9 @@ POST_INGEST_TOPIC = os.environ.get(
 TERMINAL_STATUSES = {"succeeded", "failed", "notify_pending"}
 # ingest 1건이 분 단위라 poll 간격 한도를 넉넉히 둔다. 이 시간을 넘기면 리밸런싱된다.
 MAX_POLL_INTERVAL_MS = int(os.environ.get("INGEST_MAX_POLL_INTERVAL_MS", "1800000"))
+# 삭제 정리는 lint 승격과 같은 워크스페이스 잠금을 쓰고, 승격은 LLM 생성 동안 잠금을 쥔다.
+# 잠금 한 번의 대기가 60초라 10회면 약 10분이며 max_poll_interval(30분)보다 짧다.
+DELETE_LOCK_ATTEMPTS = 10
 
 
 class UnprocessableIngestCommand(ValueError):
@@ -194,9 +198,24 @@ def _handle_controlled(command: dict) -> dict:
     _build_payload(command)
     return journal.execute(command, lambda: _handle(command))
 
+def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
+    # 잠금 시간 초과로 재시작하면 offset이 멈춰 같은 파티션의 ingest까지 막힌다. 워커 안에서 다시 기다린다.
+    for attempt in range(1, DELETE_LOCK_ATTEMPTS + 1):
+        try:
+            database.delete_document_wiki_data(workspace_id, document_id)
+            return
+        except ConceptLockTimeout:
+            if attempt == DELETE_LOCK_ATTEMPTS:
+                raise
+            logger.warning(
+                "[문서 삭제 정리 대기] workspace_id=%s document_id=%s attempt=%s",
+                workspace_id, document_id, attempt,
+            )
+
+
 def _handle(command: dict) -> dict:
     if command.get("kind") == "document_deleted":
-        database.delete_document_wiki_data(command["workspace_id"], command["document_id"])
+        _delete_document_wiki_data(command["workspace_id"], command["document_id"])
         return {}
 
     run_id = command["run_id"]

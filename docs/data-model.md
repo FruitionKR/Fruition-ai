@@ -10,6 +10,7 @@
 | document_derived_state | ai-svc | 문서 파생물 stale 추적 | `document.edit.event` consumer가 갱신 |
 | wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | workspace 범위 unique, DB 밖 document ID는 논리 참조 |
 | source_blocks | ai-svc | 문서 block 텍스트 | 복합 PK `(block_id, document_id)` |
+| wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다 |
 | pipeline_runs | ai-svc | pipeline 실행 상태 | Spring이 만든 `run_id`, `user_id`·`workspace_id` 보존. ingest manifest의 `post_ingest.status`는 `running/retrying/ready/needs_review` 품질 진단 상태를 보존 |
 | wiki_page_embeddings·wiki_embedding_vectors·wiki_embedding_units | ai-svc | 검색용 embedding과 페이지 embedding 재처리 예약 | `wiki_page_embeddings.status`의 `pending`·`failed`는 maintenance worker가 재처리, page FK는 ai_db 내부, document ID는 논리 참조 |
 | ai_task_runs·ai_task_changes | ai-svc | 비 Agent 작업·부모/자식·AI DB/객체 저장소 변경 기록 | command hash, 취소 상태, 역순 복구 기록 |
