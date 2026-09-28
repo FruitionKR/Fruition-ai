@@ -6,7 +6,10 @@ from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 
 
 class BgeM3EmbeddingModel(EmbeddingModelPort):
-    def __init__(self, model_name: str | None = None, batch_size: int = 16) -> None:
+    # 배치를 묶으면 가장 긴 입력(최대 8192 token)에 맞춰 padding한 activation이 메모리를 좌우한다.
+    # Jev 한영 교차·한국어 문서 평가에서 배치 1은 벡터가 같고(cosine ≥ 0.9999996) 최고 메모리가
+    # 5.58GB → 2.52GB로 줄었으며 padding 낭비가 없어 더 빨랐다.
+    def __init__(self, model_name: str | None = None, batch_size: int = 1) -> None:
         self._model_name = model_name or os.environ.get("EMBEDDING_MODEL_NAME") or "BAAI/bge-m3"
         self._batch_size = batch_size
         self._model: Any | None = None
