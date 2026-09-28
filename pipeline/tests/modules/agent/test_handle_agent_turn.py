@@ -1877,6 +1877,55 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         self.assertIn("모든 작업", result.message or "")
         self.assertEqual(starter.requests, [])
 
+    def _bare_command_use_case(self, capability: str) -> tuple[HandleAgentTurnUseCase, FixedRouter, RecordingMarkdownEditor]:
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="selection", start_line=1, end_line=1),
+                    summary="unused",
+                    replacement_markdown="unused",
+                )
+            )
+        )
+        # 할 일이 비어 있으면 라우터를 부르지 않는다. 불리면 대화 답변으로 분류돼 Skill이 빠진다.
+        router = FixedRouter(AgentTurnRoute(action="conversation_reply", confidence=1.0, reason="empty"))
+        use_case = HandleAgentTurnUseCase(
+            router=router,
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            skill_selector=SelectSkillUseCase(FixedSkillRepository(document_skill(capability))),  # type: ignore[arg-type]
+        )
+        return use_case, router, editor
+
+    def test_bare_template_skill_command_creates_document_draft(self) -> None:
+        use_case, router, editor = self._bare_command_use_case("template")
+
+        result = use_case.execute(
+            AgentTurnRequest(message="/brief", workspace_id="workspace-1", user_id="user-1")
+        )
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(result.route.selected_skill_id, "skill-1")
+        self.assertEqual(router.requests, [])
+        self.assertEqual(editor.create_requests[0].skill_instructions, "핵심 내용을 세 문단 이내로 작성한다.")
+        self.assertIn("brief", editor.create_requests[0].instruction)
+        self.assertIsNotNone(result.generated_markdown)
+
+    def test_bare_non_document_skill_command_explains_usage(self) -> None:
+        use_case, router, editor = self._bare_command_use_case("folder-organize")
+
+        result = use_case.execute(
+            AgentTurnRequest(message="/brief", workspace_id="workspace-1", user_id="user-1")
+        )
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("`/brief` 뒤에", result.message or "")
+        self.assertIn("문서를 간결하게 작성합니다.", result.message or "")
+        self.assertEqual(router.requests, [])
+        self.assertEqual(editor.create_requests, [])
+
     def test_stops_for_ambiguous_skill_selection(self) -> None:
         skill = document_skill("folder-organize")
         editor = RecordingMarkdownEditor(
