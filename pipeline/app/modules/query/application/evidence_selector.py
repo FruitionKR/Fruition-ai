@@ -17,7 +17,7 @@ from app.modules.query.application.source_references import (
     source_references_from_ids,
 )
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, SourceReference, WikiEmbeddingUnit, WikiPage
-from app.modules.query.domain.scoring import hybrid_score
+from app.modules.query.domain.scoring import evidence_embedding_weight, hybrid_score
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,6 @@ class EvidenceSelector:
         text_search: TextSearchPort | None = None,
         max_related_pages: int = 8,
         max_paragraphs_per_page: int = 4,
-        evidence_embedding_weight: float = 0.75,
         min_evidence_score: float = 0.0,
         evidence_relative_score_floor: float = 0.85,
         max_evidence_snippets: int = 8,
@@ -97,7 +96,6 @@ class EvidenceSelector:
         self._text_search = text_search
         self._max_related_pages = max_related_pages
         self._max_paragraphs_per_page = max_paragraphs_per_page
-        self._evidence_embedding_weight = evidence_embedding_weight
         self._min_evidence_score = min_evidence_score
         self._evidence_relative_score_floor = evidence_relative_score_floor
         self._max_evidence_snippets = max(1, max_evidence_snippets)
@@ -341,12 +339,13 @@ class EvidenceSelector:
             embedding_scores = self._embedding_search.score(question, texts)
             text_scores = self._text_search.score(question, texts)
             query_terms = set(tokens(question))
+            embedding_weight = evidence_embedding_weight(question)
             scored = []
             for candidate, embedding_score, text_score in zip(candidates, embedding_scores, text_scores):
                 evidence_score = hybrid_score(
                     embedding_score,
                     text_score,
-                    embedding_weight=self._evidence_embedding_weight,
+                    embedding_weight=embedding_weight,
                 )
                 overlap = len(query_terms & set(tokens(candidate.text)))
                 lexical_bonus = overlap * 0.20
