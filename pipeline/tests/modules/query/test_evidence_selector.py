@@ -20,6 +20,14 @@ class QueryContainsSearch:
         return scores
 
 
+class FixedScoreSearch:
+    def __init__(self, scores_by_text: dict[str, float]) -> None:
+        self._scores_by_text = scores_by_text
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        return [self._scores_by_text[document] for document in documents]
+
+
 class EvidenceSelectorTest(unittest.TestCase):
     def test_keeps_selected_source_title_and_content_in_answer_context(self) -> None:
         source_title = "Exact Source Title"
@@ -43,6 +51,33 @@ class EvidenceSelectorTest(unittest.TestCase):
         self.assertEqual(context.evidence_snippets[0].text, f"{source_content}.")
         self.assertIn(source_title, context.answer_context)
         self.assertIn(source_content, context.answer_context)
+
+    def test_keyword_weight_depends_on_question_language(self) -> None:
+        dense_text = "Alpha paragraph explains the setting."
+        keyword_text = "Beta paragraph lists the measured values."
+        page = WikiPage(
+            id="source:lang",
+            page_type="source",
+            title="Language Source",
+            slug="language-source",
+            summary="Language summary",
+            markdown=(
+                "---\ndocument_id: doc_lang\n---\n\n"
+                f"{dense_text} [B0001]\n\n{keyword_text} [B0002]"
+            ),
+        )
+        selector = EvidenceSelector(
+            embedding_search=FixedScoreSearch({dense_text: 0.7, keyword_text: 0.5}),
+            text_search=FixedScoreSearch({dense_text: 0.0, keyword_text: 1.0}),
+        )
+        pages = [RetrievedPage(page=page, score=0.9, role="seed_source")]
+
+        # 한국어는 키워드 10%라 의미 점수가 높은 근거가, 영어는 40%라 키워드 점수가 높은 근거가 앞선다.
+        korean = selector.select("측정 조건은 무엇인가", pages, {})
+        english = selector.select("what were the conditions", pages, {})
+
+        self.assertEqual(korean[0].text, dense_text)
+        self.assertEqual(english[0].text, keyword_text)
 
     def test_selects_only_text_with_source_block_refs(self) -> None:
         page = WikiPage(

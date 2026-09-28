@@ -9,6 +9,8 @@ embedding top-k만 사용하는 RAG는 lexical match와 Wiki graph를 충분히 
 ## Decision
 Query는 hybrid retrieval과 graph traversal로 원문 evidence를 수집한 뒤 답변하는 고정 pipeline으로 운영한다.
 
+evidence 점수의 키워드(BM25) 비중은 질문 언어로 정한다. 한글이 있으면 10%, 없으면 40%다. Jev 한영 교차 실험에서 같은 wiki 단위 근거를 가장 앞에 찾은 비중이며, 한국어 질문은 영어 원문 근거와 표기가 달라 키워드 일치 효과가 작다.
+
 ## Alternatives Considered
 - embedding top-k만 사용하는 RAG: lexical match와 graph 경로를 활용하기 어려워 기각했다.
 - BM25/text search만 사용: 의미적으로 연결된 Page를 찾기 어려워 기각했다.
