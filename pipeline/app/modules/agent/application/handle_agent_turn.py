@@ -616,7 +616,7 @@ class HandleAgentTurnUseCase:
             ),
             message=(
                 f"`/{skill.slug}` 뒤에 이 Skill로 할 일을 함께 적어 주세요. "
-                f"예: `/{skill.slug} 지금 문서를 정리해줘`\n\n{version.description}"
+                f"형식: `/{skill.slug} (할 일)`\n\n{version.description}"
             ),
         )
 
