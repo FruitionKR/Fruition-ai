@@ -65,11 +65,13 @@ RUN mkdir -p /opt/docling-rs/models \
 # 저장되므로 Pod별 다운로드·캐시(약 2.1GB)가 없고, Pod가 뜰 때 Hugging Face에 의존하지 않는다.
 # main에는 pytorch_model.bin만 있다. revision을 고정하고 refs/main을 같은 commit으로 적어
 # 코드의 모델 이름(BAAI/bge-m3)을 그대로 오프라인에서 해석하게 한다. 저장 임베딩의 모델 키가 이 이름이다.
+# huggingface_hub가 root 전용으로 만드는 tree 캐시를 앱 사용자(10001)도 읽게 해 로드 경고를 없앤다.
 ENV HF_HOME=/opt/huggingface
 ARG BGE_M3_REVISION=5617a9f61b028005a4858fdac845db406aefb181
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-m3', revision='${BGE_M3_REVISION}', allow_patterns=['*.json', 'sentencepiece.bpe.model', 'pytorch_model.bin', '1_Pooling/*'], ignore_patterns=['onnx/*'])" \
     && mkdir -p "${HF_HOME}/hub/models--BAAI--bge-m3/refs" \
-    && printf '%s' "${BGE_M3_REVISION}" > "${HF_HOME}/hub/models--BAAI--bge-m3/refs/main"
+    && printf '%s' "${BGE_M3_REVISION}" > "${HF_HOME}/hub/models--BAAI--bge-m3/refs/main" \
+    && find "${HF_HOME}" ! -perm -o+r -exec chmod a+r {} +
 # 실행 중에는 Hub에 묻지 않는다. 온라인이면 transformers가 safetensors 변환본(약 2.3GB)을 추가로 받는다.
 ENV HF_HUB_OFFLINE=1
 
