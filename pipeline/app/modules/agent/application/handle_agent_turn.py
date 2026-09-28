@@ -73,6 +73,8 @@ CLARIFY_INCOMPATIBLE_SKILL_MESSAGE = (
     "선택한 Skill이 요청한 모든 작업을 지원하지 않습니다. "
     "다른 Skill을 선택하거나 요청 범위를 줄여 주세요."
 )
+# `/slug`만 보냈을 때 바로 새 문서를 만드는 Skill 기능. template은 문서 생성을 포함한다.
+BARE_COMMAND_CREATE_CAPABILITIES = frozenset({"template", "document-create"})
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
 BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
@@ -139,6 +141,8 @@ class HandleAgentTurnUseCase:
     def _execute(self, request: AgentTurnRequest) -> AgentTurnResult:
         selection = self._prepare_skill_selection(request)
         request = selection.request
+        if selection.explicit_skill_id is not None and not request.message.strip():
+            return self._execute_bare_skill_command(request, selection.skills[0])
         resolved = selection.resolve_route(self._router.route(request))
         route = resolved.route
         selected_skill = resolved.skill
@@ -576,6 +580,44 @@ class HandleAgentTurnUseCase:
             edit=result.edit,
             message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
             source_markdown_sha256=_markdown_sha256(markdown_context.markdown),
+        )
+
+    def _execute_bare_skill_command(self, request: AgentTurnRequest, skill: Skill) -> AgentTurnResult:
+        """`/slug`만 보낸 요청. 할 일이 비어 있어 라우터에 맡기지 않는다.
+
+        문서를 만드는 Skill은 그 지침으로 새 문서 초안을 만든다(슬래시 템플릿과 같은 동작).
+        그 밖의 Skill은 무엇을 할지 정할 수 없으므로 사용법을 안내한다.
+        """
+        version = skill.enabled_version
+        assert version is not None  # 명시 선택 단계에서 활성 버전을 확인했다.
+        if set(version.capabilities) & BARE_COMMAND_CREATE_CAPABILITIES:
+            route = AgentTurnRoute(
+                action="markdown_create",
+                confidence=1.0,
+                reason="Bare Skill command creates a document from the Skill.",
+                edit_goal="create_from_chat",
+                selected_skill_id=skill.id,
+                document_operation="create",
+                required_capabilities=("document-create",),
+            )
+            publish_query_event(self._event_publisher, "agent.routed", "새 문서 작성 요청으로 확인했어요.")
+            return self._execute_markdown_create(
+                replace(request, message=f"'{version.name}' Skill의 지침과 형식으로 새 문서 초안을 작성해 주세요."),
+                route,
+                skill,
+            )
+        return AgentTurnResult(
+            action="clarify",
+            route=AgentTurnRoute(
+                action="clarify",
+                confidence=1.0,
+                reason="Bare Skill command has no instruction.",
+                selected_skill_id=skill.id,
+            ),
+            message=(
+                f"`/{skill.slug}` 뒤에 이 Skill로 할 일을 함께 적어 주세요. "
+                f"예: `/{skill.slug} 지금 문서를 정리해줘`\n\n{version.description}"
+            ),
         )
 
     def _execute_markdown_create(
