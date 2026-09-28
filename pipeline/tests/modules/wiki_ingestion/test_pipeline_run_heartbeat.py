@@ -729,3 +729,54 @@ def test_restore_concept_drops_tombstoned_document_link(monkeypatch) -> None:
     ]
     assert link_inserts == [("doc-live", "page-1", "ws-1")]
     assert persist_units.call_args.args[2] == "doc-live"
+
+
+def test_restore_returns_tombstoned_source_page_and_skips_its_links(monkeypatch) -> None:
+    monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+    source_row = {"id": "page-1", "page_type": "source", "slug": "page-1", "user_id": "user-1"}
+    target_row = {"id": "page-t", "page_type": "concept", "slug": "target", "user_id": "user-1"}
+
+    def execute(query, params=None):
+        cursor = Mock()
+        normalized = " ".join(str(query).split())
+        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+            # 두 번째 조회는 링크 대상이 될 활성 페이지 목록이다.
+            cursor.fetchall.return_value = (
+                [target_row] if "status = 'active'" in normalized else [source_row]
+            )
+        elif normalized.startswith("SELECT document_id FROM wiki_source_tombstones"):
+            cursor.fetchall.return_value = [{"document_id": "doc-deleted"}]
+        else:
+            cursor.fetchall.return_value = []
+        return cursor
+
+    connection.execute.side_effect = execute
+
+    with (
+        patch.object(database, "connect", return_value=connection),
+        patch.object(database, "concept_write_lock", return_value=nullcontext()),
+        patch.object(database, "_upsert_wiki_page_link") as upsert_link,
+        patch.object(database, "invalidate_concept_index"),
+    ):
+        skipped = database.apply_restored_wiki_state_and_cleanup(
+            "restore-1",
+            "ws-1",
+            [{
+                "page_id": "page-1",
+                "markdown_key": "wiki/ws-1/pages/page-1/ops/restore-1.md",
+                "source_document_id": "doc-deleted",
+            }],
+            {"removed_links": [], "restored_links": [{
+                "source": "source:page-1",
+                "target": "concept:target",
+                "relation": "mentions",
+            }]},
+            True,
+            [],
+        )
+
+    assert skipped == ["page-1"]
+    upsert_link.assert_not_called()

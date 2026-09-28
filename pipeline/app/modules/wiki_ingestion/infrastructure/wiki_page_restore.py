@@ -38,7 +38,7 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 bool,
                 list[str],
             ],
-            None,
+            list[str],
         ],
     ) -> None:
         self._read_text = read_text
@@ -53,8 +53,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
         link_changes: dict[str, list[dict[str, Any]]],
         replace_links: bool,
         deleted_page_ids: list[str],
-    ) -> None:
-        self._apply_current_state_and_cleanup(
+    ) -> list[str]:
+        return self._apply_current_state_and_cleanup(
             operation_id,
             workspace_id,
             changed_pages,

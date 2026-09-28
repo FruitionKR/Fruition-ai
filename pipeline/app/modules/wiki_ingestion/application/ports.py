@@ -90,7 +90,7 @@ class WikiPageRestorePort(Protocol):
         link_changes: dict[str, list[dict[str, Any]]],
         replace_links: bool,
         deleted_page_ids: list[str],
-    ) -> None: ...
+    ) -> list[str]: ...
 
     def rebuild_page(
         self,
