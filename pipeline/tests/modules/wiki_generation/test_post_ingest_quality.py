@@ -84,6 +84,69 @@ def test_quality_cases_use_only_verbatim_raw_source_evidence() -> None:
     assert "다른 실제 사실이다" in completion.user_prompts[0]
 
 
+def test_quality_cases_accept_quotes_without_markdown_decoration() -> None:
+    # Gemini json_mode는 원문 markdown의 **강조**·`코드`·[링크](url)를 벗긴 문장을
+    # 인용으로 돌려준다. 이 인용도 원문 블록에서 검증돼야 한다.
+    completion = FixedCompletion(
+        {
+            "cases": [
+                {
+                    "question": "문서 본문과 편집 revision은 어디에 저장하는가?",
+                    "evidence": [
+                        {
+                            "block_id": "B0003",
+                            "quote": (
+                                "문서 본문·편집 revision은 MongoDB: "
+                                "document_edit_states를 단일 Mongo 트랜잭션으로 기록."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "question": "결정 4는 어떤 ADR로 대체됐는가?",
+                    "evidence": [
+                        {
+                            "block_id": "B0002",
+                            "quote": "결정 4는 ADR-0005로 대체됨",
+                        }
+                    ],
+                },
+                {
+                    "question": "원문에 없는 문장은 무엇인가?",
+                    "evidence": [
+                        {"block_id": "B0002", "quote": "원문에 존재하지 않는 문장이다."}
+                    ],
+                },
+            ]
+        }
+    )
+
+    cases = generate_post_ingest_quality_cases(
+        completion=completion,
+        source_document_id="doc-1",
+        source_blocks=[
+            {
+                "block_id": "B0002",
+                "text": "- 상태: 부분 대체 — 결정 4는 [ADR-0005](0005-prepare.md)로 대체됨",
+            },
+            {
+                "block_id": "B0003",
+                "text": (
+                    "3. **문서 본문·편집 revision은 MongoDB**: "
+                    "`document_edit_states`를 단일 Mongo 트랜잭션으로 기록."
+                ),
+            },
+        ],
+        limit=3,
+    )
+
+    assert [case["source_block_ids"] for case in cases] == [["B0003"], ["B0002"]]
+    assert cases[0]["expected_claims"] == [
+        "문서 본문·편집 revision은 MongoDB: "
+        "document_edit_states를 단일 Mongo 트랜잭션으로 기록."
+    ]
+
+
 def test_quality_cases_reject_multiple_quotes_for_one_question() -> None:
     completion = FixedCompletion(
         {
