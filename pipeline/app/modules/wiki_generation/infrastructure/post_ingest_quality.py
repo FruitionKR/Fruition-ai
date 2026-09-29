@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,11 @@ EVIDENCE_EVALUATOR_PROMPT = (
 )
 MIN_QUALITY_SCORE = 0.75
 MAX_QUESTION_SOURCE_CHARS = 60_000
+logger = logging.getLogger("post_ingest_quality")
+# 원문 markdown 장식. LLM은 **강조**·`코드`·[링크](url)를 벗긴 문장을 인용하므로
+# 인용 검증 시 양쪽에서 함께 제거한다.
+MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+MARKDOWN_DECORATION_PATTERN = re.compile(r"[*_`~#>|]")
 ADMINISTRATIVE_METADATA_PATTERN = re.compile(
     r"(?i)(^\s*[-*]?\s*상태\s*:|^\s*status\s*:|작성일\s*:|authored date\s*:"
     r"|기능 SDD\s*:|구현 위치\s*:|implementation location\s*:"
@@ -69,8 +75,10 @@ def generate_post_ingest_quality_cases(
     cases = []
     seen_questions = set()
     seen_claims = set()
+    rejected: list[str] = []
     for item in value.get("cases", []):
         if not isinstance(item, dict):
+            rejected.append("not_object")
             continue
         question = str(item.get("question") or "").strip()
         evidence = [
@@ -79,13 +87,14 @@ def generate_post_ingest_quality_cases(
             if isinstance(entry, dict)
         ]
         if len(evidence) != 1:
+            rejected.append(f"evidence_count={len(evidence)}")
             continue
         verified = [
             (block_id, quote)
             for block_id, quote in evidence
             if len(quote) >= 8
             and block_id in blocks_by_id
-            and _compact(quote) in _compact(blocks_by_id[block_id])
+            and _quote_in_source(quote, blocks_by_id[block_id])
         ]
         claim = verified[0][1] if verified else ""
         if (
@@ -94,6 +103,11 @@ def generate_post_ingest_quality_cases(
             or not claim
             or claim in seen_claims
         ):
+            rejected.append(
+                "duplicate"
+                if question in seen_questions or (claim and claim in seen_claims)
+                else f"unverified block_id={evidence[0][0]}"
+            )
             continue
         seen_questions.add(question)
         seen_claims.add(claim)
@@ -109,13 +123,21 @@ def generate_post_ingest_quality_cases(
         )
         if len(cases) >= limit:
             break
-    return [
+    accepted = [
         case
         for case in cases
         if not ADMINISTRATIVE_METADATA_PATTERN.search(
             str(case["expected_claims"][0])
         )
     ]
+    if not accepted:
+        logger.warning(
+            "[post_ingest 평가 질문 없음] document_id=%s returned=%d rejected=%s",
+            source_document_id,
+            len(value.get("cases") or []),
+            rejected,
+        )
+    return accepted
 
 
 def evaluate_post_ingest_evidence(
@@ -364,6 +386,16 @@ def _source_ref(block: dict[str, Any], default_document_id: str = "") -> str:
         or default_document_id
     )
     return f"{document_id}:{block_id}" if document_id else block_id
+
+
+def _quote_in_source(quote: str, source_text: str) -> bool:
+    if _compact(quote) in _compact(source_text):
+        return True
+    return _compact(_strip_markdown(quote)) in _compact(_strip_markdown(source_text))
+
+
+def _strip_markdown(value: str) -> str:
+    return MARKDOWN_DECORATION_PATTERN.sub("", MARKDOWN_LINK_PATTERN.sub(r"\1", value))
 
 
 def _compact(value: str) -> str:

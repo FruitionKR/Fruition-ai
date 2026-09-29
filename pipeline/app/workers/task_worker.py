@@ -530,9 +530,17 @@ def _run_post_ingest_wiki_quality_evaluation(
             source_blocks=database.list_source_blocks(str(command["document_id"])),
             limit=POST_INGEST_AUDIT_LIMIT,
         )
-        if not cases:
-            raise RuntimeError("원문 기반 RAG 평가 질문을 생성하지 못했습니다.")
         state["quality_cases"] = cases
+        if not cases:
+            # wiki ingest 자체는 이미 성공했으므로 품질 평가만 건너뛰고
+            # quality_status=needs_review로 남긴다.
+            state["quality_skipped"] = "원문 기반 RAG 평가 질문을 생성하지 못했습니다."
+            logger.warning(
+                "[post_ingest 품질 평가 생략] run_id=%s document_id=%s reason=%s",
+                command["run_id"],
+                command["document_id"],
+                state["quality_skipped"],
+            )
         database.checkpoint_pipeline_run(str(command["run_id"]), state)
     cases = [
         case
@@ -784,6 +792,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 "generation_evaluation_status"
             ),
             "wiki_quality_evaluations": evaluations,
+            "quality_skipped": state.get("quality_skipped"),
         }
         database.update_pipeline_run_post_ingest(
             str(command["ingest_run_id"]),

@@ -1,5 +1,11 @@
 # AI 변경 기록
 
+## 2026-09-30
+
+- post_ingest 품질 평가 질문 생성이 markdown 원문에서 항상 실패하던 문제를 수정했습니다. LLM이 `**강조**`·`` `코드` ``·`[링크](url)` 장식을 벗긴 문장을 인용하면 원문 대조에서 탈락해 유효 문항이 0개가 됐고, 이 경우 post_ingest 전체가 3회 재시도 후 실패했습니다.
+- 인용 검증은 이제 양쪽에서 markdown 장식을 제거한 뒤에도 대조하며, 탈락 사유를 경고 로그로 남깁니다. 유효 문항이 0개면 post_ingest를 실패시키지 않고 `quality_skipped` 사유를 checkpoint·결과에 기록한 채 `needs_review`로 마칩니다. wiki ingest 결과와 DB schema 변경은 없습니다.
+- 회귀 테스트 3개를 추가했고 post_ingest 품질·worker 테스트 98개를 통과했습니다.
+
 ## 2026-09-30 (converter Range 읽기 오류 원인 기록·재시도)
 
 - 2026-09-29 10:17~10:19 UTC에 `/convert-source-batch`가 같은 PDF에 대해 요청 직후 422를 세 번 반환했으나 converter 로그에는 uvicorn access log만 있어 원인을 알 수 없던 문제에 대응했습니다. `S3RangeReader`가 Range GET 실패를 `Could not read the PDF storage range`로 바꾸며 원래 예외를 버렸기 때문입니다.

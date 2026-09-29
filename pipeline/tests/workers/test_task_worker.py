@@ -769,7 +769,7 @@ def test_post_ingest_quality_retry_reuses_checkpointed_batch() -> None:
     assert evaluations == [{"question": "첫 번째 질문", "passed": True}]
 
 
-def test_post_ingest_quality_retries_when_three_aligned_cases_are_unavailable() -> None:
+def test_post_ingest_quality_skips_evaluation_when_no_cases_are_generated() -> None:
     command = {
         "run_id": "post-run-1",
         "document_id": "document-1",
@@ -792,13 +792,21 @@ def test_post_ingest_quality_retries_when_three_aligned_cases_are_unavailable() 
             "generate_post_ingest_quality_cases",
             return_value=[],
         ),
+        patch.object(
+            task_worker, "build_answer_query_use_case"
+        ) as build_query,
         patch.object(task_worker.database, "checkpoint_pipeline_run") as checkpoint,
-        pytest.raises(RuntimeError, match="평가 질문을 생성하지 못했습니다"),
     ):
-        task_worker._run_post_ingest_wiki_quality_evaluation(command, state)
+        evaluations = task_worker._run_post_ingest_wiki_quality_evaluation(
+            command,
+            state,
+        )
 
-    assert "quality_cases" not in state
-    checkpoint.assert_not_called()
+    assert evaluations == []
+    assert state["quality_cases"] == []
+    assert "평가 질문을 생성하지 못했습니다" in state["quality_skipped"]
+    checkpoint.assert_called_once_with("post-run-1", state)
+    build_query.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -871,6 +879,78 @@ def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
 
     assert result["quality_status"] == "needs_review"
     assert result["generation_evaluation_status"] == generation_status
+
+
+def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
+    command = {
+        "run_id": "post-run-1",
+        "ingest_run_id": "ingest-run-1",
+        "kind": "post_ingest",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "gemini",
+        "model": "gemini-3.1-flash-lite",
+    }
+    parent = {
+        "status": "succeeded",
+        "manifest": {
+            "post_ingest": {
+                "cluster_normalized": {},
+                "page_ids": [],
+                "quality_required": True,
+                "generation_evaluation_status": "passed",
+            },
+            "source_blocks": [],
+        },
+    }
+
+    def skip_quality(_command: dict, state: dict) -> list:
+        state["quality_cases"] = []
+        state["quality_skipped"] = "원문 기반 RAG 평가 질문을 생성하지 못했습니다."
+        return []
+
+    with (
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
+        ),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "checkpoint_pipeline_run"),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
+        patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
+        patch.object(task_worker, "build_post_ingest_cluster_artifact", return_value={}),
+        patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
+        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(task_worker.database, "persist_post_ingest_clusters", return_value=[]),
+        patch.object(
+            task_worker,
+            "build_wiki_embeddings",
+            return_value={
+                "target_count": 0,
+                "embedded_count": 0,
+                "skipped_count": 0,
+                "failed_count": 0,
+            },
+        ),
+        patch.object(
+            task_worker,
+            "_run_post_ingest_wiki_quality_evaluation",
+            side_effect=skip_quality,
+        ),
+        patch.object(task_worker.database, "finish_pipeline_run") as finish,
+        patch.object(task_worker.database, "fail_pipeline_run") as fail,
+    ):
+        result = task_worker._handle_post_ingest(command)
+
+    assert result["quality_status"] == "needs_review"
+    assert result["wiki_quality_evaluations"] == []
+    assert "평가 질문을 생성하지 못했습니다" in result["quality_skipped"]
+    assert update_parent.call_args.args[1]["status"] == "needs_review"
+    assert update_parent.call_args.args[1]["error"] is None
+    finish.assert_called_once()
+    fail.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "restore_ingest", "restore_lint"])
