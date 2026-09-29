@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import http.client
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -14,6 +16,7 @@ import uuid
 from pathlib import Path
 from threading import Event
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -22,10 +25,12 @@ from app.core.llm_env import resolve_llm_selection
 
 
 app = FastAPI(title="Fruition PDF Converter")
+logger = logging.getLogger("converter")
 
 RESTORATION_TIMEOUT_SECONDS = int(os.getenv("RESTORATION_TIMEOUT_SECONDS", "900"))
 PDF_DIAGNOSTIC_TIMEOUT_SECONDS = int(os.getenv("PDF_DIAGNOSTIC_TIMEOUT_SECONDS", "60"))
 RESTORATION_COMMAND = os.getenv("RESTORATION_COMMAND", "document-restoration")
+RANGE_RETRY_DELAY_SECONDS = 0.5
 
 
 def max_upload_bytes() -> int:
@@ -245,6 +250,23 @@ async def convert(
     }
 
 
+def describe_fetch_error(error: Exception) -> tuple[str, bool]:
+    """Range GET 실패 원인을 (credentials 없는 요약, 재시도 가능 여부)로 바꾼다. URL은 절대 포함하지 않는다."""
+    if isinstance(error, HTTPError):
+        code = None
+        try:
+            match = re.search(rb"<Code>([A-Za-z0-9._-]{1,64})</Code>", error.read(4096))
+            code = match.group(1).decode("ascii") if match else None
+        except Exception:
+            pass
+        return f"HTTP {error.code}" + (f" {code}" if code else ""), error.code >= 500 or error.code == 429
+    if isinstance(error, URLError):
+        return f"{type(error).__name__}: {error.reason}", True
+    if isinstance(error, OSError):
+        return f"{type(error).__name__}: errno={error.errno}", True
+    return type(error).__name__, isinstance(error, http.client.HTTPException)
+
+
 class S3RangeReader:
     """PDF의 seek/read를 S3 Range GET으로 변환한다. 캐시는 파일 크기와 무관하게 16MiB이다."""
     def __init__(self, url: str, size: int, cancelled: Event):
@@ -273,8 +295,38 @@ class S3RangeReader:
     def tell(self):
         return self.position
 
-    def read(self, size=-1):
+    def fetch_range(self, first: int, last: int) -> bytes:
         from urllib.request import Request as HttpRequest
+        expected = f"bytes {first}-{last}/{self.size}"
+        for attempt in (1, 2):
+            try:
+                with self.opener.open(HttpRequest(self.url, headers={"Range": f"bytes={first}-{last}"}), timeout=30) as response:
+                    received = response.headers.get("Content-Range")
+                    if response.status != 206 or received != expected:
+                        logger.warning("PDF storage range mismatch: requested=%s status=%s content_range=%s",
+                                       expected, response.status, received)
+                        raise ValueError("Storage must return the exact requested PDF byte range "
+                                         f"(status {response.status}, Content-Range {received!r})")
+                    block = response.read(self.block_size + 1)
+            except ValueError:
+                raise
+            except Exception as error:
+                # 서명 URL에는 임시 credentials가 들어 있으므로 로그·응답에 원문을 노출하지 않는다.
+                reason, retryable = describe_fetch_error(error)
+                logger.warning("PDF storage range fetch failed: requested=%s attempt=%d reason=%s", expected, attempt, reason)
+                if retryable and attempt == 1:
+                    if self.cancelled.wait(RANGE_RETRY_DELAY_SECONDS):
+                        raise HTTPException(status_code=499, detail="Conversion cancelled") from None
+                    continue
+                raise ValueError(f"Could not read the PDF storage range ({reason})") from None
+            if len(block) != last - first + 1:
+                logger.warning("PDF storage range incomplete: requested=%s expected=%d received=%d",
+                               expected, last - first + 1, len(block))
+                raise ValueError(f"Incomplete PDF storage range (expected {last - first + 1} bytes, received {len(block)})")
+            return block
+        raise AssertionError("unreachable")
+
+    def read(self, size=-1):
         size = max(0, min(self.size - self.position, self.size if size < 0 else size))
         # 파일 전체가 아닌 PDF 단일 object의 파서 메모리 한도. 손상된 xref의 전체 파일 재탐색을 막는다.
         if size > 64 * 1024 * 1024:
@@ -287,17 +339,7 @@ class S3RangeReader:
             if index not in self.cache:
                 first = index * self.block_size
                 last = min(first + self.block_size, self.size) - 1
-                try:
-                    with self.opener.open(HttpRequest(self.url, headers={"Range": f"bytes={first}-{last}"}), timeout=30) as response:
-                        if response.status != 206 or response.headers.get("Content-Range") != f"bytes {first}-{last}/{self.size}":
-                            raise ValueError("Storage must return the exact requested PDF byte range")
-                        block = response.read(self.block_size + 1)
-                except Exception as error:
-                    # 서명 URL에는 임시 credentials가 들어 있으므로 로그·응답에 원문을 노출하지 않는다.
-                    raise ValueError("Could not read the PDF storage range") from None
-                if len(block) != last - first + 1:
-                    raise ValueError("Incomplete PDF storage range")
-                self.cache[index] = block
+                self.cache[index] = self.fetch_range(first, last)
                 if len(self.cache) > 16:
                     self.cache.popitem(last=False)
             self.cache.move_to_end(index)
@@ -374,6 +416,8 @@ async def _convert_source_batch(body: SourceBatchRequest, request: Request):
             await asyncio.wait({worker}, timeout=0.1)
         return worker.result()
     except ValueError as error:
+        logger.warning("convert-source-batch rejected: byte_size=%d start_page=%d detail=%s",
+                       body.byte_size, body.start_page, error)
         raise HTTPException(status_code=422, detail=str(error)) from error
     finally:
         cancelled.set()
