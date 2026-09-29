@@ -260,8 +260,56 @@ class LargePdfRangeBatchTest(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value.status = 200
         reader.opener.open = mock.Mock(return_value=response)
-        with self.assertRaisesRegex(ValueError, "Could not read"):
+        with self.assertRaisesRegex(ValueError, "exact requested"):
             reader.read(1)
+
+    def range_storage(self, reader, size, responses):
+        """responses의 각 항목은 (first, last) -> 응답 객체 또는 raise할 예외. 요청 순서대로 소비한다."""
+        import io
+        requests = []
+        class Response(io.BytesIO):
+            status = 206
+        def open_range(request, timeout):
+            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
+            requests.append((first, last))
+            outcome = responses.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            response = Response(b"x" * (last - first + 1))
+            response.headers = {"Content-Range": outcome or f"bytes {first}-{last}/{size}"}
+            return response
+        reader.opener.open = open_range
+        return requests
+
+    def test_http_403_reports_status_and_s3_code_without_retry_or_url(self):
+        import io
+        from urllib.error import HTTPError
+        reader = self.reader(100)
+        body = io.BytesIO(b"<?xml version='1.0'?><Error><Code>AccessDenied</Code><Message>x</Message></Error>")
+        requests = self.range_storage(reader, 100, [HTTPError("https://storage.example.test/object?signature=private", 403, "Forbidden", {}, body)])
+        with self.assertLogs("converter", level="WARNING") as logs, \
+             self.assertRaisesRegex(ValueError, r"Could not read.*403 AccessDenied") as raised:
+            reader.read(1)
+        self.assertEqual(len(requests), 1)
+        self.assertNotIn("signature", str(raised.exception))
+        self.assertNotIn("signature", "\n".join(logs.output))
+        self.assertNotIn("storage.example.test", "\n".join(logs.output))
+
+    def test_transient_failures_are_retried_once(self):
+        from urllib.error import HTTPError, URLError
+        for transient in (URLError("connection reset"), HTTPError("https://storage.example.test/object", 503, "Unavailable", {}, None)):
+            with self.subTest(transient=transient), mock.patch.object(converter_app, "RANGE_RETRY_DELAY_SECONDS", 0):
+                reader = self.reader(100)
+                requests = self.range_storage(reader, 100, [transient, None])
+                self.assertEqual(reader.read(4), b"xxxx")
+                self.assertEqual(len(requests), 2)
+
+    def test_content_range_mismatch_includes_received_header(self):
+        reader = self.reader(100)
+        requests = self.range_storage(reader, 100, ["bytes 0-49/100"])
+        with self.assertRaisesRegex(ValueError, r"exact requested.*bytes 0-49/100"):
+            reader.read(1)
+        self.assertEqual(len(requests), 1)
 
     def test_page_batches_resume_without_reconverting_previous_pages(self):
         import io

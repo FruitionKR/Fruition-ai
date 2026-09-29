@@ -1,5 +1,13 @@
 # AI 변경 기록
 
+## 2026-09-30 (converter Range 읽기 오류 원인 기록·재시도)
+
+- 2026-09-29 10:17~10:19 UTC에 `/convert-source-batch`가 같은 PDF에 대해 요청 직후 422를 세 번 반환했으나 converter 로그에는 uvicorn access log만 있어 원인을 알 수 없던 문제에 대응했습니다. `S3RangeReader`가 Range GET 실패를 `Could not read the PDF storage range`로 바꾸며 원래 예외를 버렸기 때문입니다.
+- Range GET 실패 시 credentials가 든 서명 URL은 제외하고 원인만 요약해 ValueError 메시지와 warning 로그에 남깁니다. `HTTPError`는 상태 코드와 응답 본문의 S3 `<Code>`(예: `AccessDenied`, `ExpiredToken`, `InvalidRange`), `URLError`·OSError(timeout, connection reset)는 예외 클래스와 `reason`/errno를 씁니다. Content-Range 불일치는 실제 상태와 수신 헤더를, 길이 부족은 기대·수신 바이트 수를 함께 기록합니다.
+- 일시 장애(HTTP 5xx·429, `URLError`, timeout, connection reset/EOF)만 0.5초 후 한 번 재시도합니다. 4xx 인증·범위 오류는 재시도하지 않으며 재시도 대기 중 취소되면 즉시 499로 끝냅니다.
+- `_convert_source_batch`가 422로 바꾸는 ValueError를 `byte_size`·`start_page`와 함께 warning으로 남겨 access log 줄과 대조할 수 있게 했습니다. `source_url`은 기록하지 않습니다.
+- 검증: converter 테스트 16개(신규 3개: 403+AccessDenied 무재시도·URL 미노출, URLError/503 후 성공 시 요청 2회, Content-Range 불일치 메시지) 통과. DB schema·API 변경은 없습니다.
+
 ## 2026-09-21 (converter CPU 전용 torch)
 
 - converter 이미지가 PyPI linux torch 2.14.0 wheel의 의존성으로 `cuda-toolkit 13`, `nvidia-cudnn-cu13`, `nvidia-nccl-cu13`, `nvidia-cusparselt-cu13`, `nvidia-nvshmem-cu13`, `triton` 등 수 GiB의 GPU 패키지를 함께 설치해, 운영 EKS CPU 노드(20GiB)에서 이미지 압축 해제 중 디스크가 고갈되던 문제를 수정했습니다. 기존 converter는 계속 운영 중이며 이 변경은 이미지 빌드·의존성만 바꿉니다.
