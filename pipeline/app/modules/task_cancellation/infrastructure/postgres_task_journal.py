@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+import os
 from contextlib import contextmanager
 from typing import Any
 
@@ -23,6 +25,9 @@ class TaskAlreadyExecutingError(RuntimeError):
 
 
 STOPPING = frozenset({"cancel_requested", "rolling_back", "rollback_failed", "cancelled"})
+# worker가 죽어 중단된 run을 같은 재전달 안에서 다시 실행하는 최대 횟수. 넘어서면 실패로 닫아 crash loop가 LLM 호출을 반복하지 않게 한다.
+MAX_INTERRUPTED_ATTEMPTS = int(os.environ.get("AI_TASK_MAX_INTERRUPTED_ATTEMPTS", "3"))
+logger = logging.getLogger("task_journal")
 
 
 def connect():
@@ -114,6 +119,16 @@ def rollback(run_id: str) -> None:
         if child:
             conn.execute("UPDATE ai_task_runs SET status = 'cancel_requested' WHERE id = %s", (run_id,))
             return
+    if not _undo_changes(run_id):
+        return
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET status = 'cancelled', error_code = NULL, updated_at = now() WHERE id = %s",
+                     (run_id,))
+
+
+def _undo_changes(run_id: str) -> bool:
+    """기록된 변경을 역순으로 되돌린다. 실패하면 rollback_failed로 남기고 False를 돌려준다."""
+    with connect() as conn:
         changes = conn.execute("SELECT * FROM ai_task_changes WHERE run_id = %s AND NOT undone ORDER BY id DESC",
                                (run_id,)).fetchall()
     try:
@@ -127,10 +142,8 @@ def rollback(run_id: str) -> None:
         with connect() as conn:
             conn.execute("UPDATE ai_task_runs SET status = 'rollback_failed', error_code = %s, updated_at = now() WHERE id = %s",
                          ("rollback_conflict" if isinstance(exc, ValueError) else "rollback_database_error", run_id))
-        return
-    with connect() as conn:
-        conn.execute("UPDATE ai_task_runs SET status = 'cancelled', error_code = NULL, updated_at = now() WHERE id = %s",
-                     (run_id,))
+        return False
+    return True
 
 
 def undo_row(change: dict[str, Any]) -> None:
@@ -196,13 +209,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
         if row["status"] in STOPPING:
             rollback(run_id)
             raise PipelineRunCancelledError("Task cancellation requested.")
-        with connect() as conn:
-            interrupted = conn.execute("SELECT 1 FROM ai_task_changes WHERE run_id = %s AND NOT undone LIMIT 1",
-                                       (run_id,)).fetchone()
-        if interrupted:
-            request_cancel(run_id, row["workspace_id"], row["user_id"])
-            rollback(run_id)
-            raise PipelineRunCancelledError("Interrupted task changes were sent for rollback.")
+        _begin_attempt(row)
         token = task_run_id.set(run_id)
         try:
             with task_cancellation_scope(lambda: active(run_id)), usage_scope(command):
@@ -224,6 +231,34 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
         finally:
             if token is not None:
                 task_run_id.reset(token)
+
+
+def _begin_attempt(row: dict[str, Any]) -> None:
+    """running인 run의 시도 번호를 올린다. 이미 시도가 있었다면 이전 worker가 죽어 중단된 것이므로
+    부분 변경을 되돌린 뒤 같은 전달 안에서 다시 실행한다(사용자 취소는 호출 전에 STOPPING으로 걸러진다)."""
+    run_id = row["id"]
+    previous = row["attempt"]
+    if previous >= MAX_INTERRUPTED_ATTEMPTS:
+        request_cancel(run_id, row["workspace_id"], row["user_id"])
+        rollback(run_id)
+        with connect() as conn:
+            conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = 'interrupted_attempts_exhausted', "
+                         "updated_at = now() WHERE id = %s AND status = 'cancelled'", (run_id,))
+        raise ValueError(f"Interrupted task exceeded {MAX_INTERRUPTED_ATTEMPTS} attempts (attempt {previous}); "
+                         "partial changes were rolled back and the task was closed as failed.")
+    if previous > 0:
+        with connect() as conn:
+            partial = conn.execute("SELECT count(*) AS count FROM ai_task_changes WHERE run_id = %s AND NOT undone",
+                                   (run_id,)).fetchone()["count"]
+            # 되돌리는 동안 trigger가 새 변경을 막도록 running에서 잠시 벗어난다.
+            conn.execute("UPDATE ai_task_runs SET status = 'rolling_back', updated_at = now() WHERE id = %s", (run_id,))
+        if not _undo_changes(run_id):
+            raise PipelineRunCancelledError("Interrupted task changes could not be rolled back.")
+        logger.warning("[중단된 run 재실행] run_id=%s attempt=%d max=%d rolled_back_changes=%d",
+                       run_id, previous + 1, MAX_INTERRUPTED_ATTEMPTS, partial)
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET status = 'running', attempt = attempt + 1, updated_at = now() "
+                     "WHERE id = %s AND status IN ('running', 'rolling_back')", (run_id,))
 
 
 def rollback_pending() -> None:

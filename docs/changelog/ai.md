@@ -1,5 +1,13 @@
 # AI 변경 기록
 
+## 2026-09-30 (중단된 작업 자동 재실행)
+
+- spot 회수 등으로 worker pod가 ingest·post_ingest 같은 작업 도중 죽으면, Kafka 재전달을 받은 새 worker가 `ai_task_changes`에 남은 부분 변경을 보고 run을 `cancelled`로 닫아 사용자가 직접 재시도해야 하던 문제를 수정했습니다. 사용자 취소와 worker 사망을 구분하지 않았기 때문입니다.
+- `ai_task_runs.attempt`(handler 시작 횟수, `ADD COLUMN IF NOT EXISTS`)를 추가했습니다. 재전달된 run의 상태가 `running`이고 advisory lock을 새로 얻었으며 `attempt ≥ 1`이면 이전 worker가 죽은 것으로 보고, 기록된 부분 변경을 기존 역순 복구 로직으로 되돌린 뒤 `attempt`를 올리고 같은 전달 안에서 handler를 다시 실행합니다. 변경이 0건인 고아 run도 같은 경로로 재실행하며 `[중단된 run 재실행] run_id=… attempt=N max=… rolled_back_changes=…` 경고를 남깁니다.
+- `cancel_requested`·`rolling_back`·`rollback_failed`·`cancelled`인 run은 그대로 취소를 이행하고 handler를 다시 부르지 않습니다. 복구 자체가 실패하면 기존과 같이 `rollback_failed`로 남깁니다.
+- 재실행은 `AI_TASK_MAX_INTERRUPTED_ATTEMPTS`(기본 3)회로 제한합니다. 넘어서면 부분 변경을 되돌리고 `failed`/`interrupted_attempts_exhausted`로 닫아 durable 실패로 offset을 전진시키며, 실패 메시지에 한도를 적습니다. Kafka commit 순서와 packet 단위 checkpoint는 바꾸지 않았습니다.
+- 검증: 실 PostgreSQL 저널 테스트 5개(부분 변경 되돌린 뒤 1회 재실행·완료, 사용자 취소 유지, 한도 초과 durable 실패, 변경 0건 고아 재실행, 첫 실행 attempt=1) 추가, 저널 테스트 18개 통과.
+
 ## 2026-09-30
 
 - post_ingest 품질 평가 질문 생성이 markdown 원문에서 항상 실패하던 문제를 수정했습니다. LLM이 `**강조**`·`` `코드` ``·`[링크](url)` 장식을 벗긴 문장을 인용하면 원문 대조에서 탈락해 유효 문항이 0개가 됐고, 이 경우 post_ingest 전체가 3회 재시도 후 실패했습니다.

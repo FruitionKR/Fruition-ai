@@ -454,10 +454,12 @@ CREATE TABLE IF NOT EXISTS ai_task_runs (
     status text NOT NULL DEFAULT 'running',
     result jsonb,
     error_code text,
+    attempt integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS command jsonb;
+ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_ai_task_runs_parent ON ai_task_runs(parent_run_id);
 CREATE TABLE IF NOT EXISTS ai_task_changes (
     id bigserial PRIMARY KEY,
