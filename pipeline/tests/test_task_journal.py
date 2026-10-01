@@ -314,3 +314,91 @@ def test_last_rollback_lease_is_reclaimed_and_failure_can_be_retried(journal_dat
     AgentWorker(jobs, runs, MagicMock(), None).process(recovered)
     assert runs.get_for_user("ws", "user", "turn").status == "cancelled"
     assert jobs.claim_next("replacement") is None
+
+
+def start_attempt(connect, attempt=1):
+    # 이전 worker가 handler를 시작한 뒤 죽은 상태를 흉내 낸다.
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET attempt = %s WHERE id = 'run'", (attempt,))
+
+
+def test_interrupted_run_rolls_back_partial_changes_and_reruns_handler(journal_database, caplog):
+    connect = journal_database
+    journal.register(command())
+    start_attempt(connect)
+    with connect() as conn:
+        conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+        insert_page(conn, "partial")
+    calls = []
+    def handle():
+        with connect() as conn:
+            conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+            assert conn.execute("SELECT * FROM wiki_pages").fetchall() == []
+            insert_page(conn, "final")
+        calls.append(1)
+        return {"ok": True}
+    with caplog.at_level("WARNING", logger="task_journal"):
+        assert journal.execute(command(), handle) == {"ok": True}
+    assert calls == [1]
+    assert "[중단된 run 재실행] run_id=run attempt=2" in caplog.text
+    with connect() as conn:
+        row = conn.execute("SELECT status, attempt FROM ai_task_runs WHERE id = 'run'").fetchone()
+        assert row == dict(status="completed", attempt=2)
+        assert [r["id"] for r in conn.execute("SELECT id FROM wiki_pages").fetchall()] == ["final"]
+
+
+def test_user_cancel_on_interrupted_run_still_cancels_without_rerun(journal_database):
+    from app.core.pipeline_control import PipelineRunCancelledError
+    connect = journal_database
+    journal.register(command())
+    start_attempt(connect)
+    with connect() as conn:
+        conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+        insert_page(conn)
+    journal.request_cancel("run", "ws", "user")
+    def unexpected():
+        pytest.fail("취소한 작업의 handler를 다시 호출했습니다.")
+    with pytest.raises(PipelineRunCancelledError):
+        journal.execute(command(), unexpected)
+    assert journal.status("run", "ws", "user")["status"] == "cancelled"
+    with connect() as conn:
+        assert conn.execute("SELECT * FROM wiki_pages").fetchall() == []
+
+
+def test_interrupted_run_beyond_attempt_cap_fails_durably(journal_database):
+    connect = journal_database
+    journal.register(command())
+    start_attempt(connect, journal.MAX_INTERRUPTED_ATTEMPTS)
+    with connect() as conn:
+        conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+        insert_page(conn)
+    def unexpected():
+        pytest.fail("한도를 넘은 작업의 handler를 호출했습니다.")
+    with pytest.raises(ValueError, match=f"exceeded {journal.MAX_INTERRUPTED_ATTEMPTS} attempts"):
+        journal.execute(command(), unexpected)
+    assert journal.status("run", "ws", "user") == dict(id="run", status="failed", error_code="interrupted_attempts_exhausted")
+    with connect() as conn:
+        assert conn.execute("SELECT * FROM wiki_pages").fetchall() == []
+    with pytest.raises(ValueError, match="interrupted_attempts_exhausted"):
+        journal.execute(command(), unexpected)
+
+
+def test_orphan_run_without_changes_reruns_with_attempt_logged(journal_database, caplog):
+    connect = journal_database
+    journal.register(command())
+    start_attempt(connect)
+    with caplog.at_level("WARNING", logger="task_journal"):
+        assert journal.execute(command(), lambda: {"done": True}) == {"done": True}
+    assert "[중단된 run 재실행] run_id=run attempt=2" in caplog.text
+    assert "rolled_back_changes=0" in caplog.text
+    with connect() as conn:
+        assert conn.execute("SELECT status, attempt FROM ai_task_runs WHERE id = 'run'").fetchone() == dict(status="completed", attempt=2)
+
+
+def test_first_execution_records_attempt_without_warning(journal_database, caplog):
+    connect = journal_database
+    with caplog.at_level("WARNING", logger="task_journal"):
+        journal.execute(command(), lambda: {})
+    assert "[중단된 run 재실행]" not in caplog.text
+    with connect() as conn:
+        assert conn.execute("SELECT attempt FROM ai_task_runs WHERE id = 'run'").fetchone()["attempt"] == 1
