@@ -108,3 +108,11 @@ class WikiSchemaResponse(BaseModel):
 
 class CreateWikiSchemaDraftResponse(BaseModel):
     wiki_schema: WikiSchemaResponse
+
+
+class ListWikiSchemaDraftsResponse(BaseModel):
+    wiki_schemas: list[WikiSchemaResponse]
+
+    @classmethod
+    def from_domain(cls, records: list[WikiSchemaRecord]) -> "ListWikiSchemaDraftsResponse":
+        return cls(wiki_schemas=[WikiSchemaResponse.from_domain(record) for record in records])
