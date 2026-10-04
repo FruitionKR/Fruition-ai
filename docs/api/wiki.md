@@ -130,6 +130,12 @@ curl -X GET "$PIPELINE/wiki/documents/<value>/context?workspace_id=<value>" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_document_wiki_context_wiki_documents__document_id__context_get`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:63 (`app.wiki-state.endpoint`).
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-get-wiki-documents-document-id-context)
 
 </details>
@@ -236,6 +242,12 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_wiki_graph_wiki_graph_get`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:35.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-get-wiki-graph)
 
@@ -374,6 +386,12 @@ curl -X POST "$PIPELINE/wiki/ingest-restore-runs" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: restore_ingest_operation_wiki_ingest_restore_runs_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 복구 command를 Kafka `ai.maintenance.command`로 발행한다(Fruition-document `src/main/java/fruition/core/aihistory/service/RestoreExecuteService.java`:132). ai-svc는 `app/workers/task_worker.py`의 `kind: restore_ingest`·`restore_lint` 분기로 처리한다.
+- 아웃바운드 호출: 없음(AI DB 복구).
+- 미연동 표시: HTTP는 미연동. 같은 로직이 Kafka로 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-wiki-ingest-restore-runs)
 
 </details>
@@ -503,6 +521,12 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: restore_lint_operation_wiki_lint_restore_runs_post`)
+
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 복구 command를 Kafka `ai.maintenance.command`로 발행한다(Fruition-document `src/main/java/fruition/core/aihistory/service/RestoreExecuteService.java`:132). ai-svc는 `app/workers/task_worker.py`의 `kind: restore_ingest`·`restore_lint` 분기로 처리한다.
+- 아웃바운드 호출: 없음(AI DB 복구).
+- 미연동 표시: HTTP는 미연동. 같은 로직이 Kafka로 연결되어 있다.
 
 [↑ 요약으로 돌아가기](#summary-post-wiki-lint-restore-runs)
 
@@ -662,6 +686,12 @@ curl -X POST "$PIPELINE/wiki/maintenance/lint" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: lint_wiki_workspace_wiki_maintenance_lint_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 Kafka `ai.maintenance.command`(`kind: lint`)를 발행한다(Fruition-document `src/main/java/fruition/core/wikimaintenance/service/WikiMaintenanceService.java`:66).
+- 아웃바운드 호출: LLM provider(승격 생성).
+- 미연동 표시: HTTP는 미연동. 같은 로직이 Kafka로 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-wiki-maintenance-lint)
 
 </details>
@@ -783,6 +813,12 @@ curl -X POST "$PIPELINE/wiki/pages/lookup" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: lookup_wiki_pages_wiki_pages_lookup_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:54.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-post-wiki-pages-lookup)
 
 </details>
@@ -890,6 +926,12 @@ curl -X GET "$PIPELINE/wiki/pages/<value>?workspace_id=<value>" \
 
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_wiki_page_wiki_pages__page_id__get`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:43.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-get-wiki-pages-page-id)
 
@@ -1009,6 +1051,12 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: rename_wiki_page_wiki_pages__page_id__rename_patch`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiPageRequester.java`:37 (`app.wiki-page.endpoint`).
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-patch-wiki-pages-page-id-rename)
 
 </details>
@@ -1117,6 +1165,12 @@ curl -X DELETE "$PIPELINE/wiki/workspaces/<value>/documents/<value>" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: delete_document_wiki_data_wiki_workspaces__workspace_id__documents__document_id__delete`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:70.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-delete-wiki-workspaces-workspace-id-documents-document-id)
 
 </details>
@@ -1223,6 +1277,12 @@ curl -X GET "$PIPELINE/wiki/workspaces/<value>/last-updated" \
 
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_last_wiki_updated_wiki_workspaces__workspace_id__last_updated_get`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wiki/repository/PipelineWikiStateRequester.java`:77.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-get-wiki-workspaces-workspace-id-last-updated)
 

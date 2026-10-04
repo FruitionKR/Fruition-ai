@@ -1277,6 +1277,17 @@ components:
       - target_operation_id
       title: LintOperationRestoreIn
       type: object
+    ListWikiSchemaDraftsResponse:
+      properties:
+        wiki_schemas:
+          items:
+            $ref: '#/components/schemas/WikiSchemaResponse'
+          title: Wiki Schemas
+          type: array
+      required:
+      - wiki_schemas
+      title: ListWikiSchemaDraftsResponse
+      type: object
     MarkdownAgentRunStatusResponse:
       properties:
         apply_operation_id:
@@ -4576,6 +4587,45 @@ paths:
       tags:
       - wiki-schema
   /wiki-schema/drafts:
+    get:
+      operationId: list_wiki_schema_drafts_wiki_schema_drafts_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWikiSchemaDraftsResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Wiki Schema Drafts
+      tags:
+      - wiki-schema
     post:
       operationId: create_wiki_schema_draft_wiki_schema_drafts_post
       parameters:

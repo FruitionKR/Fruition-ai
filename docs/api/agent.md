@@ -339,6 +339,12 @@ curl -X POST "$PIPELINE/agent/turn" \
 - 진입점: `pipeline/app/modules/agent/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: handle_agent_turn_agent_turn_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 Kafka `ai.agent.command`(`kind: agent`)를 발행하고(Fruition-document `src/main/java/fruition/core/agent/service/AgentTurnService.java`:131) ai-svc `app/workers/task_worker.py`가 같은 use case를 실행한다.
+- 아웃바운드 호출: LLM provider(`app/modules/wiki_generation/infrastructure/chat_completions_llm.py`), Tool 실행·읽기는 document-svc `POST /internal/agent/tools/{execute,read}/{tool_name}`(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:27,51`).
+- 미연동 표시: 없음. Kafka 경로로 프런트엔드 Agent 채팅까지 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-agent-turn)
 
 </details>
@@ -445,6 +451,12 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_agent_run_agent_runs__run_id__get`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:45-47,61-62,106-113 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: 없음.
+
 </details>
 
 <a id="summary-post-agent-runs-run-id-approve"></a>
@@ -529,6 +541,12 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: approve_agent_run_agent_runs__run_id__approve_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:69 → 84-90 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 승인 실행은 Tool gateway를 거쳐 document-svc `POST /internal/agent/tools/execute/{tool_name}`를 호출한다(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:51`).
+- 미연동 표시: 없음.
 
 </details>
 
@@ -616,6 +634,12 @@ curl -X POST "$PIPELINE/agent/runs/run_123/cancel" \
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: cancel_agent_run_agent_runs__run_id__cancel_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:77 → 84-90 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 갱신).
+- 미연동 표시: 없음.
+
 </details>
 
 <a id="summary-post-agent-runs-run-id-reject"></a>
@@ -695,6 +719,12 @@ curl -X POST "$PIPELINE/agent/runs/run_123/reject" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: reject_agent_run_agent_runs__run_id__reject_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:73 → 84-90 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 갱신).
+- 미연동 표시: 없음.
 
 </details>
 
@@ -779,6 +809,12 @@ curl -X POST "$PIPELINE/agent/runs/run_123/revise" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: revise_agent_run_agent_runs__run_id__revise_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:81 → 84-90 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 갱신).
+- 미연동 표시: 없음.
 
 </details>
 
@@ -911,6 +947,12 @@ curl -X POST "$PIPELINE/internal/agent/runs/artifacts/list" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: list_agent_artifacts_internal_agent_runs_artifacts_list_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentArtifactClient.java`:39 (`app.agent.status-endpoint` + `/artifacts`).
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-post-internal-agent-runs-artifacts-list)
 
@@ -1049,6 +1091,12 @@ curl -X POST "$PIPELINE/internal/agent/runs/artifacts/register" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: register_agent_artifact_internal_agent_runs_artifacts_register_post`)
+
+#### 연동
+
+- 인바운드 호출자: **호출자 없음.** `PipelineAgentArtifactClient`는 `/list`·`/resolve`만 호출한다(Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentArtifactClient.java`:39,59). `artifacts/register` 문자열은 document-svc 전체에서 검색되지 않는다.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: **미연동.** ai-svc 내부에서도 이 route를 호출하는 경로가 없다.
 
 [↑ 요약으로 돌아가기](#summary-post-internal-agent-runs-artifacts-register)
 
@@ -1189,6 +1237,12 @@ curl -X POST "$PIPELINE/internal/agent/runs/artifacts/resolve" \
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: resolve_agent_artifact_internal_agent_runs_artifacts_resolve_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentArtifactClient.java`:59.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-post-internal-agent-runs-artifacts-resolve)
 
 </details>
@@ -1307,6 +1361,12 @@ curl -X POST "$PIPELINE/internal/agent/runs/tool-authorizations/execute" \
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: authorize_agent_tool_execute_internal_agent_runs_tool_authorizations_execute_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentToolAuthorizationClient.java`:39 → 48 (`app.agent.status-endpoint` + `/tool-authorizations`).
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-post-internal-agent-runs-tool-authorizations-execute)
 
 </details>
@@ -1417,6 +1477,12 @@ curl -X POST "$PIPELINE/internal/agent/runs/tool-authorizations/read" \
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: authorize_agent_tool_read_internal_agent_runs_tool_authorizations_read_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentToolAuthorizationClient.java`:34 → 48.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-post-internal-agent-runs-tool-authorizations-read)
 
@@ -1542,6 +1608,12 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 
 - 진입점: `pipeline/app/modules/agent_run/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_markdown_agent_run_internal_agent_runs__run_id__get`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:118-120 (`app.agent.status-endpoint`, `X-Internal-Token`).
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-get-internal-agent-runs-run-id)
 

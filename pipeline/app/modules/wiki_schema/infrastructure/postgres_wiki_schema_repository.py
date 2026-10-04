@@ -99,6 +99,21 @@ class PostgresWikiSchemaRepository(WikiSchemaRepositoryPort):
             ).fetchone()
         return _row_to_record(row) if row else None
 
+    def list_drafts(self, workspace_id: str, user_id: str) -> list[WikiSchemaRecord]:
+        # get_active 와 동일하게 workspace_id + user_id 로 범위를 좁힌다.
+        # created_at 동일 시에도 순서가 흔들리지 않도록 id 를 보조 정렬 키로 둔다.
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM wiki_schemas
+                WHERE workspace_id = %s AND user_id = %s AND status = 'draft'
+                ORDER BY created_at DESC, id DESC
+                """,
+                (workspace_id, user_id),
+            ).fetchall()
+        return [_row_to_record(row) for row in rows]
+
 
 def _row_to_record(row: dict[str, Any]) -> WikiSchemaRecord:
     lint_result = row.get("lint_result") or {}

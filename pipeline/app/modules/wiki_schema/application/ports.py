@@ -20,3 +20,6 @@ class WikiSchemaRepositoryPort(Protocol):
 
     def get_active(self, workspace_id: str, user_id: str) -> WikiSchemaRecord | None:
         ...
+
+    def list_drafts(self, workspace_id: str, user_id: str) -> list[WikiSchemaRecord]:
+        ...
