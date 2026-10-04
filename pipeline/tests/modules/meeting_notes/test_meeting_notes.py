@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -226,10 +228,11 @@ def test_truncated_json_retries_with_a_smaller_batch():
     client.complete_json.side_effect = respond
     result = GenerateMeetingNotes(ChatMeetingNotes(client)).execute("회의", segments)
 
-    assert [
+    assert sorted(
         batch_segment_ids(call) for call in client.complete_json.call_args_list
-    ] == [["s0", "s1"], ["s0"], ["s1"]]
-    assert len(result["summary"]) == 2
+    ) == [["s0"], ["s0", "s1"], ["s1"]]
+    # 쪼갠 뒤에도 전사 순서대로 합친다.
+    assert [item["source_segment_ids"] for item in result["summary"]] == [["s0"], ["s1"]]
 
 
 def test_truncated_json_on_a_single_segment_is_not_swallowed():
@@ -249,3 +252,117 @@ def test_meeting_notes_client_requests_a_large_enough_completion_budget(monkeypa
     assert config.max_tokens > 4096
     # 다른 호출자는 기존 기본값을 그대로 쓴다.
     assert ChatClientConfig(api_key="k", model="gpt-5-nano").max_tokens is None
+
+
+def section_of(data, *, items=1):
+    """해당 묶음의 첫 구간을 근거로 삼는 최소 회의록 응답을 만든다."""
+    first = json.loads(data)["segments"][0]["id"]
+    return {
+        "summary": [
+            {"text": f"요약 {first}-{i}", "source_segment_ids": [first]}
+            for i in range(items)
+        ],
+        "decisions": [],
+        "action_items": [],
+        "open_questions": [],
+    }
+
+
+def test_batches_are_requested_concurrently_in_bounded_parallel():
+    # 묶음 수가 상한보다 많아도 동시 호출 수는 상한을 넘지 않는다.
+    segments = long_segments(chat_meeting_notes.MAX_CONCURRENT_BATCHES * 2 + 1, chars=20000)
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+    client = Mock()
+
+    def respond(system, data, **kwargs):
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        return section_of(data)
+
+    client.complete_json.side_effect = respond
+    result = GenerateMeetingNotes(ChatMeetingNotes(client)).execute("회의", segments)
+
+    assert client.complete_json.call_count == len(segments)
+    assert state["peak"] > 1
+    assert state["peak"] <= chat_meeting_notes.MAX_CONCURRENT_BATCHES
+    assert len(result["summary"]) == len(segments)
+
+
+def test_merge_order_follows_batches_not_completion_order():
+    # 먼저 끝난 묶음이 앞으로 오지 않아야 한다. 뒤쪽 묶음을 일부러 먼저 끝낸다.
+    segments = long_segments(4, chars=20000)
+    client = Mock()
+
+    def respond(system, data, **kwargs):
+        first = json.loads(data)["segments"][0]["id"]
+        time.sleep(0.2 - 0.04 * int(first[1:]))
+        return section_of(data)
+
+    client.complete_json.side_effect = respond
+    result = GenerateMeetingNotes(ChatMeetingNotes(client)).execute("회의", segments)
+
+    assert [item["source_segment_ids"] for item in result["summary"]] == [
+        [s.id] for s in segments
+    ]
+    assert [item["text"] for item in result["summary"]] == [
+        f"요약 {s.id}-0" for s in segments
+    ]
+
+
+def test_hard_failure_in_one_batch_fails_the_whole_call():
+    # 전사 한 묶음이 전송 오류로 실패하면 부분 회의록을 돌려주지 않고 그대로 실패한다.
+    segments = long_segments(4, chars=20000)
+    client = Mock()
+
+    def respond(system, data, **kwargs):
+        if json.loads(data)["segments"][0]["id"] == "s2":
+            raise RuntimeError("LLM API HTTP 500")
+        return section_of(data)
+
+    client.complete_json.side_effect = respond
+    with pytest.raises(RuntimeError, match="LLM API HTTP 500"):
+        GenerateMeetingNotes(ChatMeetingNotes(client)).execute("회의", segments)
+
+
+def test_split_retries_also_run_concurrently_and_keep_order():
+    # 쪼갠 묶음도 같은 상한 안에서 동시에 다시 묻는다.
+    segments = long_segments(4, chars=20000)
+    client = Mock()
+
+    def respond(system, data, **kwargs):
+        batch = json.loads(data)["segments"]
+        if len(batch) > 1:
+            raise JsonParseError("Model output is not repairable JSON")
+        return section_of(data)
+
+    client.complete_json.side_effect = respond
+    result = GenerateMeetingNotes(ChatMeetingNotes(client)).execute("회의", segments)
+
+    assert [item["source_segment_ids"] for item in result["summary"]] == [
+        [s.id] for s in segments
+    ]
+
+
+def test_meeting_notes_call_budget_fits_the_document_side_deadline():
+    # document-svc의 HTTP 호출 예산 270초 안에 최악의 경우가 들어와야 한다.
+    worst_case = (
+        chat_meeting_notes.BATCH_TIMEOUT_SECONDS
+        * (chat_meeting_notes.MAX_BATCH_RETRIES + 1)
+        * chat_meeting_notes.MAX_SPLIT_ROUNDS
+    )
+    assert worst_case <= 240
+
+
+def test_meeting_notes_client_uses_its_own_timeout_and_retry_budget(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    config = get_meeting_notes()._generator._client.config
+    assert config.timeout_seconds == chat_meeting_notes.BATCH_TIMEOUT_SECONDS
+    assert config.max_retries == chat_meeting_notes.MAX_BATCH_RETRIES
+    # 다른 호출자는 기존 기본값을 그대로 쓴다.
+    default = ChatClientConfig(api_key="k", model="gpt-5-nano")
+    assert (default.timeout_seconds, default.max_retries) == (180, 2)

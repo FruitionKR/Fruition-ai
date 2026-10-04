@@ -5,6 +5,8 @@ from app.modules.meeting_notes.application.generate_meeting_notes import (
     GenerateMeetingNotes,
 )
 from app.modules.meeting_notes.infrastructure.chat_meeting_notes import (
+    BATCH_TIMEOUT_SECONDS,
+    MAX_BATCH_RETRIES,
     MAX_OUTPUT_TOKENS,
     ChatMeetingNotes,
 )
@@ -27,6 +29,8 @@ def get_meeting_notes() -> GenerateMeetingNotes:
                     model="gpt-5-nano",
                     json_mode=True,
                     max_tokens=MAX_OUTPUT_TOKENS,
+                    timeout_seconds=BATCH_TIMEOUT_SECONDS,
+                    max_retries=MAX_BATCH_RETRIES,
                 ),
             )
         )
