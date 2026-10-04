@@ -4,16 +4,19 @@ from app.modules.wiki_schema.application.activate_schema import ActivateSchemaUs
 from app.modules.wiki_schema.application.build_schema_preview import build_schema_preview
 from app.modules.wiki_schema.application.create_schema_draft import CreateSchemaDraftUseCase
 from app.modules.wiki_schema.application.get_active_schema import GetActiveSchemaUseCase
+from app.modules.wiki_schema.application.list_schema_drafts import ListSchemaDraftsUseCase
 from app.modules.wiki_schema.application.organize_schema import OrganizeSchemaUseCase
 from app.modules.wiki_schema.interfaces.http.dependencies import (
     get_activate_schema_use_case,
     get_active_schema_use_case,
     get_create_schema_draft_use_case,
+    get_list_schema_drafts_use_case,
     get_organize_schema_use_case,
 )
 from app.modules.wiki_schema.interfaces.http.schemas import (
     CreateWikiSchemaDraftRequest,
     CreateWikiSchemaDraftResponse,
+    ListWikiSchemaDraftsResponse,
     WikiSchemaPreviewRequest,
     WikiSchemaPreviewResponse,
     WikiSchemaResponse,
@@ -58,6 +61,21 @@ def create_wiki_schema_draft(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return CreateWikiSchemaDraftResponse(wiki_schema=WikiSchemaResponse.from_domain(record))
+
+
+@router.get("/drafts", response_model=ListWikiSchemaDraftsResponse)
+def list_wiki_schema_drafts(
+    workspace_id: str,
+    user_id: str,
+    use_case: ListSchemaDraftsUseCase = Depends(get_list_schema_drafts_use_case),
+) -> ListWikiSchemaDraftsResponse:
+    try:
+        records = use_case.execute(workspace_id, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ListWikiSchemaDraftsResponse.from_domain(records)
 
 
 @router.post("/{schema_id}/activate", response_model=WikiSchemaResponse)
