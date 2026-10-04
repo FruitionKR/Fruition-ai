@@ -164,6 +164,12 @@ curl -X POST "$PIPELINE/chat-wiki/runs" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: run_chat_wiki_endpoint_chat_wiki_runs_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 Kafka `ai.ingest.command`(`kind: chat_wiki`)를 발행한다(Fruition-document `src/main/java/fruition/core/document/repository/IngestCommandOutbox.java`:56, 호출처 Fruition-document `src/main/java/fruition/core/document/service/DocumentService.java`:1206). 수동·운영 인터페이스다.
+- 아웃바운드 호출: 문서 본문은 document-svc `GET /internal/documents/{document_id}/pipeline-source`(`app/modules/wiki_ingestion/infrastructure/backend_document_reader.py:19`), 기여 기록은 `POST /internal/wiki/contributions`(같은 파일 52행), 그리고 LLM provider.
+- 미연동 표시: HTTP는 미연동이지만 같은 로직이 Kafka로 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-chat-wiki-runs)
 
 </details>
@@ -295,6 +301,12 @@ curl -X POST "$PIPELINE/pipeline/reingest-runs" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: run_reingest_pipeline_endpoint_pipeline_reingest_runs_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** 재편입도 Kafka `ai.ingest.command`로 발행한다(Fruition-document `src/main/java/fruition/core/document/repository/IngestCommandOutbox.java`:56).
+- 아웃바운드 호출: 위 `POST /chat-wiki/runs`와 같다.
+- 미연동 표시: HTTP는 미연동. 운영·수동 재실행용이다.
+
 [↑ 요약으로 돌아가기](#summary-post-pipeline-reingest-runs)
 
 </details>
@@ -425,6 +437,12 @@ curl -X POST "$PIPELINE/pipeline/runs" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: run_pipeline_endpoint_pipeline_runs_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 Kafka `ai.ingest.command`(`kind: document`)를 발행한다(Fruition-document `src/main/java/fruition/core/document/repository/IngestCommandOutbox.java`:56). `app.pipeline-run.endpoint`는 상태 조회에만 쓴다.
+- 아웃바운드 호출: 위 `POST /chat-wiki/runs`와 같다.
+- 미연동 표시: HTTP는 미연동. 같은 로직이 Kafka로 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-pipeline-runs)
 
 </details>
@@ -532,6 +550,12 @@ curl -X GET "$PIPELINE/pipeline/runs/<value>" \
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_pipeline_run_pipeline_runs__run_id__get`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/document/repository/PipelineRunStatusRequester.java`:30 (`app.pipeline-run.endpoint`).
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-get-pipeline-runs-run-id)
 
 </details>
@@ -637,6 +661,12 @@ string
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_pipeline_logs_pipeline_runs__run_id__logs_get`)
 
+#### 연동
+
+- 인바운드 호출자: **호출자 없음.** document-svc에 `/logs`를 호출하는 코드가 없다. 운영자 수동 조회용이다.
+- 아웃바운드 호출: 없음(로그 저장소 조회).
+- 미연동 표시: **미연동.** 서비스 간 호출자가 없다.
+
 [↑ 요약으로 돌아가기](#summary-get-pipeline-runs-run-id-logs)
 
 </details>
@@ -741,8 +771,14 @@ curl -X GET "$PIPELINE/documents/<value>" \
 
 #### 10. 구현 파일
 
-- 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
+- 진입점: `pipeline/api.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_document_documents__document_id__get`)
+
+#### 연동
+
+- 인바운드 호출자: **호출자 없음.** 문서 조회의 실제 방향은 반대다 — ai-svc가 document-svc `GET /internal/documents/{document_id}/pipeline-source`(Fruition-document `src/main/java/fruition/core/document/controller/InternalDocumentController.java`:55)를 호출한다.
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: **미연동.** 운영 점검용으로만 남아 있다.
 
 [↑ 요약으로 돌아가기](#summary-get-documents-document-id)
 
@@ -820,8 +856,14 @@ curl -X GET "$PIPELINE/health"
 
 #### 10. 구현 파일
 
-- 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
+- 진입점: `pipeline/api.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: health_health_get`)
+
+#### 연동
+
+- 인바운드 호출자: 서비스 간 호출자 없음. 컨테이너·오케스트레이터 probe용이다.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 해당 없음(운영 probe).
 
 [↑ 요약으로 돌아가기](#summary-get-health)
 

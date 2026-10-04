@@ -213,6 +213,12 @@ curl -X GET "$PIPELINE/skills?workspace_id=<value>&user_id=<value>" \
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: list_skills_skills_get`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:58-63 → 114 (`app.skill.endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-get-skills)
 
 </details>
@@ -268,7 +274,14 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 
 #### 10. 구현 파일
 
-`app/modules/skill/interfaces/http/routes.py`, `pipeline/api-specs/openapi.yaml`.
+- 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
+- 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: execute_skill_task_skills_tasks_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:102-107 → 124 (`app.skill.endpoint`, `X-Agent-Service-Token`). `kind`는 `skill_author`·`skill_publish`·`skill_update`다.
+- 아웃바운드 호출: LLM provider. 참조 읽기는 document-svc `POST /internal/agent/skill-authoring/references/read`(`pipeline/app/modules/skill/infrastructure/backend_skill_reference_reader.py`:27, `DOCUMENT_INTERNAL_BASE_URL`), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19).
+- 미연동 표시: 없음.
 
 <a id="summary-post-skills-draft-from-runs-preview"></a>
 ### `POST /skills/draft-from-runs/preview`
@@ -382,6 +395,12 @@ workspace·user 소유권과 완료 상태를 확인한 canonical run 결과만 
 
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: propose_skill_draft_skills_draft_from_runs_preview_post`)
+
+#### 연동
+
+- 인바운드 호출자: **호출자 없음.** document-svc에 `draft-from-runs` 문자열이 없다. ai-svc 내부 기능이다.
+- 아웃바운드 호출: LLM provider.
+- 미연동 표시: **미연동.** 추가로 `AGENT_SKILLS_ENABLED=true`가 아니면 노출 자체가 되지 않는다(기본값 false).
 
 </details>
 
@@ -509,6 +528,12 @@ curl -X POST "$PIPELINE/skills/preview" \
 
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: preview_skill_skills_preview_post`)
+
+#### 연동
+
+- 인바운드 호출자: **호출자 없음.** document-svc에 `skills/preview` 문자열이 없다. 작성·게시·수정은 모두 `POST /skills/tasks`로 간다.
+- 아웃바운드 호출: LLM provider.
+- 미연동 표시: **미연동.**
 
 [↑ 요약으로 돌아가기](#summary-post-skills-preview)
 
@@ -694,6 +719,12 @@ curl -X GET "$PIPELINE/skills/<value>?workspace_id=<value>&user_id=<value>" \
 
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_skill_skills__skill_id__get`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:66-70 → 114.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-get-skills-skill-id)
 
@@ -887,6 +918,12 @@ curl -X POST "$PIPELINE/skills/<value>/disable" \
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: disable_skill_skills__skill_id__disable_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:82-83 → 124.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-post-skills-skill-id-disable)
 
 </details>
@@ -1079,17 +1116,90 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
 - 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: enable_skill_skills__skill_id__enable_post`)
 
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:82-83 → 124.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: 없음.
+
 [↑ 요약으로 돌아가기](#summary-post-skills-skill-id-enable)
 
 </details>
 
 <a id="delete-skill"></a>
-## `DELETE /skills/{skill_id}`
+### `DELETE /skills/{skill_id}`
 
+#### 1. Method + Path
+
+`DELETE /skills/{skill_id}`
+
+#### 2. 목적
+
+Skill과 그 버전을 삭제하고 과거 실행 기록은 보존합니다.
+
+#### 3. Auth 필요 여부
+
+- 필요
 - `SKILL_API_ENABLED=true`에서 노출하며 `X-Agent-Service-Token` 인증이 필요하다.
-- Query: `workspace_id`, `user_id` 필수. 공개 API에서 검증한 actor를 Document 서비스가 전달한다.
-- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER만 삭제할 수 있다. 기존 관리 권한으로 행을 잠근 뒤 같은 트랜잭션에서 삭제한다.
-- 성공: `204`, 응답 본문 없음. 존재하지 않거나 삭제할 수 없는 스킬: `404`.
-- 스킬의 모든 버전과 버전 출처는 CASCADE로 삭제한다. 과거 `agent_runs`는 유지하고 `skill_version_id`만 NULL로 바뀐다. 실행 중 작업을 취소하는 API는 아니다.
-- 삭제 후 목록·커맨드 검색·새 에이전트 스킬 선택에서 제외되며, 같은 커맨드로 새 스킬을 만들 수 있다.
-- PostgreSQL 권한·삭제 검증: `SKILL_TEST_DSN`을 지정하고 `pytest tests/modules/skill/test_delete_skill_postgres.py` 실행. 임시 스키마에서 검증한 뒤 전체 롤백한다.
+
+#### 4. Request body
+
+| 위치 | 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|---|
+| path | `skill_id` | `string` | 예 | 삭제할 Skill |
+| query | `workspace_id` | `string` | 예 | 공개 API에서 검증한 workspace |
+| query | `user_id` | `string` | 예 | 공개 API에서 검증한 actor |
+| header | `X-Agent-Service-Token` | `string` | 예 (인증 계층 검증) | - |
+
+- 본문 없음.
+
+#### 5. Response body
+
+- HTTP `204`: 응답 본문 없음.
+
+#### 6. Error response
+
+| HTTP 상태 | 설명 |
+|---|---|
+| `404` | 존재하지 않거나 삭제할 수 없는 스킬 |
+| `422` | 요청 검증 실패 — `HTTPValidationError` |
+| `401` | Agent 서비스 토큰 누락 또는 불일치 |
+| `503` | Agent 서비스 인증 미설정 |
+
+#### 7. Pagination / filtering
+
+- 페이지네이션: 지원하지 않음
+- 필터링: 지원하지 않음 (`workspace_id`·`user_id`는 actor scope다)
+
+#### 8. 권한 규칙
+
+- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER만 삭제할 수 있다.
+  기존 관리 권한으로 행을 잠근 뒤 같은 트랜잭션에서 삭제한다.
+- 스킬의 모든 버전과 버전 출처는 CASCADE로 삭제한다. 과거 `agent_runs`는 유지하고
+  `skill_version_id`만 NULL로 바뀐다. 실행 중 작업을 취소하는 API는 아니다.
+- 삭제 후 목록·커맨드 검색·새 에이전트 스킬 선택에서 제외되며, 같은 커맨드로 새 스킬을
+  만들 수 있다.
+
+#### 9. 예시 요청/응답
+
+```bash
+curl -X DELETE "$PIPELINE/skills/skill_example?workspace_id=ws_example&user_id=user_example" \
+  -H 'X-Agent-Service-Token: <value>'
+```
+
+`204 No Content`, 응답 본문 없음.
+
+PostgreSQL 권한·삭제 검증: `SKILL_TEST_DSN`을 지정하고
+`pytest tests/modules/skill/test_delete_skill_postgres.py` 실행.
+임시 스키마에서 검증한 뒤 전체 롤백한다.
+
+#### 10. 구현 파일
+
+- 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py`
+- 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: delete_skill_skills__skill_id__delete`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:85-93 (`app.skill.endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 없음(AI DB 삭제).
+- 미연동 표시: 없음.
