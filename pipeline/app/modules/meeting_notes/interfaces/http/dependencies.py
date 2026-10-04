@@ -4,7 +4,12 @@ from app.core.llm_env import api_key_from_env
 from app.modules.meeting_notes.application.generate_meeting_notes import (
     GenerateMeetingNotes,
 )
-from app.modules.meeting_notes.infrastructure.chat_meeting_notes import ChatMeetingNotes
+from app.modules.meeting_notes.infrastructure.chat_meeting_notes import (
+    BATCH_TIMEOUT_SECONDS,
+    MAX_BATCH_RETRIES,
+    MAX_OUTPUT_TOKENS,
+    ChatMeetingNotes,
+)
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
@@ -19,7 +24,13 @@ def get_meeting_notes() -> GenerateMeetingNotes:
         ChatMeetingNotes(
             ChatCompletionsJsonClient(
                 ChatClientConfig(
-                    api_key=key, provider="openai", model="gpt-5-nano", json_mode=True
+                    api_key=key,
+                    provider="openai",
+                    model="gpt-5-nano",
+                    json_mode=True,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    timeout_seconds=BATCH_TIMEOUT_SECONDS,
+                    max_retries=MAX_BATCH_RETRIES,
                 ),
             )
         )
