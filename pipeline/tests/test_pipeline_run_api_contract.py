@@ -644,6 +644,8 @@ def test_internal_token_is_required_when_not_configured(monkeypatch) -> None:
         api.require_internal_token("token")
 
     assert exc_info.value.status_code == 503
+    # detail을 고정해 두지 않으면 같은 이름의 다른 정의로 바뀌어도 테스트가 통과한다.
+    assert exc_info.value.detail == "Internal token authentication is not configured."
 
 
 def test_internal_token_rejects_invalid_value(monkeypatch) -> None:
@@ -653,6 +655,7 @@ def test_internal_token_rejects_invalid_value(monkeypatch) -> None:
         api.require_internal_token("wrong-token")
 
     assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid internal token."
 
 
 def test_internal_token_accepts_matching_value(monkeypatch) -> None:
