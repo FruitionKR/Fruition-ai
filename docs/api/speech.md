@@ -160,3 +160,64 @@ Agent 승인·감사 경로에 회의록 작업을 등록하는 것은 별도 �
 공식 계약: [실시간 전사](https://developers.openai.com/api/docs/guides/realtime-transcription),
 [파일 전사](https://developers.openai.com/api/docs/guides/speech-to-text),
 [음성 합성](https://developers.openai.com/api/docs/guides/text-to-speech).
+
+## 연동
+
+다른 도메인 문서와 같은 세 항목을 API마다 기록한다. 음성 사슬은 **서비스 사이는 연결되어
+있으나 프런트엔드에는 진입점이 없다.** document-svc는 `/api/workspaces/{workspace_id}/meetings/**` 공개 REST API와
+`/api/meetings/{meetingId}/live` WebSocket까지 올려 두었지만(Fruition-document
+`src/main/java/fruition/core/meeting/MeetingController.java`,
+`src/main/java/fruition/core/meeting/MeetingLiveConfig.java`:42,
+`src/main/java/fruition/core/meeting/MeetingNotesController.java`),
+Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호출과
+`MediaRecorder`·`getUserMedia`·`navigator.mediaDevices`·`AudioContext`·`WebSocket`·`new Audio(`
+사용이 모두 0건이다. 즉 녹음·실시간 표시·음성 재생 UI가 없어 사용자가 이 경로를 쓸 수 없다.
+
+### `POST /speech/transcriptions`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechTranscriptionClient.java`:31-38 (공개 `POST /api/workspaces/{workspace_id}/speech/transcriptions` 중계), 그리고 회의 녹음 파일 전사 worker `src/main/java/fruition/core/meeting/MeetingTranscriptionWorker.java`:69-72. 둘 다 `app.speech.transcription-endpoint`를 쓴다.
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:30), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
+- 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — 호출하는 화면이 없다.
+
+### `POST /speech/synthesis`
+
+- 인바운드 호출자: **호출자 없음.** document-svc에 `synthesis` 문자열과 TTS endpoint 설정이 없다. `app.speech.*` 설정은 전사·실시간·회의록 세 개뿐이다(Fruition-document `src/main/resources/application.properties`:98,100,103).
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/speech`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:49), access-svc 권한 확인.
+- 미연동 표시: **전 구간 미연동.** 중계하는 backend도, 재생하는 화면도 없다.
+
+### `WS /speech/transcriptions/live`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingLiveHandler.java`:146-152. JDK `HttpClient.newWebSocketBuilder`로 `app.speech.live-endpoint`에 `X-Internal-Token`을 붙여 접속하고, 사용자 쪽은 `/api/meetings/{meetingId}/live`로 받는다.
+- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:70), access-svc 권한 확인.
+- 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — WebSocket을 여는 코드가 없다.
+
+### `POST /meeting-notes/preview`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingNotesClient.java`:32 (`app.speech.meeting-notes-endpoint`).
+- 아웃바운드 호출: OpenAI ChatCompletions(`gpt-5-nano`)를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
+- 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동.**
+
+### 묶음 동시 호출 (`/meeting-notes/preview` 구현 기준)
+
+`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py` 기준이다.
+
+- 전사를 순서대로 `BATCH_CHAR_BUDGET = 25000`자 단위로 묶고, 묶음을 `ThreadPoolExecutor`로
+  최대 `MAX_CONCURRENT_BATCHES = 4`개까지 동시에 호출한다. 소요 시간은 묶음 수가 아니라
+  호출 예산이 정한다.
+- 묶음 호출 하나는 `BATCH_TIMEOUT_SECONDS = 60`, 재시도 `MAX_BATCH_RETRIES = 1`,
+  출력 예산 `MAX_OUTPUT_TOKENS = 16000`이다.
+- 응답 JSON이 잘리면(`JsonParseError`) 그 묶음을 절반으로 쪼개 다시 묻는다. 라운드 상한은
+  `MAX_SPLIT_ROUNDS = 2`이고, 더 쪼갤 수 없거나 라운드가 남지 않으면 실패로 올린다.
+  최악의 경우 60초 × (재시도 1 + 1) × 라운드 2 = 240초다.
+- 묶음별 결과는 완료 순서가 아니라 전사 순서로 합친다. 각 항목의 `source_segment_ids`는
+  그 묶음에 실제로 있는 구간 id만 남기고, 근거가 하나도 남지 않으면 항목을 버린다.
+  합칠 때 섹션당 `MAX_SECTION_ITEMS = 100`개, 항목당 `MAX_ITEM_CHARS = 2000`자로 맞춘다.
+- 전송 오류는 그대로 올라오며 부분 회의록을 만들지 않는다.
+
+### 위 "Document 저장 경로 재사용" 표의 현재 상태
+
+그 표는 AI 응답을 기존 문서 저장 API로 직접 보내는 안을 적은 것이고, document-svc는 그 뒤
+전용 경로를 구현했다. 현재는 `POST /api/workspaces/{workspace_id}/meetings/{meeting_id}/notes`로
+초안 버전을 만들고 `.../notes/{version}/append-preview`·`.../notes/{version}/apply`로
+문서에 반영한다(Fruition-document `src/main/java/fruition/core/meeting/MeetingNotesController.java`:54,75,98,126).
+ai-svc가 저장하지 않는다는 서술은 그대로 유효하다. 저장·버전·멱등 키 책임은 document-svc에 있다.

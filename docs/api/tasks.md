@@ -29,3 +29,38 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 - AI DB `ai_model_usage`에 공통 ChatCompletions 클라이언트의 호출 시작과 응답 사용량을 별도 트랜잭션으로 기록한다. 호출 전 원장 기록 실패 시 모델을 호출하지 않는다. 응답 기록 실패·프로세스 중단 시 시작 기록이 미완료로 남는다. 실패·취소로 사용량 원장을 롤백하지 않는다.
 - Kafka 작업(ingest/query/agent/maintenance), journal 기반 Skill 작업, Agent worker와 채팅 제목 생성의 사용자 컨텍스트를 전달한다. 의미 추출 스레드에는 기존 `copy_context` 경로가 컨텍스트를 전달한다.
 - 사용자 실행 컨텍스트가 없는 독립 스크립트, 별도 PDF converter, 로컬 임베딩 및 실험용 Jev 직접 호출은 이 원장에 자동 포함되지 않는다. 과거 로그를 소급 집계하지 않는다. SDK 내부 재시도의 미수신 응답 사용량은 확보할 수 없으므로 청구서 대체 자료가 아니다.
+
+## 연동
+
+다른 도메인 문서와 같은 세 항목을 API마다 기록한다. 인바운드는 document-svc의 Java client,
+아웃바운드는 ai-svc가 다시 호출하는 대상이다.
+
+### `POST /internal/ai/tasks/{run_id}/cancel`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:26. base URL은 `app.agent.status-endpoint`의 host에 `/internal/ai/tasks`를 붙여 만든다(같은 파일 22행).
+- 아웃바운드 호출: 없음(AI DB의 취소 command 등록).
+- 미연동 표시: 없음.
+
+### `GET /internal/ai/tasks/{run_id}`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:38-40.
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: 없음.
+
+### `POST /internal/ai/tasks/{run_id}/rollback-backend`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:32.
+- 아웃바운드 호출: document-svc `POST /internal/agent/tools/rollback/{run_id}/changes`, 이어서 각 변경의 `.../changes/{change_id}`와 `.../rollback/{run_id}/finalize-edits`를 `X-Agent-Service-Token`으로 호출한다(`pipeline/app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20). base URL은 `AGENT_BACKEND_URL`(기본 `http://document-svc:8080`)이다.
+- 미연동 표시: 없음.
+
+### `POST /internal/ai/tasks/documents/{document_id}/cancel`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:45.
+- 아웃바운드 호출: 없음(AI DB 조회).
+- 미연동 표시: 없음.
+
+### `GET /usage/models`
+
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/usage/service/ModelUsageService.java`:35-40 (`app.model-usage.endpoint`, 기본값 `http://localhost:8000/usage/models`).
+- 아웃바운드 호출: 없음(AI DB `ai_model_usage` 조회).
+- 미연동 표시: 없음.

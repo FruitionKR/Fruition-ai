@@ -288,6 +288,12 @@ curl -X POST "$PIPELINE/query" \
 - 진입점: `pipeline/app/modules/query/interfaces/http/routes.py`
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: answer_query_query_post`)
 
+#### 연동
+
+- 인바운드 호출자: **HTTP 호출자 없음.** document-svc에 `app.query.endpoint`(Fruition-document `src/main/resources/application.properties`:78, 기본값 `http://localhost:8000/query`)가 선언되어 있으나 이를 읽는 Java 클래스가 없다(사문화된 설정). 공개 Query는 Kafka `ai.query.command`로 보낸다(Fruition-document `src/main/java/fruition/core/query/service/QueryRunService.java`:74).
+- 아웃바운드 호출: LLM provider, `allow_web_search=true`일 때 Tavily `POST https://api.tavily.com/search`(`app/modules/query/infrastructure/web_search.py:14,73`).
+- 미연동 표시: HTTP는 미연동. 같은 application 로직이 `app/workers/task_worker.py`의 Kafka 경로로 프런트엔드까지 연결되어 있다.
+
 [↑ 요약으로 돌아가기](#summary-post-query)
 
 </details>
