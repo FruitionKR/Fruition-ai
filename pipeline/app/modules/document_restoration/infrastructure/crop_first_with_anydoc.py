@@ -275,7 +275,8 @@ def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:
             replacement = region_markdown(output_dir, output_file, region)
             if token in content:
                 before, after = content.split(token, 1)
-                content = f"{before}{replacement}{after.replace(token, '')}"
+                # 문장 중간 마커도 독립 블록으로 넣어야 `$$`·표가 본문 줄에 붙지 않는다.
+                content = f"{before.rstrip()}\n\n{replacement}\n\n{after.replace(token, '').lstrip()}"
             else:
                 content = f"{content.rstrip()}\n\n{replacement}".strip()
         chunks.append(f"<!-- page {page_number} -->\n\n{content.strip()}")
