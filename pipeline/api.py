@@ -46,16 +46,6 @@ SKILL_API_ENABLED = os.environ.get("SKILL_API_ENABLED", "true").lower() in {
 }
 
 
-def require_internal_token(
-    token: str | None = Header(default=None, alias="X-Internal-Token"),
-) -> None:
-    expected = os.environ.get("INTERNAL_CALLBACK_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=503, detail="Internal service authentication is not configured.")
-    if token is None or not compare_digest(token, expected):
-        raise HTTPException(status_code=401, detail="Invalid internal service token.")
-
-
 def require_agent_service_token(
     token: str | None = Header(default=None, alias="X-Agent-Service-Token"),
 ) -> None:
