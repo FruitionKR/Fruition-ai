@@ -17,7 +17,7 @@ from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
 
 
-TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks",
+TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks", "source_block_snapshots",
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
                     "document_derived_state", "skills", "skill_versions", "skill_version_sources"})
 class TaskAlreadyExecutingError(RuntimeError):

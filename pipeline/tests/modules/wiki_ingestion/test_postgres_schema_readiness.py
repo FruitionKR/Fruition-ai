@@ -38,6 +38,22 @@ def test_verify_schema_reports_missing_tables() -> None:
         database.verify_schema()
 
 
+def test_verify_schema_requires_source_block_snapshots() -> None:
+    """편입 저장이 쓰는 테이블이 빠지면 기동 단계에서 드러나야 한다."""
+    schema = database._AI_SCHEMA_SQL_PATH.read_text(encoding="utf-8")
+    assert "source_block_snapshots (" in schema
+    existing_tables = tuple(
+        name for name in database.AI_DB_REQUIRED_TABLES if name != "source_block_snapshots"
+    )
+    connection = _connection_with_tables(existing_tables)
+
+    with (
+        patch.object(database, "connect_ai", return_value=connection),
+        pytest.raises(RuntimeError, match="missing tables: source_block_snapshots"),
+    ):
+        database.verify_schema()
+
+
 def test_verify_agent_schema_accepts_agent_and_checkpoint_tables() -> None:
     connection = _connection_with_tables(database.AGENT_REQUIRED_TABLES)
 

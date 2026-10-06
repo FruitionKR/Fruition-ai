@@ -92,6 +92,21 @@ CREATE TABLE IF NOT EXISTS source_blocks (
     PRIMARY KEY (block_id, document_id)
 );
 
+-- 영구 block_id는 문서 순서와 다르므로 순서·줄 범위를 따로 저장한다.
+-- 줄 범위는 편입 입력 Markdown을 '\n'으로 나눈 1-based 양끝 포함 값이다.
+-- 기존 행과 채팅 문서(레코드 단위 블록)의 줄 범위는 null이다.
+ALTER TABLE source_blocks ADD COLUMN IF NOT EXISTS position integer;
+ALTER TABLE source_blocks ADD COLUMN IF NOT EXISTS line_start integer;
+ALTER TABLE source_blocks ADD COLUMN IF NOT EXISTS line_end integer;
+ALTER TABLE source_blocks ADD COLUMN IF NOT EXISTS block_type varchar(32);
+
+-- 현재 source_blocks를 만든 편입 입력 Markdown의 SHA-256. 블록과 같은 트랜잭션에서 갱신한다.
+CREATE TABLE IF NOT EXISTS source_block_snapshots (
+    document_id varchar(255) PRIMARY KEY,
+    source_content_hash varchar(64) NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS wiki_page_embeddings (
     page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
     embedding_model text NOT NULL,
@@ -508,7 +523,7 @@ DECLARE item text[];
 BEGIN
     FOREACH item SLICE 1 IN ARRAY ARRAY[
         ['pipeline_runs','id'], ['wiki_pages','id'], ['document_wiki_links','document_id,relation_type,wiki_page_id'],
-        ['wiki_page_links','from_page_id,link_type,to_page_id'], ['source_blocks','block_id,document_id'],
+        ['wiki_page_links','from_page_id,link_type,to_page_id'], ['source_blocks','block_id,document_id'], ['source_block_snapshots','document_id'],
         ['wiki_page_embeddings','page_id,embedding_model'], ['wiki_embedding_vectors','id'],
         ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id']
     ] LOOP

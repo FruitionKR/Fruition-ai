@@ -145,7 +145,7 @@ def test_run_pipeline_manifest_preserves_log_callback_url(tmp_path: Path) -> Non
         patch("run_lab._prepare_api_client", return_value=object()),
         patch(
             "run_lab._extract_pipeline_source",
-            return_value=(SimpleNamespace(document_id="doc-1"), [], []),
+            return_value=(SimpleNamespace(document_id="doc-1"), [], [], "0" * 64),
         ),
         patch("run_lab._empty_normalized", return_value=normalized),
         patch("run_lab._assemble_wiki_pages", return_value=page_outputs),
