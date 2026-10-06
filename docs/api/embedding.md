@@ -15,6 +15,6 @@
 
 ## 연동
 
-- 인바운드 호출자: ai-svc Query·Agent(`RemoteEmbeddingModel`, `EMBEDDING_SERVICE_URL`이 설정된 경우). 서버 오류(5xx)와 연결 실패는 한 번 재시도하고, 응답 `model`이 저장 벡터의 모델 이름과 다르면 실패시킵니다.
+- 인바운드 호출자: ai-svc Query·Agent(`RemoteEmbeddingModel`, `EMBEDDING_SERVICE_URL`이 설정된 경우). 요청당 64개를 넘으면 나눠 보내고, 서버 오류(5xx)와 연결 실패만 한 번 재시도하며(타임아웃 제외), 응답 `model`이 저장 벡터의 모델 이름과 다르면 실패시킵니다.
 - 아웃바운드 호출: 없음.
 - 미연동 표시: 배포 매니페스트(Fruition-flatform)와 `EMBEDDING_SERVICE_URL` 설정 전에는 호출자가 없습니다.

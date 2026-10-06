@@ -17,9 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
-
-MAX_TEXTS_PER_REQUEST = 64
-MAX_TEXT_CHARS = 4_000
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, MAX_TEXTS_PER_REQUEST
 
 
 class EmbeddingRequest(BaseModel):
@@ -60,8 +58,9 @@ def require_internal_token(token: str | None = Header(default=None, alias="X-Int
         raise HTTPException(status_code=401, detail="Invalid internal token.")
 
 
+# async로 두어 encode 잠금을 기다리는 요청이 스레드 풀을 채워도 liveness 검사가 막히지 않게 한다.
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     if not _ready.is_set():
         raise HTTPException(status_code=503, detail="Embedding model is loading.")
     return {"status": "ok", "model": _model.model_name}

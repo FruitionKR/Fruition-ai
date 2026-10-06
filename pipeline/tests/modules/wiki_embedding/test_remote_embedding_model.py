@@ -2,7 +2,7 @@ import unittest
 
 import httpx
 
-from app.modules.wiki_embedding.infrastructure.remote_embedding_model import RemoteEmbeddingModel
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXTS_PER_REQUEST, RemoteEmbeddingModel
 
 
 def _model(handler) -> RemoteEmbeddingModel:
@@ -51,6 +51,32 @@ class RemoteEmbeddingModelTest(unittest.TestCase):
 
             self.assertEqual(_model(handler).embed(["a"]), [[1.0]])
             self.assertEqual(len(calls), 2)
+
+    def test_does_not_retry_timeouts(self) -> None:
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            raise httpx.ReadTimeout("slow")
+
+        with self.assertRaises(httpx.ReadTimeout):
+            _model(handler).embed(["a"])
+        self.assertEqual(len(calls), 1)
+
+    def test_splits_requests_by_server_batch_limit(self) -> None:
+        import json
+
+        sizes = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            texts = json.loads(request.read())["texts"]
+            sizes.append(len(texts))
+            return httpx.Response(200, json={"model": "BAAI/bge-m3", "vectors": [[float(len(t))] for t in texts]})
+
+        vectors = _model(handler).embed(["a"] * (MAX_TEXTS_PER_REQUEST + 1))
+
+        self.assertEqual(sizes, [MAX_TEXTS_PER_REQUEST, 1])
+        self.assertEqual(len(vectors), MAX_TEXTS_PER_REQUEST + 1)
 
     def test_does_not_retry_client_errors(self) -> None:
         calls = []

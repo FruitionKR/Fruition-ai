@@ -21,7 +21,7 @@ from app.modules.query.infrastructure.rule_based_query_rewriter import RuleBased
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.query.infrastructure.web_search import build_web_search
 from app.modules.query.interfaces.http.schemas import QueryRequest
-from app.modules.wiki_embedding.infrastructure.remote_embedding_model import RemoteEmbeddingModel
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 
 
 def build_answer_query_use_case(
@@ -91,10 +91,10 @@ def _build_embedding_search(text_search: Bm25Searcher):
 @lru_cache(maxsize=1)
 def _stored_embedding_search() -> StoredWikiPageEmbeddingSearch:
     if os.environ.get("EMBEDDING_SERVICE_URL"):
-        # 임베딩 서버는 짧은 텍스트만 받는다. 저장 벡터가 없는 긴 문서는 질문 시점에 임베딩하지 않고 BM25로 점수를 매긴다.
+        # 임베딩 서버는 짧은 텍스트만 받는다. 저장 벡터가 없는 긴 문서는 질문 시점에 임베딩하지 않는다.
         return StoredWikiPageEmbeddingSearch(
             embedding_model=RemoteEmbeddingModel.from_env(),
-            fallback_search=Bm25Searcher(),
+            online_text_limit=MAX_TEXT_CHARS,
         )
     return StoredWikiPageEmbeddingSearch()
 
