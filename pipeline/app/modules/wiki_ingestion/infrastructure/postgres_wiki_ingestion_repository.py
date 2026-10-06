@@ -697,6 +697,10 @@ def lookup_wiki_pages(
     return [dict(row) for row in rows]
 
 
+# 영구 block_id 순서는 문서 순서가 아니다. position이 없는 기존 행은 뒤로 보내고 block_id로 정렬한다.
+_SOURCE_BLOCK_ORDER = "position NULLS LAST, block_id"
+
+
 def get_document_wiki_context(
     document_id: str,
     workspace_id: str,
@@ -717,8 +721,8 @@ def get_document_wiki_context(
             (document_id, workspace_id, workspace_id),
         ).fetchall()
         blocks = conn.execute(
-            """
-            SELECT block_id, text
+            f"""
+            SELECT block_id, text, position, line_start, line_end, block_type
             FROM source_blocks
             WHERE document_id = %s
               AND EXISTS (
@@ -727,12 +731,21 @@ def get_document_wiki_context(
                   WHERE link.document_id = source_blocks.document_id
                     AND link.workspace_id = %s
               )
-            ORDER BY block_id
+            ORDER BY {_SOURCE_BLOCK_ORDER}
             """,
             (document_id, workspace_id),
         ).fetchall()
+        snapshot = (
+            conn.execute(
+                "SELECT source_content_hash FROM source_block_snapshots WHERE document_id = %s",
+                (document_id,),
+            ).fetchone()
+            if blocks
+            else None
+        )
     return {
         "pages": [dict(page) for page in pages],
+        "source_content_hash": snapshot["source_content_hash"] if snapshot else None,
         "source_blocks": [dict(block) for block in blocks],
     }
 
@@ -794,6 +807,7 @@ def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
             (document_id, workspace_id),
         )
         conn.execute("DELETE FROM source_blocks WHERE document_id = %s", (document_id,))
+        conn.execute("DELETE FROM source_block_snapshots WHERE document_id = %s", (document_id,))
         conn.execute(
             """
             UPDATE pipeline_runs
@@ -1185,11 +1199,11 @@ def latest_source_page_context(
 def list_source_blocks(document_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT document_id, block_id, text
             FROM source_blocks
             WHERE document_id = %s
-            ORDER BY block_id
+            ORDER BY {_SOURCE_BLOCK_ORDER}
             """,
             (document_id,),
         ).fetchall()
@@ -2042,12 +2056,12 @@ def _source_blocks_for_refs(conn: psycopg.Connection, refs: list[str]) -> list[d
     rows_out: list[dict[str, str]] = []
     for document_id, block_ids in by_document.items():
         rows = conn.execute(
-            """
+            f"""
             SELECT block_id, text
             FROM source_blocks
             WHERE document_id = %s
               AND block_id = ANY(%s)
-            ORDER BY block_id
+            ORDER BY {_SOURCE_BLOCK_ORDER}
             """,
             (document_id, block_ids),
         ).fetchall()

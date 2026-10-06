@@ -122,12 +122,26 @@ curl -X GET "$PIPELINE/wiki/documents/<value>/context?workspace_id=<value>" \
 
 ```json
 {
+  "pages": [
+    { "id": "page_…", "page_type": "source", "title": "레드블랙트리", "slug": "doc-…", "relation_type": "source_of", "confidence": 1.0 }
+  ],
+  "source_content_hash": "9f2c…",
+  "source_blocks": [
+    { "block_id": "B0005", "text": "# 서문", "position": 1, "line_start": 1, "line_end": 1, "block_type": "heading" },
+    { "block_id": "B0001", "text": "# 레드블랙트리", "position": 2, "line_start": 3, "line_end": 3, "block_type": "heading" }
+  ]
 }
 ```
+
+- `source_blocks`는 문서 순서(`position`)로 정렬된다. 재편입은 변경 없는 블록의 ID를 유지하고 새 블록에 `최대번호+1`을 주므로 `block_id` 순서는 문서 순서가 아니다.
+- `line_start`·`line_end`: 편입 입력 Markdown을 `\n`으로 나눈 1-based 양끝 포함 줄 범위. 채팅 문서(문답 단위 블록)와 위치 저장 이전 블록은 `null`이며, 이때 `position`이 없는 블록은 뒤로 정렬된다.
+- `block_type`: `heading`·`paragraph`·`code`·`list` 중 하나. 채팅 문서와 기존 블록은 `null`.
+- `source_content_hash`: 현재 블록 집합을 만든 편입 입력 Markdown의 SHA-256 hex. 문서의 현재 `content_hash`와 다르면 블록 줄 범위가 현재 본문과 어긋났을 수 있으므로 텍스트 대조로 대체한다. 블록이 없거나 기록 이전 편입이면 `null`.
 
 #### 10. 구현 파일
 
 - 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
+- 조회: `pipeline/app/modules/wiki_ingestion/infrastructure/postgres_wiki_ingestion_repository.py` (`get_document_wiki_context`)
 - 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: get_document_wiki_context_wiki_documents__document_id__context_get`)
 
 #### 연동

@@ -113,10 +113,10 @@ def test_persist_source_blocks_clears_existing_rows_for_empty_blocks() -> None:
         {"source_blocks": []},
     )
 
-    conn.execute.assert_called_once()
-    query, params = conn.execute.call_args.args
-    assert "DELETE FROM source_blocks WHERE document_id = %s" in query
-    assert params == ("doc-1",)
+    assert [call.args for call in conn.execute.call_args_list] == [
+        ("DELETE FROM source_blocks WHERE document_id = %s", ("doc-1",)),
+        ("DELETE FROM source_block_snapshots WHERE document_id = %s", ("doc-1",)),
+    ]
 
 
 def test_persist_source_blocks_returns_raw_blocks_for_source_embedding() -> None:
