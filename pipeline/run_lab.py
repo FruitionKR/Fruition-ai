@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -77,6 +78,8 @@ from app.core.llm_env import (
     resolve_llm_selection,
     resolve_llm_provider_defaults,
 )
+
+logger = logging.getLogger("run_lab")
 
 
 class PipelineConfigurationError(ValueError):
@@ -393,7 +396,18 @@ def _extract_pipeline_source(
             "블록 수": len(blocks),
         },
     )
-    return document, blocks, source_block_records, _source_content_hash(source_markdown)
+    source_content_hash = _source_content_hash(source_markdown)
+    expected_hash = getattr(args, "source_content_hash", None)
+    if expected_hash and expected_hash != source_content_hash:
+        # 프론트는 이 해시를 문서 content_hash와 비교해 블록 줄 범위를 믿을지 정한다.
+        # 다르면 backend가 보낸 Markdown과 content_hash 계산 대상이 다르다는 뜻이다.
+        logger.warning(
+            "source_content_hash mismatch: document_id=%s expected=%s computed=%s",
+            getattr(args, "source_document_id", None),
+            expected_hash,
+            source_content_hash,
+        )
+    return document, blocks, source_block_records, source_content_hash
 
 
 def _empty_normalized(document: SourceDocument) -> dict[str, Any]:

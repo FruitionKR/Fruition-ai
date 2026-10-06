@@ -1,6 +1,8 @@
 import hashlib
+import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -14,7 +16,8 @@ from app.modules.wiki_generation.infrastructure.extract import MarkdownBlockExtr
 from app.modules.wiki_ingestion.domain.source_block_changes import compare_source_blocks
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
-from run_lab import _source_block_records, _source_content_hash
+from app.modules.wiki_generation.infrastructure.pipeline_log import PipelineLog
+from run_lab import _extract_pipeline_source, _source_block_records, _source_content_hash
 
 MARKDOWN = "# 레드블랙트리\n\n균형 규칙은\n다섯 가지다.\n\n```python\nx = [1, 2]\n\ny = 3\n```\n\n- 항목\n"
 
@@ -68,6 +71,22 @@ def test_chat_records_have_position_without_line_ranges() -> None:
 
 def test_source_content_hash_matches_backend_sha256() -> None:
     assert _source_content_hash(MARKDOWN) == hashlib.sha256(MARKDOWN.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize(("expected", "warned"), [("0" * 64, True), (hashlib.sha256(MARKDOWN.encode()).hexdigest(), False)])
+def test_warns_when_backend_hash_differs_from_ingested_markdown(tmp_path: Path, caplog, expected: str, warned: bool) -> None:
+    with caplog.at_level(logging.WARNING, logger="run_lab"):
+        *_rest, computed = _extract_pipeline_source(
+            SimpleNamespace(source_document_id="doc-1", source_content_hash=expected, save_debug_json=False),
+            input_text=MARKDOWN,
+            input_source_name="doc.md",
+            input_path=Path("doc.md"),
+            out=tmp_path,
+            log=PipelineLog(tmp_path / "pipeline.log"),
+        )
+
+    assert computed == hashlib.sha256(MARKDOWN.encode()).hexdigest()
+    assert ("source_content_hash mismatch" in caplog.text) is warned
 
 
 def test_reingest_with_prepended_block_keeps_ids_and_follows_new_order() -> None:
