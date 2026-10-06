@@ -63,7 +63,11 @@ class JevConceptResolver(ConceptResolver):
     def _resolve_with_jev(self, incoming: list[JsonDict], existing: list[JsonDict]) -> list[JsonDict]:
         pool = [
             *({**concept, "definition": concept.get("definition") or "", "location": "incoming"} for concept in incoming),
-            *({**concept, "definition": concept.get("summary") or "", "location": "existing"} for concept in existing),
+            # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다.
+            *(
+                {**concept, "definition": concept.get("definition") or concept.get("summary") or "", "location": "existing"}
+                for concept in existing
+            ),
         ]
         pool = [concept for concept in pool if concept.get("slug") and str(concept["definition"]).strip()]
         tasks = [

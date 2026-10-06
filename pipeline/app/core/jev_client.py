@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from functools import lru_cache
 from threading import Lock
 from types import SimpleNamespace
 from typing import Any
@@ -48,7 +49,13 @@ def build_jev_client(feature_env: str) -> JevClient | None:
     api_key = first_env((JEV_API_KEY_ENV,), strip=True)
     if not api_key:
         return None
-    return JevClient(api_key, timeout_seconds=float_env("JEV_TIMEOUT_SECONDS", 30.0))
+    return _shared_client(api_key, float_env("JEV_TIMEOUT_SECONDS", 30.0))
+
+
+@lru_cache(maxsize=1)
+def _shared_client(api_key: str, timeout_seconds: float) -> JevClient:
+    # 작업마다 use case를 새로 만들므로 연결 풀을 프로세스 안에서 공유한다.
+    return JevClient(api_key, timeout_seconds=timeout_seconds)
 
 
 class JevClient:

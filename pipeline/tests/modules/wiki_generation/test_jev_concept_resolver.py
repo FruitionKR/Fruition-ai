@@ -50,9 +50,10 @@ INCOMING = [
     {"slug": "memoization-new", "title": "메모이제이션", "definition": "함수 결과를 저장해 재계산을 피한다."},
     {"slug": "untitled", "title": "memoization", "definition": ""},
 ]
+# DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary를 쓴다.
 EXISTING = [
-    {"slug": "memoization", "title": "memoization", "aliases": ["메모이제이션"], "summary": "함수 결과를 저장해 재사용한다."},
-    {"slug": "cache", "title": "cache", "aliases": [], "summary": "데이터를 저장하는 포괄 개념이다."},
+    {"slug": "memoization", "title": "memoization", "aliases": ["메모이제이션"], "definition": "함수 결과를 저장해 재사용한다."},
+    {"slug": "cache", "title": "cache", "aliases": [], "summary": "함수 결과를 포함해 데이터를 저장하는 포괄 개념이다."},
 ]
 
 
@@ -69,7 +70,7 @@ class JevConceptResolverTest(unittest.TestCase):
         )
         self.assertEqual(result["hint_resolutions"], [])
         self.assertNotIn("untitled", jev.candidates)
-        self.assertIn("memoization", jev.candidates["memoization-new"])
+        self.assertEqual(set(jev.candidates["memoization-new"]), {"memoization", "cache"})
         self.assertLessEqual(len(jev.candidates["memoization-new"]), 3)
         self.assertEqual(fallback.calls, [])
 

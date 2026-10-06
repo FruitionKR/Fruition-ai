@@ -110,7 +110,12 @@ def _build_query_context(
             client,
             fallback,
             wiki_repository,
-            embedding_search,
+            # workspace 전체 후보를 점수 매기므로 저장 벡터가 없는 unit을 질문 시점에 임베딩하지 않는다.
+            (
+                embedding_search.with_fallback_search(text_search)
+                if isinstance(embedding_search, StoredWikiPageEmbeddingSearch)
+                else embedding_search
+            ),
             text_search,
             max_evidence_snippets=max_evidence_snippets,
         ),

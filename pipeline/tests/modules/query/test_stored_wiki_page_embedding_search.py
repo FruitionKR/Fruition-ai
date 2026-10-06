@@ -215,6 +215,21 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
         self.assertEqual(scores, [0.0])
         self.assertEqual(fallback.calls, [])
 
+    def test_fallback_variant_scores_missing_vectors_without_live_embedding(self) -> None:
+        model = FakeEmbeddingModel()
+        fallback = FakeFallbackSearch()
+        search = StoredWikiPageEmbeddingSearch(embedding_model=model).with_fallback_search(fallback)
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ):
+            scores = search.score("query", ["저장 벡터 없는 unit"])
+
+        self.assertEqual(scores, [0.25])
+        self.assertEqual(fallback.calls, [("query", ["저장 벡터 없는 unit"])])
+        self.assertEqual(model.embedded_texts, ["query"])
+
 
 if __name__ == "__main__":
     unittest.main()

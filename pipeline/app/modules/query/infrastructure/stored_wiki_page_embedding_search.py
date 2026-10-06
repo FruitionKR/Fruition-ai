@@ -18,6 +18,12 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
         self._fallback_search = fallback_search
         self._cached_embed_query = lru_cache(maxsize=128)(self._embed_query)
 
+    def with_fallback_search(self, fallback_search: EmbeddingSearchPort) -> "StoredWikiPageEmbeddingSearch":
+        """저장 벡터가 없는 문서를 모델로 바로 임베딩하지 않고 fallback 점수로 매긴다. 모델과 질문 임베딩 캐시는 공유한다."""
+        search = StoredWikiPageEmbeddingSearch(self._embedding_model, fallback_search)
+        search._cached_embed_query = self._cached_embed_query
+        return search
+
     def embed_query(self, query: str) -> SemanticQueryEmbedding:
         return self._cached_embed_query(query)
 
