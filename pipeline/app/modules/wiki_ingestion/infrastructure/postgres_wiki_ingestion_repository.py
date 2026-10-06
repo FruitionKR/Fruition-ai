@@ -476,6 +476,7 @@ REQUIRED_TABLES = (
     "wiki_pages",
     "document_wiki_links",
     "source_blocks",
+    "source_block_snapshots",
     "wiki_page_links",
     "pipeline_runs",
     "wiki_page_embeddings",
