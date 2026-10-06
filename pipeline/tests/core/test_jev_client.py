@@ -31,15 +31,26 @@ def _answer(choice: str = "include") -> dict:
     }
 
 
-def _client(*responses: httpx.Response, requests: list[httpx.Request] | None = None) -> JevClient:
+def _client(
+    *responses: httpx.Response | Exception,
+    requests: list[httpx.Request] | None = None,
+    deadline_seconds: float | None = None,
+) -> JevClient:
     queue = list(responses)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if requests is not None:
             requests.append(request)
-        return queue.pop(0)
+        response = queue.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
-    return JevClient("key", http=httpx.Client(transport=httpx.MockTransport(handler)))
+    return JevClient(
+        "key",
+        deadline_seconds=deadline_seconds,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
 
 
 class BuildJevClientTest(unittest.TestCase):
@@ -54,6 +65,14 @@ class BuildJevClientTest(unittest.TestCase):
     def test_builds_client_when_feature_is_on_and_key_exists(self) -> None:
         with patch.dict("os.environ", {"JEV_ROUTING_ENABLED": "true", "TYPESAFE_API_KEY": "key"}):
             self.assertIsInstance(build_jev_client("JEV_ROUTING_ENABLED"), JevClient)
+
+    def test_interactive_client_has_response_budget_and_batch_client_does_not(self) -> None:
+        with patch.dict("os.environ", {"JEV_ROUTING_ENABLED": "true", "TYPESAFE_API_KEY": "key"}):
+            interactive = build_jev_client("JEV_ROUTING_ENABLED", interactive=True)
+            batch = build_jev_client("JEV_ROUTING_ENABLED")
+
+        self.assertEqual(interactive._deadline_seconds, jev_client.INTERACTIVE_DEADLINE_SECONDS)
+        self.assertIsNone(batch._deadline_seconds)
 
 
 class JevClientTest(unittest.TestCase):
@@ -117,6 +136,44 @@ class JevClientTest(unittest.TestCase):
 
         with self.assertRaises(JevUnavailable):
             client.choose("state", QUESTIONS)
+
+    def test_batch_client_retries_timeouts(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(httpx.ReadTimeout("slow"), httpx.Response(200, json=_answer()), requests=requests)
+
+        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "include")
+        self.assertEqual(len(requests), 2)
+
+    def test_interactive_client_does_not_retry_timeouts(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(httpx.ReadTimeout("slow"), requests=requests, deadline_seconds=15.0)
+
+        with self.assertRaisesRegex(JevUnavailable, "시간 초과"):
+            client.choose("state", QUESTIONS)
+        self.assertEqual(len(requests), 1)
+        jev_client.time.sleep.assert_not_called()
+
+    def test_interactive_client_gives_up_when_retry_wait_exceeds_budget(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(httpx.Response(429, headers={"retry-after": "20"}), requests=requests, deadline_seconds=15.0)
+
+        with self.assertRaisesRegex(JevUnavailable, "응답 예산"):
+            client.choose("state", QUESTIONS)
+        self.assertEqual(len(requests), 1)
+        jev_client.time.sleep.assert_not_called()
+
+    def test_interactive_client_retries_within_budget_and_caps_request_timeout(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(
+            httpx.Response(429, headers={"retry-after": "0"}),
+            httpx.Response(200, json=_answer("exclude")),
+            requests=requests,
+            deadline_seconds=15.0,
+        )
+
+        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "exclude")
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(request.extensions["timeout"]["read"] <= 15.0 for request in requests))
 
     def test_choice_outside_criteria_is_unavailable(self) -> None:
         client = _client(httpx.Response(200, json=_answer("unknown")))

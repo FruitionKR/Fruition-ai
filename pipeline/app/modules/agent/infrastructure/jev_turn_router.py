@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 def with_jev_routing(router: AgentTurnRouterPort) -> AgentTurnRouterPort:
     """`JEV_ROUTING_ENABLED`와 API 키가 있으면 Jev를 먼저 쓰고, 아니면 기존 라우터를 그대로 쓴다."""
-    client = build_jev_client(JEV_ROUTING_ENABLED_ENV)
+    client = build_jev_client(JEV_ROUTING_ENABLED_ENV, interactive=True)
     if client is None:
         return router
     return JevTurnRouter(client, router, load_agent_turn_router_prompt())

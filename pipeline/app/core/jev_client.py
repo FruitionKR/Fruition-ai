@@ -34,6 +34,8 @@ _RETRY_STATUSES = {429, 502, 503, 504, 529}
 _BLOCKING_STATUSES = {401, 402, 403}
 _MAX_ATTEMPTS = 4
 _MAX_RETRY_AFTER_SECONDS = 60.0
+# 사용자가 기다리는 경로(Agent 라우팅·Query 근거 선택)의 호출 전체 응답 예산. 넘으면 바로 기존 경로로 간다.
+INTERACTIVE_DEADLINE_SECONDS = 15.0
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 logger = logging.getLogger(__name__)
 _blocked_until = 0.0
@@ -44,20 +46,24 @@ class JevUnavailable(RuntimeError):
     """Jev를 쓸 수 없어 기존 경로로 처리해야 한다."""
 
 
-def build_jev_client(feature_env: str) -> JevClient | None:
-    """기능 설정이 켜져 있고 API 키가 있으면 클라이언트를 만든다."""
+def build_jev_client(feature_env: str, *, interactive: bool = False) -> JevClient | None:
+    """기능 설정이 켜져 있고 API 키가 있으면 클라이언트를 만든다.
+
+    `interactive`면 호출 전체를 `INTERACTIVE_DEADLINE_SECONDS` 안에 끝내고, 타임아웃은 재시도하지 않는다.
+    """
     if os.environ.get(feature_env, "false").strip().lower() not in _TRUE_VALUES:
         return None
     api_key = first_env((JEV_API_KEY_ENV,), strip=True)
     if not api_key:
         return None
-    return _shared_client(api_key, float_env("JEV_TIMEOUT_SECONDS", 30.0))
+    deadline = INTERACTIVE_DEADLINE_SECONDS if interactive else None
+    return _shared_client(api_key, float_env("JEV_TIMEOUT_SECONDS", 30.0), deadline)
 
 
-@lru_cache(maxsize=1)
-def _shared_client(api_key: str, timeout_seconds: float) -> JevClient:
+@lru_cache(maxsize=2)
+def _shared_client(api_key: str, timeout_seconds: float, deadline_seconds: float | None) -> JevClient:
     # 작업마다 use case를 새로 만들므로 연결 풀을 프로세스 안에서 공유한다.
-    return JevClient(api_key, timeout_seconds=timeout_seconds)
+    return JevClient(api_key, timeout_seconds=timeout_seconds, deadline_seconds=deadline_seconds)
 
 
 class JevClient:
@@ -66,8 +72,11 @@ class JevClient:
         api_key: str,
         *,
         timeout_seconds: float = 30.0,
+        deadline_seconds: float | None = None,
         http: httpx.Client | None = None,
     ) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._deadline_seconds = deadline_seconds
         self._http = http or httpx.Client(
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout_seconds,
@@ -97,12 +106,19 @@ class JevClient:
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         # 평가 실행기(jev_api.RetryingClient)와 같이 일시 오류는 최대 4회까지 2·4·8초 간격으로 시도한다.
+        # 응답 예산이 있으면(실시간 경로) 타임아웃은 재시도하지 않고, 예산을 넘는 대기 없이 바로 포기한다.
+        started = time.monotonic()
         for attempt in range(_MAX_ATTEMPTS):
             last = attempt == _MAX_ATTEMPTS - 1
+            remaining = self._remaining(started)
             try:
-                response = self._http.post(JEV_ENDPOINT, json=payload)
+                response = self._http.post(
+                    JEV_ENDPOINT,
+                    json=payload,
+                    timeout=self._timeout_seconds if remaining is None else min(self._timeout_seconds, remaining),
+                )
             except httpx.TimeoutException:
-                if last:
+                if last or self._deadline_seconds is not None:
                     raise JevUnavailable("Jev 응답 시간 초과") from None
                 time.sleep(2 ** (attempt + 1))
                 continue
@@ -115,6 +131,9 @@ class JevClient:
                 delay = _retry_delay(response, attempt)
                 if delay is None:
                     raise JevUnavailable(f"Jev HTTP {response.status_code}, 재시도 대기가 너무 깁니다.")
+                remaining = self._remaining(started)
+                if remaining is not None and delay >= remaining:
+                    raise JevUnavailable(f"Jev HTTP {response.status_code}, 재시도 대기가 응답 예산을 넘습니다.")
                 time.sleep(delay)
                 continue
             if response.status_code != 200:
@@ -127,6 +146,14 @@ class JevClient:
                 raise JevUnavailable("Jev 응답이 객체가 아닙니다.")
             return data
         raise JevUnavailable("Jev 재시도 한도를 넘었습니다.")
+
+    def _remaining(self, started: float) -> float | None:
+        if self._deadline_seconds is None:
+            return None
+        remaining = self._deadline_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            raise JevUnavailable("Jev 응답 예산을 넘었습니다.")
+        return remaining
 
 
 def _validated_answers(

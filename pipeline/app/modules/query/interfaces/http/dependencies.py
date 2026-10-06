@@ -98,7 +98,7 @@ def _build_query_context(
     max_evidence_snippets: int,
 ) -> BuildQueryContextUseCase | None:
     """`JEV_EVIDENCE_ENABLED`와 API 키가 있으면 Jev 근거 선택을 쓰고, 아니면 기존 기본값을 쓴다."""
-    client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV)
+    client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV, interactive=True)
     if client is None:
         return None
     fallback = EvidenceSelector(
