@@ -79,6 +79,24 @@ class JevTurnRouterTest(unittest.TestCase):
         self.assertNotIn("edit_goal", next(iter(jev.calls[0]["route"]["criteria"].values())))
         self.assertIn("edit_goal", next(iter(jev.calls[1]["route"]["criteria"].values())))
 
+    def test_shuffles_options_deterministically_with_evaluated_fields(self) -> None:
+        request = AgentTurnRequest(message="정책 알려줘")
+        first, second = ChoosingJev(lambda value: True), ChoosingJev(lambda value: True)
+
+        JevTurnRouter(first, RecordingRouter(), "system").route(request)
+        JevTurnRouter(second, RecordingRouter(), "system").route(request)
+
+        criteria = first.calls[0]["route"]["criteria"]
+        self.assertEqual(list(criteria.values()), list(second.calls[0]["route"]["criteria"].values()))
+        self.assertNotEqual(
+            [value["action"] for value in criteria.values()],
+            [option["action"] for option in route_options(request)],
+        )
+        self.assertEqual(
+            list(next(iter(criteria.values()))),
+            ["action", "retrieval_source", "document_operation", "persist", "required_capabilities", "selected_skill_id", "skill_candidates"],
+        )
+
     def test_unavailable_jev_uses_existing_router(self) -> None:
         fallback = RecordingRouter()
 

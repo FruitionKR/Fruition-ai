@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
+import random
 from typing import Any
 
 from app.core.jev_client import JEV_ROUTING_ENABLED_ENV, JevClient, JevUnavailable, build_jev_client
+from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.agent.application.ports import AgentTurnRouterPort
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
@@ -30,6 +33,7 @@ from app.modules.agent.infrastructure.chat_completions_turn_router import (
 )
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
 
+# 평가(run_jev_controlled.PairedChoiceClient)의 ROUTE_FIELDS·SKILL_ROUTE_FIELDS와 같은 순서다.
 ROUTE_CHOICE_FIELDS = (
     "action",
     "retrieval_source",
@@ -37,8 +41,20 @@ ROUTE_CHOICE_FIELDS = (
     "persist",
     "required_capabilities",
     "selected_skill_id",
+    "skill_candidates",
 )
-EDIT_CHOICE_FIELDS = (*ROUTE_CHOICE_FIELDS, "edit_goal", "edit_operation", "edit_destination")
+EDIT_CHOICE_FIELDS = (
+    "action",
+    "retrieval_source",
+    "document_operation",
+    "persist",
+    "required_capabilities",
+    "edit_goal",
+    "edit_operation",
+    "edit_destination",
+    "selected_skill_id",
+    "skill_candidates",
+)
 MAX_CHOICES = 255
 JEV_ROUTE_REASON = "Jev가 허용된 작업 조합에서 선택"
 logger = logging.getLogger(__name__)
@@ -64,11 +80,13 @@ class JevTurnRouter(AgentTurnRouterPort):
             return guarded
         if _may_need_skill_clarification(request):
             return self._fallback.route(request)
-        state = json.dumps(route_payload(request), ensure_ascii=False)
+        payload = route_payload(request)
+        # 기존 라우터가 모델에 보내는 사용자 입력과 같은 형식이다.
+        state = json.dumps(payload, ensure_ascii=False, indent=2)
         try:
-            selected = self._choose(state, route_options(request), ROUTE_CHOICE_FIELDS)
+            selected = self._choose(payload, state, route_options(request), ROUTE_CHOICE_FIELDS)
             if selected["document_operation"] == "edit":
-                selected = self._choose(state, edit_options(selected, request), EDIT_CHOICE_FIELDS)
+                selected = self._choose(payload, state, edit_options(selected, request), EDIT_CHOICE_FIELDS)
         except JevUnavailable as exc:
             logger.warning("[Jev route 대체] %s", exc)
             return self._fallback.route(request)
@@ -79,17 +97,29 @@ class JevTurnRouter(AgentTurnRouterPort):
             return self._fallback.route(request)
         return route
 
-    def _choose(self, state: str, options: list[dict[str, Any]], fields: tuple[str, ...]) -> dict[str, Any]:
+    def _choose(
+        self,
+        payload: dict[str, object],
+        state: str,
+        options: list[dict[str, Any]],
+        fields: tuple[str, ...],
+    ) -> dict[str, Any]:
         if not 1 <= len(options) <= MAX_CHOICES:
             raise JevUnavailable(f"route 선택지 수가 Jev 범위를 벗어났습니다: {len(options)}")
-        choices = {f"r{index}": option for index, option in enumerate(options)}
         detail = fields == EDIT_CHOICE_FIELDS
+        # 평가와 같이 요청 상태로 정한 고정 무작위 순서로 섞어 선택지 위치가 단서가 되지 않게 한다.
+        seed = hashlib.sha256(
+            json.dumps({"state": payload, "detail": detail}, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        options = list(options)
+        random.Random(seed).shuffle(options)
+        choices = {f"r{index}": option for index, option in enumerate(options)}
         answers = self._client.choose(
             state,
             {
                 "route": {
                     "type": "choice",
-                    "instructions": self._system_prompt
+                    "instructions": with_llm_security_boundary(self._system_prompt)
                     + (
                         "\n\n허용된 완전한 편집 조합 중 사용자 요청과 맞는 하나를 고르세요."
                         if detail

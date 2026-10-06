@@ -46,7 +46,7 @@ class WikiRepositoryPort(Protocol):
     def list_embedding_units_by_page_ids(self, page_ids: list[str]) -> dict[str, list[WikiEmbeddingUnit]]:
         ...
 
-    def list_workspace_embedding_units(self, workspace_id: str) -> list[WikiEmbeddingUnit]:
+    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
         ...
 
 

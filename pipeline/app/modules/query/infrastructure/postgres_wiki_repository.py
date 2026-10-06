@@ -395,11 +395,13 @@ class PostgresWikiRepository(WikiRepositoryPort):
             units_by_page_id.setdefault(unit.page_id, []).append(unit)
         return units_by_page_id
 
-    def list_workspace_embedding_units(self, workspace_id: str) -> list[WikiEmbeddingUnit]:
+    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
+        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다."""
         with database.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight
+                SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight,
+                       p.title AS page_title
                 FROM wiki_embedding_units eu
                 JOIN wiki_pages p ON p.id = eu.page_id
                 WHERE p.status = 'active'
@@ -409,7 +411,7 @@ class PostgresWikiRepository(WikiRepositoryPort):
                 """,
                 (workspace_id,),
             ).fetchall()
-        return [_embedding_unit(row) for row in rows]
+        return [(_embedding_unit(row), row["page_title"] or "") for row in rows]
 
 
 def _embedding_unit(row) -> WikiEmbeddingUnit:

@@ -11,8 +11,8 @@ class UnitRepository:
     def __init__(self, units: list[WikiEmbeddingUnit]) -> None:
         self._units = units
 
-    def list_workspace_embedding_units(self, workspace_id: str) -> list[WikiEmbeddingUnit]:
-        return self._units
+    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
+        return [(unit, f"페이지 {unit.page_id}") for unit in self._units]
 
 
 class TextOverlapSearch:
@@ -36,11 +36,14 @@ class IncludingJev:
         self._keyword = keyword
         self._lock = Lock()
         self.batch_sizes: list[int] = []
+        self.states: list[dict] = []
 
     def choose(self, state: str, questions: dict) -> dict:
-        candidates = {item["id"]: item["text"] for item in json.loads(state)["candidates"]}
+        decoded = json.loads(state)
+        candidates = {item["id"]: item["text"] for item in decoded["candidates"]}
         with self._lock:
             self.batch_sizes.append(len(questions))
+            self.states.append(decoded)
         answers = {}
         for key in questions:
             include = self._keyword in candidates[key]
@@ -116,6 +119,36 @@ class JevEvidenceSelectorTest(unittest.TestCase):
 
         self.assertEqual(sorted(jev.batch_sizes), [1, 3, 3])
         self.assertEqual(len(snippets), 7)
+
+    def test_splits_batches_by_request_token_budget(self) -> None:
+        units = [_unit(f"u{index:03}", "환불 " * 300 + str(index), f"B{index:04}") for index in range(1, 7)]
+        jev = IncludingJev("환불")
+        selector, _ = _selector(jev, units, max_batch_tokens=3_000)
+
+        selector.select("환불", [], {}, workspace_id="ws")
+
+        self.assertGreater(len(jev.batch_sizes), 1)
+        self.assertEqual(sum(jev.batch_sizes), 6)
+
+    def test_sends_evaluated_candidate_fields(self) -> None:
+        jev = IncludingJev("환불")
+        selector, _ = _selector(jev, [_unit("u1", "환불 기한은 7일이다.")])
+
+        selector.select("환불 기한은?", [], {}, workspace_id="ws")
+
+        self.assertEqual(
+            jev.states[0]["candidates"][0],
+            {
+                "id": "u1",
+                "text": "환불 기한은 7일이다.",
+                "source_titles": ["페이지 source:doc"],
+                "page_ids": ["source:doc"],
+                "source_document_id": "doc",
+                "block_refs": ["B0001"],
+                "unit_type": "evidence",
+                "weight": 1.0,
+            },
+        )
 
     def test_reuses_selection_for_same_question_in_one_query(self) -> None:
         jev = IncludingJev("환불")

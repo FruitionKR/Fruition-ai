@@ -20,14 +20,17 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
 - 공통 클라이언트(`app/core/jev_client.py`)의 동작:
   - 요청 상태의 숫자 개인정보를 가리고 instructions에 보안 경계를 붙인다.
   - 사용량 원장에 provider `typesafe`로 기록한다.
-- **라우팅:** 기존 route 계약을 통과하는 조합에서 고르고, 편집이면 편집 목표·방식·위치를 한 번 더 고른다.
+- **라우팅:** 기존 route 계약을 통과하는 조합에서 고르고, 편집이면 편집 목표·방식·위치를 한 번 더 고른다. 평가(`PairedChoiceClient`)와 같이 선택지를 요청 상태로 정한 고정 무작위 순서로 섞고, 기존 라우터와 같은 상태 JSON을 보낸다.
   - clarify는 선택지에서 뺀다.
   - Skill 후보의 capability가 겹쳐 clarify가 필요할 수 있는 요청은 기존 라우터가 처리한다.
-- **근거 선택:** workspace embedding unit을 BGE-M3·BM25 혼합 점수로 상위 300개까지 추린다.
-  - 80개·28,000자 이하 묶음을 4개씩 병렬로 판정한다.
-  - include 확률 순으로 `QUERY_EVIDENCE_LIMIT`개를 남긴다.
+- **근거 선택:** 평가한 300후보·4병렬 구성(local-pilot `run_jev_300_parallel.py`)을 그대로 따른다.
+  - workspace embedding unit을 (본문, block ref, 문서)로 묶고, 기존 하이브리드 점수(BGE-M3 0.75 + BM25 0.25)로 상위 300개를 추린다. 순위 단서가 없도록 섞어서 보낸다.
+  - 후보 필드는 평가와 같다(`id, text, source_titles, page_ids, source_document_id, block_refs, unit_type, weight`). 운영 unit에 없는 PDF 쪽번호(`pages`)만 뺀다.
+  - 요청 본문을 cl100k_base로 세어 28,000 토큰·80개 이하로 묶고, 최대 4개 묶음을 동시에 요청한다.
+  - include 확률 순으로 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 남긴다.
+  - 일시 오류(429·502·503·504·529, 시간 초과)는 평가 실행기와 같이 최대 4회, 2·4·8초 간격으로 시도한다.
   - 웹 근거가 섞인 질의는 기존 선택기가 처리한다.
-- **개념 병합:** 들어온 개념마다 BM25로 후보 3개를 추리고 `keep_new`와 함께 판정한다.
+- **개념 병합:** 들어온 개념마다 BM25로 후보 3개를 추리고 `keep_new`와 함께 판정한다. 평가와 같이 요청 하나에 판정 하나만 담고, 후보 순서와 `keep_new` 위치를 섞는다.
   - 정의가 없는 개념은 보내지 않는다.
   - 병합 대상이 다시 병합되는 연쇄는 버린다.
   - missing hint가 있으면 기존 LLM 결과의 `hint_resolutions`만 쓴다.
@@ -39,6 +42,7 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
 - **개념 후보를 BGE-M3로 추림:** ingest worker에 임베딩 모델(약 2.5GB)을 새로 올려야 한다(워커마다 모델을 올려 AI 노드 메모리를 넘던 문제, PR #39와 충돌).
 
 ## Consequences
+- 평가와 달리 운영 요청에는 숫자 개인정보 마스킹과 LLM 보안 경계를 항상 적용한다(개념 병합 평가는 보안 경계 없이 측정했다).
 - 기본값이 꺼짐이라 배포해도 동작은 바뀌지 않는다. 키를 Secrets Manager에 넣고 설정을 켜면 해당 경로만 Jev를 쓴다.
 - 라우팅의 Jev route는 설명 대신 고정된 `reason`을 남긴다.
 - 근거 선택은 관련 페이지 밖의 workspace 근거도 고를 수 있다. 질문마다 workspace unit을 모두 읽어 점수를 매긴다. 저장 벡터가 아직 없는 unit은 질문 시점에 임베딩하지 않고 BM25 점수로 대신한다.

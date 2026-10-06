@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from threading import Lock
 from types import SimpleNamespace
@@ -31,7 +32,8 @@ JEV_CONCEPT_MERGE_ENABLED_ENV = "JEV_CONCEPT_MERGE_ENABLED"
 _RETRY_STATUSES = {429, 502, 503, 504, 529}
 # 크레딧 소진(402)·키 오류(401/403)는 재시도해도 풀리지 않으므로 일정 시간 Jev 호출을 건너뛴다.
 _BLOCKING_STATUSES = {401, 402, 403}
-_MAX_RETRY_DELAY_SECONDS = 2.0
+_MAX_ATTEMPTS = 4
+_MAX_RETRY_AFTER_SECONDS = 60.0
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 logger = logging.getLogger(__name__)
 _blocked_until = 0.0
@@ -94,18 +96,26 @@ class JevClient:
         return _validated_answers(data, questions)
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        for attempt in range(2):
+        # 평가 실행기(jev_api.RetryingClient)와 같이 일시 오류는 최대 4회까지 2·4·8초 간격으로 시도한다.
+        for attempt in range(_MAX_ATTEMPTS):
+            last = attempt == _MAX_ATTEMPTS - 1
             try:
                 response = self._http.post(JEV_ENDPOINT, json=payload)
+            except httpx.TimeoutException:
+                if last:
+                    raise JevUnavailable("Jev 응답 시간 초과") from None
+                time.sleep(2 ** (attempt + 1))
+                continue
             except httpx.HTTPError as exc:
-                if attempt == 0 and isinstance(exc, httpx.TimeoutException):
-                    continue
                 raise JevUnavailable(f"Jev 전송 실패: {type(exc).__name__}") from None
             if response.status_code in _BLOCKING_STATUSES:
                 _block(response.status_code)
                 raise JevUnavailable(f"Jev HTTP {response.status_code}")
-            if response.status_code in _RETRY_STATUSES and attempt == 0:
-                time.sleep(_retry_delay(response))
+            if response.status_code in _RETRY_STATUSES and not last:
+                delay = _retry_delay(response, attempt)
+                if delay is None:
+                    raise JevUnavailable(f"Jev HTTP {response.status_code}, 재시도 대기가 너무 깁니다.")
+                time.sleep(delay)
                 continue
             if response.status_code != 200:
                 raise JevUnavailable(f"Jev HTTP {response.status_code}")
@@ -139,12 +149,18 @@ def choice_probability(answer: dict[str, Any], choice: str) -> float:
     return 0.0
 
 
-def _retry_delay(response: httpx.Response) -> float:
+def _retry_delay(response: httpx.Response, attempt: int) -> float | None:
+    retry_after = response.headers.get("retry-after", "0")
     try:
-        delay = float(response.headers.get("retry-after", "1"))
+        delay = float(retry_after)
     except ValueError:
-        delay = 1.0
-    return max(0.0, min(delay, _MAX_RETRY_DELAY_SECONDS))
+        try:
+            delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            delay = 0.0
+    if delay > _MAX_RETRY_AFTER_SECONDS:
+        return None
+    return max(float(2 ** (attempt + 1)), delay)
 
 
 def _block(status_code: int) -> None:

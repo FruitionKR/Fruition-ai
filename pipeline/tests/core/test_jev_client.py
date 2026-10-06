@@ -58,9 +58,9 @@ class BuildJevClientTest(unittest.TestCase):
 
 class JevClientTest(unittest.TestCase):
     def setUp(self) -> None:
-        patcher = patch.object(jev_client, "_blocked_until", 0.0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (patch.object(jev_client, "_blocked_until", 0.0), patch.object(jev_client.time, "sleep")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_returns_validated_answers_with_security_boundary_and_redaction(self) -> None:
         requests: list[httpx.Request] = []
@@ -93,11 +93,27 @@ class JevClientTest(unittest.TestCase):
 
         self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "exclude")
 
-    def test_repeated_server_error_is_unavailable(self) -> None:
+    def test_retries_overload_up_to_four_attempts(self) -> None:
+        requests: list[httpx.Request] = []
         client = _client(
-            httpx.Response(503, headers={"retry-after": "0"}),
-            httpx.Response(503, headers={"retry-after": "0"}),
+            httpx.Response(529),
+            httpx.Response(503),
+            httpx.Response(502),
+            httpx.Response(200, json=_answer()),
+            requests=requests,
         )
+
+        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "include")
+        self.assertEqual(len(requests), 4)
+
+    def test_repeated_server_error_is_unavailable(self) -> None:
+        client = _client(*(httpx.Response(503) for _ in range(4)))
+
+        with self.assertRaises(JevUnavailable):
+            client.choose("state", QUESTIONS)
+
+    def test_long_retry_after_is_unavailable_without_waiting(self) -> None:
+        client = _client(httpx.Response(429, headers={"retry-after": "120"}))
 
         with self.assertRaises(JevUnavailable):
             client.choose("state", QUESTIONS)

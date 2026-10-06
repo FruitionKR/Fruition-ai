@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import random
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
@@ -98,6 +100,10 @@ class JevConceptResolver(ConceptResolver):
         return [candidate for score, candidate in ranked[:CANDIDATE_LIMIT] if score > 0]
 
     def _judge(self, concept: JsonDict, candidates: list[JsonDict]) -> str:
+        # 평가와 같이 후보 순서와 keep_new 위치를 고정하지 않아 순위·위치가 단서가 되지 않게 한다.
+        rng = random.Random(hashlib.sha256(str(concept["slug"]).encode("utf-8")).hexdigest())
+        candidates = list(candidates)
+        rng.shuffle(candidates)
         state = {
             "q0": {
                 "incoming": {
@@ -118,6 +124,8 @@ class JevConceptResolver(ConceptResolver):
             }
         }
         options = [candidate["slug"] for candidate in candidates] + [KEEP_NEW]
+        offset = rng.randrange(len(options))
+        options = options[offset:] + options[:offset]
         answers = self._client.choose(
             json.dumps(state, ensure_ascii=False),
             {
