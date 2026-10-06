@@ -215,6 +215,20 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
         self.assertEqual(scores, [0.0])
         self.assertEqual(fallback.calls, [])
 
+    def test_online_text_limit_embeds_only_short_missing_documents(self) -> None:
+        model = FakeEmbeddingModel()
+        search = StoredWikiPageEmbeddingSearch(embedding_model=model, online_text_limit=10)
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ):
+            scores = search.score("query", ["짧은 섹션", "x" * 11])
+
+        # 짧은 문서는 질문 시점에 임베딩하고, 상한을 넘는 문서는 임베딩하지 않아 0점이다.
+        self.assertEqual(scores, [1.0, 0.0])
+        self.assertEqual(model.embedded_texts, ["query", "짧은 섹션"])
+
 
 if __name__ == "__main__":
     unittest.main()
