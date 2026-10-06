@@ -76,6 +76,9 @@ class ChatCompletionsJsonClient:
         }
         profile = inference_profile(self.provider, self.config.model)
         if self.provider == "openai":
+            if "reasoning_effort" in profile:
+                # OpenAI 추론 모델은 기본값(1) 외의 temperature를 400으로 거부한다.
+                options["temperature"] = None
             options.update(profile)
             model = ChatOpenAI(**options)
             if self.config.json_mode:
