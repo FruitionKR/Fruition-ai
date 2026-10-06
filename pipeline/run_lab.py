@@ -44,6 +44,7 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
 )
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import with_jev_concept_merge
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
     load_existing_concept_index,
@@ -435,9 +436,11 @@ def _resolve_pipeline_concepts(
     concept_update_candidates = assembler.candidate_claims(normalized)
     concepts = [*normalized.get("concept_ledger", []), *existing_concepts]
     missing_related_hints = normalized.get("missing_related_concept_hints", [])
-    resolver = ApiConceptResolver(
-        api_client,
-        concept_resolution_prompt,
+    resolver = with_jev_concept_merge(
+        ApiConceptResolver(
+            api_client,
+            concept_resolution_prompt,
+        )
     )
 
     def resolve_concepts() -> tuple[dict[str, Any], float]:
