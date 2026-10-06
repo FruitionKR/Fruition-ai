@@ -139,6 +139,75 @@ class QueryAnswerAssemblerTest(unittest.TestCase):
             [EvidenceSnippet(rank=1, source_document_id="doc-a", source_block_ids=["B0003"], text="첫 문장")],
         )
 
+    def test_number_arrays_in_fenced_code_are_not_citations(self) -> None:
+        """코드 블록 안 숫자 배열은 인용이 아니다. 재번호·삭제하면 코드가 바뀐다."""
+        evidence_snippets = [
+            EvidenceSnippet(rank=3, source_document_id="doc-a", source_block_ids=["B0003"], text="근거"),
+        ]
+        content = (
+            "정렬 예시입니다. [3]\n\n"
+            "```python\nnums = [5, 2, 4, 6, 1, 3]\nfirst = nums[3]\n```\n\n"
+            "~~~\n[3, 1]\n~~~\n"
+        )
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(content))
+
+        answer, returned = assembler.generate_supported_answer(query_context(evidence_snippets))
+
+        self.assertIn("정렬 예시입니다. [1]", answer.content)
+        self.assertIn("nums = [5, 2, 4, 6, 1, 3]\nfirst = nums[3]\n", answer.content)
+        self.assertIn("~~~\n[3, 1]\n~~~", answer.content)
+        self.assertEqual([snippet.rank for snippet in returned], [1])
+
+    def test_number_arrays_in_inline_code_are_not_citations(self) -> None:
+        evidence_snippets = [
+            EvidenceSnippet(rank=2, source_document_id="doc-a", source_block_ids=["B0002"], text="근거"),
+        ]
+        assembler = QueryAnswerAssembler(
+            FixedAnswerGenerator("`arr[1, 2]`처럼 인덱싱합니다. [2] ``x = [7]``도 같습니다.")
+        )
+
+        answer, _ = assembler.generate_supported_answer(query_context(evidence_snippets))
+
+        self.assertEqual("`arr[1, 2]`처럼 인덱싱합니다. [1] ``x = [7]``도 같습니다.", answer.content)
+
+    def test_unclosed_fence_is_code_until_end(self) -> None:
+        """답변이 펜스를 닫지 않고 끝나도 마크다운은 끝까지 코드로 렌더링한다."""
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(""))
+
+        answer, _ = assembler.renumber_used_evidence(
+            GeneratedAnswer(content="코드입니다.\n```\nprint([1, 2])\n"), []
+        )
+
+        self.assertEqual("코드입니다.\n```\nprint([1, 2])\n", answer.content)
+
+    def test_unpaired_backtick_does_not_hide_next_paragraph_citations(self) -> None:
+        """인라인 코드는 문단을 넘지 않는다. 짝 없는 백틱 뒤 문단의 인용도 재번호돼야 한다."""
+        evidence_snippets = [
+            EvidenceSnippet(rank=5, source_document_id="doc-a", source_block_ids=["B0005"], text="근거"),
+        ]
+        assembler = QueryAnswerAssembler(
+            FixedAnswerGenerator("백틱 ` 하나가 남았습니다.\n\n다음 문단입니다. [5] 예: `x`")
+        )
+
+        answer, _ = assembler.generate_supported_answer(query_context(evidence_snippets))
+
+        self.assertIn("다음 문단입니다. [1]", answer.content)
+
+    def test_indented_fence_in_list_item_is_code(self) -> None:
+        """번호 목록 안 코드 블록은 4칸 이상 들여쓴다. 빈 줄이 있어도 코드로 건너뛴다."""
+        evidence_snippets = [
+            EvidenceSnippet(rank=3, source_document_id="doc-a", source_block_ids=["B0003"], text="근거"),
+        ]
+        content = "1. 정렬합니다. [3]\n\n    ```python\n    nums = [5, 2]\n\n    print(nums[0])\n    ```\n"
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(content))
+
+        answer, _ = assembler.generate_supported_answer(query_context(evidence_snippets))
+
+        self.assertEqual(
+            "1. 정렬합니다. [1]\n\n    ```python\n    nums = [5, 2]\n\n    print(nums[0])\n    ```\n",
+            answer.content,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
