@@ -74,6 +74,10 @@ RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(
     && find "${HF_HOME}" ! -perm -o+r -exec chmod a+r {} +
 # 실행 중에는 Hub에 묻지 않는다. 온라인이면 transformers가 safetensors 변환본(약 2.3GB)을 추가로 받는다.
 ENV HF_HUB_OFFLINE=1
+# Jev 근거 선택의 요청 토큰 추정(cl100k_base)도 실행 중 내려받지 않도록 이미지에 넣는다.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
+    && chmod -R a+rX /opt/tiktoken
 
 COPY agent_worker.py api.py run_lab.py wiki_db_cutover.py ./
 COPY app ./app

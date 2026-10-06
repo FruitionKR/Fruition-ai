@@ -1,6 +1,6 @@
 from app.modules.query.application.answer_context_formatter import AnswerContextFormatter
 from app.modules.query.application.evidence_selector import EvidenceSelector
-from app.modules.query.application.ports import EmbeddingSearchPort, TextSearchPort
+from app.modules.query.application.ports import EmbeddingSearchPort, EvidenceSelectorPort, TextSearchPort
 from app.modules.query.domain.entities import (
     GraphContext,
     OutputLanguage,
@@ -25,7 +25,7 @@ class BuildQueryContextUseCase:
         evidence_relative_score_floor: float = 0.85,
         max_evidence_snippets: int = 8,
         answer_context_formatter: AnswerContextFormatter | None = None,
-        evidence_selector: EvidenceSelector | None = None,
+        evidence_selector: EvidenceSelectorPort | None = None,
     ) -> None:
         self._evidence_selector = evidence_selector or EvidenceSelector(
             embedding_search=embedding_search,
@@ -62,6 +62,7 @@ class BuildQueryContextUseCase:
             evidence_question or question,
             related_pages,
             embedding_units_by_page_id or {},
+            workspace_id=workspace_id,
         )
         return QueryContext(
             question=question,

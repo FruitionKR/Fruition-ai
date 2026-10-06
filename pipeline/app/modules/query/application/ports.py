@@ -7,6 +7,7 @@ from app.modules.query.domain.entities import (
     QueryContext,
     QueryEvaluation,
     QueryRewrite,
+    RetrievedPage,
     SemanticQueryEmbedding,
     WebSearchResult,
     WikiEmbeddingUnit,
@@ -43,6 +44,20 @@ class WikiRepositoryPort(Protocol):
         ...
 
     def list_embedding_units_by_page_ids(self, page_ids: list[str]) -> dict[str, list[WikiEmbeddingUnit]]:
+        ...
+
+    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
+        ...
+
+
+class EvidenceSelectorPort(Protocol):
+    def select(
+        self,
+        question: str,
+        related_pages: list[RetrievedPage],
+        embedding_units_by_page_id: dict[str, list[WikiEmbeddingUnit]],
+        workspace_id: str | None = None,
+    ) -> list[EvidenceSnippet]:
         ...
 
 

@@ -105,7 +105,9 @@ class EvidenceSelector:
         question: str,
         related_pages: list[RetrievedPage],
         embedding_units_by_page_id: dict[str, list[WikiEmbeddingUnit]],
+        workspace_id: str | None = None,
     ) -> list[EvidenceSnippet]:
+        # 기존 선택은 관련 페이지 안에서만 고르므로 workspace 범위를 쓰지 않는다.
         candidates: list[_EvidenceCandidate] = []
         for item in related_pages[: self._max_related_pages]:
             source_document_id = self._source_document_id(item)

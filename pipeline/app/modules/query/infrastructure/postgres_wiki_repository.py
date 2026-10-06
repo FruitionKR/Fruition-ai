@@ -391,14 +391,36 @@ class PostgresWikiRepository(WikiRepositoryPort):
             ).fetchall()
         units_by_page_id: dict[str, list[WikiEmbeddingUnit]] = {}
         for row in rows:
-            unit = WikiEmbeddingUnit(
-                id=row["id"],
-                page_id=row["page_id"],
-                source_document_id=row["source_document_id"],
-                unit_type=row["unit_type"],
-                source_block_ids=list(row["block_refs"] or []),
-                text=row["text"],
-                weight=float(row["weight"] or 1.0),
-            )
+            unit = _embedding_unit(row)
             units_by_page_id.setdefault(unit.page_id, []).append(unit)
         return units_by_page_id
+
+    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
+        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다."""
+        with database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight,
+                       p.title AS page_title
+                FROM wiki_embedding_units eu
+                JOIN wiki_pages p ON p.id = eu.page_id
+                WHERE p.status = 'active'
+                  AND p.workspace_id = %s
+                  AND p.page_type IN ('source', 'concept')
+                ORDER BY eu.id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return [(_embedding_unit(row), row["page_title"] or "") for row in rows]
+
+
+def _embedding_unit(row) -> WikiEmbeddingUnit:
+    return WikiEmbeddingUnit(
+        id=row["id"],
+        page_id=row["page_id"],
+        source_document_id=row["source_document_id"],
+        unit_type=row["unit_type"],
+        source_block_ids=list(row["block_refs"] or []),
+        text=row["text"],
+        weight=float(row["weight"] or 1.0),
+    )

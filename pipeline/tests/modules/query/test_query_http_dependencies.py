@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from app.modules.query.domain.entities import GeneratedAnswer, WikiPage
+from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSelector
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
 from app.modules.query.interfaces.http import dependencies
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
@@ -131,3 +132,14 @@ class QueryHttpDependenciesTest(unittest.TestCase):
 
         self.assertEqual(use_case._min_internal_relevance_score, 0.8)
         self.assertTrue(result.answer.content.startswith("제공된 근거에서 질문에 직접 답할 내용을 찾지 못했습니다."))
+
+    def test_jev_evidence_selector_is_used_only_when_enabled_with_key(self) -> None:
+        for env, expected in (
+            ({"JEV_EVIDENCE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}, True),
+            ({"JEV_EVIDENCE_ENABLED": "true", "TYPESAFE_API_KEY": ""}, False),
+            ({"JEV_EVIDENCE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}, False),
+        ):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=False):
+                use_case = _build_production_use_case(0.5)
+                selector = use_case._build_query_context._evidence_selector
+                self.assertEqual(isinstance(selector, JevEvidenceSelector), expected)
