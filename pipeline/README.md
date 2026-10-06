@@ -29,6 +29,10 @@ Query를 검사하려면 `QUERY_EVALUATOR_MODE=llm`, evaluator를 끄려면 `dis
 내부 검색은 기본적으로 `QUERY_EMBEDDING_MODE=bge-m3`의 keyword+vector hybrid를 사용하고,
 일반 Query는 `QUERY_EVIDENCE_LIMIT=8`, post-ingest 단일 주장 평가는
 `POST_INGEST_EVIDENCE_LIMIT=3`에 따라 source ref 중복 제거 후 전역 상위 근거만 반환합니다.
+`EMBEDDING_SERVICE_URL`을 설정하면 Query는 BGE-M3를 직접 올리지 않고 임베딩 서버
+(`uvicorn app.modules.wiki_embedding.interfaces.http.embedding_server:app`, `X-Internal-Token`)에
+짧은 텍스트 임베딩을 요청합니다. 서버는 요청당 64개, 텍스트당 4,000자까지만 받으므로 저장 벡터가 없는
+문서 중 4,000자 이하는 질문 시점에 서버로 임베딩하고, 더 긴 문서는 임베딩 점수를 0으로 두어 hybrid의 BM25 점수에만 맡깁니다. 설정하지 않으면 기존처럼 프로세스에 모델을 올립니다.
 LangGraph evaluator loop를 LangSmith에서 확인하려면 아래 tracing 값도 platform의 `infra/.env`에 설정합니다.
 
 ```env

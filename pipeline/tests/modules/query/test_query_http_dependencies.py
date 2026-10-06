@@ -67,6 +67,21 @@ class QueryHttpDependenciesTest(unittest.TestCase):
         self.assertIs(first, second)
         dependencies._stored_embedding_search.cache_clear()
 
+    def test_embedding_service_url_uses_remote_model_with_online_text_limit(self) -> None:
+        dependencies._stored_embedding_search.cache_clear()
+        env = {
+            "QUERY_EMBEDDING_MODE": "bge-m3",
+            "EMBEDDING_SERVICE_URL": "http://embedding-server:8000",
+            "INTERNAL_CALLBACK_TOKEN": "token",
+        }
+        with patch.dict(os.environ, env):
+            search = dependencies._build_embedding_search(FixedScoreSearch(0.1))
+
+        self.assertIsInstance(search._embedding_model, dependencies.RemoteEmbeddingModel)
+        self.assertIsNone(search._fallback_search)
+        self.assertEqual(search._online_text_limit, dependencies.MAX_TEXT_CHARS)
+        dependencies._stored_embedding_search.cache_clear()
+
     def test_production_web_disabled_weak_evidence_returns_grounded_no_answer(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("QUERY_MIN_INTERNAL_RELEVANCE_SCORE", None)

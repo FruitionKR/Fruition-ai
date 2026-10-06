@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from app.modules.query.application.ports import EmbeddingSearchPort
 from app.modules.query.domain.entities import SemanticQueryEmbedding
+from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -11,11 +12,15 @@ from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_re
 class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
     def __init__(
         self,
-        embedding_model: BgeM3EmbeddingModel | None = None,
+        embedding_model: EmbeddingModelPort | None = None,
         fallback_search: EmbeddingSearchPort | None = None,
+        online_text_limit: int | None = None,
     ) -> None:
         self._embedding_model = embedding_model or BgeM3EmbeddingModel()
         self._fallback_search = fallback_search
+        # 저장 벡터가 없는 문서를 질문 시점에 임베딩할 최대 글자 수. 넘는 문서는 임베딩 점수 0으로 두고
+        # hybrid의 BM25 점수에만 맡긴다(임베딩 서버는 짧은 텍스트만 받는다).
+        self._online_text_limit = online_text_limit
         self._cached_embed_query = lru_cache(maxsize=128)(self._embed_query)
 
     def with_fallback_search(self, fallback_search: EmbeddingSearchPort) -> "StoredWikiPageEmbeddingSearch":
@@ -56,10 +61,7 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
             fallback_scores = (
                 self._fallback_search.score(query, missing_documents)
                 if self._fallback_search is not None
-                else [
-                    self._dot(query_vector, vector)
-                    for vector in self._embedding_model.embed(missing_documents)
-                ]
+                else self._score_online(query_vector, missing_documents)
             )
             for index, fallback_score in zip(
                 missing_indexes,
@@ -69,6 +71,15 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
                 scores[index] = fallback_score
 
         return [float(score or 0.0) for score in scores]
+
+    def _score_online(self, query_vector: list[float], documents: list[str]) -> list[float]:
+        limit = self._online_text_limit
+        indexes = [index for index, document in enumerate(documents) if limit is None or len(document) <= limit]
+        scores = [0.0 for _ in documents]
+        vectors = self._embedding_model.embed([documents[index] for index in indexes])
+        for index, vector in zip(indexes, vectors, strict=True):
+            scores[index] = self._dot(query_vector, vector)
+        return scores
 
     def _load_vectors_by_hash(self, representation_hashes: list[str]) -> dict[str, list[float]]:
         unique_hashes = list(dict.fromkeys(representation_hashes))
