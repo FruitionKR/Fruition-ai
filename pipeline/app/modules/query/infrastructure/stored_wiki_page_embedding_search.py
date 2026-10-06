@@ -23,9 +23,13 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
         self._online_text_limit = online_text_limit
         self._cached_embed_query = lru_cache(maxsize=128)(self._embed_query)
 
-    def with_fallback_search(self, fallback_search: EmbeddingSearchPort) -> "StoredWikiPageEmbeddingSearch":
-        """저장 벡터가 없는 문서를 모델로 바로 임베딩하지 않고 fallback 점수로 매긴다. 모델과 질문 임베딩 캐시는 공유한다."""
-        search = StoredWikiPageEmbeddingSearch(self._embedding_model, fallback_search)
+    def without_live_embedding(self) -> "StoredWikiPageEmbeddingSearch":
+        """저장 벡터가 없는 문서를 질문 시점에 임베딩하지 않고 dense 점수 0으로 둔다. 모델과 질문 임베딩 캐시는 공유한다.
+
+        BM25로 대신하면 벡터가 없는 문서들 안에서만 최댓값 정규화돼 관련성과 상관없이 1.0이 나올 수 있고,
+        호출자의 hybrid 점수에 BM25가 이중으로 들어간다.
+        """
+        search = StoredWikiPageEmbeddingSearch(self._embedding_model, online_text_limit=0)
         search._cached_embed_query = self._cached_embed_query
         return search
 
@@ -74,8 +78,13 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
 
     def _score_online(self, query_vector: list[float], documents: list[str]) -> list[float]:
         limit = self._online_text_limit
-        indexes = [index for index, document in enumerate(documents) if limit is None or len(document) <= limit]
+        indexes = [
+            index for index, document in enumerate(documents)
+            if document and (limit is None or len(document) <= limit)
+        ]
         scores = [0.0 for _ in documents]
+        if not indexes:
+            return scores
         vectors = self._embedding_model.embed([documents[index] for index in indexes])
         for index, vector in zip(indexes, vectors, strict=True):
             scores[index] = self._dot(query_vector, vector)

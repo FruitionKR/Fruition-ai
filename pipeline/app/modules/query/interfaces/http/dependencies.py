@@ -111,9 +111,10 @@ def _build_query_context(
             client,
             fallback,
             wiki_repository,
-            # workspace 전체 후보를 점수 매기므로 저장 벡터가 없는 unit을 질문 시점에 임베딩하지 않는다.
+            # workspace 전체 후보를 점수 매기므로 저장 벡터가 없는 unit을 질문 시점에 임베딩하지 않고 dense 0으로 둔다.
+            # lexical 점수는 JevEvidenceSelector의 hybrid가 전체 후보 기준으로 따로 넣는다.
             (
-                embedding_search.with_fallback_search(text_search)
+                embedding_search.without_live_embedding()
                 if isinstance(embedding_search, StoredWikiPageEmbeddingSearch)
                 else embedding_search
             ),

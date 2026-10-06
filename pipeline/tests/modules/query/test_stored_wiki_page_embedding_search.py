@@ -215,10 +215,10 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
         self.assertEqual(scores, [0.0])
         self.assertEqual(fallback.calls, [])
 
-    def test_fallback_variant_scores_missing_vectors_without_live_embedding(self) -> None:
+    def test_without_live_embedding_scores_missing_vectors_as_zero(self) -> None:
         model = FakeEmbeddingModel()
-        fallback = FakeFallbackSearch()
-        search = StoredWikiPageEmbeddingSearch(embedding_model=model).with_fallback_search(fallback)
+        base = StoredWikiPageEmbeddingSearch(embedding_model=model)
+        search = base.without_live_embedding()
 
         with patch(
             "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
@@ -226,9 +226,10 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
         ):
             scores = search.score("query", ["저장 벡터 없는 unit"])
 
-        self.assertEqual(scores, [0.25])
-        self.assertEqual(fallback.calls, [("query", ["저장 벡터 없는 unit"])])
+        # 벡터가 없는 문서는 임베딩하지 않고 0점이며, 질문 임베딩만 계산한다.
+        self.assertEqual(scores, [0.0])
         self.assertEqual(model.embedded_texts, ["query"])
+        self.assertIs(search._cached_embed_query, base._cached_embed_query)
 
     def test_online_text_limit_embeds_only_short_missing_documents(self) -> None:
         model = FakeEmbeddingModel()
