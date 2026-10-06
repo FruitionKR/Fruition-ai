@@ -193,6 +193,21 @@ class QueryAnswerAssemblerTest(unittest.TestCase):
 
         self.assertIn("다음 문단입니다. [1]", answer.content)
 
+    def test_indented_fence_in_list_item_is_code(self) -> None:
+        """번호 목록 안 코드 블록은 4칸 이상 들여쓴다. 빈 줄이 있어도 코드로 건너뛴다."""
+        evidence_snippets = [
+            EvidenceSnippet(rank=3, source_document_id="doc-a", source_block_ids=["B0003"], text="근거"),
+        ]
+        content = "1. 정렬합니다. [3]\n\n    ```python\n    nums = [5, 2]\n\n    print(nums[0])\n    ```\n"
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(content))
+
+        answer, _ = assembler.generate_supported_answer(query_context(evidence_snippets))
+
+        self.assertEqual(
+            "1. 정렬합니다. [1]\n\n    ```python\n    nums = [5, 2]\n\n    print(nums[0])\n    ```\n",
+            answer.content,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

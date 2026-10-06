@@ -8,9 +8,10 @@ from app.modules.query.application.source_references import remove_block_refs
 from app.modules.query.domain.entities import EvidenceSnippet, GeneratedAnswer, QueryContext
 
 # 펜스는 같은 문자로 같은 길이 이상 닫혀야 끝나고, 닫히지 않으면 답변 끝까지 코드다.
+# 목록 안 코드 블록은 4칸 이상 들여쓰므로 펜스 앞 들여쓰기는 제한하지 않는다.
 # 인라인 코드는 문단(빈 줄)을 넘지 않는다. 짝 없는 백틱이 뒤 문단 인용까지 삼키지 않게 한다.
 _CODE_PATTERN = re.compile(
-    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*(?:\n.*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)|\Z)"
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*(?:\n.*?(?:^[ \t]*(?P=fence)[`~]*[ \t]*$|\Z)|\Z)"
     r"|(?P<tick>`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)(?P=tick)(?!`)",
     re.MULTILINE | re.DOTALL,
 )
