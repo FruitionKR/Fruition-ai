@@ -55,7 +55,7 @@ JEV_TIMEOUT_SECONDS=30
 JEV_BLOCK_SECONDS=600
 ```
 
-LLM 호출은 `openai/gpt-5-nano`(기본, reasoning `medium`), `gemini/gemini-3.1-flash-lite`(reasoning `low`), `claude/claude-sonnet-5`(extended thinking 없음)만 지원합니다. provider/model은 API·DB·Kafka payload에서 선택하며 env override는 없습니다. base URL은 provider별로 고정하고 key는 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 선택 provider의 값만 사용합니다. live provider 호출에는 key가 필요하지만 mock 통합 테스트에는 필요하지 않습니다. 실제 비밀값은 platform의 `infra/.env`에만 두고 커밋하지 않습니다.
+LLM 호출은 `openai`, `gemini`, `claude` provider의 텍스트 생성 모델을 받습니다. 선택 가능한 모델 목록은 백엔드 카탈로그가 관리하고, AI는 provider 접두사(`gpt-`·`o1/o3/o4`, `gemini-`, `claude-`)와 비텍스트 계열(image·tts·audio·realtime·transcribe·embedding·search·live 등, OpenAI의 pro·codex) 차단만 검증합니다(`app/core/llm_env.py`). reasoning 수준은 지원하는 계열에만 보냅니다: OpenAI gpt-5 이상·o 시리즈는 `medium`(`*-chat-latest` 제외), Gemini 3 이상은 `low`, Claude는 extended thinking 없음. 기본 모델은 `openai/gpt-5-nano`, `gemini/gemini-3.1-flash-lite`, `claude/claude-sonnet-5`입니다. provider/model은 API·DB·Kafka payload에서 선택하며 env override는 없습니다. base URL은 provider별로 고정하고 key는 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 선택 provider의 값만 사용합니다. live provider 호출에는 key가 필요하지만 mock 통합 테스트에는 필요하지 않습니다. 실제 비밀값은 platform의 `infra/.env`에만 두고 커밋하지 않습니다.
 
 Wiki ingest의 독립 semantic packet은 기본 4개까지 병렬 처리합니다. 직렬 비교나 provider rate limit 조정은 `WIKI_SEMANTIC_MAX_WORKERS`로 설정합니다.
 

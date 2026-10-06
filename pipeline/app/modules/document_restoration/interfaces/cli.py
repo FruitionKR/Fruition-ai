@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from app.core.llm_env import SUPPORTED_LLM_MODELS
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.document_restoration.application.models import RestoreDocumentCommand
 from app.modules.document_restoration.application.restore_document import (
     RestoreDocumentUseCase,
@@ -74,7 +74,7 @@ def main() -> None:
             selective_provider=args.selective_provider,
             selective_model=(
                 args.selective_model
-                or SUPPORTED_LLM_MODELS[args.selective_provider]
+                or DEFAULT_LLM_MODELS[args.selective_provider]
             ),
             selective_max_workers=args.selective_max_workers,
             anydoc_command=args.anydoc_command,

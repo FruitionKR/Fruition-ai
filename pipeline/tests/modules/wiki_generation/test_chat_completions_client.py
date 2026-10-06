@@ -54,17 +54,23 @@ class ChatCompletionsJsonClientTest(unittest.TestCase):
                 "gpt-5-nano",
                 "ChatOpenAI",
                 {"reasoning_effort": "medium"},
+                None,
             ),
+            ("openai", "o4-mini", "ChatOpenAI", {"reasoning_effort": "medium"}, None),
+            ("openai", "gpt-6-luna", "ChatOpenAI", {"reasoning_effort": "medium"}, None),
+            ("openai", "gpt-4.1-mini", "ChatOpenAI", {}, 0.0),
             (
                 "gemini",
                 "gemini-3.1-flash-lite",
                 "ChatGoogleGenerativeAI",
                 {"thinking_level": "low"},
+                0.0,
             ),
-            ("claude", "claude-sonnet-5", "ChatAnthropic", {}),
+            ("claude", "claude-sonnet-5", "ChatAnthropic", {}, 0.0),
         )
-        for provider, model_name, class_name, provider_options in cases:
-            with self.subTest(provider=provider):
+        # OpenAI 추론 모델은 기본값(1) 외의 temperature를 거부하므로 호출자가 0.0을 줘도 보내지 않는다.
+        for provider, model_name, class_name, provider_options, temperature in cases:
+            with self.subTest(model=model_name):
                 model = _Model()
                 with patch.object(
                     chat_completions_llm,
@@ -87,7 +93,7 @@ class ChatCompletionsJsonClientTest(unittest.TestCase):
                 constructor.assert_called_once_with(
                     model=model_name,
                     api_key="provider-key",
-                    temperature=0.0,
+                    temperature=temperature,
                     timeout=17,
                     max_tokens=321,
                     max_retries=3,
