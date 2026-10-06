@@ -89,6 +89,26 @@ def test_warns_when_backend_hash_differs_from_ingested_markdown(tmp_path: Path, 
     assert ("source_content_hash mismatch" in caplog.text) is warned
 
 
+def test_chat_regeneration_does_not_warn_on_delta_markdown(tmp_path: Path, caplog) -> None:
+    """채팅 재생성은 미편입 문답만 보내고 해시는 문서 전체 기준이라 비교하지 않는다."""
+    with caplog.at_level(logging.WARNING, logger="run_lab"):
+        _extract_pipeline_source(
+            SimpleNamespace(
+                source_document_id="chatdoc-1",
+                source_content_hash="0" * 64,
+                save_debug_json=False,
+                input_blocks=[{"block_id": "session_1:pair_9", "text": "Q : 새 질문\nA : 새 답변"}],
+            ),
+            input_text="# Chat\n\nQ : 새 질문\nA : 새 답변",
+            input_source_name="chat.md",
+            input_path=Path("chat.md"),
+            out=tmp_path,
+            log=PipelineLog(tmp_path / "pipeline.log"),
+        )
+
+    assert "source_content_hash mismatch" not in caplog.text
+
+
 def test_reingest_with_prepended_block_keeps_ids_and_follows_new_order() -> None:
     first = _records(MARKDOWN)
 

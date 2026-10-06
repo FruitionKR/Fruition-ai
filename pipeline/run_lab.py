@@ -398,7 +398,9 @@ def _extract_pipeline_source(
     )
     source_content_hash = _source_content_hash(source_markdown)
     expected_hash = getattr(args, "source_content_hash", None)
-    if expected_hash and expected_hash != source_content_hash:
+    # 채팅 재생성은 미편입 문답(delta)만 input_markdown으로 받고 해시는 문서 전체 기준이라 항상 다르다.
+    # 채팅 블록은 줄 범위도 저장하지 않으므로 비교하지 않는다.
+    if expected_hash and not getattr(args, "input_blocks", None) and expected_hash != source_content_hash:
         # 프론트는 이 해시를 문서 content_hash와 비교해 블록 줄 범위를 믿을지 정한다.
         # 다르면 backend가 보낸 Markdown과 content_hash 계산 대상이 다르다는 뜻이다.
         logger.warning(
