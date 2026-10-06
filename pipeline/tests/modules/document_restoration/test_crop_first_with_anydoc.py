@@ -150,6 +150,56 @@ class CropFirstWithAnyDocTest(unittest.TestCase):
                 "<!-- page 1 -->\n\n> 본문 자동 복원 실패\n\n원본 본문\n",
             )
 
+    def test_assemble_separates_inline_and_indented_markers_as_blocks(self) -> None:
+        # 문장 중간·들여쓴 줄의 마커도 앞뒤 빈 줄로 분리해야 `$$`·표가 본문에 붙지 않는다.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "output"
+            manifest_file = output_dir / "manifest.json"
+            output_file = output_dir / "final" / "restored.md"
+            recovered_dir = output_dir / "layout" / "auto" / "recovered_blocks"
+            recovered_dir.mkdir(parents=True)
+            (recovered_dir / "equation-1.md").write_text("$$\n\\min f\n$$", encoding="utf-8")
+            (recovered_dir / "table-1.md").write_text("| A |\n| --- |", encoding="utf-8")
+            manifest_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "body-1",
+                            "page": 1,
+                            "order": 0,
+                            "type": "paragraph",
+                            "source_text": "given by XQ001QX where w1\n    XQ002QX\nend",
+                            "body_broken": False,
+                        },
+                        {
+                            "id": "equation-1",
+                            "page": 1,
+                            "order": 1,
+                            "type": "equation_candidate",
+                            "token": "XQ001QX",
+                            "asset": "layout/crop_first/assets/specials/equation.png",
+                        },
+                        {
+                            "id": "table-1",
+                            "page": 1,
+                            "order": 2,
+                            "type": "table_candidate",
+                            "token": "XQ002QX",
+                            "asset": "layout/crop_first/assets/specials/table.png",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            module.assemble(manifest_file, output_dir, output_file)
+
+            self.assertEqual(
+                output_file.read_text(encoding="utf-8"),
+                "<!-- page 1 -->\n\ngiven by\n\n$$\n\\min f\n$$\n\nwhere w1\n\n| A |\n| --- |\n\nend\n",
+            )
+
     def test_unicode_text_and_ligatures_remain_safe(self) -> None:
         page = mock.Mock()
         page.get_text.return_value = [(0, 0, 0, 0, "ofﬁce", 0, 0, 0)]

@@ -87,82 +87,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
         if guarded is not None:
             return guarded
 
-        payload = {
-            "message": request.message,
-            "conversation_summary": (
-                request.conversation_context.recent_conversation_summary
-                if request.conversation_context
-                else None
-            ),
-            "recent_messages": (
-                [
-                    {
-                        "role": message.role,
-                        "content": message.content,
-                        "action": message.action,
-                        "agent_route": (
-                            {
-                                "action": message.agent_route.action,
-                                "retrieval_source": message.agent_route.retrieval_source,
-                                "document_operation": message.agent_route.document_operation,
-                                "persist": message.agent_route.persist,
-                                "edit_goal": message.agent_route.edit_goal,
-                                "edit_operation": message.agent_route.edit_operation,
-                                "edit_destination": message.agent_route.edit_destination,
-                                "selected_skill_id": message.agent_route.selected_skill_id,
-                            }
-                            if message.agent_route
-                            else None
-                        ),
-                    }
-                    for message in request.conversation_context.recent_messages
-                ]
-                if request.conversation_context
-                else []
-            ),
-            "reference_context": (
-                request.conversation_context.reference_context
-                if request.conversation_context
-                else {}
-            ),
-            "pending_skill_proposal": (
-                {
-                    "scope_type": request.conversation_context.pending_skill_proposal.scope_type,
-                    "name": request.conversation_context.pending_skill_proposal.name,
-                    "description": request.conversation_context.pending_skill_proposal.description,
-                    "instructions_markdown": request.conversation_context.pending_skill_proposal.instructions_markdown,
-                }
-                if request.conversation_context and request.conversation_context.pending_skill_proposal
-                else None
-            ),
-            "active_markdown_context": {
-                "has_markdown": bool(request.active_markdown_context and request.active_markdown_context.markdown.strip()),
-                "target": (
-                    {
-                        "type": request.active_markdown_context.target.type,
-                        "start_line": request.active_markdown_context.target.start_line,
-                        "end_line": request.active_markdown_context.target.end_line,
-                    }
-                    if request.active_markdown_context and request.active_markdown_context.target
-                    else None
-                ),
-            },
-            "skill_mode": request.skill_mode,
-            "skill_scope_type": request.skill_scope_type,
-            "skill_authoring_mode": request.skill_authoring_mode,
-            "has_selected_completed_work": bool(request.skill_draft_sources),
-            "allow_web_search": request.allow_web_search,
-            "available_skills": [
-                {
-                    "id": skill.id,
-                    "version_id": skill.version_id,
-                    "name": skill.name,
-                    "description": skill.description,
-                    "capabilities": list(skill.capabilities),
-                }
-                for skill in request.available_skills
-            ],
-        }
+        payload = route_payload(request)
         route, failures = self._complete_route(payload)
         failures.extend(_route_failures(route, request))
         if failures:
@@ -204,6 +129,86 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
         return _normalize_route(raw)
 
 
+def route_payload(request: AgentTurnRequest) -> dict[str, object]:
+    """라우터 모델에 보낼 사용자 요청 상태다. Jev 라우터도 같은 상태를 쓴다."""
+    return {
+        "message": request.message,
+        "conversation_summary": (
+            request.conversation_context.recent_conversation_summary
+            if request.conversation_context
+            else None
+        ),
+        "recent_messages": (
+            [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                    "action": message.action,
+                    "agent_route": (
+                        {
+                            "action": message.agent_route.action,
+                            "retrieval_source": message.agent_route.retrieval_source,
+                            "document_operation": message.agent_route.document_operation,
+                            "persist": message.agent_route.persist,
+                            "edit_goal": message.agent_route.edit_goal,
+                            "edit_operation": message.agent_route.edit_operation,
+                            "edit_destination": message.agent_route.edit_destination,
+                            "selected_skill_id": message.agent_route.selected_skill_id,
+                        }
+                        if message.agent_route
+                        else None
+                    ),
+                }
+                for message in request.conversation_context.recent_messages
+            ]
+            if request.conversation_context
+            else []
+        ),
+        "reference_context": (
+            request.conversation_context.reference_context
+            if request.conversation_context
+            else {}
+        ),
+        "pending_skill_proposal": (
+            {
+                "scope_type": request.conversation_context.pending_skill_proposal.scope_type,
+                "name": request.conversation_context.pending_skill_proposal.name,
+                "description": request.conversation_context.pending_skill_proposal.description,
+                "instructions_markdown": request.conversation_context.pending_skill_proposal.instructions_markdown,
+            }
+            if request.conversation_context and request.conversation_context.pending_skill_proposal
+            else None
+        ),
+        "active_markdown_context": {
+            "has_markdown": bool(request.active_markdown_context and request.active_markdown_context.markdown.strip()),
+            "target": (
+                {
+                    "type": request.active_markdown_context.target.type,
+                    "start_line": request.active_markdown_context.target.start_line,
+                    "end_line": request.active_markdown_context.target.end_line,
+                }
+                if request.active_markdown_context and request.active_markdown_context.target
+                else None
+            ),
+        },
+        "skill_mode": request.skill_mode,
+        "skill_scope_type": request.skill_scope_type,
+        "skill_authoring_mode": request.skill_authoring_mode,
+        "has_selected_completed_work": bool(request.skill_draft_sources),
+        "allow_web_search": request.allow_web_search,
+        "available_skills": [
+            {
+                "id": skill.id,
+                "version_id": skill.version_id,
+                "name": skill.name,
+                "description": skill.description,
+                "capabilities": list(skill.capabilities),
+            }
+            for skill in request.available_skills
+        ],
+    }
+
+
 def build_agent_turn_router(
     *,
     provider: str | None = None,
@@ -213,7 +218,6 @@ def build_agent_turn_router(
     api_key = _api_key(resolved_provider)
     if not api_key:
         raise RuntimeError(f"Set {provider_api_key_env(resolved_provider)}.")
-    prompt_path = Path(os.environ.get("AGENT_TURN_ROUTER_SYSTEM_PROMPT", str(DEFAULT_AGENT_TURN_ROUTER_PROMPT)))
     client = ChatCompletionsJsonClient(
         ChatClientConfig(
             api_key=api_key,
@@ -227,8 +231,13 @@ def build_agent_turn_router(
     )
     return ChatCompletionsTurnRouter(
         client,
-        system_prompt=prompt_path.read_text(encoding="utf-8"),
+        system_prompt=load_agent_turn_router_prompt(),
     )
+
+
+def load_agent_turn_router_prompt() -> str:
+    prompt_path = Path(os.environ.get("AGENT_TURN_ROUTER_SYSTEM_PROMPT", str(DEFAULT_AGENT_TURN_ROUTER_PROMPT)))
+    return prompt_path.read_text(encoding="utf-8")
 
 
 def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:

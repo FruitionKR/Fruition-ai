@@ -15,6 +15,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [작업 취소·사용량](tasks.md) | 5 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
 | [Wiki Schema](wiki-schema.md) | 4 | 내부 HTTP |
+| [임베딩 서버](embedding.md) | 2 | 별도 프로세스의 내부 HTTP, 배포 전 호출자 없음 |
 
 Agent 승인 run 5개와 실행 결과 기반 Skill 초안 API는 `AGENT_SKILLS_ENABLED=true`,
 나머지 Skill API 7개는 `SKILL_API_ENABLED=true`일 때 노출된다. 이 문서는 선택 기능을

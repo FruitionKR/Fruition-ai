@@ -1,13 +1,17 @@
 import os
 from functools import lru_cache
 
+from app.core.jev_client import JEV_EVIDENCE_ENABLED_ENV, build_jev_client
 from app.modules.query.application.answer_query import AnswerQueryUseCase
+from app.modules.query.application.build_query_context import BuildQueryContextUseCase
+from app.modules.query.application.evidence_selector import EvidenceSelector
 from app.modules.query.application.ports import (
     QueryEventPublisherPort,
     WikiRepositoryPort,
 )
 from app.modules.query.application.query_answer_assembler import QueryAnswerAssembler
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
+from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSelector
 from app.modules.query.infrastructure.minio_wiki_markdown_reader import MinioWikiMarkdownReader
 from app.modules.query.infrastructure.postgres_wiki_repository import PostgresWikiRepository
 from app.modules.query.infrastructure.query_chat_answer_generator import (
@@ -21,6 +25,7 @@ from app.modules.query.infrastructure.rule_based_query_rewriter import RuleBased
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.query.infrastructure.web_search import build_web_search
 from app.modules.query.interfaces.http.schemas import QueryRequest
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 
 
 def build_answer_query_use_case(
@@ -48,12 +53,18 @@ def build_answer_query_use_case(
         model=model,
     )
     query_evaluator_max_attempts = _int_env("QUERY_EVALUATOR_MAX_ATTEMPTS", 2)
+    max_evidence_snippets = _int_env("QUERY_EVIDENCE_LIMIT", 8)
+    wiki_repository = wiki_repository or PostgresWikiRepository()
+    embedding_search = _build_embedding_search(text_search)
     return AnswerQueryUseCase(
-        wiki_repository=wiki_repository or PostgresWikiRepository(),
+        wiki_repository=wiki_repository,
         markdown_reader=MinioWikiMarkdownReader(),
         event_publisher=event_publisher or NoOpQueryEventPublisher(),
-        embedding_search=_build_embedding_search(text_search),
+        embedding_search=embedding_search,
         text_search=text_search,
+        build_query_context=_build_query_context(
+            wiki_repository, embedding_search, text_search, max_evidence_snippets
+        ),
         answer_generator=answer_generator,
         query_rewriter=RuleBasedQueryRewriter(),
         query_evaluator=query_evaluator,
@@ -67,7 +78,7 @@ def build_answer_query_use_case(
         ),
         min_internal_relevance_score=_float_env("QUERY_MIN_INTERNAL_RELEVANCE_SCORE", 0.5),
         query_evaluator_max_attempts=query_evaluator_max_attempts,
-        max_evidence_snippets=_int_env("QUERY_EVIDENCE_LIMIT", 8),
+        max_evidence_snippets=max_evidence_snippets,
         conversation_summarizer=conversation_summarizer,
     )
 
@@ -80,6 +91,39 @@ def get_query_answer_use_case(payload: QueryRequest) -> AnswerQueryUseCase:
     )
 
 
+def _build_query_context(
+    wiki_repository: WikiRepositoryPort,
+    embedding_search,
+    text_search: Bm25Searcher,
+    max_evidence_snippets: int,
+) -> BuildQueryContextUseCase | None:
+    """`JEV_EVIDENCE_ENABLED`와 API 키가 있으면 Jev 근거 선택을 쓰고, 아니면 기존 기본값을 쓴다."""
+    client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV, interactive=True)
+    if client is None:
+        return None
+    fallback = EvidenceSelector(
+        embedding_search=embedding_search,
+        text_search=text_search,
+        max_evidence_snippets=max_evidence_snippets,
+    )
+    return BuildQueryContextUseCase(
+        evidence_selector=JevEvidenceSelector(
+            client,
+            fallback,
+            wiki_repository,
+            # workspace 전체 후보를 점수 매기므로 저장 벡터가 없는 unit을 질문 시점에 임베딩하지 않고 dense 0으로 둔다.
+            # lexical 점수는 JevEvidenceSelector의 hybrid가 전체 후보 기준으로 따로 넣는다.
+            (
+                embedding_search.without_live_embedding()
+                if isinstance(embedding_search, StoredWikiPageEmbeddingSearch)
+                else embedding_search
+            ),
+            text_search,
+            max_evidence_snippets=max_evidence_snippets,
+        ),
+    )
+
+
 def _build_embedding_search(text_search: Bm25Searcher):
     mode = os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower()
     if mode in {"text-only", "bm25", "lexical"}:
@@ -89,6 +133,12 @@ def _build_embedding_search(text_search: Bm25Searcher):
 
 @lru_cache(maxsize=1)
 def _stored_embedding_search() -> StoredWikiPageEmbeddingSearch:
+    if os.environ.get("EMBEDDING_SERVICE_URL"):
+        # 임베딩 서버는 짧은 텍스트만 받는다. 저장 벡터가 없는 긴 문서는 질문 시점에 임베딩하지 않는다.
+        return StoredWikiPageEmbeddingSearch(
+            embedding_model=RemoteEmbeddingModel.from_env(),
+            online_text_limit=MAX_TEXT_CHARS,
+        )
     return StoredWikiPageEmbeddingSearch()
 
 

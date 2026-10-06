@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from app.modules.query.domain.entities import GeneratedAnswer, WikiPage
+from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSelector
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
 from app.modules.query.interfaces.http import dependencies
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
@@ -66,6 +67,21 @@ class QueryHttpDependenciesTest(unittest.TestCase):
         self.assertIs(first, second)
         dependencies._stored_embedding_search.cache_clear()
 
+    def test_embedding_service_url_uses_remote_model_with_online_text_limit(self) -> None:
+        dependencies._stored_embedding_search.cache_clear()
+        env = {
+            "QUERY_EMBEDDING_MODE": "bge-m3",
+            "EMBEDDING_SERVICE_URL": "http://embedding-server:8000",
+            "INTERNAL_CALLBACK_TOKEN": "token",
+        }
+        with patch.dict(os.environ, env):
+            search = dependencies._build_embedding_search(FixedScoreSearch(0.1))
+
+        self.assertIsInstance(search._embedding_model, dependencies.RemoteEmbeddingModel)
+        self.assertIsNone(search._fallback_search)
+        self.assertEqual(search._online_text_limit, dependencies.MAX_TEXT_CHARS)
+        dependencies._stored_embedding_search.cache_clear()
+
     def test_production_web_disabled_weak_evidence_returns_grounded_no_answer(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("QUERY_MIN_INTERNAL_RELEVANCE_SCORE", None)
@@ -116,3 +132,14 @@ class QueryHttpDependenciesTest(unittest.TestCase):
 
         self.assertEqual(use_case._min_internal_relevance_score, 0.8)
         self.assertTrue(result.answer.content.startswith("제공된 근거에서 질문에 직접 답할 내용을 찾지 못했습니다."))
+
+    def test_jev_evidence_selector_is_used_only_when_enabled_with_key(self) -> None:
+        for env, expected in (
+            ({"JEV_EVIDENCE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}, True),
+            ({"JEV_EVIDENCE_ENABLED": "true", "TYPESAFE_API_KEY": ""}, False),
+            ({"JEV_EVIDENCE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}, False),
+        ):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=False):
+                use_case = _build_production_use_case(0.5)
+                selector = use_case._build_query_context._evidence_selector
+                self.assertEqual(isinstance(selector, JevEvidenceSelector), expected)
