@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.llm_env import SUPPORTED_LLM_MODELS
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
 from app.modules.agent.domain.entities import AgentTurnRequest
 from app.modules.agent.infrastructure.chat_completions_turn_router import build_agent_turn_router
@@ -24,7 +24,7 @@ from app.modules.agent_run.infrastructure.chat_completions_plan_generator import
 @pytest.mark.skipif(os.environ.get("RUN_LIVE_AGENT_E2E") != "1", reason="실제 모델 호출은 명시적으로 실행한다.")
 def test_live_organization_reaches_approval_and_groups_documents():
     provider = os.environ.get("AGENT_E2E_PROVIDER", "openai")
-    model = SUPPORTED_LLM_MODELS[provider]
+    model = DEFAULT_LLM_MODELS[provider]
     instruction = "현재까지 업로드 한 문서, 알맞은 폴더 이름 생성해서 주제별로 정리해 줘"
     design, inbox = str(uuid4()), str(uuid4())
     items = {

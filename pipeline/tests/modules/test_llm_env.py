@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.core.llm_env import (
-    SUPPORTED_LLM_MODELS,
+    DEFAULT_LLM_MODELS,
     api_key_from_env,
     float_env,
     inference_profile,
@@ -19,15 +19,46 @@ class LlmEnvTest(unittest.TestCase):
     def test_supported_selection_and_openai_default(self) -> None:
         self.assertEqual(resolve_llm_provider(), "openai")
         self.assertEqual(
-            SUPPORTED_LLM_MODELS,
+            DEFAULT_LLM_MODELS,
             {
                 "openai": "gpt-5-nano",
                 "gemini": "gemini-3.1-flash-lite",
                 "claude": "claude-sonnet-5",
             },
         )
-        for provider, model in SUPPORTED_LLM_MODELS.items():
+        for provider, model in DEFAULT_LLM_MODELS.items():
             self.assertEqual(resolve_llm_selection(provider, model), (provider, model))
+
+    def test_accepts_other_text_models_of_provider(self) -> None:
+        for provider, model in (
+            ("openai", "gpt-4.1-mini"),
+            ("openai", "o3"),
+            ("openai", "gpt-5.5"),
+            ("gemini", "gemini-3.1-pro-preview"),
+            ("gemini", "gemini-flash-latest"),
+            ("claude", "claude-opus-4-8"),
+            ("claude", "claude-haiku-4-5-20251001"),
+        ):
+            with self.subTest(provider=provider, model=model):
+                self.assertEqual(resolve_llm_selection(provider, f" {model} "), (provider, model))
+
+    def test_rejects_non_text_or_other_provider_models(self) -> None:
+        for provider, model in (
+            ("openai", "gpt-image-1"),
+            ("openai", "gpt-4o-mini-tts"),
+            ("openai", "gpt-realtime"),
+            ("openai", "text-embedding-3-small"),
+            ("openai", "gpt-5-pro"),
+            ("openai", "gpt-5-codex"),
+            ("gemini", "gemini-3.1-flash-tts-preview"),
+            ("gemini", "gemini-omni-1.1-flash"),
+            ("gemini", "gpt-5-nano"),
+            ("claude", "gemini-3.1-flash-lite"),
+            ("claude", "claude opus"),
+        ):
+            with self.subTest(provider=provider, model=model):
+                with self.assertRaisesRegex(ValueError, "Unsupported model"):
+                    resolve_llm_selection(provider, model)
 
     def test_rejects_partial_or_unsupported_selection(self) -> None:
         for provider, model in ((None, "gpt-5-nano"), ("openai", None), (None, None)):
@@ -70,6 +101,22 @@ class LlmEnvTest(unittest.TestCase):
             {"reasoning_effort": "low"},
         )
         self.assertEqual(inference_profile("claude", "claude-sonnet-5"), {})
+
+    def test_reasoning_profile_is_sent_only_to_reasoning_models(self) -> None:
+        """비추론 모델은 추론 수준 파라미터를 받으면 400을 낸다."""
+        for provider, model, expected in (
+            ("openai", "o3", {"reasoning_effort": "medium"}),
+            ("openai", "gpt-6-sol", {"reasoning_effort": "medium"}),
+            ("openai", "gpt-4.1", {}),
+            ("openai", "gpt-4o-mini", {}),
+            ("openai", "gpt-5.1-chat-latest", {}),
+            ("gemini", "gemini-3.1-pro-preview", {"reasoning_effort": "low"}),
+            ("gemini", "gemini-2.5-flash", {}),
+            ("gemini", "gemini-flash-latest", {}),
+            ("claude", "claude-opus-4-8", {}),
+        ):
+            with self.subTest(model=model):
+                self.assertEqual(inference_profile(provider, model), expected)
 
     def test_resolves_numeric_env_values(self) -> None:
         with patch.dict(

@@ -275,12 +275,9 @@ def call_openai(
                 "detail": "original" if page_body or sequence > 0 else "auto",
             }
         )
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "store": False,
-        "reasoning": {
-            "effort": inference_profile("openai", model)["reasoning_effort"]
-        },
         "input": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": content},
@@ -294,6 +291,10 @@ def call_openai(
             }
         },
     }
+    # 추론 수준은 지원하는 모델에만 보낸다.
+    effort = inference_profile("openai", model).get("reasoning_effort")
+    if effort is not None:
+        body["reasoning"] = {"effort": effort}
     response = post_json(
         OPENAI_ENDPOINT,
         body,

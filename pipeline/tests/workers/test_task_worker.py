@@ -1175,7 +1175,7 @@ def test_agent_route_contract_failure_persists_safe_diagnostic() -> None:
     [
         (None, "gpt-5-nano", "provider and model are required"),
         ("openai", "unsupported-model", "Unsupported model"),
-        ("gemini", "gpt-5-nano", "Expected gemini-3.1-flash-lite"),
+        ("gemini", "gpt-5-nano", "Unsupported model for gemini"),
     ],
 )
 def test_invalid_agent_selection_is_terminally_registered(
