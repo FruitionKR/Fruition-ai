@@ -242,6 +242,24 @@ Second
         self.assertEqual(result, {"results": []})
         self.assertEqual(usage, {"total_tokens": 10})
 
+    def test_omits_reasoning_effort_for_non_reasoning_model(self) -> None:
+        response_body = {
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"results":[]}'}]}],
+        }
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResponse(response_body)) as urlopen:
+            call_page(
+                provider="openai",
+                api_key="test-key",
+                model="gpt-4.1-mini",
+                prompt="restore",
+                payload={"blocks": []},
+                images=[],
+            )
+
+        body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertNotIn("reasoning", body)
+
     def test_calls_gemini_api_with_inline_images_and_json_schema(self) -> None:
         response_body = {
             "candidates": [

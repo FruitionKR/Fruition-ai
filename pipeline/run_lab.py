@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import logging
 import os
 import shutil
 from collections.abc import Callable
@@ -76,6 +78,8 @@ from app.core.llm_env import (
     resolve_llm_selection,
     resolve_llm_provider_defaults,
 )
+
+logger = logging.getLogger("run_lab")
 
 
 class PipelineConfigurationError(ValueError):
@@ -344,24 +348,31 @@ def _extract_pipeline_source(
     input_path: Path,
     out: Path,
     log: PipelineLog,
-) -> tuple[SourceDocument, list[SourceBlock], list[dict[str, str]]]:
+) -> tuple[SourceDocument, list[SourceBlock], list[dict[str, Any]], str]:
     extractor = MarkdownBlockExtractor()
     if getattr(args, "input_blocks", None):
         # 채팅 경로: 문답 경계와 provenance를 backend가 확정해 보내므로 Markdown을 다시 쪼개지 않는다.
+        source_markdown = input_text or ""
         document, blocks = extractor.blocks_from_records(
             args.input_blocks,
-            text=input_text or "",
+            text=source_markdown,
             source_path=input_source_name,
             fallback_title=Path(input_source_name).stem,
         )
     elif input_text is not None:
+        source_markdown = input_text
         document, blocks = extractor.extract_text(
             input_text,
             source_path=input_source_name,
             fallback_title=Path(input_source_name).stem,
         )
     else:
-        document, blocks = extractor.extract(input_path)
+        source_markdown = input_path.read_text(encoding="utf-8")
+        document, blocks = extractor.extract_text(
+            source_markdown,
+            source_path=str(input_path),
+            fallback_title=input_path.stem,
+        )
 
     source_document_id = getattr(args, "source_document_id", None)
     if source_document_id:
@@ -372,14 +383,10 @@ def _extract_pipeline_source(
         write_json(out / "document.json", asdict(document))
         write_json(out / "block_map.json", {block.block_id: block.source_reference_id for block in blocks})
 
-    source_block_records = [
-        {
-            "document_id": block.document_id,
-            "block_id": block.block_id,
-            "text": block.text,
-        }
-        for block in blocks
-    ]
+    source_block_records = _source_block_records(
+        blocks,
+        with_line_ranges=not getattr(args, "input_blocks", None),
+    )
     log.emit(
         "1. 블록 추출",
         "Markdown 원문을 블록 객체로 변환했고, 이 블록 목록을 다음 단계 입력으로 전달합니다.",
@@ -389,7 +396,20 @@ def _extract_pipeline_source(
             "블록 수": len(blocks),
         },
     )
-    return document, blocks, source_block_records
+    source_content_hash = _source_content_hash(source_markdown)
+    expected_hash = getattr(args, "source_content_hash", None)
+    # 채팅 재생성은 미편입 문답(delta)만 input_markdown으로 받고 해시는 문서 전체 기준이라 항상 다르다.
+    # 채팅 블록은 줄 범위도 저장하지 않으므로 비교하지 않는다.
+    if expected_hash and not getattr(args, "input_blocks", None) and expected_hash != source_content_hash:
+        # 프론트는 이 해시를 문서 content_hash와 비교해 블록 줄 범위를 믿을지 정한다.
+        # 다르면 backend가 보낸 Markdown과 content_hash 계산 대상이 다르다는 뜻이다.
+        logger.warning(
+            "source_content_hash mismatch: document_id=%s expected=%s computed=%s",
+            getattr(args, "source_document_id", None),
+            expected_hash,
+            source_content_hash,
+        )
+    return document, blocks, source_block_records, source_content_hash
 
 
 def _empty_normalized(document: SourceDocument) -> dict[str, Any]:
@@ -407,15 +427,30 @@ def _empty_normalized(document: SourceDocument) -> dict[str, Any]:
     }
 
 
-def _source_block_records(blocks: list[SourceBlock]) -> list[dict[str, str]]:
+def _source_block_records(
+    blocks: list[SourceBlock],
+    *,
+    with_line_ranges: bool,
+) -> list[dict[str, Any]]:
+    # 영구 block_id는 문서 순서와 다르므로 position을 함께 남긴다.
+    # 채팅 블록은 backend가 넘긴 레코드 단위라 줄 범위·블록 종류가 없다.
     return [
         {
             "document_id": block.document_id,
             "block_id": block.block_id,
             "text": block.text,
+            "position": position,
+            "line_start": block.line_start if with_line_ranges else None,
+            "line_end": block.line_end if with_line_ranges else None,
+            "block_type": block.block_type if with_line_ranges else None,
         }
-        for block in blocks
+        for position, block in enumerate(blocks, start=1)
     ]
+
+
+def _source_content_hash(markdown: str) -> str:
+    """source_blocks를 만든 편입 입력 Markdown의 SHA-256(backend content_hash와 같은 방식)."""
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
 def _resolve_pipeline_concepts(
@@ -829,7 +864,7 @@ def run_pipeline(
 
     prompts = _load_pipeline_prompts(args, log)
     api_client = _prepare_api_client(args, out, log)
-    document, blocks, source_block_records = _extract_pipeline_source(
+    document, blocks, source_block_records, source_content_hash = _extract_pipeline_source(
         args,
         input_text=input_text,
         input_source_name=input_source_name,
@@ -853,7 +888,10 @@ def run_pipeline(
         )
         blocks = source_changes.blocks
         extraction_blocks = source_changes.ingest_blocks
-        source_block_records = _source_block_records(blocks)
+        source_block_records = _source_block_records(
+            blocks,
+            with_line_ranges=not getattr(args, "input_blocks", None),
+        )
         log.emit(
             "1-보조. 재편입 블록 비교",
             "마지막 성공 블록과 최신 Markdown을 비교해 재추출 대상을 확정했습니다.",
@@ -1011,6 +1049,7 @@ def run_pipeline(
             "source_page": page_outputs.source_page,
             "source_extraction_artifact": source_extraction_artifact,
             "source_blocks": source_block_records,
+            "source_content_hash": source_content_hash,
             "source_block_changes": (
                 source_changes.to_manifest()
                 if source_changes is not None

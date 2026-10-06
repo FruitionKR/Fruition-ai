@@ -403,26 +403,70 @@ def _persist_source_blocks(
         blocks = json.loads(path.read_text(encoding="utf-8"))
     if blocks is None:
         return []
-    normalized_blocks: dict[str, dict[str, str]] = {}
-    for block in blocks:
+    normalized_blocks: dict[str, dict[str, Any]] = {}
+    for index, block in enumerate(blocks, start=1):
         block_id = block.get("block_id")
         if block_id:
             normalized_blocks[str(block_id)] = {
                 "block_id": str(block_id),
                 "text": str(block.get("text") or ""),
+                "position": _optional_int(block.get("position")) or index,
+                "line_start": _optional_int(block.get("line_start")),
+                "line_end": _optional_int(block.get("line_end")),
+                "block_type": block.get("block_type") or None,
             }
     conn.execute("DELETE FROM source_blocks WHERE document_id = %s", (document_id,))
     for block in normalized_blocks.values():
         conn.execute(
             """
-            INSERT INTO source_blocks (document_id, block_id, text)
-            VALUES (%s, %s, %s)
+            INSERT INTO source_blocks
+                (document_id, block_id, text, position, line_start, line_end, block_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (document_id, block_id) DO UPDATE SET
-                text = EXCLUDED.text
+                text = EXCLUDED.text,
+                position = EXCLUDED.position,
+                line_start = EXCLUDED.line_start,
+                line_end = EXCLUDED.line_end,
+                block_type = EXCLUDED.block_type
             """,
-            (document_id, block["block_id"], block["text"]),
+            (
+                document_id,
+                block["block_id"],
+                block["text"],
+                block["position"],
+                block["line_start"],
+                block["line_end"],
+                block["block_type"],
+            ),
         )
-    return list(normalized_blocks.values())
+    _persist_source_block_snapshot(conn, document_id, manifest.get("source_content_hash"))
+    return [{"block_id": block["block_id"], "text": block["text"]} for block in normalized_blocks.values()]
+
+
+def _persist_source_block_snapshot(
+    conn: psycopg.Connection,
+    document_id: str,
+    source_content_hash: object,
+) -> None:
+    # 블록과 같은 트랜잭션에서 갱신해, 편입이 실패하면 직전 성공 스냅샷이 그대로 남는다.
+    # 해시를 모르는 블록 집합에 이전 해시가 남으면 프론트가 줄 범위를 잘못 믿으므로 지운다.
+    if not source_content_hash:
+        conn.execute("DELETE FROM source_block_snapshots WHERE document_id = %s", (document_id,))
+        return
+    conn.execute(
+        """
+        INSERT INTO source_block_snapshots (document_id, source_content_hash)
+        VALUES (%s, %s)
+        ON CONFLICT (document_id) DO UPDATE SET
+            source_content_hash = EXCLUDED.source_content_hash,
+            updated_at = now()
+        """,
+        (document_id, str(source_content_hash)),
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _persist_meaning_cluster_artifacts(

@@ -212,7 +212,7 @@ class WikiGenerationPipelineTest(unittest.TestCase):
 
     def test_extract_pipeline_source_applies_requested_document_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            document, blocks, source_block_records = _extract_pipeline_source(
+            document, blocks, source_block_records, _source_content_hash = _extract_pipeline_source(
                 SimpleNamespace(
                     selection_mode=None,
                     source_document_id="requested-document",

@@ -98,7 +98,8 @@ class MarkdownBlockExtractor:
         )
 
     def _split_blocks(self, text: str) -> List[Tuple[str, str, int, int]]:
-        lines = text.splitlines()
+        # 줄 번호는 프론트 편집기와 같은 '\n' 기준이다. splitlines는 \u2028 등도 줄바꿈으로 센다.
+        lines = text.split("\n")
         blocks: list[tuple[str, str, int, int]] = []
         buf: list[str] = []
         buf_start = 1

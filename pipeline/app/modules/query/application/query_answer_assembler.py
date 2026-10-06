@@ -1,10 +1,31 @@
 import re
+from collections.abc import Callable
 from dataclasses import replace
 
 from app.modules.query.application.extract_answer_citations import ExtractAnswerCitationsUseCase
 from app.modules.query.application.ports import AnswerGeneratorPort
 from app.modules.query.application.source_references import remove_block_refs
 from app.modules.query.domain.entities import EvidenceSnippet, GeneratedAnswer, QueryContext
+
+# 펜스는 같은 문자로 같은 길이 이상 닫혀야 끝나고, 닫히지 않으면 답변 끝까지 코드다.
+# 목록 안 코드 블록은 4칸 이상 들여쓰므로 펜스 앞 들여쓰기는 제한하지 않는다.
+# 인라인 코드는 문단(빈 줄)을 넘지 않는다. 짝 없는 백틱이 뒤 문단 인용까지 삼키지 않게 한다.
+_CODE_PATTERN = re.compile(
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*(?:\n.*?(?:^[ \t]*(?P=fence)[`~]*[ \t]*$|\Z)|\Z)"
+    r"|(?P<tick>`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)(?P=tick)(?!`)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _sub_outside_code(pattern: str, replacement: str | Callable[[re.Match[str]], str], content: str) -> str:
+    parts: list[str] = []
+    last = 0
+    for match in _CODE_PATTERN.finditer(content):
+        parts.append(re.sub(pattern, replacement, content[last : match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(re.sub(pattern, replacement, content[last:]))
+    return "".join(parts)
 
 
 class QueryAnswerAssembler:
@@ -63,8 +84,9 @@ class QueryAnswerAssembler:
         # strip=False: 참조가 없는 답변은 한 글자도 건드리지 않는다. 들여쓰기 코드블록으로
         # 시작하는 답변에서 앞 공백이 잘리면 마크다운이 깨진다.
         content = remove_block_refs(answer.content, strip=False)
-        content = re.sub(r"\[((?:\d+)(?:\s*,\s*\d+)*)\]", replace_marker, content)
-        content = re.sub(r"(\[\d+(?:,\s*\d+)*\])(?:\1)+", r"\1", content)
+        # 코드 블록·인라인 코드 안의 숫자 배열(예: [5, 2, 4])은 인용이 아니므로 건너뛴다.
+        content = _sub_outside_code(r"\[((?:\d+)(?:\s*,\s*\d+)*)\]", replace_marker, content)
+        content = _sub_outside_code(r"(\[\d+(?:,\s*\d+)*\])(?:\1)+", r"\1", content)
         used_snippets = list(snippets_by_new_rank.values())
         if not used_snippets:
             return GeneratedAnswer(content=content), []
