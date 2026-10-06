@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from app.modules.query.application.ports import EmbeddingSearchPort
 from app.modules.query.domain.entities import SemanticQueryEmbedding
+from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -11,7 +12,7 @@ from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_re
 class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
     def __init__(
         self,
-        embedding_model: BgeM3EmbeddingModel | None = None,
+        embedding_model: EmbeddingModelPort | None = None,
         fallback_search: EmbeddingSearchPort | None = None,
     ) -> None:
         self._embedding_model = embedding_model or BgeM3EmbeddingModel()
