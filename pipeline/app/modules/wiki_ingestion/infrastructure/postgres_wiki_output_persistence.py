@@ -6,6 +6,7 @@ from typing import Any
 
 import psycopg
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
 )
@@ -324,7 +325,7 @@ def _persist_concept_pages(
                 if isinstance(item, dict)
             ]
             concept_markdown = (
-                append_concept_evidence(current_markdown, updates)
+                sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
                 if current_markdown else concept_markdown
             )
             concept_page["markdown"] = concept_markdown
@@ -580,7 +581,7 @@ def _prepare_concept_update_decisions(
         markdown = read_optional_text_object(row["markdown_uri"])
         if not markdown:
             continue
-        updated_markdown = append_concept_evidence(markdown, updates)
+        updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
         if updated_markdown == markdown:
             continue
         changed_pages.append(

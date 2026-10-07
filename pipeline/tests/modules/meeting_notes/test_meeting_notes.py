@@ -52,6 +52,22 @@ def test_notes_keep_transcript_evidence_without_executing_instructions():
     assert client.complete_json.call_args.kwargs["trusted_identifiers"] == ("s1",)
 
 
+def test_notes_neutralize_external_images_and_links_in_markdown_and_items():
+    generator = Mock()
+    generator.generate.return_value = {
+        **candidate(),
+        "decisions": [
+            {"text": "![x](https://attacker.example/x.png) [안내](https://e.example)", "source_segment_ids": ["s1"]}
+        ],
+    }
+
+    result = GenerateMeetingNotes(generator).execute("회의", [TranscriptSegment("s1", "결정")])
+
+    assert result["decisions"][0]["text"] == "외부 이미지(attacker.example) 안내 (e.example)"
+    assert "- 외부 이미지(attacker.example) 안내 (e.example) (s1)" in result["markdown"]
+    assert "https://" not in result["markdown"]
+
+
 @pytest.mark.parametrize(
     "bad",
     [

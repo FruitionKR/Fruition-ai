@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.core.llm_env import (
     api_key_from_env,
     float_env,
@@ -293,6 +294,8 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             failures,
         )
         restored = repair_markdown_output(actual_request, restored)
+        # 사용자 원문에 있던 링크는 지키고, AI가 새로 넣은 외부 이미지·링크만 무력화한다.
+        restored = sanitize_ai_markdown(restored, keep_urls=external_urls(request.markdown))
         failures.extend(validate_markdown_output(actual_request, restored))
         failures.extend(validate_markdown_syntax(restored))
         restored_result = MarkdownEditResult(
@@ -422,6 +425,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         raw = self._client.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
         failures: list[str] = []
         result = _normalize_create_result(raw, failures)
+        result = replace(
+            result,
+            document=replace(result.document, markdown=sanitize_ai_markdown(result.document.markdown)),
+        )
         failures.extend(validate_markdown_create_output(result.document))
         failures.extend(validate_markdown_syntax(result.document.markdown))
         return result, failures, raw

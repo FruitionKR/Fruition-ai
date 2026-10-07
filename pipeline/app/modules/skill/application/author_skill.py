@@ -26,7 +26,11 @@ from app.modules.skill.domain.reference_template import (
     extract_fixed_reference_template,
     extract_markdown_structure,
 )
-from app.modules.skill.domain.safety import SkillSafetyIssue, inspect_skill_instructions
+from app.modules.skill.domain.safety import (
+    SkillSafetyIssue,
+    inspect_skill_instructions,
+    inspect_skill_output_links,
+)
 
 
 MAX_INSTRUCTION_CHARS = 4_000
@@ -240,6 +244,7 @@ class AuthorSkillUseCase:
             _tag_issues(inspect_skill_instructions(resolved_name), "name")
             + _tag_issues(inspect_skill_instructions(resolved_description), "description")
             + _tag_issues(inspect_skill_instructions(instructions), "instruction")
+            + _tag_issues(inspect_skill_output_links(instructions), "instruction")
         )
         if output_issues:
             proposal = SkillAuthoringProposal(

@@ -13,6 +13,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
 from app.core.error_text import truncate_error
 from app.modules.wiki_generation.domain.text_utils import slugify
@@ -1859,6 +1860,7 @@ def _materialize_promotion_candidates(
                 for claim in claims
             ],
         ).strip()
+        markdown = sanitize_ai_markdown(markdown)
         title = str(page.get("title") or cluster_id).strip()
         slug = slugify(str(page.get("slug") or cluster_id))
         if not markdown or not slug or slug == "untitled":
@@ -1947,7 +1949,7 @@ def _merge_promotion_into_existing_concept(
         }
         for claim in claims
     ]
-    updated_markdown = append_concept_evidence(markdown, updates)
+    updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
     if operation_id:
         current_markdown_uri = storage_uri(
             f"wiki/{workspace_id}/pages/{row['id']}/ops/{operation_id}.md"
