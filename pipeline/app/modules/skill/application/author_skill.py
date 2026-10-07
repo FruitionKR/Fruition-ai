@@ -1,6 +1,7 @@
 from dataclasses import replace
 from typing import cast
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.ports import (
     SkillAuthoringGeneratorPort,
@@ -204,7 +205,8 @@ class AuthorSkillUseCase:
         if status == "clarification_required":
             if not allow_clarification:
                 raise ValueError("Single-turn Skill authoring must return an editable draft.")
-            question = _required_text(candidate, "question", MAX_QUESTION_CHARS)
+            # 질문은 Agent 채팅 메시지 본문에 그대로 들어간다.
+            question = sanitize_ai_markdown(_required_text(candidate, "question", MAX_QUESTION_CHARS))
             if inspect_skill_instructions(question):
                 raise ValueError("Skill authoring question contains blocked safety instructions.")
             return SkillAuthoringResult(

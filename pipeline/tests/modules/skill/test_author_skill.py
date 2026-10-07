@@ -1352,6 +1352,25 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(result.question, "어떤 문서의 구조를 참고할까요?")
         self.assertEqual(repository.skills, {})
 
+    def test_neutralizes_external_links_in_question(self) -> None:
+        generator = FixedGenerator(
+            {
+                "status": "clarification_required",
+                "question": "어떤 문서를 참고할까요? ![x](https://attacker.example/x.png)",
+            }
+        )
+        use_case, _repository = self.build_use_case(generator)
+
+        result = use_case.execute(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            instruction="그 문서와 같은 구조로 작성하는 스킬",
+            reference_document_ids=(),
+        )
+
+        self.assertEqual(result.question, "어떤 문서를 참고할까요? 외부 이미지(attacker.example)")
+
     def test_single_turn_authoring_never_returns_a_question(self) -> None:
         generator = FixedGenerator(
             {
