@@ -13,7 +13,8 @@ Accepted
 ## Decision
 - 공통 모듈 `app/core/ai_markdown_sanitizer.py`를 둔다.
   - 외부 이미지 → `외부 이미지(host)`, 외부 링크 → `텍스트 (host)`, autolink → `host`.
-  - 외부 주소는 scheme이 있거나 `//`로 시작하는 주소다. 상대 경로·`#anchor`, 위키 링크 `[[slug]]`, 블록 참조 `[doc:B0001]`, citation `[1]`은 그대로 둔다.
+  - 외부 주소는 scheme이 있거나 `//`로 시작하는 주소다. `mailto:`도 외부로 본다. 상대 경로·`#anchor`, 위키 링크 `[[slug]]`, 블록 참조 `[doc:B0001]`, citation `[1]`은 그대로 둔다.
+  - png·jpeg·gif·webp `data:` 이미지는 외부로 요청을 보내지 않아 그대로 둔다. Fruition-document `AiMarkdownSanitizer`와 같은 기준이다.
   - 코드 블록·인라인 코드·평문 URL은 바꾸지 않는다.
 - markdown-it-py는 인라인 노드의 원문 위치를 주지 않는다. 그래서 파서가 외부 링크가 있다고 알려 준 인라인 블록의 줄 안에서만 링크 문법을 바꾼다. 다시 파싱해 외부 링크가 남았으면(참조 링크 등) 그 블록의 `[`·`]`·`<`를 escape해 링크가 되지 못하게 한다(fail-closed).
 - 적용 지점:

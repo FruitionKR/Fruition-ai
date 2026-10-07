@@ -4,7 +4,8 @@
 사용자가 화면을 열기만 해도 브라우저가 그 주소를 요청해 내용이 밖으로 나간다.
 
 - 외부 이미지는 `외부 이미지(host)` 글자로, 외부 링크는 `텍스트 (host)` 글자로 바꾼다.
-- 외부 주소는 scheme이 있거나 `//`로 시작하는 주소다. 상대 경로·`#anchor`는 그대로 둔다.
+- 외부 주소는 scheme이 있거나 `//`로 시작하는 주소다. 상대 경로·`#anchor`와 png·jpeg·gif·webp `data:` 이미지는
+  외부로 요청을 보내지 않으므로 그대로 둔다(Fruition-document `AiMarkdownSanitizer`와 같은 기준).
 - 코드 블록·인라인 코드·평문 URL은 바꾸지 않는다.
 
 markdown-it-py는 인라인 노드의 원문 위치를 주지 않는다. 그래서 파서가 알려 준 인라인 블록 줄 범위 안에서만
@@ -21,6 +22,7 @@ from markdown_it.token import Token
 
 _PARSER = MarkdownIt("commonmark").enable("table")
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_DATA_IMAGE = re.compile(r"^data:image/(?:png|jpeg|gif|webp)[;,]", re.IGNORECASE)
 _INLINE_LINK = re.compile(
     r"(?P<bang>!?)\[(?P<text>(?:[^\[\]\\]|\\.|\[[^\[\]]*\])*)\]"
     r"\(\s*(?P<dest><[^<>\n]*>|[^\s()<>]*(?:\([^\s()]*\)[^\s()<>]*)*)"
@@ -195,6 +197,8 @@ def _normalize_destination(raw: str) -> str:
 def _is_external(url: str) -> bool:
     # 브라우저는 주소의 공백·제어 문자를 무시하고 scheme을 읽는다(java\tscript: 등).
     compact = re.sub(r"[\x00-\x20]", "", url)
+    if _DATA_IMAGE.match(compact):
+        return False
     return bool(_SCHEME.match(compact)) or compact.startswith("//")
 
 

@@ -26,6 +26,7 @@ def test_neutralizes_external_images_and_links(markdown: str, expected: str) -> 
     [
         "본문 [[slug|제목]] [doc:B0001] [1, 2]",
         "[상대](./other.md) [앵커](#section) ![로컬](images/a.png)",
+        "![내장](data:image/png;base64,iVBORw0KGgo=)",
         "평문 URL https://plain.example 은 링크 문법이 아니다.",
         "인라인 `![x](https://e.example/a.png)` 코드",
         "```\n![x](https://e.example/a.png)\n```\n",
