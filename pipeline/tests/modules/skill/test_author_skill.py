@@ -34,6 +34,7 @@ def test_intent_prompt_defines_supported_boundaries() -> None:
     assert '"고객에게 이메일을 자동 발송하는 규칙을 만들어줘" -> `unsupported`' in prompt
     assert '"ㅁㄴㅇㅁㄴㅇㅁㄴ" -> `ambiguous`' in prompt
     assert "Meaningless input such as jamo sequences" in prompt
+    assert "is never meaningless, however short" in prompt
     assert "A workspace document entry's display name or filename" in prompt
     assert "A Markdown H1 or title inside the document body" in prompt
     assert "every Skill kind required" in prompt

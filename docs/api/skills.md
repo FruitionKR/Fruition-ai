@@ -267,6 +267,8 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | `invalid_reference` | 참조 문서 개수·중복·빈 id, 접근 불가, 빈 본문, 문서별 40,000자·합계 80,000자 초과 |
 | `skill_request_invalid` | 그 밖의 작성 실패(LLM 출력 계약 위반 등) |
 
+단, 이름 형식(`name` 패턴)과 참조 문서 개수(최대 3개)는 요청 스키마가 먼저 검증하므로 `400` 코드가 아니라 `422` `HTTPValidationError`로 반환됩니다.
+
 #### 7. Pagination / filtering
 
 없음.
