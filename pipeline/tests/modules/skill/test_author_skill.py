@@ -629,6 +629,10 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
                 self.assertEqual(repository.skills, {})
 
+    def test_rejection_code_must_be_registered(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown Skill rejection code"):
+            SkillRequestRejectedError("not_registered", "message")
+
     def test_empty_reference_markdown_is_invalid_reference(self) -> None:
         use_case, _ = self.build_use_case(FixedGenerator(draft_result()), FixedReferenceReader("  "))
 
@@ -1340,6 +1344,37 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json(), {"detail": {"code": code, "message": message}})
+
+    def test_task_route_maps_journal_replay_errors(self) -> None:
+        from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+        cases = [
+            (journal.TaskFailedError("intent_ambiguous"), 400, "intent_ambiguous"),
+            (journal.TaskFailedError("task_failed"), 409, "task_failed"),
+            (journal.TaskCommandMismatchError("Task command identity mismatch."), 409, "task_command_mismatch"),
+        ]
+        application = FastAPI()
+        application.include_router(skill_router)
+        for error, status_code, code in cases:
+            with self.subTest(code=code), patch(
+                "app.modules.task_cancellation.infrastructure.postgres_task_journal.execute",
+                side_effect=error,
+            ):
+                response = TestClient(application).post(
+                    "/skills/tasks",
+                    json={"run_id": "skill-test", "kind": "skill_author", "workspace_id": "workspace-1", "user_id": "user-1", "payload": {
+                        "workspace_id": "workspace-1",
+                        "user_id": "user-1",
+                        "provider": "openai",
+                        "model": "gpt-5-nano",
+                        "scope_type": "personal",
+                        "instruction": "ㅁㄴㅇㅁㄴㅇㅁㄴ",
+                        "reference_document_ids": [],
+                    }},
+                )
+
+                self.assertEqual(response.status_code, status_code)
+                self.assertEqual(response.json()["detail"]["code"], code)
 
     def test_backend_reference_reader_preserves_service_failure(self) -> None:
         reader = BackendSkillReferenceReader("http://backend:8080", "service-token")

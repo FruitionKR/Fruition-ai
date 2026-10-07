@@ -24,6 +24,18 @@ class TaskAlreadyExecutingError(RuntimeError):
     pass
 
 
+class TaskFailedError(ValueError):
+    """실패로 닫힌 run을 다시 요청했다. code는 실패 때 저장한 error_code다."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class TaskCommandMismatchError(ValueError):
+    pass
+
+
 STOPPING = frozenset({"cancel_requested", "rolling_back", "rollback_failed", "cancelled"})
 # worker가 죽어 중단된 run을 같은 재전달 안에서 다시 실행하는 최대 횟수. 넘어서면 실패로 닫아 crash loop가 LLM 호출을 반복하지 않게 한다.
 MAX_INTERRUPTED_ATTEMPTS = int(os.environ.get("AI_TASK_MAX_INTERRUPTED_ATTEMPTS", "3"))
@@ -53,7 +65,7 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
         )
         row = conn.execute("SELECT * FROM ai_task_runs WHERE id = %s", (command["run_id"],)).fetchone()
     if row["command_hash"] != digest:
-        raise ValueError("Task command identity mismatch.")
+        raise TaskCommandMismatchError("Task command identity mismatch.")
     return row
 
 
@@ -205,7 +217,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
         if row["status"] == "completed":
             return row["result"] or {}
         if row["status"] == "failed":
-            raise ValueError(row["error_code"] or "Task failed.")
+            raise TaskFailedError(row["error_code"] or "task_failed")
         if row["status"] in STOPPING:
             rollback(run_id)
             raise PipelineRunCancelledError("Task cancellation requested.")
@@ -217,7 +229,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
                 ensure_task_active()
                 complete(run_id, result)
                 return result
-        except BaseException:
+        except BaseException as exc:
             cancelled = not active(run_id)
             task_run_id.reset(token)
             token = None
@@ -225,8 +237,11 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
             rollback(run_id)
             if not cancelled:
                 with connect() as conn:
-                    conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = 'task_failed' "
-                                 "WHERE id = %s AND status = 'cancelled'", (run_id,))
+                    # 예외가 문자열 code를 가지면 재요청 때 같은 사유를 돌려줄 수 있게 남긴다.
+                    code = getattr(exc, "code", None)
+                    conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = %s "
+                                 "WHERE id = %s AND status = 'cancelled'",
+                                 (code if isinstance(code, str) else "task_failed", run_id))
             raise
         finally:
             if token is not None:

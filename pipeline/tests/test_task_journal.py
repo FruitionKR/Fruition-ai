@@ -108,6 +108,37 @@ def test_cancel_before_delivery_never_calls_handler(journal_database):
     assert journal.status("run", "ws", "user")["status"] == "cancelled"
 
 
+def test_failed_run_keeps_reason_code_for_replay(journal_database):
+    class Rejected(ValueError):
+        code = "intent_ambiguous"
+    def reject():
+        raise Rejected("rejected")
+    with pytest.raises(Rejected):
+        journal.execute(command(), reject)
+    assert journal.status("run", "ws", "user") == dict(id="run", status="failed", error_code="intent_ambiguous")
+    def unexpected():
+        pytest.fail("실패로 닫힌 작업의 handler를 호출했습니다.")
+    with pytest.raises(journal.TaskFailedError) as replay:
+        journal.execute(command(), unexpected)
+    assert replay.value.code == "intent_ambiguous"
+
+
+def test_failed_run_without_code_is_task_failed(journal_database):
+    def fail():
+        raise RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        journal.execute(command(), fail)
+    assert journal.status("run", "ws", "user")["error_code"] == "task_failed"
+    with pytest.raises(journal.TaskFailedError, match="task_failed"):
+        journal.execute(command(), fail)
+
+
+def test_command_mismatch_is_typed(journal_database):
+    journal.register(command())
+    with pytest.raises(journal.TaskCommandMismatchError):
+        journal.register({**command(), "kind": "query"})
+
+
 def test_active_worker_settles_before_rollback(journal_database):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
