@@ -269,6 +269,10 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 
 단, 이름 형식(`name` 패턴)과 참조 문서 개수(최대 3개)는 요청 스키마가 먼저 검증하므로 `400` 코드가 아니라 `422` `HTTPValidationError`로 반환됩니다.
 
+실패로 닫힌 작업을 같은 `run_id`로 다시 요청하면 작업을 재실행하지 않습니다.
+거절 코드로 실패했으면 같은 `code`로 `400`, 그 밖의 실패는 `409`(`code`: 저장된 `error_code`, 보통 `task_failed`)를 반환합니다.
+같은 `run_id`에 다른 command를 보내면 `409` `task_command_mismatch`입니다.
+
 #### 7. Pagination / filtering
 
 없음.

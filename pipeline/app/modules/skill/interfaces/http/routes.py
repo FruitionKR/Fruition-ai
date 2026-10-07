@@ -8,6 +8,7 @@ from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
 from app.modules.skill.application.ports import SkillRepositoryPort
 from app.modules.skill.domain.exceptions import (
+    SKILL_REJECTION_CODES,
     ReferenceDocumentTooLargeError,
     SkillRequestRejectedError,
 )
@@ -63,6 +64,15 @@ def execute_skill_task(task: SkillTaskRequest):
         return {**result.model_dump(mode="json"), "run_id": task.run_id}
     try:
         return journal.execute(task.model_dump(mode="json", exclude_none=True), execute)
+    except SkillRequestRejectedError as exc:
+        # journal 밖에서 HTTP로 바꿔야 journal이 거절 code를 error_code로 남긴다.
+        raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
+    except journal.TaskFailedError as exc:
+        if exc.code in SKILL_REJECTION_CODES:
+            raise HTTPException(400, {"code": exc.code, "message": "Skill task was already rejected."}) from exc
+        raise HTTPException(409, {"code": exc.code, "message": "Skill task already failed."}) from exc
+    except journal.TaskCommandMismatchError as exc:
+        raise HTTPException(409, {"code": "task_command_mismatch", "message": str(exc)}) from exc
     except HTTPException as exc:
         if exc.status_code == 413:
             return JSONResponse(status_code=413, content=exc.detail)
@@ -91,16 +101,10 @@ def author_skill(
             status_code=413,
             content={"error": {"code": exc.code, "message": str(exc)}},
         )
-    except SkillRequestRejectedError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+    except SkillRequestRejectedError:
+        raise
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "skill_request_invalid", "message": str(exc)},
-        ) from exc
+        raise SkillRequestRejectedError("skill_request_invalid", str(exc)) from exc
 
 
 def publish_authored_skill(
