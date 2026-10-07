@@ -995,7 +995,12 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
     def test_neutralizes_only_new_external_links_in_edit(self) -> None:
         link = "[회사](https://company.example)"
         client = SequenceJsonClient(
-            [response(f"{link} 본문을 보강했습니다. ![x](https://attacker.example/x.png)")]
+            [
+                {
+                    **response(f"{link} 본문을 보강했습니다. ![x](https://attacker.example/x.png)"),
+                    "summary": "보강했습니다. ![s](https://attacker.example/s.png)",
+                }
+            ]
         )
         editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
         request = MarkdownEditRequest(
@@ -1010,13 +1015,14 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             result.edit.replacement_markdown,
             f"{link} 본문을 보강했습니다. 외부 이미지(attacker.example)",
         )
+        self.assertEqual(result.edit.summary, "보강했습니다. 외부 이미지(attacker.example)")
 
     def test_neutralizes_external_links_in_created_markdown(self) -> None:
         client = SequenceJsonClient(
             [
                 {
                     "title": "대화 정리",
-                    "summary": "대화를 정리했습니다.",
+                    "summary": "대화를 [정리](https://attacker.example)했습니다.",
                     "markdown": "# 대화 정리\n\n![x](https://attacker.example/x.png)",
                 }
             ]
@@ -1026,6 +1032,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         result = editor.generate_markdown(MarkdownCreateRequest(instruction="대화를 문서로 만들어줘."))
 
         self.assertEqual(result.document.markdown, "# 대화 정리\n\n외부 이미지(attacker.example)")
+        self.assertEqual(result.document.summary, "대화를 정리 (attacker.example)했습니다.")
 
     def test_retries_expanded_target_that_changes_protected_link(self) -> None:
         link = "[문서](https://example.com)"

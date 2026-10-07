@@ -58,6 +58,7 @@ class GenerateMeetingNotes:
                 lines.append(f"- {item['text'].strip()} ({', '.join(refs)})")
         return {
             "display_name": display_name.strip() or "회의록",
-            "markdown": "\n".join(lines),
+            # 항목끼리 합쳐지면 참조 링크 정의와 사용이 이어져 새 링크가 생길 수 있다.
+            "markdown": sanitize_ai_markdown("\n".join(lines)),
             **{key: result[key] for key, _ in sections},
         }

@@ -21,7 +21,8 @@ Accepted
   - Agent 대화 응답: `ChatCompletionsConversationReplier.reply`
   - Agent 문서 생성: `_complete_markdown_create`
   - Agent 문서 편집: `_complete_edit`. 사용자 원문에 있던 URL은 `keep_urls`로 남기고 새로 생긴 외부 URL만 바꾼다. 산출물 `content_hash`는 바뀐 결과로 계산된다. source range 편집은 이미 replacement의 URL을 계약 위반으로 거절한다.
-  - 회의록: `GenerateMeetingNotes.execute`의 markdown과 항목 배열
+  - 편집·생성 결과의 `summary`: 채팅 메시지 본문에 그대로 들어가므로 함께 바꾼다.
+  - 회의록: `GenerateMeetingNotes.execute`의 항목 배열과 합친 markdown. 항목끼리 합쳐지면 참조 링크 정의와 사용이 이어질 수 있어 합친 결과도 다시 처리한다.
   - 위키: manifest 페이지를 읽는 `page_payload`(페이지 저장·임베딩·operation artifact가 모두 이 값을 읽는다), 개념 근거 추가(`_prepare_concept_update_decisions`, 기존 개념 페이지 append), lint promotion 생성·병합
 - Skill은 바꾸지 않고 막는다. AI가 만든 Skill 본문(`author_skill`의 생성 결과, `propose_skill_draft`)에 외부 이미지·링크 문법이 있으면 `external_link` 이슈로 `blocked`를 돌려준다. Skill은 사용자가 검토해 게시하는 설정이고, 게시되면 이후 답변 프롬프트에 지시로 들어가 그 Skill을 쓰는 모든 답변을 오염시키기 때문이다. 사용자 메시지·참고 문서 입력 검사(`inspect_skill_instructions`)에는 넣지 않는다. 정상 링크가 흔하기 때문이다.
 

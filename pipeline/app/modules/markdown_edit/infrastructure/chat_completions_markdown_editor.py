@@ -240,7 +240,8 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         )
         replacement, failures = apply_source_range_response(plan, raw.get("edits"))
         failures.extend(validate_markdown_output(request, replacement))
-        summary = _contract_string(raw.get("summary"), "summary", failures).strip()
+        # summary는 채팅 메시지 본문에도 그대로 들어간다.
+        summary = sanitize_ai_markdown(_contract_string(raw.get("summary"), "summary", failures).strip())
         if not summary:
             failures.append("summary must not be empty")
         result = MarkdownEditResult(
@@ -303,7 +304,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
                 operation=result.edit.operation,
                 target=result.edit.target,
                 requested_target=request.target,
-                summary=result.edit.summary,
+                summary=sanitize_ai_markdown(result.edit.summary),
                 replacement_markdown=restored,
             )
         )
@@ -427,7 +428,11 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         result = _normalize_create_result(raw, failures)
         result = replace(
             result,
-            document=replace(result.document, markdown=sanitize_ai_markdown(result.document.markdown)),
+            document=replace(
+                result.document,
+                summary=sanitize_ai_markdown(result.document.summary),
+                markdown=sanitize_ai_markdown(result.document.markdown),
+            ),
         )
         failures.extend(validate_markdown_create_output(result.document))
         failures.extend(validate_markdown_syntax(result.document.markdown))
