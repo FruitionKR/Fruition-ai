@@ -23,6 +23,9 @@ from markdown_it.token import Token
 _PARSER = MarkdownIt("commonmark").enable("table")
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _DATA_IMAGE = re.compile(r"^data:image/(?:png|jpeg|gif|webp)[;,]", re.IGNORECASE)
+# markdown-it은 `\`를 `%5C`로 인코딩한다. 브라우저는 `\`를 `/`로 읽어 `/\host`도 외부 주소가 된다.
+_ENCODED_BACKSLASH = re.compile(r"%5c", re.IGNORECASE)
+_NETWORK_PATH = re.compile(r"^[/\\]{2}")
 _INLINE_LINK = re.compile(
     r"(?P<bang>!?)\[(?P<text>(?:[^\[\]\\]|\\.|\[[^\[\]]*\])*)\]"
     r"\(\s*(?P<dest><[^<>\n]*>|[^\s()<>]*(?:\([^\s()]*\)[^\s()<>]*)*)"
@@ -199,11 +202,11 @@ def _is_external(url: str) -> bool:
     compact = re.sub(r"[\x00-\x20]", "", url)
     if _DATA_IMAGE.match(compact):
         return False
-    return bool(_SCHEME.match(compact)) or compact.startswith("//")
+    return bool(_SCHEME.match(compact) or _NETWORK_PATH.match(_ENCODED_BACKSLASH.sub("\\\\", compact)))
 
 
 def _host(url: str) -> str:
     try:
-        return urlsplit(url).hostname or ""
+        return urlsplit(_ENCODED_BACKSLASH.sub("/", url).replace("\\", "/")).hostname or ""
     except ValueError:
         return ""
