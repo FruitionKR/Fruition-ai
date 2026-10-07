@@ -1346,12 +1346,15 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
                 self.assertEqual(response.json(), {"detail": {"code": code, "message": message}})
 
     def test_task_route_maps_journal_replay_errors(self) -> None:
+        from app.core.pipeline_control import PipelineRunCancelledError
         from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 
         cases = [
             (journal.TaskFailedError("intent_ambiguous"), 400, "intent_ambiguous"),
             (journal.TaskFailedError("task_failed"), 409, "task_failed"),
             (journal.TaskCommandMismatchError("Task command identity mismatch."), 409, "task_command_mismatch"),
+            (PipelineRunCancelledError("Task cancellation requested."), 409, "task_cancelled"),
+            (journal.TaskAlreadyExecutingError("Task is already executing."), 409, "task_in_progress"),
         ]
         application = FastAPI()
         application.include_router(skill_router)

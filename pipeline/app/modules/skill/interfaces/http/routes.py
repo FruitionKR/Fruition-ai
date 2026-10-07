@@ -3,6 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
@@ -73,6 +74,10 @@ def execute_skill_task(task: SkillTaskRequest):
         raise HTTPException(409, {"code": exc.code, "message": "Skill task already failed."}) from exc
     except journal.TaskCommandMismatchError as exc:
         raise HTTPException(409, {"code": "task_command_mismatch", "message": str(exc)}) from exc
+    except PipelineRunCancelledError as exc:
+        raise HTTPException(409, {"code": "task_cancelled", "message": str(exc)}) from exc
+    except journal.TaskAlreadyExecutingError as exc:
+        raise HTTPException(409, {"code": "task_in_progress", "message": str(exc)}) from exc
     except HTTPException as exc:
         if exc.status_code == 413:
             return JSONResponse(status_code=413, content=exc.detail)
