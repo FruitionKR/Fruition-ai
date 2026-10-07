@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.core.ai_markdown_sanitizer import external_link_spans
+
 
 @dataclass(frozen=True)
 class SkillSafetyIssue:
@@ -145,6 +147,22 @@ def inspect_skill_instructions(instructions_markdown: str) -> tuple[SkillSafetyI
             for match in pattern.finditer(instructions_markdown)
         )
     return _deduplicate_issues(issues)
+
+
+def inspect_skill_output_links(instructions_markdown: str) -> tuple[SkillSafetyIssue, ...]:
+    # AI가 만든 Skill 본문은 이후 답변 프롬프트에 지시로 들어가고 화면에도 그려진다.
+    # 참고 문서에 숨은 지시로 외부 이미지·링크가 들어오면 그 Skill을 쓰는 모든 답변이 오염된다.
+    # 사용자 메시지·참고 문서 입력에는 정상 링크가 흔하므로 inspect_skill_instructions가 아닌 생성 결과에만 쓴다.
+    return tuple(
+        SkillSafetyIssue(
+            category="external_link",
+            text="[external link]",
+            reason="Skill에는 외부 이미지·링크를 포함할 수 없습니다.",
+            start=start,
+            end=end,
+        )
+        for start, end in external_link_spans(instructions_markdown)
+    )
 
 
 def _personal_data_issues(value: str) -> list[SkillSafetyIssue]:

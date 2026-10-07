@@ -13,6 +13,7 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 
 취소 command의 ID·actor는 경로·body와 같아야 하며 기존 command와 내용이 다르면 `409`입니다.
 내부 상태 응답의 `error_code`는 오류가 없을 때 `null`입니다. 목록 pagination은 없습니다.
+실패(`failed`)로 닫힌 작업의 `error_code`는 실패 예외가 사유 코드를 가지면 그 코드(예: Skill 거절 `intent_ambiguous`), 없으면 `task_failed`입니다.
 
 
 상태 의미·복구 순서·검증 범위는 [공통 계약](https://github.com/FruitionKR/Fruition-flatform/blob/main/docs/api/ai-task-cancellation.md)을 따릅니다. 업무 DB 복구 API는 [Document](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/tasks.md#업무-변경-복구-내부-api)가 제공합니다.

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.core.llm_env import (
     api_key_from_env,
     int_env,
@@ -85,7 +86,7 @@ class ChatCompletionsConversationReplier(ConversationReplierPort):
         message = raw.get("message")
         if not isinstance(message, str) or not message.strip():
             raise AgentTurnRouteContractError(["message must be a non-empty string"])
-        return message.strip()
+        return sanitize_ai_markdown(message.strip())
 
 
 def build_conversation_replier(

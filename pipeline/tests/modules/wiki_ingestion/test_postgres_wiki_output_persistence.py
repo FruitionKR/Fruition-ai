@@ -781,6 +781,48 @@ def test_existing_concept_update_writes_canonical_current_markdown(
     assert "새 근거" in changes[0]["markdown"]
 
 
+def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> None:
+    writes = []
+
+    class Result:
+        def fetchone(self):
+            return {"id": "existing-page-1", "markdown_uri": "wiki/user-1/ws/concepts/existing.md"}
+
+    class Connection:
+        def execute(self, _query, _params):
+            return Result()
+
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda _key: "# Existing\n\n## Evidence\n- 기존 근거\n")
+    monkeypatch.setattr(
+        persistence,
+        "write_text_object",
+        lambda key, text: writes.append((key, text)) or f"s3://bucket/{key}",
+    )
+    embedded = []
+    monkeypatch.setattr(persistence, "persist_embedding_units", lambda *args: embedded.append(args[3]))
+
+    changes = persistence._apply_concept_update_decisions(
+        Connection(),
+        "doc-1",
+        "user-1",
+        "ws",
+        [
+            {
+                "decision": "same_concept",
+                "concept_slug": "existing",
+                "claim_id": "claim-1",
+                "claim": "새 근거 ![x](https://attacker.example/x.png)",
+                "refs": ["doc-1:B0001"],
+            }
+        ],
+    )
+
+    assert "외부 이미지(attacker.example)" in writes[0][1]
+    assert "https://" not in writes[0][1]
+    assert embedded == [writes[0][1]]
+    assert changes[0]["markdown"] == writes[0][1]
+
+
 def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> None:
     log_markdown = "## 2026-08-21 ingest: doc-1\n"
     writes = []

@@ -1,3 +1,4 @@
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.modules.meeting_notes.application.ports import MeetingNotesGeneratorPort
 from app.modules.meeting_notes.domain.entities import (
     InvalidMeetingNotesError,
@@ -52,9 +53,12 @@ class GenerateMeetingNotes:
                     raise InvalidMeetingNotesError(
                         "회의록의 전사 근거를 확인하지 못했습니다."
                     )
-                lines.append(f"- {text.strip()} ({', '.join(refs)})")
+                # 항목 배열도 그대로 반환되므로 markdown과 같이 외부 이미지·링크를 무력화한다.
+                item["text"] = sanitize_ai_markdown(text)
+                lines.append(f"- {item['text'].strip()} ({', '.join(refs)})")
         return {
             "display_name": display_name.strip() or "회의록",
-            "markdown": "\n".join(lines),
+            # 항목끼리 합쳐지면 참조 링크 정의와 사용이 이어져 새 링크가 생길 수 있다.
+            "markdown": sanitize_ai_markdown("\n".join(lines)),
             **{key: result[key] for key, _ in sections},
         }

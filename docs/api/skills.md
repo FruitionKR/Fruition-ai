@@ -255,6 +255,25 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 입력 검증은 `422`, 참조 길이 초과는 `413`, 권한·게시 검증 실패는 해당 Skill 오류를 반환합니다.
 취소·충돌 상태는 [작업 상태 API](tasks.md)에서 확인합니다.
 
+작성(`skill_author`) 요청이 거절되면 `400 {"detail": {"code", "message"}}`로 사유를 구분합니다.
+위험 표현은 오류가 아니라 `200` `status: "blocked"`와 `issues[]`로 반환합니다.
+
+| code | 의미 |
+|---|---|
+| `intent_ambiguous` | 수행할 작업을 특정할 수 없음(무의미한 문자열 포함) |
+| `intent_unsupported` | Agent가 지원하지 않는 작업(메시지 발송, 외부 서비스 등) |
+| `invalid_instruction_length` | 지침이 비었거나 최대 길이를 넘음 |
+| `invalid_name` | Skill 이름 형식 오류 |
+| `invalid_reference` | 참조 문서 개수·중복·빈 id, 접근 불가, 빈 본문, 문서별 40,000자·합계 80,000자 초과 |
+| `skill_request_invalid` | 그 밖의 작성 실패(LLM 출력 계약 위반 등) |
+
+단, 이름 형식(`name` 패턴)과 참조 문서 개수(최대 3개)는 요청 스키마가 먼저 검증하므로 `400` 코드가 아니라 `422` `HTTPValidationError`로 반환됩니다.
+
+실패로 닫힌 작업을 같은 `run_id`로 다시 요청하면 작업을 재실행하지 않습니다.
+거절 코드로 실패했으면 같은 `code`로 `400`, 그 밖의 실패는 `409`(`code`: 저장된 `error_code`, 보통 `task_failed`)를 반환합니다.
+같은 `run_id`에 다른 command를 보내면 `409` `task_command_mismatch`입니다.
+취소된 작업은 `409` `task_cancelled`, 아직 실행 중인 작업을 다시 보내면 `409` `task_in_progress`입니다.
+
 #### 7. Pagination / filtering
 
 없음.

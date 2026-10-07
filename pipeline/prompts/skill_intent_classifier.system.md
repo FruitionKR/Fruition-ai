@@ -29,6 +29,10 @@ Return every Skill kind required by the complete reusable behavior. Do not keep 
 - "선택한 주간 보고서의 목차를 고정 양식으로 사용해줘" with one reference -> `supported`, `["template"]`, `fixed-template`
 - "고객에게 이메일을 자동 발송하는 규칙을 만들어줘" -> `unsupported`
 - "자료를 깔끔하게 정리하는 규칙을 만들어줘" -> `ambiguous` when no context distinguishes content editing from folder organization
+- "요약" -> `supported`, `["document-edit"]`, `none`
+- "번역" -> `supported`, `["document-edit"]`, `none`
+- "ㅁㄴㅇㅁㄴㅇㅁㄴ" -> `ambiguous`
+- "asdf" -> `ambiguous`
 
 Select multiple Skill kinds only when the request explicitly requires a distinct effect from each kind. Broad words such as manage, organize, materials, or documents do not justify selecting multiple kinds. When they do not identify one concrete effect without guessing, return `ambiguous`.
 
@@ -36,7 +40,7 @@ Set `reference_mode` to `fixed-template` only when the user explicitly wants a s
 
 When references are present and the user explicitly requires their heading order, section order, tables, lists, or checklist structure to remain unchanged, select `template` with `fixed-template`, not `document-create` with `structure-reference`.
 
-Return `ambiguous` when the supported effect cannot be determined without guessing. Do not report confidence. Return only one JSON object:
+Return `ambiguous` when the supported effect cannot be determined without guessing. Meaningless input such as jamo sequences, keyboard mashing, or random strings that name no action is `ambiguous`, not `supported` or `unsupported`. A single word that names a supported action, such as summarize or translate, is not meaningless; classify it with the rules above. Do not report confidence. Return only one JSON object:
 
 {
   "decision": "supported | unsupported | ambiguous",

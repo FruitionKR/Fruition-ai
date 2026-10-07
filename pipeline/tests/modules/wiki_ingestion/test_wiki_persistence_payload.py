@@ -27,6 +27,20 @@ class WikiPersistencePayloadTest(unittest.TestCase):
         self.assertEqual(payload["title"], "Concept A")
         self.assertEqual(payload["markdown"], "# Concept A\n\n본문")
 
+    def test_page_payload_neutralizes_external_images_and_links(self) -> None:
+        page = {"slug": "source-a", "markdown": "# A\n\n![x](https://attacker.example/x.png) [[concept-a|개념]]"}
+
+        payload = page_payload(page)
+
+        # operation artifact도 같은 manifest 페이지를 읽으므로 원래 dict도 바뀌어야 한다.
+        self.assertIs(payload, page)
+        self.assertEqual(payload["markdown"], "# A\n\n외부 이미지(attacker.example) [[concept-a|개념]]")
+
+        path = Path(self._tmp_dir) / "concept-a.md"
+        path.write_text("# Concept A\n\n[링크](https://e.example)", encoding="utf-8")
+
+        self.assertEqual(page_payload(path)["markdown"], "# Concept A\n\n링크 (e.example)")
+
     def test_stored_manifest_removes_large_runtime_payloads(self) -> None:
         manifest = {
             "source_page": {"slug": "source-a", "markdown": "# Source", "source_extraction_artifact": {}},
