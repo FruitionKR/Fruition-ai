@@ -13,7 +13,7 @@ from app.modules.skill.domain.policy import (
     validate_skill_name,
     with_required_planning_reads,
 )
-from app.modules.skill.domain.safety import inspect_skill_instructions
+from app.modules.skill.domain.safety import inspect_skill_instructions, inspect_skill_output_links
 
 
 class ProposeSkillDraftUseCase:
@@ -50,7 +50,7 @@ class ProposeSkillDraftUseCase:
             raise ValueError("Skill proposal tools must come from successful operations.")
         allowed_tools = with_required_planning_reads(proposed_tools)
         validate_allowed_tools(capabilities, allowed_tools)
-        if inspect_skill_instructions(instructions):
+        if inspect_skill_instructions(instructions) or inspect_skill_output_links(instructions):
             raise ValueError("Skill proposal contains blocked safety instructions.")
         _reject_excluded_literals(
             (name, description, instructions),

@@ -156,6 +156,40 @@ def test_lint_merge_does_not_overwrite_previous_operation_snapshot(
     assert "lint 근거" in change["markdown"]
 
 
+def test_promotion_merge_neutralizes_external_links_in_claims(monkeypatch) -> None:
+    writes = []
+
+    class Result:
+        def fetchone(self):
+            return {
+                "id": "page-shared",
+                "title": "Shared",
+                "summary": "공유 개념",
+                "markdown_uri": "wiki/user-1/ws/concepts/shared.md",
+            }
+
+    class Connection:
+        def execute(self, _query, _params):
+            return Result()
+
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda _key: "# Shared\n\n## Evidence\n- 기존 근거\n")
+    monkeypatch.setattr(repository, "write_text_object", lambda key, text: writes.append((key, text)) or key)
+    monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *_args: None)
+    monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
+
+    change = _merge_promotion_into_existing_concept(
+        Connection(),
+        "user-1",
+        "ws",
+        "shared",
+        [{"id": "claim-1", "claim": "lint 근거 [안내](https://attacker.example)", "refs": ["doc-A:B0001"]}],
+    )
+
+    assert change is not None
+    assert "안내 (attacker.example)" in writes[0][1]
+    assert change["markdown"] == writes[0][1]
+
+
 def test_concept_index_uses_markdown_definition_and_evidence() -> None:
     markdown = """---
 type: concept

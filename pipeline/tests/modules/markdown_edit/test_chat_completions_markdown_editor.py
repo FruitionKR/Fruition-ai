@@ -992,6 +992,48 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             any("partially overlaps display_math" in failure for failure in retry_failures)
         )
 
+    def test_neutralizes_only_new_external_links_in_edit(self) -> None:
+        link = "[회사](https://company.example)"
+        client = SequenceJsonClient(
+            [
+                {
+                    **response(f"{link} 본문을 보강했습니다. ![x](https://attacker.example/x.png)"),
+                    "summary": "보강했습니다. ![s](https://attacker.example/s.png)",
+                }
+            ]
+        )
+        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
+        request = MarkdownEditRequest(
+            instruction="본문을 보강해줘.",
+            markdown=f"{link} 본문",
+            target=TARGET,
+        )
+
+        result = editor.generate_edit(request)
+
+        self.assertEqual(
+            result.edit.replacement_markdown,
+            f"{link} 본문을 보강했습니다. 외부 이미지(attacker.example)",
+        )
+        self.assertEqual(result.edit.summary, "보강했습니다. 외부 이미지(attacker.example)")
+
+    def test_neutralizes_external_links_in_created_markdown(self) -> None:
+        client = SequenceJsonClient(
+            [
+                {
+                    "title": "대화 정리",
+                    "summary": "대화를 [정리](https://attacker.example)했습니다.",
+                    "markdown": "# 대화 정리\n\n![x](https://attacker.example/x.png)",
+                }
+            ]
+        )
+        editor = ChatCompletionsMarkdownEditor(client, "system", create_system_prompt="create")  # type: ignore[arg-type]
+
+        result = editor.generate_markdown(MarkdownCreateRequest(instruction="대화를 문서로 만들어줘."))
+
+        self.assertEqual(result.document.markdown, "# 대화 정리\n\n외부 이미지(attacker.example)")
+        self.assertEqual(result.document.summary, "대화를 정리 (attacker.example)했습니다.")
+
     def test_retries_expanded_target_that_changes_protected_link(self) -> None:
         link = "[문서](https://example.com)"
         client = SequenceJsonClient(

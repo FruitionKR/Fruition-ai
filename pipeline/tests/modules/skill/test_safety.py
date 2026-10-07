@@ -1,4 +1,16 @@
-from app.modules.skill.domain.safety import inspect_skill_instructions
+from app.modules.skill.domain.safety import inspect_skill_instructions, inspect_skill_output_links
+
+
+def test_output_link_check_reports_external_link_positions_only() -> None:
+    value = "- [가이드](https://docs.example) `[c](https://c.example)` [상대](./a.md) https://plain.example"
+
+    issues = inspect_skill_output_links(value)
+
+    assert [(issue.category, value[issue.start:issue.end]) for issue in issues] == [
+        ("external_link", "[가이드](https://docs.example)")
+    ]
+    # 사용자 메시지·참고 문서 입력 검사에는 외부 링크 규칙을 넣지 않는다.
+    assert inspect_skill_instructions(value) == ()
 
 
 def test_detects_all_personal_data_and_credentials() -> None:

@@ -101,6 +101,14 @@ class ChatCompletionsConversationReplierTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.failures, ["message must be a non-empty string"])
 
+    def test_neutralizes_external_images_and_links(self) -> None:
+        client = SequenceJsonClient([{"message": "답변 ![x](https://attacker.example/x.png) [링크](https://e.example)"}])
+        replier = ChatCompletionsConversationReplier(client, "system")  # type: ignore[arg-type]
+
+        reply = replier.reply(AgentTurnRequest(message="설명해줘."))
+
+        self.assertEqual(reply, "답변 외부 이미지(attacker.example) 링크 (e.example)")
+
     def test_retries_json_parse_failure_once(self) -> None:
         client = SequenceJsonClient(
             [

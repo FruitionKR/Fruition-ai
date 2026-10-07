@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+
 
 def source_summary(normalized: dict[str, Any], manifest: dict[str, Any] | None = None) -> str:
     manifest = manifest or {}
@@ -27,9 +29,12 @@ def markdown_title(markdown: str) -> str:
 
 
 def page_payload(value: Any) -> dict[str, Any]:
+    # 위키 페이지는 AI가 정리한 결과다. 페이지 저장·임베딩·operation artifact가 모두 이 값을 읽으므로
+    # 여기서 외부 이미지·링크를 무력화한다.
     if isinstance(value, dict):
         if "markdown" not in value:
             raise RuntimeError("Pipeline manifest page payload is missing markdown")
+        value["markdown"] = sanitize_ai_markdown(str(value["markdown"]))
         return value
     path = Path(str(value))
     if not path.exists():
@@ -39,7 +44,7 @@ def page_payload(value: Any) -> dict[str, Any]:
         "slug": path.stem,
         "title": markdown_title(markdown),
         "markdown_path": str(path),
-        "markdown": markdown,
+        "markdown": sanitize_ai_markdown(markdown),
     }
 
 
