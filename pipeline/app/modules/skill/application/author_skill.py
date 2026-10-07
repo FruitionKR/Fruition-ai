@@ -17,6 +17,7 @@ from app.modules.skill.domain.entities import (
     SkillScopeType,
     SkillTool,
 )
+from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
     validate_allowed_tools,
@@ -76,20 +77,29 @@ class AuthorSkillUseCase:
             MAX_INSTRUCTIONS_CHARS if authoring_mode == "preserve" else MAX_INSTRUCTION_CHARS
         )
         if not instruction or len(instruction) > max_instruction_chars:
-            raise ValueError(f"instruction must contain 1-{max_instruction_chars} characters.")
+            raise SkillRequestRejectedError(
+                "invalid_instruction_length",
+                f"instruction must contain 1-{max_instruction_chars} characters.",
+            )
         if len(reference_document_ids) > MAX_REFERENCE_COUNT:
-            raise ValueError(f"reference_document_ids supports at most {MAX_REFERENCE_COUNT} documents.")
+            raise SkillRequestRejectedError(
+                "invalid_reference",
+                f"reference_document_ids supports at most {MAX_REFERENCE_COUNT} documents.",
+            )
         if len(set(reference_document_ids)) != len(reference_document_ids):
-            raise ValueError("reference_document_ids must not contain duplicates.")
+            raise SkillRequestRejectedError("invalid_reference", "reference_document_ids must not contain duplicates.")
         if any(not document_id.strip() for document_id in reference_document_ids):
-            raise ValueError("reference_document_ids must contain non-empty ids.")
+            raise SkillRequestRejectedError("invalid_reference", "reference_document_ids must contain non-empty ids.")
         input_issues = _tag_issues(inspect_skill_instructions(instruction), "instruction")
         if input_issues and authoring_mode != "regenerate":
             return SkillAuthoringResult(status="blocked", issues=input_issues)
         if input_issues:
             instruction = _redact_issues(instruction, input_issues)
         if name is not None:
-            name = validate_skill_name(name)
+            try:
+                name = validate_skill_name(name)
+            except ValueError as exc:
+                raise SkillRequestRejectedError("invalid_name", str(exc)) from exc
         if description is not None:
             description = description.strip()
             if not description or len(description) > MAX_DESCRIPTION_CHARS:
@@ -135,7 +145,7 @@ class AuthorSkillUseCase:
                         status="clarification_required",
                         question="이 Skill이 수행할 작업이 문서 작성, 문서 수정, 폴더 정리, 템플릿 중 무엇인지 알려 주세요.",
                     )
-                raise ValueError("Skill request could not be classified.")
+                raise SkillRequestRejectedError("intent_ambiguous", "Skill request could not be classified.")
             capabilities, reference_mode, allowed_tools = intent
         else:
             reference_mode = "none"
@@ -180,7 +190,7 @@ class AuthorSkillUseCase:
                         status="clarification_required",
                         question="이 Skill이 수행할 작업이 문서 작성, 문서 수정, 폴더 정리, 템플릿 중 무엇인지 알려 주세요.",
                     )
-                raise ValueError("Skill request could not be classified.")
+                raise SkillRequestRejectedError("intent_ambiguous", "Skill request could not be classified.")
             capabilities, reference_mode, allowed_tools = intent
             candidate = self._generator.generate(
                 instruction,
@@ -415,9 +425,12 @@ def _validate_references(references: tuple[SkillAuthoringReference, ...]) -> tup
     for reference in references:
         markdown = reference.markdown
         if not markdown.strip():
-            raise ValueError("Reference document must contain Markdown.")
+            raise SkillRequestRejectedError("invalid_reference", "Reference document must contain Markdown.")
         if len(markdown) > MAX_REFERENCE_CHARS:
-            raise ValueError(f"Each reference document supports at most {MAX_REFERENCE_CHARS} characters.")
+            raise SkillRequestRejectedError(
+                "invalid_reference",
+                f"Each reference document supports at most {MAX_REFERENCE_CHARS} characters.",
+            )
         total_chars += len(markdown)
         issues.extend(
             _tag_issues(
@@ -427,7 +440,10 @@ def _validate_references(references: tuple[SkillAuthoringReference, ...]) -> tup
             )
         )
     if total_chars > MAX_TOTAL_REFERENCE_CHARS:
-        raise ValueError(f"Reference documents support at most {MAX_TOTAL_REFERENCE_CHARS} characters in total.")
+        raise SkillRequestRejectedError(
+            "invalid_reference",
+            f"Reference documents support at most {MAX_TOTAL_REFERENCE_CHARS} characters in total.",
+        )
     return tuple(issues)
 
 
@@ -570,7 +586,10 @@ def _classify_intent(
         bool(references),
     )
     if classification[0] == "unsupported":
-        raise ValueError("Skill request does not map to a supported Agent action.")
+        raise SkillRequestRejectedError(
+            "intent_unsupported",
+            "Skill request does not map to a supported Agent action.",
+        )
     if classification[0] != "supported":
         return None
     capabilities = classification[1]
