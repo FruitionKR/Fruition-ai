@@ -4,7 +4,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.modules.skill.domain.entities import SkillAuthoringReference
-from app.modules.skill.domain.exceptions import ReferenceDocumentTooLargeError
+from app.modules.skill.domain.exceptions import (
+    ReferenceDocumentTooLargeError,
+    SkillRequestRejectedError,
+)
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
     list_source_blocks,
 )
@@ -46,7 +49,7 @@ class BackendSkillReferenceReader:
             if exc.code == 413:
                 raise ReferenceDocumentTooLargeError() from exc
             if exc.code in {400, 403, 404}:
-                raise ValueError("Reference document is not accessible.") from exc
+                raise SkillRequestRejectedError("invalid_reference", "Reference document is not accessible.") from exc
             raise RuntimeError("Skill reference service request failed.") from exc
         except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("Skill reference service request failed.") from exc
@@ -60,7 +63,7 @@ class BackendSkillReferenceReader:
         elif document_role == "ORIGINAL":
             markdown = "\n\n".join(block["text"] for block in list_source_blocks(document_id))
             if not markdown.strip():
-                raise ValueError("Reference document is not accessible.")
+                raise SkillRequestRejectedError("invalid_reference", "Reference document is not accessible.")
         else:
             raise RuntimeError("Skill reference service response is invalid.")
         return SkillAuthoringReference(id=document_id, name="", markdown=markdown)

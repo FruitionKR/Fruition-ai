@@ -7,7 +7,10 @@ from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
 from app.modules.skill.application.ports import SkillRepositoryPort
-from app.modules.skill.domain.exceptions import ReferenceDocumentTooLargeError
+from app.modules.skill.domain.exceptions import (
+    ReferenceDocumentTooLargeError,
+    SkillRequestRejectedError,
+)
 from app.modules.skill.interfaces.http.dependencies import (
     get_author_skill_use_case,
     get_manage_skill_use_case,
@@ -88,8 +91,16 @@ def author_skill(
             status_code=413,
             content={"error": {"code": exc.code, "message": str(exc)}},
         )
+    except SkillRequestRejectedError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "skill_request_invalid", "message": str(exc)},
+        ) from exc
 
 
 def publish_authored_skill(
