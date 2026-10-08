@@ -1,20 +1,21 @@
 import json
 import os
-from contextlib import nullcontext
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
 import psycopg
 import pytest
 from psycopg import sql
 from psycopg.rows import dict_row
+from minio.error import S3Error
 
 from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
 )
-from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
+from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, PageRebuildError
 from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
@@ -168,6 +169,24 @@ def test_rebuild_without_manual_contribution_regenerates_from_json() -> None:
     assert rebuilt.title == "캐시"
 
 
+def test_restoring_source_snapshot_stops_when_contribution_cannot_be_read() -> None:
+    def read_text(key: str) -> str:
+        if key.endswith(".md"):
+            return "본문\n"
+        if "BROKEN" in key:
+            return "not json"
+        raise S3Error(None, "SlowDown", "", "", "", "")
+
+    restore = ObjectStorageWikiPageRestore(read_text, lambda *_args: "", Mock())
+    source = SourceSnapshotRestoreCommand("S1", "doc-1")
+
+    # 오판하면 수동 스냅샷의 이름·요약을 본문으로 덮어쓰므로 일시 오류·깨진 JSON에서 멈춘다.
+    with pytest.raises(PageRebuildError):
+        restore.restore_source_page("R1", "M", "ws", source)
+    with pytest.raises(PageRebuildError):
+        restore.restore_source_page("R1", "BROKEN", "ws", source)
+
+
 def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> None:
     objects = {
         "wiki/ws/pages/S1/ops/M.md": "사람이 고친 본문\n",
@@ -184,33 +203,82 @@ def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> N
     assert (generated["title"], generated["summary"]) == ("AI 제목", "AI 요약")
 
 
-def test_active_manual_markdown_reads_latest_active_manual_contribution(monkeypatch) -> None:
-    conn = Mock()
-    conn.execute.return_value.fetchone.return_value = {"markdown_uri": "s3://bucket/source.md"}
-    rows = [
-        {"sequence_revision": 1, "active": True, "object_key": "ops/A.json"},
-        {"sequence_revision": 2, "active": True, "object_key": "ops/M1.json"},
-        {"sequence_revision": 3, "active": True, "object_key": "ops/B.json"},
-        {"sequence_revision": 4, "active": False, "object_key": "ops/M2.json"},
-    ]
+def _source_page_connection(page: dict | None) -> MagicMock:
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.execute.return_value.fetchone.return_value = page
+    return conn
+
+
+MANUAL_ROWS = [
+    {"sequence_revision": 1, "active": True, "object_key": "ops/A.json"},
+    {"sequence_revision": 2, "active": True, "object_key": "ops/M1.json"},
+    {"sequence_revision": 3, "active": True, "object_key": "ops/B.json"},
+    {"sequence_revision": 4, "active": False, "object_key": "ops/M2.json"},
+]
+
+
+def test_active_manual_source_markdown_reads_latest_active_manual_contribution(monkeypatch) -> None:
     objects = {
         "ops/M1.json": json.dumps(_manual("M1")),
         "ops/M1.md": "첫 수동 본문",
         "ops/M2.json": json.dumps(_manual("M2")),
         "ops/M2.md": "되돌린 수동 본문",
     }
-    monkeypatch.setattr(persistence, "read_contributions", lambda *_args: rows)
-    monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "connect", lambda: _source_page_connection({"id": "S1"}))
+    monkeypatch.setattr(repository, "read_contributions", lambda *_args: MANUAL_ROWS)
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "read_text_object", objects.__getitem__)
 
-    assert persistence._active_manual_markdown(conn, "S1", "ws") == "첫 수동 본문"
+    manifest = {"user_id": "user", "workspace_id": "ws"}
+    assert repository._active_manual_source_markdown("doc-1", manifest) == "첫 수동 본문"
 
 
-def test_active_manual_markdown_skips_lookup_for_new_page(monkeypatch) -> None:
-    conn = Mock()
-    conn.execute.return_value.fetchone.return_value = {"markdown_uri": None}
-    monkeypatch.setattr(persistence, "read_contributions", Mock(side_effect=AssertionError))
+def test_active_manual_source_markdown_fails_when_manual_body_is_missing(monkeypatch) -> None:
+    objects = {"ops/M1.json": json.dumps(_manual("M1"))}
+    monkeypatch.setattr(repository, "connect", lambda: _source_page_connection({"id": "S1"}))
+    monkeypatch.setattr(repository, "read_contributions", lambda *_args: MANUAL_ROWS)
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "read_text_object", objects.__getitem__)
 
-    assert persistence._active_manual_markdown(conn, "S1", "ws") is None
+    # 빈 본문으로 source 페이지를 덮어쓰지 않도록 재편입을 실패시킨다.
+    with pytest.raises(KeyError):
+        repository._active_manual_source_markdown("doc-1", {"user_id": "user", "workspace_id": "ws"})
+
+
+def test_active_manual_source_markdown_skips_lookup_for_new_document(monkeypatch) -> None:
+    monkeypatch.setattr(repository, "connect", lambda: _source_page_connection(None))
+    monkeypatch.setattr(repository, "read_contributions", Mock(side_effect=AssertionError))
+
+    assert repository._active_manual_source_markdown("doc-1", {"user_id": "user", "workspace_id": "ws"}) is None
+
+
+def test_finish_pipeline_run_reads_manual_body_before_lock(monkeypatch) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        repository, "connect",
+        lambda: _source_page_connection({"document_id": "doc-1", "user_id": "user", "workspace_id": "ws", "status": "running"}),
+    )
+    monkeypatch.setattr(
+        repository, "_active_manual_source_markdown",
+        lambda *_args: events.append("manual") or "사람 본문",
+    )
+
+    @contextmanager
+    def lock(*_args):
+        events.append("lock")
+        yield
+
+    def persist(_conn, _document_id, _manifest, manual_source_markdown):
+        events.append(f"persist:{manual_source_markdown}")
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(repository, "concept_write_lock", lock)
+    monkeypatch.setattr(repository, "_persist_wiki_outputs", persist)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        repository.finish_pipeline_run("run-1", {"operation_id": "op-2", "user_id": "user", "workspace_id": "ws"})
+    assert events == ["manual", "lock", "persist:사람 본문"]
 
 
 def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
@@ -228,7 +296,6 @@ def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
         "operation_id": "op-2",
     }
     monkeypatch.setattr(persistence, "resolve_or_create_wiki_page_id", lambda *_args: "S1")
-    monkeypatch.setattr(persistence, "_active_manual_markdown", lambda *_args: "사람 본문 [링크](https://example.com)\n")
     monkeypatch.setattr(persistence, "_persist_source_blocks", lambda *_args: None)
     monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda markdown, key: uploaded.setdefault(key, markdown))
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
@@ -240,9 +307,9 @@ def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
     monkeypatch.setattr(persistence, "_persist_meaning_cluster_artifacts", lambda *_args: [])
     monkeypatch.setattr(persistence, "write_text_object", lambda key, text, _type: written.setdefault(key, text))
 
-    persistence.persist_wiki_outputs(Mock(), "doc-1", manifest)
-
     body = "사람 본문 [링크](https://example.com)\n"
+    persistence.persist_wiki_outputs(Mock(), "doc-1", manifest, body)
+
     assert list(uploaded.values()) == [body]
     assert embedded == [body]
     assert written["wiki/ws/pages/S1/ops/op-2.md"] == body
@@ -279,8 +346,22 @@ def ai_database(monkeypatch):
                 "VALUES ('doc-1', 'C1', 'extracted_concept', 'ws', now())"
             )
         objects["s3://bucket/cache.md"] = "# 캐시\n\n## Related Concepts\n- [[cdn|CDN]]\n"
-        monkeypatch.setattr(repository, "connect_ai", connect)
-        monkeypatch.setattr(repository, "concept_write_lock", lambda *_args: nullcontext())
+        held: list[tuple[str, str]] = []
+
+        @contextmanager
+        def lock(workspace_id: str, run_id: str):
+            held.append((workspace_id, run_id))
+            yield
+            held.pop()
+
+        def connect_under_lock():
+            # 읽기·차이 계산·반영이 모두 워크스페이스 락 안에서 일어나야 한다.
+            # 실제 락은 같은 run_id로 재진입하므로 중첩 획득도 같은 범위다.
+            assert held and set(held) == {("ws", "op-m")}
+            return connect()
+
+        monkeypatch.setattr(repository, "connect_ai", connect_under_lock)
+        monkeypatch.setattr(repository, "concept_write_lock", lock)
         monkeypatch.setattr(repository, "invalidate_concept_index", lambda *_args: None)
         monkeypatch.setattr(repository, "storage_uri", lambda key: f"s3://bucket/{key}")
         monkeypatch.setattr(repository, "write_text_object", lambda key, text, _type: objects.__setitem__(f"s3://bucket/{key}", text))

@@ -16,6 +16,8 @@ Accepted
 - 사람의 수정은 별도 작업 하나의 **수동 기여**로 저장한다. 경로는 `ops/{operation_id}.md`(본문)와 `.json`(`artifact_type: "manual"`, `added_links`, `removed_links`)이다.
   - document-svc가 `base_revision`을 검사한 뒤 `PUT /wiki/pages/{page_id}/manual-edit`을 동기 호출한다.
   - 응답 항목으로 기여와 버전을 기록한다. 기여로 남으므로 작업 로그 되돌리기의 대상이 된다.
+  - `wiki_page_contributions.object_key`에는 응답의 `contribution_key`(`.json`)를 기록한다. 재편입과 복구가 이 JSON의 `artifact_type`으로 수동 기여를 알아본다.
+  - 읽기, 링크 차이 계산, 반영을 모두 워크스페이스 `concept_write_lock` 안에서 한다. 동시에 도는 ingest·restore·lint가 그 사이에 링크나 본문을 바꾸지 못한다.
 - **링크**: 저장할 때 이전 본문과 새 본문의 `[[slug]]` 차이만 edge에 반영한다.
   - 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지운다.
   - 새 slug는 같은 소유 범위의 활성 페이지가 있을 때만 edge를 만든다. 종류는 source 페이지면 `source_mentions_concept`, concept 페이지면 `related_to`다.
@@ -28,6 +30,8 @@ Accepted
   - 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다(`replay_supported_links`). lint의 고아 링크 판정도 기여를 `sequence_revision` 순으로 재생한다.
   - 사람이 쓴 외부 링크는 무력화하지 않는다. AI가 덧붙인 근거의 외부 링크만 무력화한다([0028](0028-ai-output-external-link-neutralization.md)).
 - **재편입**: concept 페이지는 원래부터 현재 본문 위에 근거를 덧붙이므로 수정이 남는다. source 페이지는 활성 수동 기여가 있으면 가장 최근 수동 본문을 유지하고, 링크·블록·임베딩 같은 구조만 갱신한다.
+  - 수동 본문 조회는 document-svc와 저장소를 부르므로 워크스페이스 락과 DB 트랜잭션을 잡기 전에 끝낸다.
+  - 수동 기여 JSON은 있는데 본문이 없으면 빈 본문으로 덮어쓰지 않고 재편입을 실패시킨다.
 
 ## Alternatives
 - **사람의 수정을 기여가 아닌 `wiki_pages` 본문 덮어쓰기로만 저장**: 다음 복구나 재편입 때 사라진다. 되돌리기 대상도 되지 않는다.
@@ -41,3 +45,5 @@ Accepted
 - 수동 기여 이후 AI 기여가 같은 링크를 다시 추가하면 replay가 edge를 되살린다. AI가 근거를 새로 찾은 것으로 본다.
 - source 페이지는 마지막 기여의 스냅샷으로 복구한다. 수동 수정 뒤 재편입이 있으면 그 재편입 스냅샷이 이미 수동 본문이므로, 수동 기여만 되돌려도 본문은 바뀌지 않는다.
 - 남길 기여가 수동 기여뿐인 concept 페이지는 근거 문서 연결과 임베딩 단위가 비게 된다.
+- 수동 기여보다 앞선 AI 작업만 되돌리면, 그 작업의 근거 문장과 인용은 수동 본문에 남는다. 반면 `source_document_ids`에서는 그 문서가 빠져 `extracted_concept` 연결과 본문이 어긋난다. 사람이 본 본문을 기준으로 삼는다는 결정에 따른 의도된 동작이다. 사람이 쓴 문장 속 근거를 기계적으로 골라 지우지 않는다.
+- source 재편입의 수동 본문 조회와 반영 사이에 새 수동 저장이 끼면, 재편입은 직전 수동 본문을 반영한다. 최신 수동 기여는 원장에 남으므로 다음 수동 저장이나 복구로 맞춰진다.
