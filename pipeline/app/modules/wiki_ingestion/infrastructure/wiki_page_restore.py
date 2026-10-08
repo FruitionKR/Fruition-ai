@@ -137,6 +137,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 f"failed to restore source snapshot:{source_page.page_id}"
             ) from exc
         digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        # 사람이 고친 본문으로 되돌릴 때는 이름·요약을 본문에서 다시 읽지 않는다. 이름은 rename으로만 바꾼다.
+        manual = self._is_manual_snapshot(source_key.removesuffix(".md") + ".json")
         return {
             "page_id": source_page.page_id,
             "page_type": "source",
@@ -145,9 +147,16 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             # 소스 페이지 제목은 문서 파일명이다(ADR 0033). 스냅샷 본문의 생성 제목으로 되돌리지 않도록
             # 비워 두면 저장 단계가 현재 제목을 유지한다.
             "title": None,
-            "summary": markdown_section(markdown, "Summary"),
+            "summary": None if manual else markdown_section(markdown, "Summary"),
             "source_document_id": source_page.document_id,
         }
+
+    def _is_manual_snapshot(self, contribution_key: str) -> bool:
+        try:
+            return json.loads(self._read_text(contribution_key)).get("artifact_type") == "manual"
+        except Exception:
+            # source 페이지의 ingest 스냅샷은 기여 JSON을 남기지 않는다.
+            return False
 
     def calculate_lint_action_changes(
         self,

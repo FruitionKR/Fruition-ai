@@ -38,6 +38,18 @@ def append_concept_evidence(markdown: str, updates: list[dict[str, Any]]) -> str
     return "\n".join(lines).rstrip() + "\n"
 
 
+def concept_evidence_updates(contribution: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "claim_id": item.get("evidence_id"),
+            "claim": item.get("claim"),
+            "refs": item.get("anchor_reference_ids", []),
+        }
+        for item in contribution.get("evidence_units", [])
+        if isinstance(item, dict)
+    ]
+
+
 def _concept_evidence_line(update: dict[str, Any]) -> str:
     claim = str(update.get("claim") or "").strip()
     if not claim:
