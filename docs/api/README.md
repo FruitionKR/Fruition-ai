@@ -12,7 +12,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [Query](query.md) | 1 | 공개 동기·비동기 모두 Kafka, 이 HTTP는 호출자 없음 |
 | [음성·회의록](speech.md) | HTTP 3 + WS 1 | 전사·실시간·회의록은 내부 HTTP/WS로 연결, 합성은 호출자 없음, 화면은 전부 미연동 |
 | [Skills](skills.md) | 8 | 작업 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
-| [작업 취소·사용량](tasks.md) | 5 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결 |
+| [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
 | [AI 데이터 파기](purge.md) | 2 | 내부 HTTP, Document 쪽 호출 연결 전 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
 | [Wiki Schema](wiki-schema.md) | 4 | 내부 HTTP |
@@ -74,6 +74,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `POST /meeting-notes/preview` | `core/meeting/MeetingNotesClient.java`:32 | |
 | `POST /internal/ai/tasks/{run_id}/cancel`, `GET /internal/ai/tasks/{run_id}`, `POST .../rollback-backend`, `POST /internal/ai/tasks/documents/{document_id}/cancel` | `core/aitask/repository/PipelineTaskCancellationClient.java`:26,38-40,32,45 | |
 | `GET /usage/models` | `core/usage/service/ModelUsageService.java`:35-40 | |
+| `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
 | `POST /internal/ai/purge/workspaces`, `POST /internal/ai/purge/users` | **호출자 없음** | Document 파기 API 구현 전 |
 
 ### 아웃바운드 (ai-svc → 외부)
@@ -86,7 +87,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}` | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:27,51 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
-| OpenAI | `/v1/audio/transcriptions`, `/v1/audio/speech`, `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:30,49,70 |
+| OpenAI | `/v1/audio/transcriptions`, `/v1/audio/speech`, `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:40,65,86 |
 | OpenAI · Gemini · Claude | ChatCompletions / Responses / messages | `app/modules/wiki_generation/infrastructure/chat_completions_llm.py`, `app/modules/document_restoration/infrastructure/selective_repair_with_provider.py`:51,53,55 |
 | Tavily | `POST https://api.tavily.com/search` | `app/modules/query/infrastructure/web_search.py`:14,73 |
 

@@ -7,6 +7,9 @@ from app.modules.wiki_schema.domain.entities import SchemaFilterResult, SchemaFr
 
 class WikiSchemaPreviewRequest(BaseModel):
     raw_markdown: str = Field(..., min_length=1)
+    # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다.
+    workspace_id: str | None = Field(default=None, min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
 
 
 class SchemaFragmentsResponse(BaseModel):

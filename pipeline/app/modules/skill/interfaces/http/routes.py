@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core.pipeline_control import PipelineRunCancelledError
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
@@ -135,21 +137,25 @@ def publish_authored_skill(
 @agent_router.post("/draft-from-runs/preview", response_model=SkillAuthoringResponse)
 def propose_skill_draft(
     payload: SkillDraftProposalRequest,
+    request_id: RequestId = None,
 ) -> SkillAuthoringResponse:
     use_case = get_propose_skill_draft_use_case(provider=payload.provider, model=payload.model)
     authorer = get_author_skill_use_case(provider=payload.provider, model=payload.model)
+    scope = {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "skill_draft_preview"}
     try:
-        proposal = use_case.execute(
-            source_runs=tuple(source.to_domain() for source in payload.source_runs),
-            user_directives=tuple(payload.user_directives),
-            excluded_literals=tuple(payload.excluded_literals),
-        )
-        reviewed = authorer.review_draft(
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            scope_type=payload.scope_type,
-            draft=proposal,
-        )
+        with usage_scope(scope):
+            proposal = use_case.execute(
+                source_runs=tuple(source.to_domain() for source in payload.source_runs),
+                user_directives=tuple(payload.user_directives),
+                excluded_literals=tuple(payload.excluded_literals),
+            )
+            reviewed = authorer.review_draft(
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                scope_type=payload.scope_type,
+                draft=proposal,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillAuthoringResponse.from_domain(reviewed)

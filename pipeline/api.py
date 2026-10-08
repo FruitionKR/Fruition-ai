@@ -192,5 +192,7 @@ Instrumentator(excluded_handlers=["/metrics"]).add(
     )
 ).instrument(app).expose(app, include_in_schema=False)
 
+from app.modules.model_usage.interfaces.http.routes import internal_router as model_usage_internal_router
 from app.modules.model_usage.interfaces.http.routes import router as model_usage_router
 include_internal_router(model_usage_router, internal_token_dependencies)
+include_internal_router(model_usage_internal_router, internal_token_dependencies)

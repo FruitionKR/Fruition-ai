@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.wiki_schema.application.activate_schema import ActivateSchemaUseCase
 from app.modules.wiki_schema.application.build_schema_preview import build_schema_preview
 from app.modules.wiki_schema.application.create_schema_draft import CreateSchemaDraftUseCase
@@ -30,9 +32,12 @@ router = APIRouter(prefix="/wiki-schema", tags=["wiki-schema"])
 def preview_wiki_schema(
     payload: WikiSchemaPreviewRequest,
     use_case: OrganizeSchemaUseCase = Depends(get_organize_schema_use_case),
+    request_id: RequestId = None,
 ) -> WikiSchemaPreviewResponse:
     try:
-        result = use_case.execute(payload.raw_markdown)
+        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
+                          "user_id": payload.user_id, "kind": "wiki_schema_preview"}):
+            result = use_case.execute(payload.raw_markdown)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

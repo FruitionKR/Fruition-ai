@@ -377,7 +377,7 @@ curl -X POST "$PIPELINE/wiki-schema/drafts" \
 | 항목 | 내용 |
 |---|---|
 | 목적 | Wiki 스키마 적용 결과를 미리 확인합니다. |
-| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`<br>**Body** — `WikiSchemaPreviewRequest` |
+| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`, `X-Request-Id`(선택, 사용량 원장 run_id): `string` / `null`<br>**Body** — `WikiSchemaPreviewRequest` |
 | 출력 | `200` 성공 — `WikiSchemaPreviewResponse` |
 | 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다. |
 | 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
@@ -406,12 +406,16 @@ Wiki 스키마 적용 결과를 미리 확인합니다.
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
 
 - Content-Type: `application/json` (`WikiSchemaPreviewRequest`)
+- `workspace_id`·`user_id`(선택): 사용량 원장 귀속용. 없으면 `unattributed`로 기록한다.
 
 ```json
 {
-  "raw_markdown": "string"
+  "raw_markdown": "string",
+  "user_id": "string",
+  "workspace_id": "string"
 }
 ```
 

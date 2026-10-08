@@ -242,3 +242,133 @@ def test_realtime_drains_last_segment_and_preserves_order(monkeypatch):
         assert len(asyncio.all_tasks()) == 1
 
     asyncio.run(run())
+
+
+def _ledger_rows(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from app.modules.model_usage.infrastructure import usage_ledger
+
+    rows = {}
+
+    def execute(sql, params):
+        if sql.lstrip().startswith("INSERT"):
+            rows[params[0]] = {"model": params[6], "status": "started"}
+        else:
+            rows[params[-1]].update(
+                status=params[0],
+                input_tokens=params[2],
+                audio_seconds=params[7],
+                input_characters=params[8],
+            )
+
+    @contextmanager
+    def connect():
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(usage_ledger.database, "connect_ai", connect)
+    return usage_ledger.usage_scope({"run_id": "req", **SCOPE}), rows
+
+
+def test_file_transcription_and_tts_are_recorded(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+
+    def handler(request):
+        if request.url.path.endswith("transcriptions"):
+            return httpx.Response(
+                200, json={"text": "전사", "usage": {"type": "duration", "seconds": 4}}
+            )
+        return httpx.Response(200, content=b"mp3")
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        openai_speech.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        with scope:
+            provider = openai_speech.OpenAISpeech("fake-key")
+            await provider.transcribe(b"audio", "audio/webm")
+            await provider.synthesize("답변입니다")
+
+    asyncio.run(run())
+    transcribe, tts = rows.values()
+    assert transcribe["model"] == "gpt-transcribe" and transcribe["status"] == "succeeded"
+    assert transcribe["audio_seconds"] == 4.0
+    assert tts["model"] == "gpt-4o-mini-tts" and tts["input_characters"] == 5
+
+
+def test_live_transcription_records_each_committed_segment(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+
+    class Upstream:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+            self.commits = 0
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            if event["type"] == "session.update":
+                await self.queue.put({"type": "session.updated"})
+            if event["type"] == "input_audio_buffer.commit":
+                self.commits += 1
+                item = f"item_{self.commits}"
+                await self.queue.put(
+                    {"type": "input_audio_buffer.committed", "item_id": item}
+                )
+                if self.commits == 1:
+                    await self.queue.put(
+                        {
+                            "type": "conversation.item.input_audio_transcription.completed",
+                            "item_id": item,
+                            "transcript": "첫 구간",
+                            "usage": {"input_tokens": 9, "output_tokens": 3},
+                        }
+                    )
+                else:
+                    await self.queue.put({"type": "error"})
+
+        async def recv(self):
+            return json.dumps(await self.queue.get())
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.recv()
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield Upstream()
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+
+    async def audio():
+        yield b"\0" * 4800
+        yield "commit"
+        yield b"\0" * 9600
+        yield "commit"
+        await asyncio.sleep(1)
+
+    async def run():
+        with scope:
+            with pytest.raises(SpeechUnavailableError):
+                async for _ in openai_speech.OpenAISpeech("fake").transcribe_live(
+                    audio()
+                ):
+                    pass
+
+    asyncio.run(run())
+    first, second = rows.values()
+    assert first == {
+        "model": "gpt-live-transcribe",
+        "status": "succeeded",
+        "input_tokens": 9,
+        "audio_seconds": 0.1,
+        "input_characters": None,
+    }
+    # 전사를 받지 못한 구간도 보낸 오디오 길이와 함께 남는다.
+    assert second["status"] == "failed" and second["audio_seconds"] == 0.2

@@ -557,7 +557,8 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
     provider text NOT NULL,
     requested_model text NOT NULL,
     model text NOT NULL,
-    status text NOT NULL CHECK (status IN ('started', 'succeeded', 'failed')),
+    status text NOT NULL CONSTRAINT ai_model_usage_status_check
+        CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned')),
     input_tokens bigint CHECK (input_tokens >= 0),
     output_tokens bigint CHECK (output_tokens >= 0),
     cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
@@ -569,3 +570,18 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_actor_time ON ai_model_usage (workspace_id, user_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_run ON ai_model_usage (run_id);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS audio_seconds double precision CHECK (audio_seconds >= 0);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS input_characters bigint CHECK (input_characters >= 0);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ai_model_usage_status_check' AND pg_get_constraintdef(oid) LIKE '%abandoned%'
+    ) THEN
+        ALTER TABLE ai_model_usage DROP CONSTRAINT IF EXISTS ai_model_usage_status_check;
+        ALTER TABLE ai_model_usage ADD CONSTRAINT ai_model_usage_status_check
+            CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_finished ON ai_model_usage (finished_at);
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_started ON ai_model_usage (started_at) WHERE status = 'started';
