@@ -638,3 +638,52 @@ class SelectiveRepairUsageLedgerTest(unittest.TestCase):
             "usage": {"input_tokens": 7, "output_tokens": 3},
         })
         self.assertEqual(finished[:4], ("failed", "claude-actual", 7, 3))
+
+
+    def test_unknown_usage_leaves_cache_unknown(self) -> None:
+        text = '{"results":[]}'
+        for provider, body in {
+            "gemini": {"candidates": [{"content": {"parts": [{"text": text}]}}]},
+            "claude": {"content": [{"type": "text", "text": text}]},
+        }.items():
+            with self.subTest(provider=provider):
+                _, finished = self._call(provider, body)
+                # input, output, cached, cache_creation, reasoning 모두 미확인
+                self.assertEqual(finished[2:7], (None, None, None, None, None))
+
+    def test_ledger_failure_falls_back_without_losing_paid_response(self) -> None:
+        import psycopg
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        from app.modules.model_usage.infrastructure import usage_ledger
+
+        body = {"content": [{"type": "text", "text": '{"results":[]}'}], "usage": {"input_tokens": 1}}
+        scope = json.dumps({"run_id": "r", "workspace_id": "w", "user_id": "u"})
+
+        def attempt(fail_on: str):
+            @contextmanager
+            def connect():
+                def execute(sql, params):
+                    if sql.lstrip().startswith(fail_on):
+                        raise psycopg.OperationalError("db down")
+                yield SimpleNamespace(execute=execute)
+
+            with (
+                mock.patch.object(usage_ledger.database, "connect_ai", connect),
+                mock.patch.dict(os.environ, {"MODEL_USAGE_SCOPE": scope}),
+                mock.patch("urllib.request.urlopen", return_value=_FakeResponse(body)) as urlopen,
+            ):
+                try:
+                    return call_page(provider="claude", api_key="k", model="m", prompt="p",
+                                     payload={"blocks": []}, images=[]), urlopen
+                except RuntimeError as exc:
+                    return exc, urlopen
+
+        # 시작 기록 실패: 공급사를 호출하지 않고 run()이 잡는 RuntimeError로 바뀐다.
+        error, urlopen = attempt("INSERT")
+        self.assertIsInstance(error, RuntimeError)
+        urlopen.assert_not_called()
+        # 갱신 실패: 이미 받은 응답은 그대로 돌려준다.
+        result, _ = attempt("UPDATE")
+        self.assertEqual(result, ({"results": []}, {"input_tokens": 1}))

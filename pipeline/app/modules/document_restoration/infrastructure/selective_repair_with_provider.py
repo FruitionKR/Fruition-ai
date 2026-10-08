@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import fitz
+import psycopg
 
 from app.core.llm_env import api_key_from_env, inference_profile, resolve_llm_selection
 from app.modules.document_restoration.domain.markdown_text import (
@@ -52,6 +54,7 @@ OUTPUT_SCHEMA = {
     },
     "required": ["results"],
 }
+logger = logging.getLogger(__name__)
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -426,18 +429,27 @@ def call_page(
     }
     # converter가 넘긴 actor로 기록한다. env가 없는 로컬 CLI 실행은 원장이 경고만 남긴다.
     scope = os.environ.get(SCOPE_ENV)
-    with (
-        usage_scope(json.loads(scope)) if scope else nullcontext(),
-        track_call(provider, model) as receipt,
-    ):
-        return callers[provider](
-            receipt=receipt,
-            api_key=api_key,
-            model=model,
-            prompt=prompt,
-            payload=payload,
-            images=images,
-        )
+    result = None
+    try:
+        with (
+            usage_scope(json.loads(scope)) if scope else nullcontext(),
+            track_call(provider, model) as receipt,
+        ):
+            result = callers[provider](
+                receipt=receipt,
+                api_key=api_key,
+                model=model,
+                prompt=prompt,
+                payload=payload,
+                images=images,
+            )
+    except psycopg.Error as exc:
+        if result is None:
+            # 시작 기록 실패라 공급사를 호출하지 않았다. run()이 기본 변환 결과로 넘어간다.
+            raise RuntimeError("model usage ledger unavailable") from exc
+        # 이미 비용이 나간 응답은 버리지 않는다. started 행은 1시간 뒤 abandoned로 닫힌다.
+        logger.warning("사용량 원장 갱신 실패: provider=%s model=%s", provider, model)
+    return result
 
 
 def _token(value: Any) -> int | None:
@@ -473,10 +485,14 @@ def ledger_response(provider: str, response: Any) -> SimpleNamespace | None:
     elif provider == "gemini":
         usage = response.get("usageMetadata") or {}
         output = _sum(usage.get("candidatesTokenCount"), usage.get("thoughtsTokenCount"))
+        incoming = _sum(usage.get("promptTokenCount"), usage.get("toolUsePromptTokenCount"))
         normalized = {
-            "input_tokens": _sum(usage.get("promptTokenCount"), usage.get("toolUsePromptTokenCount")),
+            "input_tokens": incoming,
             "output_tokens": output,
-            "input_token_details": {"cache_read": _token(usage.get("cachedContentTokenCount", 0))},
+            # 기준 토큰을 모르면 캐시도 모른다. 0으로 확정하면 미확인 캐시 집계에서 빠진다.
+            "input_token_details": {
+                "cache_read": None if incoming is None else _token(usage.get("cachedContentTokenCount", 0))
+            },
             "output_token_details": {
                 "reasoning": None if output is None else _token(usage.get("thoughtsTokenCount", 0))
             },
@@ -484,8 +500,9 @@ def ledger_response(provider: str, response: Any) -> SimpleNamespace | None:
         model = response.get("modelVersion")
     else:
         usage = response.get("usage") or {}
-        cache_read = _token(usage.get("cache_read_input_tokens", 0))
-        cache_creation = _token(usage.get("cache_creation_input_tokens", 0))
+        known = _token(usage.get("input_tokens")) is not None
+        cache_read = _token(usage.get("cache_read_input_tokens", 0)) if known else None
+        cache_creation = _token(usage.get("cache_creation_input_tokens", 0)) if known else None
         normalized = {
             # Anthropic input_tokens는 캐시 입력을 빼고 세므로 더한다.
             "input_tokens": _sum(usage.get("input_tokens"), cache_read, cache_creation),

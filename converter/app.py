@@ -148,6 +148,9 @@ def process_pdf(
             detail=f"Missing converter commands: {', '.join(missing)}",
         )
 
+    # 하위 프로세스의 귀속 경고는 요청별 process.log에만 남으므로 운영 로그에도 남긴다.
+    if not all((usage_actor or {}).get(key) for key in ("run_id", "workspace_id", "user_id")):
+        logger.warning("사용자 귀속 없는 변환 요청: usage_actor=%s", usage_actor)
     with tempfile.TemporaryDirectory(prefix="fruition-pdf-") as temp_dir:
         job_dir = Path(temp_dir) / str(uuid.uuid4())
         job_dir.mkdir(mode=0o700)

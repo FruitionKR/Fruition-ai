@@ -149,7 +149,7 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
             ):
                 with mock.patch.object(
                     converter_app, "run", side_effect=fake_run
-                ) as restoration:
+                ) as restoration, self.assertLogs("converter", "WARNING") as logs:
                     result = process_pdf(
                         b"pdf", usage_actor={"run_id": "r", "workspace_id": "w", "user_id": None}
                     )
@@ -164,6 +164,8 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
             "gemini-3.1-flash-lite",
         )
         self.assertEqual(result["repair_summary"]["provider"], "gemini")
+        # user_id가 빠진 요청은 converter 운영 로그에 경고로 남는다.
+        self.assertIn("사용자 귀속 없는 변환 요청", logs.output[0])
         # selective repair가 상속받을 사용량 원장 actor
         env = restoration.call_args.args[5]
         self.assertEqual(
