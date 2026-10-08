@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
-from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
+from app.core.ai_database import connect_ai
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.core.error_text import truncate_error
 from app.modules.wiki_generation.domain.text_utils import slugify
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
@@ -88,25 +88,6 @@ def _today_iso() -> str:
 
 
 logger = logging.getLogger(__name__)
-
-
-def ai_database_url() -> str:
-    url = os.environ.get("AI_DATABASE_URL")
-    if not url:
-        raise RuntimeError("Set AI_DATABASE_URL before using ai_db-backed APIs")
-    return url
-
-
-def connect_ai() -> psycopg.Connection:
-    """ai-svc 소유 테이블의 ai_db 연결."""
-    conn = psycopg.connect(ai_database_url(), row_factory=dict_row)
-    if task_run_id.get() is not None:
-        try:
-            conn.execute("SELECT set_config('app.ai_task_run_id', %s, true)", (task_run_id.get(),))
-        except Exception:
-            conn.close()
-            raise
-    return conn
 
 
 def connect() -> psycopg.Connection:

@@ -4,12 +4,15 @@ import argparse
 import base64
 import json
 import mimetypes
+import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import fitz
@@ -20,6 +23,7 @@ from app.modules.document_restoration.domain.markdown_text import (
     is_valid_markdown_table,
 )
 from app.modules.document_restoration.domain.text_quality import looks_glyph_encoded
+from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV, track_call, usage_scope
 
 
 PROMPT_FILE = (
@@ -251,6 +255,7 @@ def post_json(
 
 def call_openai(
     *,
+    receipt: dict[str, Any],
     api_key: str,
     model: str,
     prompt: str,
@@ -301,11 +306,13 @@ def call_openai(
         {"Authorization": f"Bearer {api_key}"},
         "OpenAI Responses API",
     )
+    receipt["response"] = ledger_response("openai", response)
     return json.loads(openai_response_text(response)), response.get("usage") or {}
 
 
 def call_gemini(
     *,
+    receipt: dict[str, Any],
     api_key: str,
     model: str,
     prompt: str,
@@ -339,6 +346,7 @@ def call_gemini(
         {"x-goog-api-key": api_key},
         "Gemini API",
     )
+    receipt["response"] = ledger_response("gemini", response)
     try:
         text = response["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -348,6 +356,7 @@ def call_gemini(
 
 def call_claude(
     *,
+    receipt: dict[str, Any],
     api_key: str,
     model: str,
     prompt: str,
@@ -389,6 +398,7 @@ def call_claude(
         {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
         "Claude Messages API",
     )
+    receipt["response"] = ledger_response("claude", response)
     try:
         text = next(
             block["text"]
@@ -414,13 +424,76 @@ def call_page(
         "gemini": call_gemini,
         "claude": call_claude,
     }
-    return callers[provider](
-        api_key=api_key,
-        model=model,
-        prompt=prompt,
-        payload=payload,
-        images=images,
-    )
+    # converter가 넘긴 actor로 기록한다. env가 없는 로컬 CLI 실행은 원장이 경고만 남긴다.
+    scope = os.environ.get(SCOPE_ENV)
+    with (
+        usage_scope(json.loads(scope)) if scope else nullcontext(),
+        track_call(provider, model) as receipt,
+    ):
+        return callers[provider](
+            receipt=receipt,
+            api_key=api_key,
+            model=model,
+            prompt=prompt,
+            payload=payload,
+            images=images,
+        )
+
+
+def _token(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _sum(*values: Any) -> int | None:
+    # 첫 값(기준 토큰)을 모르면 합계도 모른다. 나머지 세부 항목은 없으면 0이다.
+    first = _token(values[0])
+    if first is None:
+        return None
+    return first + sum(_token(value) or 0 for value in values[1:])
+
+
+def ledger_response(provider: str, response: Any) -> SimpleNamespace | None:
+    """공급사 usage 원값을 원장의 LangChain 형태로 맞춘다.
+
+    input_tokens는 캐시 입력을, output_tokens는 추론 토큰을 포함한다(docs/api/tasks.md 토큰 포함 관계).
+    """
+    if not isinstance(response, dict):
+        return None
+    if provider == "openai":
+        usage = response.get("usage") or {}
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        normalized = {
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "input_token_details": {"cache_read": input_details.get("cached_tokens")},
+            "output_token_details": {"reasoning": output_details.get("reasoning_tokens")},
+        }
+        model = response.get("model")
+    elif provider == "gemini":
+        usage = response.get("usageMetadata") or {}
+        output = _sum(usage.get("candidatesTokenCount"), usage.get("thoughtsTokenCount"))
+        normalized = {
+            "input_tokens": _sum(usage.get("promptTokenCount"), usage.get("toolUsePromptTokenCount")),
+            "output_tokens": output,
+            "input_token_details": {"cache_read": _token(usage.get("cachedContentTokenCount", 0))},
+            "output_token_details": {
+                "reasoning": None if output is None else _token(usage.get("thoughtsTokenCount", 0))
+            },
+        }
+        model = response.get("modelVersion")
+    else:
+        usage = response.get("usage") or {}
+        cache_read = _token(usage.get("cache_read_input_tokens", 0))
+        cache_creation = _token(usage.get("cache_creation_input_tokens", 0))
+        normalized = {
+            # Anthropic input_tokens는 캐시 입력을 빼고 세므로 더한다.
+            "input_tokens": _sum(usage.get("input_tokens"), cache_read, cache_creation),
+            "output_tokens": usage.get("output_tokens"),
+            "input_token_details": {"cache_read": cache_read, "cache_creation": cache_creation},
+        }
+        model = response.get("model")
+    return SimpleNamespace(usage_metadata=normalized, response_metadata={"model": model})
 
 
 def clean_previous_results(

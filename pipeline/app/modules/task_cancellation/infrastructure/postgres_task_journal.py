@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, task_run_id
-from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
+from app.core.ai_database import ai_database_url
 
 
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks", "source_block_snapshots",

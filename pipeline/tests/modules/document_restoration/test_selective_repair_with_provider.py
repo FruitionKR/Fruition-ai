@@ -571,3 +571,70 @@ Second
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelectiveRepairUsageLedgerTest(unittest.TestCase):
+    def _call(self, provider: str, response_body: dict) -> list[tuple]:
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        from app.modules.model_usage.infrastructure import usage_ledger
+
+        rows: list[tuple] = []
+
+        @contextmanager
+        def connect():
+            yield SimpleNamespace(execute=lambda sql, params: rows.append(params))
+
+        scope = json.dumps({"run_id": "r", "workspace_id": "w", "user_id": None, "kind": "document_conversion"})
+        with (
+            mock.patch.object(usage_ledger.database, "connect_ai", connect),
+            mock.patch.dict(os.environ, {"MODEL_USAGE_SCOPE": scope}),
+            mock.patch("urllib.request.urlopen", return_value=_FakeResponse(response_body)),
+        ):
+            try:
+                call_page(provider=provider, api_key="k", model="gpt-5-nano", prompt="p",
+                          payload={"blocks": []}, images=[])
+            except ValueError:
+                pass
+        return rows
+
+    def test_records_normalized_usage_per_provider(self) -> None:
+        text = '{"results":[]}'
+        cases = {
+            "openai": ({
+                "model": "gpt-actual",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+                "usage": {"input_tokens": 100, "output_tokens": 20,
+                          "input_tokens_details": {"cached_tokens": 40},
+                          "output_tokens_details": {"reasoning_tokens": 5}},
+            }, ("gpt-actual", 100, 20, 40, None, 5)),
+            "gemini": ({
+                "modelVersion": "gemini-actual",
+                "candidates": [{"content": {"parts": [{"text": text}]}}],
+                "usageMetadata": {"promptTokenCount": 90, "toolUsePromptTokenCount": 10,
+                                  "candidatesTokenCount": 15, "thoughtsTokenCount": 5,
+                                  "cachedContentTokenCount": 30},
+            }, ("gemini-actual", 100, 20, 30, None, 5)),
+            "claude": ({
+                "model": "claude-actual",
+                "content": [{"type": "text", "text": text}],
+                "usage": {"input_tokens": 60, "output_tokens": 20,
+                          "cache_read_input_tokens": 30, "cache_creation_input_tokens": 10},
+            }, ("claude-actual", 100, 20, 30, 10, None)),
+        }
+        for provider, (body, expected) in cases.items():
+            with self.subTest(provider=provider):
+                started, finished = self._call(provider, body)
+                # 귀속 값이 빠진 user_id는 unattributed로 남는다.
+                self.assertEqual(started[1:6], ("r", "w", "unattributed", "document_conversion", provider))
+                self.assertEqual(finished[0], "succeeded")
+                self.assertEqual(finished[1:7], expected)
+
+    def test_keeps_usage_when_response_text_is_invalid(self) -> None:
+        started, finished = self._call("claude", {
+            "model": "claude-actual",
+            "content": [{"type": "text", "text": "not json"}],
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+        })
+        self.assertEqual(finished[:4], ("failed", "claude-actual", 7, 3))
