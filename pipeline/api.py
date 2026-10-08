@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
 from app.modules.task_cancellation.interfaces.http.routes import router as task_cancellation_router
+from app.modules.data_purge.interfaces.http.routes import router as data_purge_router
 from app.modules.agent.interfaces.http.routes import router as agent_router
 from app.modules.speech.interfaces.http.routes import router as speech_router
 from app.modules.meeting_notes.interfaces.http.routes import router as meeting_notes_router
@@ -127,6 +128,7 @@ include_internal_router(speech_router, internal_token_dependencies)
 include_internal_router(meeting_notes_router, internal_token_dependencies)
 include_internal_router(pipeline_router, internal_token_dependencies)
 include_internal_router(task_cancellation_router, internal_token_dependencies)
+include_internal_router(data_purge_router, internal_token_dependencies)
 include_internal_router(wiki_schema_router, internal_token_dependencies)
 include_internal_router(agent_run_status_router, internal_token_dependencies)
 agent_service_dependencies = [Depends(require_agent_service_token)]

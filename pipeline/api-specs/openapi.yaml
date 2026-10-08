@@ -1833,6 +1833,42 @@ components:
       - log_path
       title: PipelineRunOut
       type: object
+    PurgeResponse:
+      properties:
+        deleted:
+          additionalProperties:
+            type: integer
+          title: Deleted
+          type: object
+      required:
+      - deleted
+      title: PurgeResponse
+      type: object
+    PurgeUserRequest:
+      additionalProperties: false
+      properties:
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+      required:
+      - user_id
+      title: PurgeUserRequest
+      type: object
+    PurgeWorkspacesRequest:
+      additionalProperties: false
+      properties:
+        workspace_ids:
+          items:
+            minLength: 1
+            type: string
+          minItems: 1
+          title: Workspace Ids
+          type: array
+      required:
+      - workspace_ids
+      title: PurgeWorkspacesRequest
+      type: object
     QueryRequest:
       properties:
         allow_web_search:
@@ -3709,6 +3745,74 @@ paths:
       summary: Get Markdown Agent Run
       tags:
       - internal-agent-runs
+  /internal/ai/purge/users:
+    post:
+      operationId: purge_user_internal_ai_purge_users_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeUserRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge User
+      tags:
+      - ai-data-purge
+  /internal/ai/purge/workspaces:
+    post:
+      operationId: purge_workspaces_internal_ai_purge_workspaces_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeWorkspacesRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge Workspaces
+      tags:
+      - ai-data-purge
   /internal/ai/tasks/documents/{document_id}/cancel:
     post:
       operationId: cancel_document_tasks_internal_ai_tasks_documents__document_id__cancel_post

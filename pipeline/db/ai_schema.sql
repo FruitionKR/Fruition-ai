@@ -540,6 +540,14 @@ CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_versions
 DROP TRIGGER IF EXISTS ai_task_change ON skill_version_sources;
 CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_version_sources FOR EACH ROW EXECUTE FUNCTION record_ai_task_change('id');
 
+-- 파기한 워크스페이스·사용자. Kafka 재전달로 다시 들어온 작업이 파기한 범위에 데이터를 되살리지 않게 막는다.
+CREATE TABLE IF NOT EXISTS ai_purged_scopes (
+    scope_type text NOT NULL CHECK (scope_type IN ('workspace', 'user')),
+    scope_id text NOT NULL,
+    purged_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (scope_type, scope_id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_model_usage (
     id uuid PRIMARY KEY,
     run_id text NOT NULL,

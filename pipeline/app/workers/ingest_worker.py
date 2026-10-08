@@ -17,7 +17,7 @@ backend가 `ai.ingest.command` topic에 발행한 문서/채팅 Wiki ingest 명�
 
 from __future__ import annotations
 
-from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError
 
 import asyncio
 import json
@@ -306,7 +306,7 @@ async def consume() -> None:
                             else "?",
                         )
                         raise
-                    except UnprocessableIngestCommand as exc:
+                    except (UnprocessableIngestCommand, ScopePurgedError) as exc:
                         # 재시도해도 같은 지점에서 실패한다. 실패로 확정하고 offset을 전진시켜
                         # 이 command 하나가 파티션 전체를 막지 않게 한다.
                         run_id = message.value.get("run_id") if isinstance(message.value, dict) else None
