@@ -8,7 +8,7 @@
 |---|---|---|---|
 | wiki_schemas | ai-svc | 워크스페이스·사용자별 Wiki 생성 규칙 | active 스키마는 소유 범위당 최대 1개(부분 unique index) |
 | document_derived_state | ai-svc | 문서 파생물 stale 추적 | `document.edit.event` consumer가 갱신 |
-| wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | workspace 범위 unique, DB 밖 document ID는 논리 참조 |
+| wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | workspace 범위 unique, DB 밖 document ID는 논리 참조. 사람이 고친 본문은 `ops/{operation_id}.md`·`.json`(`artifact_type: "manual"`)으로 남고 `markdown_uri`가 그 본문을 가리킨다. 수동 기여의 `added_links`·`removed_links`가 본문 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 기여 원장·revision은 document-svc가 소유한다([adr/0029](adr/0029-manual-wiki-contributions.md)) |
 | source_blocks·source_block_snapshots | ai-svc | 문서 block 텍스트·문서 내 순서·줄 범위, block 집합을 만든 편입 입력 Markdown의 SHA-256 | 복합 PK `(block_id, document_id)`. 영구 `block_id`는 문서 순서가 아니므로 `position`(1부터) 순으로 조회한다. `line_start`·`line_end`는 입력 Markdown을 `\n`으로 나눈 1-based 양끝 포함 값이며 채팅 문서·기존 행은 null. 스냅샷 해시는 블록과 같은 트랜잭션에서 갱신해 편입 실패 시 직전 성공 값을 유지한다 |
 | wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다 |
 | pipeline_runs | ai-svc | pipeline 실행 상태 | Spring이 만든 `run_id`, `user_id`·`workspace_id` 보존. ingest manifest의 `post_ingest.status`는 `running/retrying/ready/needs_review` 품질 진단 상태를 보존 |

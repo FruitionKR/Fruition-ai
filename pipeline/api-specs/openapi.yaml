@@ -3077,6 +3077,31 @@ components:
       - page_ids
       title: WikiPageLookupIn
       type: object
+    WikiPageManualEditIn:
+      additionalProperties: false
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        operation_id:
+          minLength: 1
+          title: Operation Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - user_id
+      - workspace_id
+      - operation_id
+      - markdown
+      title: WikiPageManualEditIn
+      type: object
     WikiPageRenameIn:
       additionalProperties: false
       properties:
@@ -5093,6 +5118,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Wiki Page
+      tags:
+      - wiki
+  /wiki/pages/{page_id}/manual-edit:
+    put:
+      operationId: save_manual_wiki_edit_wiki_pages__page_id__manual_edit_put
+      parameters:
+      - in: path
+        name: page_id
+        required: true
+        schema:
+          title: Page Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiPageManualEditIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Save Manual Wiki Edit Wiki Pages  Page Id  Manual Edit Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Save Manual Wiki Edit
       tags:
       - wiki
   /wiki/pages/{page_id}/rename:

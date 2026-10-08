@@ -48,7 +48,7 @@ def replay_supported_links(
                 supported.pop(_link_key(link), None)
         added = (
             artifact.get("added_links", [])
-            if artifact.get("artifact_type") == "lint"
+            if artifact.get("artifact_type") in ("lint", "manual")
             else artifact.get("links", [])
         )
         for link in added:

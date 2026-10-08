@@ -7,11 +7,15 @@ from typing import Any
 import psycopg
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
+    read_contributions,
+)
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
 )
 from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
     append_concept_evidence,
+    concept_evidence_updates,
 )
 from app.modules.wiki_ingestion.infrastructure.object_storage import write_text_object
 from app.modules.wiki_ingestion.infrastructure.operation_artifacts import (
@@ -59,6 +63,7 @@ def persist_wiki_outputs(
     operation_id = manifest.get("operation_id")
     prepared_concept_updates: list[dict[str, Any]] | None = None
     source_page_id = None
+    manual_source_markdown = None
     concept_id_by_slug = None
     if operation_id:
         source_page_id = resolve_or_create_wiki_page_id(
@@ -68,6 +73,7 @@ def persist_wiki_outputs(
             "source",
             document_id,
         )
+        manual_source_markdown = _active_manual_markdown(conn, source_page_id, workspace_id)
     source_blocks = _persist_source_blocks(conn, document_id, manifest)
     source_page_id = _persist_source_page(
         conn,
@@ -78,6 +84,7 @@ def persist_wiki_outputs(
         workspace_id,
         page_id=source_page_id,
         source_blocks=source_blocks,
+        markdown=manual_source_markdown,
     )
     lock_concept_persistence(conn, user_id, workspace_id)
     if operation_id:
@@ -123,6 +130,7 @@ def persist_wiki_outputs(
             source_page_id,
             concept_id_by_slug,
             prepared_concept_updates,
+            manual_source_markdown,
         )
     return list(
         dict.fromkeys(
@@ -142,6 +150,7 @@ def _persist_ingest_operation_artifacts(
     source_page_id: str,
     concept_id_by_slug: dict[str, str],
     prepared_concept_updates: list[dict[str, Any]],
+    manual_source_markdown: str | None,
 ) -> None:
     source_page = page_payload(manifest["source_page"])
     concept_contributions = manifest.get("concept_contributions") or {}
@@ -162,7 +171,11 @@ def _persist_ingest_operation_artifacts(
         operation_id=operation_id,
         workspace_id=workspace_id,
         source_page_id=source_page_id,
-        source_markdown=str(source_page["markdown"]),
+        source_markdown=(
+            manual_source_markdown
+            if manual_source_markdown is not None
+            else str(source_page["markdown"])
+        ),
         concept_pages=list(operation_concept_pages_by_slug.values()),
         concept_contributions=concept_contributions,
         write_text=write_text_object,
@@ -223,6 +236,7 @@ def _persist_source_page(
     *,
     page_id: str | None = None,
     source_blocks: list[dict[str, str]] | None = None,
+    markdown: str | None = None,
 ) -> str:
     source_page_id = page_id or resolve_or_create_wiki_page_id(
         conn,
@@ -232,7 +246,7 @@ def _persist_source_page(
         document_id,
     )
     source_page = page_payload(manifest["source_page"])
-    source_markdown = source_page["markdown"]
+    source_markdown = source_page["markdown"] if markdown is None else markdown
     source_markdown_uri = upload_wiki_markdown(
         source_markdown,
         f"wiki/{user_id}/{workspace_id}/sources/{document_id}.md",
@@ -264,6 +278,31 @@ def _persist_source_page(
     )
     persist_embedding_units(conn, source_page_id, document_id, source_markdown, source_blocks)
     return source_page_id
+
+
+def _active_manual_markdown(
+    conn: psycopg.Connection,
+    page_id: str,
+    workspace_id: str,
+) -> str | None:
+    """활성 수동 기여 중 가장 최근 본문을 돌려준다. 재편입은 사람이 고친 본문을 덮어쓰지 않는다."""
+    page = conn.execute(
+        "SELECT markdown_uri FROM wiki_pages WHERE id = %s",
+        (page_id,),
+    ).fetchone()
+    if not page or not page["markdown_uri"]:
+        # 이번 편입이 처음 만든 페이지에는 기여가 없다.
+        return None
+    rows = read_contributions([page_id], workspace_id)
+    for row in sorted(rows, key=lambda item: int(item.get("sequence_revision") or 0), reverse=True):
+        key = str(row.get("object_key") or "")
+        if not row.get("active") or not key.endswith(".json"):
+            continue
+        # source 페이지의 ingest 기여는 JSON을 남기지 않으므로 수동 기여만 읽힌다.
+        payload = read_optional_text_object(key)
+        if payload and json.loads(payload).get("artifact_type") == "manual":
+            return read_optional_text_object(key.removesuffix(".json") + ".md")
+    return None
 
 
 def _persist_concept_pages(
@@ -315,15 +354,7 @@ def _persist_concept_pages(
         if existing:
             current_markdown = read_optional_text_object(existing["markdown_uri"])
             contribution = (manifest.get("concept_contributions") or {}).get(slug) or {}
-            updates = [
-                {
-                    "claim_id": item.get("evidence_id"),
-                    "claim": item.get("claim"),
-                    "refs": item.get("anchor_reference_ids", []),
-                }
-                for item in contribution.get("evidence_units", [])
-                if isinstance(item, dict)
-            ]
+            updates = concept_evidence_updates(contribution)
             concept_markdown = (
                 sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
                 if current_markdown else concept_markdown

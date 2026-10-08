@@ -269,6 +269,15 @@ class WikiPageRenameIn(BaseModel):
     update_slug: bool = False
 
 
+class WikiPageManualEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    operation_id: str = Field(min_length=1)
+    markdown: str
+
+
 class WikiLintIn(BaseModel):
     user_id: str = "local-user"
     workspace_id: str = "local-workspace"
