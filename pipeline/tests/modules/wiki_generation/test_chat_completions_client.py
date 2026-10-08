@@ -140,7 +140,11 @@ class ChatCompletionsJsonClientTest(unittest.TestCase):
                         "application/json",
                     )
                 else:
-                    self.assertIn("Return only one valid JSON object", system_content)
+                    [block] = system_content
+                    self.assertIn("Return only one valid JSON object", block["text"])
+                    self.assertEqual(block["cache_control"], {"type": "ephemeral"})
+                if provider != "claude":
+                    self.assertIsInstance(system_content, str)
 
     def test_masks_request_and_response_numeric_personal_data(self) -> None:
         model = _Model(AIMessage(content="연락처는 010-1234-5678입니다."))
