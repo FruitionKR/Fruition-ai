@@ -603,7 +603,6 @@ def test_persist_wiki_outputs_skips_operation_artifacts_when_later_step_fails(
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
     )
-    monkeypatch.setattr(persistence, "_active_manual_markdown", lambda *_args: None)
     monkeypatch.setattr(
         persistence,
         "upload_wiki_markdown",
@@ -674,7 +673,6 @@ def test_operation_artifacts_include_existing_concept_evidence_updates(
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
     )
-    monkeypatch.setattr(persistence, "_active_manual_markdown", lambda *_args: None)
     monkeypatch.setattr(
         persistence,
         "upload_wiki_markdown",
@@ -891,7 +889,6 @@ def test_persist_wiki_outputs_reads_normalized_and_links_artifacts(
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
     )
-    monkeypatch.setattr(persistence, "_active_manual_markdown", lambda *_args: None)
     monkeypatch.setattr(
         persistence,
         "upload_wiki_markdown",

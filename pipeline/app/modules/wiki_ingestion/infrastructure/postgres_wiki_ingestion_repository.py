@@ -891,117 +891,151 @@ def save_manual_wiki_edit(
     revision·base_revision 충돌 검사와 기여 원장 기록은 document-svc가 맡는다. 여기서는 작업별
     불변 artifact를 쓰고 본문·링크·임베딩을 갱신한 뒤, document-svc가 기록할 페이지 항목을 돌려준다.
     """
-    prefix = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}"
-    markdown_key = f"{prefix}.md"
-    contribution_key = f"{prefix}.json"
+    # 이전 본문·현재 edge를 읽고 차이를 반영할 때까지 같은 워크스페이스의 ingest·restore·lint를 막는다.
+    # 반영 함수도 같은 operation_id로 이 락을 다시 잡으므로 재진입한다.
+    with concept_write_lock(workspace_id, operation_id):
+        prefix = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}"
+        markdown_key = f"{prefix}.md"
+        contribution_key = f"{prefix}.json"
+        with connect() as conn:
+            page = conn.execute(
+                """
+                SELECT id, page_type, slug, markdown_uri
+                FROM wiki_pages
+                WHERE id = %s AND user_id = %s AND workspace_id = %s
+                  AND status = 'active'
+                """,
+                (page_id, user_id, workspace_id),
+            ).fetchone()
+            if page is None:
+                return None
+            result = {
+                "page_id": page_id,
+                "page_type": page["page_type"],
+                "markdown_key": markdown_key,
+                "contribution_key": contribution_key,
+                "content_hash": "sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+            }
+            if page["markdown_uri"] == storage_uri(markdown_key):
+                # 같은 작업의 재요청이다. 이미 반영했으므로 같은 결과를 돌려준다.
+                return result
+            old_markdown = (
+                _read_optional_text_object(str(page["markdown_uri"]))
+                if page["markdown_uri"]
+                else ""
+            )
+            current_links = conn.execute(
+                """
+                SELECT concat(target.page_type, ':', target.slug) AS target,
+                       link.link_type AS relation
+                FROM wiki_page_links link
+                JOIN wiki_pages target ON target.id = link.to_page_id
+                WHERE link.from_page_id = %s
+                """,
+                (page_id,),
+            ).fetchall()
+            # 같은 slug면 concept 페이지를 먼저 잡는다. 본문 `[[slug]]`는 대부분 개념 링크다.
+            target_refs: dict[str, str] = {}
+            for row in conn.execute(
+                """
+                SELECT page_type, slug
+                FROM wiki_pages
+                WHERE user_id = %s AND workspace_id = %s
+                  AND status = 'active' AND slug = ANY(%s)
+                ORDER BY page_type = 'concept' DESC
+                """,
+                (user_id, workspace_id, wikilink_slugs(markdown)),
+            ).fetchall():
+                target_refs.setdefault(str(row["slug"]), f'{row["page_type"]}:{row["slug"]}')
+            source_document_ids = None
+            if page["page_type"] == "concept":
+                # 근거 문서 연결은 그대로 두되, 임베딩 단위가 이 문서 ID로 다시 만들어지도록 넘긴다.
+                source_document_ids = [
+                    str(row["document_id"])
+                    for row in conn.execute(
+                        """
+                        SELECT document_id
+                        FROM document_wiki_links
+                        WHERE wiki_page_id = %s AND relation_type = 'extracted_concept'
+                        ORDER BY created_at
+                        """,
+                        (page_id,),
+                    ).fetchall()
+                ]
+        added_links, removed_links = manual_link_changes(
+            page_ref=f'{page["page_type"]}:{page["slug"]}',
+            old_markdown=old_markdown,
+            new_markdown=markdown,
+            current_links=[dict(row) for row in current_links],
+            target_refs=target_refs,
+        )
+        write_text_object(markdown_key, markdown, "text/markdown; charset=utf-8")
+        write_text_object(
+            contribution_key,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact_type": "manual",
+                    "operation_id": operation_id,
+                    "page_id": page_id,
+                    "page_type": page["page_type"],
+                    "user_id": user_id,
+                    "added_links": added_links,
+                    "removed_links": removed_links,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "application/json; charset=utf-8",
+        )
+        # 이름·요약은 rename으로만 바꾸므로 넘기지 않는다(None이면 기존 값을 유지한다).
+        apply_restored_wiki_state_and_cleanup(
+            operation_id,
+            workspace_id,
+            [{
+                "page_id": page_id,
+                "page_type": page["page_type"],
+                "markdown_key": markdown_key,
+                "title": None,
+                "summary": None,
+                "source_document_ids": source_document_ids,
+            }],
+            {"removed_links": removed_links, "restored_links": added_links},
+            False,
+            [],
+        )
+        return result
+
+
+def _active_manual_source_markdown(document_id: str, manifest: dict[str, Any]) -> str | None:
+    """활성 수동 기여 중 가장 최근 source 본문을 돌려준다. 재편입은 사람이 고친 본문을 덮어쓰지 않는다."""
+    user_id = str(manifest.get("user_id") or "local-user")
+    workspace_id = str(manifest.get("workspace_id") or "local-workspace")
     with connect() as conn:
         page = conn.execute(
             """
-            SELECT id, page_type, slug, markdown_uri
-            FROM wiki_pages
-            WHERE id = %s AND user_id = %s AND workspace_id = %s
-              AND status = 'active'
-            """,
-            (page_id, user_id, workspace_id),
-        ).fetchone()
-        if page is None:
-            return None
-        result = {
-            "page_id": page_id,
-            "page_type": page["page_type"],
-            "markdown_key": markdown_key,
-            "contribution_key": contribution_key,
-            "content_hash": "sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
-        }
-        if page["markdown_uri"] == storage_uri(markdown_key):
-            # 같은 작업의 재요청이다. 이미 반영했으므로 같은 결과를 돌려준다.
-            return result
-        old_markdown = (
-            _read_optional_text_object(str(page["markdown_uri"]))
-            if page["markdown_uri"]
-            else ""
-        )
-        current_links = conn.execute(
-            """
-            SELECT concat(target.page_type, ':', target.slug) AS target,
-                   link.link_type AS relation
-            FROM wiki_page_links link
-            JOIN wiki_pages target ON target.id = link.to_page_id
-            WHERE link.from_page_id = %s
-            """,
-            (page_id,),
-        ).fetchall()
-        # 같은 slug면 concept 페이지를 먼저 잡는다. 본문 `[[slug]]`는 대부분 개념 링크다.
-        target_refs: dict[str, str] = {}
-        for row in conn.execute(
-            """
-            SELECT page_type, slug
+            SELECT id
             FROM wiki_pages
             WHERE user_id = %s AND workspace_id = %s
-              AND status = 'active' AND slug = ANY(%s)
-            ORDER BY page_type = 'concept' DESC
+              AND page_type = 'source' AND slug = %s
+              AND markdown_uri IS NOT NULL
             """,
-            (user_id, workspace_id, wikilink_slugs(markdown)),
-        ).fetchall():
-            target_refs.setdefault(str(row["slug"]), f'{row["page_type"]}:{row["slug"]}')
-        source_document_ids = None
-        if page["page_type"] == "concept":
-            # 근거 문서 연결은 그대로 두되, 임베딩 단위가 이 문서 ID로 다시 만들어지도록 넘긴다.
-            source_document_ids = [
-                str(row["document_id"])
-                for row in conn.execute(
-                    """
-                    SELECT document_id
-                    FROM document_wiki_links
-                    WHERE wiki_page_id = %s AND relation_type = 'extracted_concept'
-                    ORDER BY created_at
-                    """,
-                    (page_id,),
-                ).fetchall()
-            ]
-    added_links, removed_links = manual_link_changes(
-        page_ref=f'{page["page_type"]}:{page["slug"]}',
-        old_markdown=old_markdown,
-        new_markdown=markdown,
-        current_links=[dict(row) for row in current_links],
-        target_refs=target_refs,
-    )
-    write_text_object(markdown_key, markdown, "text/markdown; charset=utf-8")
-    write_text_object(
-        contribution_key,
-        json.dumps(
-            {
-                "schema_version": 1,
-                "artifact_type": "manual",
-                "operation_id": operation_id,
-                "page_id": page_id,
-                "page_type": page["page_type"],
-                "user_id": user_id,
-                "added_links": added_links,
-                "removed_links": removed_links,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        "application/json; charset=utf-8",
-    )
-    # 이름·요약은 rename으로만 바꾸므로 넘기지 않는다(None이면 기존 값을 유지한다).
-    apply_restored_wiki_state_and_cleanup(
-        operation_id,
-        workspace_id,
-        [{
-            "page_id": page_id,
-            "page_type": page["page_type"],
-            "markdown_key": markdown_key,
-            "title": None,
-            "summary": None,
-            "source_document_ids": source_document_ids,
-        }],
-        {"removed_links": removed_links, "restored_links": added_links},
-        False,
-        [],
-    )
-    return result
+            (user_id, workspace_id, slugify(document_id)),
+        ).fetchone()
+    if page is None:
+        # 처음 편입하는 문서에는 기여가 없다.
+        return None
+    rows = read_contributions([str(page["id"])], workspace_id)
+    for row in sorted(rows, key=lambda item: int(item.get("sequence_revision") or 0), reverse=True):
+        key = str(row.get("object_key") or "")
+        if not row.get("active") or not key.endswith(".json"):
+            continue
+        # source 페이지의 ingest 기여는 JSON을 남기지 않으므로 수동 기여만 읽힌다.
+        payload = _read_optional_text_object(key)
+        if payload and json.loads(payload).get("artifact_type") == "manual":
+            # 본문이 없으면 빈 본문으로 덮어쓰지 않도록 실패시킨다.
+            return read_text_object(key.removesuffix(".json") + ".md")
+    return None
 
 
 def create_pipeline_run(
@@ -1049,6 +1083,12 @@ def finish_pipeline_run(
     document_id = row["document_id"] if row else None
     user_id = row["user_id"] if row else None
     workspace_id = row["workspace_id"] if row else None
+    # 수동 본문 조회는 document-svc·저장소를 부르므로 락과 트랜잭션을 잡기 전에 끝낸다.
+    manual_source_markdown = (
+        _active_manual_source_markdown(str(document_id), manifest)
+        if document_id and manifest.get("operation_id")
+        else None
+    )
     lock = concept_write_lock(str(workspace_id), run_id) if document_id else nullcontext()
     with lock:
         with connect() as conn:
@@ -1063,7 +1103,9 @@ def finish_pipeline_run(
                     "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
                     (workspace_id, document_id),
                 )
-                embedded_page_ids = _persist_wiki_outputs(conn, document_id, manifest)
+                embedded_page_ids = _persist_wiki_outputs(
+                    conn, document_id, manifest, manual_source_markdown,
+                )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):
                     post_ingest["page_ids"] = embedded_page_ids

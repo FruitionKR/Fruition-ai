@@ -7,9 +7,6 @@ from typing import Any
 import psycopg
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
-from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
-    read_contributions,
-)
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
 )
@@ -55,7 +52,9 @@ def persist_wiki_outputs(
     conn: psycopg.Connection,
     document_id: str,
     manifest: dict[str, Any],
+    manual_source_markdown: str | None = None,
 ) -> list[str]:
+    """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다."""
     normalized = _load_normalized(manifest)
     links = _load_links(manifest)
     user_id = str(manifest.get("user_id") or "local-user")
@@ -63,7 +62,6 @@ def persist_wiki_outputs(
     operation_id = manifest.get("operation_id")
     prepared_concept_updates: list[dict[str, Any]] | None = None
     source_page_id = None
-    manual_source_markdown = None
     concept_id_by_slug = None
     if operation_id:
         source_page_id = resolve_or_create_wiki_page_id(
@@ -73,7 +71,6 @@ def persist_wiki_outputs(
             "source",
             document_id,
         )
-        manual_source_markdown = _active_manual_markdown(conn, source_page_id, workspace_id)
     source_blocks = _persist_source_blocks(conn, document_id, manifest)
     source_page_id = _persist_source_page(
         conn,
@@ -278,31 +275,6 @@ def _persist_source_page(
     )
     persist_embedding_units(conn, source_page_id, document_id, source_markdown, source_blocks)
     return source_page_id
-
-
-def _active_manual_markdown(
-    conn: psycopg.Connection,
-    page_id: str,
-    workspace_id: str,
-) -> str | None:
-    """활성 수동 기여 중 가장 최근 본문을 돌려준다. 재편입은 사람이 고친 본문을 덮어쓰지 않는다."""
-    page = conn.execute(
-        "SELECT markdown_uri FROM wiki_pages WHERE id = %s",
-        (page_id,),
-    ).fetchone()
-    if not page or not page["markdown_uri"]:
-        # 이번 편입이 처음 만든 페이지에는 기여가 없다.
-        return None
-    rows = read_contributions([page_id], workspace_id)
-    for row in sorted(rows, key=lambda item: int(item.get("sequence_revision") or 0), reverse=True):
-        key = str(row.get("object_key") or "")
-        if not row.get("active") or not key.endswith(".json"):
-            continue
-        # source 페이지의 ingest 기여는 JSON을 남기지 않으므로 수동 기여만 읽힌다.
-        payload = read_optional_text_object(key)
-        if payload and json.loads(payload).get("artifact_type") == "manual":
-            return read_optional_text_object(key.removesuffix(".json") + ".md")
-    return None
 
 
 def _persist_concept_pages(

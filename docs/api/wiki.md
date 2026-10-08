@@ -1187,6 +1187,8 @@ curl -X PUT "$PIPELINE/wiki/pages/<value>/manual-edit" \
 #### 연동
 
 - 인바운드 호출자: 미연동. document-svc가 base_revision 검사 뒤 동기 호출하고, 응답 항목으로 수동 기여(`wiki_page_contributions`)와 버전(`wiki_page_versions`)을 기록해야 한다.
+  - `wiki_page_contributions.object_key`에는 응답의 `contribution_key`(`.json`)를 기록한다. `markdown_key`를 기록하면 재편입이 수동 기여를 알아보지 못해 source 본문을 덮어쓴다.
+  - `wiki_page_versions.markdown_key`에는 응답의 `markdown_key`를 기록한다.
 - 아웃바운드 호출: 없음.
 - 미연동 표시: document-svc 호출부(별도 이슈).
 

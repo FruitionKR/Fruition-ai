@@ -5,6 +5,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from minio.error import S3Error
+
 from app.modules.wiki_ingestion.application.models import (
     RebuildPageCommand,
     SourceSnapshotRestoreCommand,
@@ -154,10 +156,19 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
 
     def _is_manual_snapshot(self, contribution_key: str) -> bool:
         try:
-            return json.loads(self._read_text(contribution_key)).get("artifact_type") == "manual"
-        except Exception:
-            # source 페이지의 ingest 스냅샷은 기여 JSON을 남기지 않는다.
+            text = self._read_text(contribution_key)
+        except KeyError:
             return False
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                # source 페이지의 ingest 스냅샷은 기여 JSON을 남기지 않는다.
+                return False
+            raise PageRebuildError(f"failed to read snapshot contribution:{contribution_key}") from exc
+        try:
+            return json.loads(text).get("artifact_type") == "manual"
+        except (json.JSONDecodeError, AttributeError) as exc:
+            # 오판하면 수동 스냅샷의 이름·요약을 본문으로 덮어쓰므로 복구를 멈춘다.
+            raise PageRebuildError(f"invalid snapshot contribution:{contribution_key}") from exc
 
     def calculate_lint_action_changes(
         self,
