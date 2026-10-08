@@ -37,7 +37,7 @@ Agent turn과 run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | 항목 | 내용 |
 |---|---|
 | 목적 | Agent 요청을 분류하고 Query·문서 생성·편집 작업을 실행합니다. |
-| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`, `X-Agent-Service-Token`(조건부 필수: `AGENT_SKILLS_ENABLED=true`): `string` / `null`<br>**Body** — `AgentTurnRequestBody` |
+| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`, `X-Agent-Service-Token`(조건부 필수: `AGENT_SKILLS_ENABLED=true`): `string` / `null`, `X-Request-Id`(선택, 사용량 원장 run_id): `string` / `null`<br>**Body** — `AgentTurnRequestBody` |
 | 출력 | `200` 성공 — `AgentTurnResponse` |
 | 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>`AGENT_SKILLS_ENABLED=true`이면 Agent 서비스 토큰도 검증한다.<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다. |
 | 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 또는 Agent 서비스 인증 토큰 누락·불일치<br>`503` 내부 또는 Agent 서비스 인증 미설정 |
@@ -74,6 +74,7 @@ Agent 요청을 분류하고 Query·문서 생성·편집 작업을 실행합니
 |---|---|---|---|---|
 | header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
 | header | `X-Agent-Service-Token` | `string` | 조건부 (`AGENT_SKILLS_ENABLED=true`) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
 
 - Content-Type: `application/json` (`AgentTurnRequestBody`)
 
