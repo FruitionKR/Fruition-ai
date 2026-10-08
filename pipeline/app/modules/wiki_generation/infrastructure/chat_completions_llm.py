@@ -129,8 +129,14 @@ class ChatCompletionsJsonClient:
             user_prompt,
             trusted_identifiers=trusted_identifiers,
         )
+        # Claude는 자동 캐시가 없어 고정된 system 프롬프트에만 캐시 지점을 둔다. 매번 바뀌는 user 입력은 캐시하지 않는다.
+        system_message = (
+            SystemMessage(content=[{"type": "text", "text": system_content, "cache_control": {"type": "ephemeral"}}])
+            if self.provider == "claude"
+            else SystemMessage(content=system_content)
+        )
         messages: list[BaseMessage] = [
-            SystemMessage(content=system_content),
+            system_message,
             HumanMessage(content=user_content),
         ]
         request_log: JsonDict = {
