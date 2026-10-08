@@ -125,6 +125,7 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
             timeout_seconds: int,
             log_file: Path,
             cancelled=None,
+            env=None,
         ) -> None:
             output_dir = Path(command[command.index("--output-dir") + 1])
             slug = command[command.index("--document-slug") + 1]
@@ -148,8 +149,10 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
             ):
                 with mock.patch.object(
                     converter_app, "run", side_effect=fake_run
-                ) as restoration:
-                    result = process_pdf(b"pdf")
+                ) as restoration, self.assertLogs("converter", "WARNING") as logs:
+                    result = process_pdf(
+                        b"pdf", usage_actor={"run_id": "r", "workspace_id": "w", "user_id": None}
+                    )
 
         command = restoration.call_args.args[0]
         self.assertEqual(command[command.index("--mode") + 1], "crop-first")
@@ -161,6 +164,14 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
             "gemini-3.1-flash-lite",
         )
         self.assertEqual(result["repair_summary"]["provider"], "gemini")
+        # user_id가 빠진 요청은 converter 운영 로그에 경고로 남는다.
+        self.assertIn("사용자 귀속 없는 변환 요청", logs.output[0])
+        # selective repair가 상속받을 사용량 원장 actor
+        env = restoration.call_args.args[5]
+        self.assertEqual(
+            json.loads(env["MODEL_USAGE_SCOPE"]),
+            {"run_id": "r", "workspace_id": "w", "user_id": None, "kind": "document_conversion"},
+        )
         self.assertFalse(asset_paths[0].exists())
         marker = "data:image/png;base64,"
         self.assertIn(marker, result["markdown"])
@@ -179,7 +190,7 @@ class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
         request = mock.Mock()
         request.is_disconnected = mock.AsyncMock(return_value=True)
 
-        def convert(content, provider, model, cancelled):
+        def convert(content, provider, model, cancelled, actor):
             try:
                 if not cancelled.wait(2):
                     raise AssertionError("취소 신호가 전달되지 않았습니다.")
@@ -193,6 +204,18 @@ class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(converter_app.convert(request, upload, "gemini", "test"), 3)
         self.assertEqual(raised.exception.status_code, 499)
         self.assertTrue(cleaned.is_set())
+
+    async def test_source_batch_passes_usage_actor(self):
+        request = mock.Mock()
+        request.is_disconnected = mock.AsyncMock(return_value=False)
+        body = converter_app.SourceBatchRequest(
+            source_url="signed", byte_size=10, run_id="r", workspace_id="w", user_id="u"
+        )
+        with mock.patch.object(
+            converter_app, "process_source_batch", return_value={"done": True}
+        ) as batch:
+            await converter_app._convert_source_batch(body, request)
+        self.assertEqual(batch.call_args.args[-1], {"run_id": "r", "workspace_id": "w", "user_id": "u"})
 
     def test_cancellation_terminates_running_process(self):
         import tempfile

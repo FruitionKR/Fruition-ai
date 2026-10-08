@@ -7,11 +7,13 @@ from datetime import datetime
 from time import perf_counter
 from uuid import uuid4
 
-from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+from app.core import ai_database as database
 
 logger = logging.getLogger(__name__)
 _actor = ContextVar('model_usage_actor', default=None)
 UNATTRIBUTED = 'unattributed'
+# 하위 프로세스(converter → restoration CLI)에 actor를 JSON으로 넘기는 env
+SCOPE_ENV = 'MODEL_USAGE_SCOPE'
 CALL_COLUMNS = '''id, run_id, workspace_id, user_id, kind, provider, requested_model, model, status,
     input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens, reasoning_tokens,
     audio_seconds, input_characters, started_at, finished_at'''

@@ -8,7 +8,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.modules.wiki_ingestion.infrastructure import object_storage
-from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
+from app.core.ai_database import ai_database_url
 
 
 def connect():
