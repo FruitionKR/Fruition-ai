@@ -12,6 +12,7 @@ from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
 )
 from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
     append_concept_evidence,
+    concept_evidence_updates,
 )
 from app.modules.wiki_ingestion.infrastructure.object_storage import write_text_object
 from app.modules.wiki_ingestion.infrastructure.operation_artifacts import (
@@ -51,7 +52,9 @@ def persist_wiki_outputs(
     conn: psycopg.Connection,
     document_id: str,
     manifest: dict[str, Any],
+    manual_source_markdown: str | None = None,
 ) -> list[str]:
+    """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다."""
     normalized = _load_normalized(manifest)
     links = _load_links(manifest)
     user_id = str(manifest.get("user_id") or "local-user")
@@ -78,6 +81,7 @@ def persist_wiki_outputs(
         workspace_id,
         page_id=source_page_id,
         source_blocks=source_blocks,
+        markdown=manual_source_markdown,
     )
     lock_concept_persistence(conn, user_id, workspace_id)
     if operation_id:
@@ -123,6 +127,7 @@ def persist_wiki_outputs(
             source_page_id,
             concept_id_by_slug,
             prepared_concept_updates,
+            manual_source_markdown,
         )
     return list(
         dict.fromkeys(
@@ -142,6 +147,7 @@ def _persist_ingest_operation_artifacts(
     source_page_id: str,
     concept_id_by_slug: dict[str, str],
     prepared_concept_updates: list[dict[str, Any]],
+    manual_source_markdown: str | None,
 ) -> None:
     source_page = page_payload(manifest["source_page"])
     concept_contributions = manifest.get("concept_contributions") or {}
@@ -162,7 +168,11 @@ def _persist_ingest_operation_artifacts(
         operation_id=operation_id,
         workspace_id=workspace_id,
         source_page_id=source_page_id,
-        source_markdown=str(source_page["markdown"]),
+        source_markdown=(
+            manual_source_markdown
+            if manual_source_markdown is not None
+            else str(source_page["markdown"])
+        ),
         concept_pages=list(operation_concept_pages_by_slug.values()),
         concept_contributions=concept_contributions,
         write_text=write_text_object,
@@ -223,6 +233,7 @@ def _persist_source_page(
     *,
     page_id: str | None = None,
     source_blocks: list[dict[str, str]] | None = None,
+    markdown: str | None = None,
 ) -> str:
     source_page_id = page_id or resolve_or_create_wiki_page_id(
         conn,
@@ -232,7 +243,7 @@ def _persist_source_page(
         document_id,
     )
     source_page = page_payload(manifest["source_page"])
-    source_markdown = source_page["markdown"]
+    source_markdown = source_page["markdown"] if markdown is None else markdown
     source_markdown_uri = upload_wiki_markdown(
         source_markdown,
         f"wiki/{user_id}/{workspace_id}/sources/{document_id}.md",
@@ -315,15 +326,7 @@ def _persist_concept_pages(
         if existing:
             current_markdown = read_optional_text_object(existing["markdown_uri"])
             contribution = (manifest.get("concept_contributions") or {}).get(slug) or {}
-            updates = [
-                {
-                    "claim_id": item.get("evidence_id"),
-                    "claim": item.get("claim"),
-                    "refs": item.get("anchor_reference_ids", []),
-                }
-                for item in contribution.get("evidence_units", [])
-                if isinstance(item, dict)
-            ]
+            updates = concept_evidence_updates(contribution)
             concept_markdown = (
                 sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
                 if current_markdown else concept_markdown

@@ -7,7 +7,7 @@ Wiki 조회·페이지 관리·lint·복구 내부 API다. 공개 Gateway 계약
 lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest 실행과 run 조회는
 [`Wiki Ingest Pipeline API`](pipeline.md)에서 다룬다.
 
-- API 수: 10
+- API 수: 11
 
 ## API 목차
 
@@ -21,6 +21,7 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 | [`POST /wiki/pages/lookup`](#summary-post-wiki-pages-lookup) | 조건에 맞는 Wiki 페이지를 조회합니다. |
 | [`GET /wiki/pages/{page_id}`](#summary-get-wiki-pages-page-id) | Wiki 페이지 상세 정보를 조회합니다. |
 | [`PATCH /wiki/pages/{page_id}/rename`](#summary-patch-wiki-pages-page-id-rename) | Wiki 페이지 이름을 변경합니다. |
+| [`PUT /wiki/pages/{page_id}/manual-edit`](#summary-put-wiki-pages-page-id-manual-edit) | 사람이 고친 Wiki 본문을 수동 기여로 저장합니다. |
 | [`DELETE /wiki/workspaces/{workspace_id}/documents/{document_id}`](#summary-delete-wiki-workspaces-workspace-id-documents-document-id) | 문서에서 파생된 Wiki 데이터를 삭제합니다. |
 | [`GET /wiki/workspaces/{workspace_id}/last-updated`](#summary-get-wiki-workspaces-workspace-id-last-updated) | 워크스페이스 Wiki의 마지막 갱신 시각을 조회합니다. |
 
@@ -291,6 +292,9 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 #### 2. 목적
 
 ingest 작업의 Wiki 변경을 복원합니다.
+
+- `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0029](../adr/0029-manual-wiki-contributions.md)).
+- source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
 
 #### 3. Auth 필요 여부
 
@@ -1072,6 +1076,123 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 - 미연동 표시: 없음.
 
 [↑ 요약으로 돌아가기](#summary-patch-wiki-pages-page-id-rename)
+
+</details>
+
+<a id="summary-put-wiki-pages-page-id-manual-edit"></a>
+### `PUT /wiki/pages/{page_id}/manual-edit`
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 사람이 고친 Wiki 본문을 수동 기여로 저장합니다. |
+| 입력 | **Path** — `page_id`: `string`<br>**Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`<br>**Body** — `WikiPageManualEditIn` |
+| 출력 | `200` 성공 — `object` (document-svc가 기록할 `changed_pages` 항목) |
+| 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>`user_id`·`workspace_id`가 소유한 활성 페이지만 고칠 수 있다.<br>revision·`base_revision` 충돌 검사는 호출자(document-svc)가 맡는다. |
+| 주요 오류 | `404` 페이지 없음·소유자 불일치·비활성<br>`422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
+
+<details>
+<summary>상세 계약 보기</summary>
+
+<a id="detail-put-wiki-pages-page-id-manual-edit"></a>
+### `PUT /wiki/pages/{page_id}/manual-edit` 상세
+
+#### 1. Method + Path
+
+`PUT /wiki/pages/{page_id}/manual-edit`
+
+#### 2. 목적
+
+사람이 고친 source·concept 페이지 본문을 수동 기여(`artifact_type: "manual"`)로 저장하고 현재 상태에 반영한다. 정책은 [ADR 0029](../adr/0029-manual-wiki-contributions.md)를 따른다.
+
+- `wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md`(본문)와 `.json`(수동 기여)을 쓴다.
+- `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
+- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 소유 범위의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
+- 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
+- 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다.
+
+#### 3. Auth 필요 여부
+
+- 필요
+- 서비스 간 내부 인증 토큰을 검증한다.
+
+#### 4. Request body
+
+| 위치 | 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|---|
+| path | `page_id` | `string` | 예 | - |
+| header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
+
+- Content-Type: `application/json` (`WikiPageManualEditIn`)
+
+```json
+{
+  "markdown": "string",
+  "operation_id": "string",
+  "user_id": "string",
+  "workspace_id": "string"
+}
+```
+
+#### 5. Response body
+
+- HTTP `200`: Successful Response
+- Content-Type: `application/json`
+
+```json
+{
+  "page_id": "string",
+  "page_type": "concept",
+  "markdown_key": "wiki/<workspace_id>/pages/<page_id>/ops/<operation_id>.md",
+  "contribution_key": "wiki/<workspace_id>/pages/<page_id>/ops/<operation_id>.json",
+  "content_hash": "sha256:<hex>"
+}
+```
+
+#### 6. Error response
+
+- HTTP `401`: 내부 인증 토큰 누락 또는 불일치
+- HTTP `404`: 페이지 없음·소유자 불일치·비활성
+- HTTP `503`: 내부 인증 미설정
+
+| HTTP 상태 | 설명 | 응답 스키마 |
+|---|---|---|
+| `422` | Validation Error | `HTTPValidationError` |
+
+#### 7. Pagination / filtering
+
+- 페이지네이션: 지원하지 않음
+- 필터링: 지원하지 않음
+
+#### 8. 권한 규칙
+
+- 올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.
+- 페이지 소유자(`user_id`·`workspace_id`)가 일치해야 한다.
+
+#### 9. 예시 요청/응답
+
+```bash
+curl -X PUT "$PIPELINE/wiki/pages/<value>/manual-edit" \
+  -H 'X-Internal-Token: <value>' \
+  -H 'Content-Type: application/json' \
+  --data '{"markdown":"<value>","operation_id":"<value>","user_id":"<value>","workspace_id":"<value>"}'
+```
+
+#### 10. 구현 파일
+
+- 진입점: `pipeline/app/modules/wiki_ingestion/interfaces/http/routes.py`
+- 저장: `pipeline/app/modules/wiki_ingestion/infrastructure/postgres_wiki_ingestion_repository.py` (`save_manual_wiki_edit`)
+- 링크 차이: `pipeline/app/modules/wiki_ingestion/domain/manual_wiki_edit.py`
+- 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: save_manual_wiki_edit_wiki_pages__page_id__manual_edit_put`)
+
+#### 연동
+
+- 인바운드 호출자: 미연동. document-svc가 base_revision 검사 뒤 동기 호출하고, 응답 항목으로 수동 기여(`wiki_page_contributions`)와 버전(`wiki_page_versions`)을 기록해야 한다.
+  - `wiki_page_contributions.object_key`에는 응답의 `contribution_key`(`.json`)를 기록한다. `markdown_key`를 기록하면 재편입이 수동 기여를 알아보지 못해 source 본문을 덮어쓴다.
+  - `wiki_page_versions.markdown_key`에는 응답의 `markdown_key`를 기록한다.
+- 아웃바운드 호출: 없음.
+- 미연동 표시: document-svc 호출부(별도 이슈).
+
+[↑ 요약으로 돌아가기](#summary-put-wiki-pages-page-id-manual-edit)
 
 </details>
 

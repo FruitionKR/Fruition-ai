@@ -5,6 +5,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from minio.error import S3Error
+
 from app.modules.wiki_ingestion.application.models import (
     RebuildPageCommand,
     SourceSnapshotRestoreCommand,
@@ -140,15 +142,33 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 f"failed to restore source snapshot:{source_page.page_id}"
             ) from exc
         digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        # 사람이 고친 본문으로 되돌릴 때는 이름·요약을 본문에서 다시 읽지 않는다. 이름은 rename으로만 바꾼다.
+        manual = self._is_manual_snapshot(source_key.removesuffix(".md") + ".json")
         return {
             "page_id": source_page.page_id,
             "page_type": "source",
             "markdown_key": target_key,
             "content_hash": f"sha256:{digest}",
-            "title": markdown_title(markdown),
-            "summary": markdown_section(markdown, "Summary"),
+            "title": None if manual else markdown_title(markdown),
+            "summary": None if manual else markdown_section(markdown, "Summary"),
             "source_document_id": source_page.document_id,
         }
+
+    def _is_manual_snapshot(self, contribution_key: str) -> bool:
+        try:
+            text = self._read_text(contribution_key)
+        except KeyError:
+            return False
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                # source 페이지의 ingest 스냅샷은 기여 JSON을 남기지 않는다.
+                return False
+            raise PageRebuildError(f"failed to read snapshot contribution:{contribution_key}") from exc
+        try:
+            return json.loads(text).get("artifact_type") == "manual"
+        except (json.JSONDecodeError, AttributeError) as exc:
+            # 오판하면 수동 스냅샷의 이름·요약을 본문으로 덮어쓰므로 복구를 멈춘다.
+            raise PageRebuildError(f"invalid snapshot contribution:{contribution_key}") from exc
 
     def calculate_lint_action_changes(
         self,

@@ -31,6 +31,7 @@ from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     get_pipeline_run_use_case,
     get_pipeline_source_reader,
     get_restore_wiki_pages_use_case,
+    get_wiki_embedding_job,
     get_wiki_maintenance,
 )
 from app.modules.wiki_ingestion.interfaces.http.schemas import (
@@ -44,6 +45,7 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
     WikiLintIn,
     WikiLintOut,
     WikiPageLookupIn,
+    WikiPageManualEditIn,
     WikiPageRenameIn,
 )
 from app.modules.wiki_ingestion.infrastructure import (
@@ -87,6 +89,21 @@ def rename_wiki_page(page_id: str, payload: WikiPageRenameIn) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="Wiki page slug conflict") from exc
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
+    return page
+
+
+@router.put("/wiki/pages/{page_id}/manual-edit", tags=["wiki"])
+def save_manual_wiki_edit(page_id: str, payload: WikiPageManualEditIn) -> dict[str, Any]:
+    page = database.save_manual_wiki_edit(
+        page_id,
+        payload.user_id,
+        payload.workspace_id,
+        payload.operation_id,
+        payload.markdown,
+    )
+    if page is None:
+        raise HTTPException(status_code=404, detail="Wiki page not found")
+    get_wiki_embedding_job().start(payload.operation_id, [page_id])
     return page
 
 
