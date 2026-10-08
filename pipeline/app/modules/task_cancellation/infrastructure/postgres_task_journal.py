@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, task_run_id
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
 
 
@@ -52,6 +52,7 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:
+        reject_purged(conn, command)
         parent_id = command.get("ingest_run_id")
         if parent_id:
             parent = conn.execute("SELECT status, workspace_id, user_id FROM ai_task_runs WHERE id = %s FOR SHARE", (parent_id,)).fetchone()
@@ -67,6 +68,13 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
     if row["command_hash"] != digest:
         raise TaskCommandMismatchError("Task command identity mismatch.")
     return row
+
+
+def reject_purged(conn, command: dict[str, Any]) -> None:
+    if conn.execute("SELECT 1 FROM ai_purged_scopes WHERE (scope_type = 'workspace' AND scope_id = %s) "
+                    "OR (scope_type = 'user' AND scope_id = %s)",
+                    (str(command.get("workspace_id")), str(command.get("user_id")))).fetchone():
+        raise ScopePurgedError("Task scope was purged.")
 
 
 def active(run_id: str) -> bool:

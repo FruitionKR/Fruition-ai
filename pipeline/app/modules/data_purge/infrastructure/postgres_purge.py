@@ -19,7 +19,15 @@ def connect():
 _CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
 
 
+def _mark_purged(scope_type: str, scope_id: str) -> None:
+    # 삭제보다 먼저 커밋해 파기 중에 들어온 작업도 journal register에서 거절되게 한다.
+    with connect() as conn:
+        conn.execute("INSERT INTO ai_purged_scopes(scope_type, scope_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                     (scope_type, scope_id))
+
+
 def purge_workspace(workspace_id: str) -> dict[str, int]:
+    _mark_purged("workspace", workspace_id)
     with connect() as conn:
         users = _column(conn, "SELECT user_id FROM wiki_pages WHERE workspace_id = %(ws)s "
                               "UNION SELECT user_id FROM pipeline_runs WHERE workspace_id = %(ws)s AND user_id IS NOT NULL "
@@ -71,6 +79,7 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
 
 def purge_user(user_id: str) -> dict[str, int]:
     """공유 워크스페이스에 남는 사용자 개인 데이터를 지운다. 공용 위키는 남긴다."""
+    _mark_purged("user", user_id)
     with connect() as conn:
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE user_id = %s AND object_key IS NOT NULL", (user_id,))
@@ -78,7 +87,7 @@ def purge_user(user_id: str) -> dict[str, int]:
 
     with connect() as conn:
         statements = [
-            # 작업 기록을 지우면 실행 중이던 작업은 이후 변경이 거부된다(trigger와 complete가 running 행을 확인한다).
+            # 작업 기록을 지우면 실행 중이던 작업은 이후 변경이 거부되고, 재전달은 ai_purged_scopes로 거절된다.
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE user_id = %(user)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE user_id = %(user)s"),
             *((table, f"DELETE FROM {table} WHERE thread_id IN (SELECT id FROM agent_runs WHERE user_id = %(user)s)")

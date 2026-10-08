@@ -21,7 +21,7 @@ from psycopg.types.json import Json
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
 from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
-from app.core.pipeline_control import PipelineRunCancelledError, ensure_task_active, task_cancellation_scope
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
     AgentTurnRouteContractError,
@@ -860,6 +860,9 @@ def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPubl
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command["kind"] != "agent":
         return journal.execute(command, lambda: _handle(command, event_publisher))
+    # agent는 journal register를 거치지 않으므로 여기서 파기 범위를 거절한다.
+    with database.connect_ai() as conn:
+        journal.reject_purged(conn, command)
 
     def active() -> bool:
         with database.connect_ai() as conn:
@@ -1077,7 +1080,7 @@ async def consume() -> None:
                                 command.get("kind"),
                                 command.get("run_id"),
                             )
-                        if not _failure_is_durable(command):
+                        if not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
                             raise
                         event = _event(
                             command,

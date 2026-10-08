@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.rows import dict_row
 
+from app.core.pipeline_control import ScopePurgedError
 from app.modules.data_purge.infrastructure import postgres_purge as purge
+from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 from app.modules.wiki_ingestion.infrastructure import object_storage
 
 BUCKET = "fruition-storage"
@@ -43,6 +45,7 @@ def database(monkeypatch):
         with connect() as conn:
             conn.execute(Path(__file__).resolve().parents[3].joinpath("db/ai_schema.sql").read_text())
         monkeypatch.setattr(purge, "connect", connect)
+        monkeypatch.setattr(journal, "connect", connect)
         yield connect
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -193,6 +196,19 @@ def test_user_purge_keeps_shared_wiki_and_removes_personal_data(database, storag
 
     second = purge.purge_user("alice")
     assert set(second.values()) == {0}
+
+
+def test_redelivered_task_in_purged_scope_is_rejected(database, storage):
+    """파기 뒤 Kafka 재전달로 같은 작업이 다시 와도 작업 기록을 되살리지 않는다."""
+    purge.purge_workspace("ws")
+    purge.purge_user("alice")
+
+    for workspace, user in (("ws", "bob"), ("other", "alice")):
+        with pytest.raises(ScopePurgedError):
+            journal.register(dict(run_id="again", workspace_id=workspace, user_id=user, kind="query"))
+    journal.register(dict(run_id="kept", workspace_id="other", user_id="bob", kind="query"))
+    with database() as conn:
+        assert ids(conn, "ai_task_runs") == {"kept"}
 
 
 def test_purge_routes_require_internal_token(monkeypatch):

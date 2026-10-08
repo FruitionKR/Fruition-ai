@@ -7,6 +7,10 @@ class PipelineRunCancelledError(RuntimeError):
     """취소 요청 또는 실행 대상 비활성화로 pipeline을 중단한다."""
 
 
+class ScopePurgedError(PipelineRunCancelledError):
+    """파기된 워크스페이스·사용자의 작업이다. 재시도해도 같으므로 실패로 확정한다."""
+
+
 task_run_id: ContextVar[str | None] = ContextVar("ai_task_run_id", default=None)
 
 
