@@ -69,13 +69,24 @@ class OpenAISpeech:
                         "voice": "coral",
                         "input": text,
                         "response_format": "mp3",
+                        # 토큰 usage는 SSE 완료 이벤트에만 실려 온다. 출력 오디오 토큰이 비용의 대부분이다.
+                        "stream_format": "sse",
                     },
                 )
                 response.raise_for_status()
-                if not response.content:
+                audio = bytearray()
+                for line in response.text.splitlines():
+                    if not line.startswith("data:"):
+                        continue
+                    event = json.loads(line[5:])
+                    if event.get("type") == "speech.audio.delta":
+                        audio.extend(base64.b64decode(event["audio"]))
+                    elif event.get("type") == "speech.audio.done":
+                        receipt["usage"] = event.get("usage")
+                if not audio:
                     raise ValueError("empty audio")
-                return response.content
-        except (httpx.HTTPError, ValueError) as exc:
+                return bytes(audio)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 생성하지 못했습니다.") from exc
 
     async def transcribe_live(

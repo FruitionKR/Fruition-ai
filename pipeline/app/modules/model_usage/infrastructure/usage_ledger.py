@@ -78,10 +78,14 @@ def finish_call(call_id, status, receipt, model, duration_ms):
     metadata = getattr(response, 'response_metadata', None)
     actual_model = (metadata.get('model_name') or metadata.get('model')) if isinstance(metadata, dict) else None
     actual_model = actual_model if isinstance(actual_model, str) and actual_model.strip() else model
+    # 이미 abandoned로 닫힌 행은 상태와 finished_at을 유지하고 사용량만 채운다.
+    # finished_at이 바뀌면 기간 조회에서 같은 행이 두 기간에 나타난다.
     with database.connect_ai() as conn:
-        conn.execute('''UPDATE ai_model_usage SET status=%s, model=%s, input_tokens=%s, output_tokens=%s,
-            cached_input_tokens=%s, cache_creation_tokens=%s, reasoning_tokens=%s, audio_seconds=%s,
-            input_characters=%s, duration_ms=%s, finished_at=now() WHERE id=%s''',
+        conn.execute('''UPDATE ai_model_usage SET
+            status=CASE WHEN status='abandoned' THEN status ELSE %s END, model=%s, input_tokens=%s,
+            output_tokens=%s, cached_input_tokens=%s, cache_creation_tokens=%s, reasoning_tokens=%s,
+            audio_seconds=%s, input_characters=%s, duration_ms=%s,
+            finished_at=CASE WHEN status='abandoned' THEN finished_at ELSE now() END WHERE id=%s''',
             (status, actual_model, incoming, outgoing, cached, created, reasoning, audio_seconds,
              characters, duration_ms, call_id))
 

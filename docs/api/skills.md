@@ -339,6 +339,11 @@ ai-svc Agent handler가 같은 application use case를 직접 호출합니다.
 
 #### 4. Request body
 
+| 위치 | 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|---|
+| header | `X-Agent-Service-Token` | `X-Agent-Service-Token` | 예 (인증 계층 검증) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
+
 ```json
 {
   "provider": "openai",
@@ -458,7 +463,6 @@ Skill 지침과 권한을 게시 전에 미리 검증합니다.
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | header | `X-Agent-Service-Token` | `X-Agent-Service-Token` | 예 (인증 계층 검증) | - |
-| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
 
 - Content-Type: `application/json` (`SkillDefinitionRequest`)
 

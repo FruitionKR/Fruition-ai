@@ -28,11 +28,11 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 - `models[]`: `provider`, `requested_model`, `model`, `calls`, `failed_calls`, `unfinished_calls`, `unknown_usage_calls`, `known_input_tokens`, `known_output_tokens`, `known_cached_input_tokens`, `known_cache_creation_tokens`, `known_reasoning_tokens`, `unknown_cache_usage_calls`.
 - 캐시 입력은 전체 입력의 일부, reasoning은 전체 출력의 일부이므로 단순 합산하지 않는다. 알려진 토큰 합계와 사용량 미확인 호출 수를 함께 표시한다. 현재 API는 토큰 조회이며 가격표·크레딧·세금을 반영한 금액을 반환하지 않는다.
 - `unfinished_calls`는 `started`와 `abandoned` 호출을 함께 센다.
-- AI DB `ai_model_usage`에 공통 ChatCompletions 클라이언트·Jev·OpenAI 음성 호출의 시작과 응답 사용량을 별도 트랜잭션으로 기록한다. 호출 전 원장 기록 실패 시 모델을 호출하지 않는다. 응답 기록 실패·프로세스 중단 시 시작 기록이 `started`로 남고, 1시간이 지나면 사용량 조회 직전에 `abandoned`로 닫힌다. 실패·취소로 사용량 원장을 롤백하지 않는다.
+- AI DB `ai_model_usage`에 공통 ChatCompletions 클라이언트·Jev·OpenAI 음성 호출의 시작과 응답 사용량을 별도 트랜잭션으로 기록한다. 호출 전 원장 기록 실패 시 모델을 호출하지 않는다. 응답 기록 실패·프로세스 중단 시 시작 기록이 `started`로 남고, 1시간이 지나면 사용량 조회 직전에 `abandoned`로 닫힌다. 닫힌 뒤 늦게 끝난 호출은 상태와 `finished_at`을 유지하고 사용량만 채운다. 기간 조회는 같은 행을 두 번 돌려주지 않으므로, 늦게 채워진 사용량은 `run_id` 조회로 확인한다. 실패·취소로 사용량 원장을 롤백하지 않는다.
 - Kafka 작업(ingest/query/agent/maintenance), journal 기반 Skill 작업, Agent worker와 채팅 제목 생성의 사용자 컨텍스트를 전달한다. 의미 추출·회의록 묶음 스레드에는 `copy_context`가 컨텍스트를 전달한다.
 - HTTP 동기 경로(`POST /agent/turn`, `/query`, `/meeting-notes/preview`, `/wiki-schema/preview`, `/skills/draft-from-runs/preview`, `/speech/transcriptions`, `/speech/synthesis`, `WS /speech/transcriptions/live`)는 document가 보낸 `X-Request-Id` 헤더(최대 128자)를 `run_id`로, 요청의 `workspace_id`·`user_id`를 귀속 대상으로 기록한다.
 - 귀속 값(`run_id`·`workspace_id`·`user_id`)이 빠진 과금 호출은 건너뛰지 않고 그 값을 `unattributed`로 기록하며 경고 로그를 남긴다. 누락 경로가 없어지면 거부로 바꾼다.
-- 음성은 토큰 대신 오디오 단위를 함께 남긴다. 파일 전사는 공급사 usage(토큰 또는 `duration` 초), TTS는 입력 문자 수(`input_characters`), 실시간 전사는 확정 구간(commit)마다 한 행으로 보낸 PCM 길이(`audio_seconds`)와 구간 usage를 기록한다. 전사를 받지 못하고 끝난 구간은 `failed`로 남는다.
+- 음성은 토큰 대신 오디오 단위를 함께 남긴다. 파일 전사는 공급사 usage(토큰 또는 `duration` 초), TTS는 입력 문자 수(`input_characters`)와 SSE 완료 이벤트의 토큰 usage(입력 텍스트·출력 오디오 토큰), 실시간 전사는 확정 구간(commit)마다 한 행으로 보낸 PCM 길이(`audio_seconds`)와 구간 usage를 기록한다. 전사를 받지 못하고 끝난 구간은 `failed`로 남는다.
 - 운영 경로의 Jev 호출은 provider `typesafe`, model `jev-1.13.0`으로 같은 원장에 기록한다. 사용자 실행 컨텍스트(scope)가 없는 독립 스크립트·실험용 호출은 경고 로그만 남기고 기록하지 않는다. 별도 PDF converter의 selective repair와 자체 호스팅 임베딩(bge-m3)은 이 원장에 포함되지 않는다. 과거 로그를 소급 집계하지 않는다. SDK 내부 재시도의 미수신 응답 사용량은 확보할 수 없으므로 청구서 대체 자료가 아니다.
 
 ## 호출 단위 사용량 조회
@@ -54,7 +54,7 @@ LangChain usage는 공급사 원값을 다음처럼 정규화한다. 금액을 �
 | `openai` (Chat) | `cached_input_tokens` 포함 | `reasoning_tokens` 포함 |
 | `anthropic` | `cached_input_tokens`·`cache_creation_tokens` 포함 (공급사 원값에 LangChain이 더한다) | `reasoning_tokens` 포함 |
 | `gemini` | `cached_input_tokens`·서버 tool prompt 포함 | `reasoning_tokens`(thoughts) 포함 |
-| `openai` 음성 | 오디오·텍스트 입력 토큰 합계(공급사 usage 원값) | 전사 텍스트 토큰 |
+| `openai` 음성 | 전사: 오디오·텍스트 입력 토큰 합계, TTS: 입력 텍스트 토큰(공급사 usage 원값) | 전사: 텍스트 토큰, TTS: 오디오 토큰 |
 | `typesafe` (Jev) | Jev 응답 usage 원값 | Jev 응답 usage 원값 |
 
 비캐시 입력은 `input_tokens - cached_input_tokens`(Anthropic은 `- cache_creation_tokens`도 뺀다), 비추론 출력은 `output_tokens - reasoning_tokens`다.

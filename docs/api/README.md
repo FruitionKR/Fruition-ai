@@ -87,7 +87,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}` | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:27,51 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
-| OpenAI | `/v1/audio/transcriptions`, `/v1/audio/speech`, `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:40,65,86 |
+| OpenAI | `/v1/audio/transcriptions`, `/v1/audio/speech`, `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:40,65,97 |
 | OpenAI · Gemini · Claude | ChatCompletions / Responses / messages | `app/modules/wiki_generation/infrastructure/chat_completions_llm.py`, `app/modules/document_restoration/infrastructure/selective_repair_with_provider.py`:51,53,55 |
 | Tavily | `POST https://api.tavily.com/search` | `app/modules/query/infrastructure/web_search.py`:14,73 |
 

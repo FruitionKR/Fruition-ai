@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -259,6 +260,7 @@ def _ledger_rows(monkeypatch):
             rows[params[-1]].update(
                 status=params[0],
                 input_tokens=params[2],
+                output_tokens=params[3],
                 audio_seconds=params[7],
                 input_characters=params[8],
             )
@@ -279,7 +281,14 @@ def test_file_transcription_and_tts_are_recorded(monkeypatch):
             return httpx.Response(
                 200, json={"text": "전사", "usage": {"type": "duration", "seconds": 4}}
             )
-        return httpx.Response(200, content=b"mp3")
+        assert json.loads(request.content)["stream_format"] == "sse"
+        events = [
+            {"type": "speech.audio.delta", "audio": base64.b64encode(b"mp").decode()},
+            {"type": "speech.audio.delta", "audio": base64.b64encode(b"3").decode()},
+            {"type": "speech.audio.done", "usage": {"input_tokens": 6, "output_tokens": 90}},
+        ]
+        body = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
+        return httpx.Response(200, text=body)
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
@@ -292,13 +301,14 @@ def test_file_transcription_and_tts_are_recorded(monkeypatch):
         with scope:
             provider = openai_speech.OpenAISpeech("fake-key")
             await provider.transcribe(b"audio", "audio/webm")
-            await provider.synthesize("답변입니다")
+            assert await provider.synthesize("답변입니다") == b"mp3"
 
     asyncio.run(run())
     transcribe, tts = rows.values()
     assert transcribe["model"] == "gpt-transcribe" and transcribe["status"] == "succeeded"
     assert transcribe["audio_seconds"] == 4.0
     assert tts["model"] == "gpt-4o-mini-tts" and tts["input_characters"] == 5
+    assert (tts["input_tokens"], tts["output_tokens"]) == (6, 90)
 
 
 def test_live_transcription_records_each_committed_segment(monkeypatch):
@@ -367,8 +377,56 @@ def test_live_transcription_records_each_committed_segment(monkeypatch):
         "model": "gpt-live-transcribe",
         "status": "succeeded",
         "input_tokens": 9,
+        "output_tokens": 3,
         "audio_seconds": 0.1,
         "input_characters": None,
     }
     # 전사를 받지 못한 구간도 보낸 오디오 길이와 함께 남는다.
     assert second["status"] == "failed" and second["audio_seconds"] == 0.2
+
+
+def test_speech_routes_attribute_calls_to_request_id(client, monkeypatch):
+    from app.modules.model_usage.infrastructure import usage_ledger
+
+    http, speech = client
+    actors = []
+
+    async def transcribe(*args):
+        actors.append(usage_ledger._actor.get())
+        return "전사"
+
+    async def synthesize(*args):
+        actors.append(usage_ledger._actor.get())
+        return b"mp3"
+
+    class LiveSpeech:
+        async def transcribe_live(self, packets):
+            actors.append(usage_ledger._actor.get())
+            yield {"type": "finished"}
+
+    speech.transcribe.side_effect = transcribe
+    speech.synthesize.side_effect = synthesize
+    monkeypatch.setattr(routes, "get_speech", lambda: LiveSpeech())
+    http.post(
+        "/speech/transcriptions?workspace_id=w&user_id=u",
+        content=b"audio",
+        headers={**HEADERS, "Content-Type": "audio/webm", "X-Request-Id": "req-stt"},
+    )
+    http.post(
+        "/speech/synthesis",
+        json={"workspace_id": "w", "user_id": "u", "action": "chat_answer", "answer": "답변"},
+        headers={**HEADERS, "X-Request-Id": "req-tts"},
+    )
+    with http.websocket_connect(
+        "/speech/transcriptions/live?workspace_id=w&user_id=u",
+        headers={**HEADERS, "X-Request-Id": "req-live"},
+    ) as ws:
+        assert ws.receive_json()["type"] == "finished"
+    assert actors == [
+        {"run_id": run_id, "workspace_id": "w", "user_id": "u", "kind": kind}
+        for run_id, kind in [
+            ("req-stt", "speech_transcription"),
+            ("req-tts", "speech_synthesis"),
+            ("req-live", "speech_live_transcription"),
+        ]
+    ]
