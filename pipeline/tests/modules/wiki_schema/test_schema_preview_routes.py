@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.modules.wiki_schema.domain.entities import SchemaFilterResult, SchemaFragments, SchemaIssue
 from app.modules.wiki_schema.interfaces.http.routes import preview_wiki_schema
@@ -34,10 +35,15 @@ class WikiSchemaPreviewRoutesTest(unittest.TestCase):
             )
         )
 
-        response = preview_wiki_schema(
-            payload=WikiSchemaPreviewRequest(raw_markdown="테스트 schema"),
-            use_case=use_case,  # type: ignore[arg-type]
-        )
+        with patch(
+            "app.modules.wiki_schema.interfaces.http.routes.build_organize_schema_use_case",
+            return_value=use_case,
+        ):
+            response = preview_wiki_schema(
+                payload=WikiSchemaPreviewRequest(
+                    raw_markdown="테스트 schema", provider="openai", model="gpt-6-luna"
+                ),
+            )
 
         self.assertEqual(use_case.requests, ["테스트 schema"])
         self.assertTrue(response.has_blocked_issues)

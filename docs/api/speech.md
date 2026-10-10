@@ -90,10 +90,15 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 {
   "workspace_id":"workspace-id",
   "user_id":"user-id",
+  "provider":"openai",
+  "model":"gpt-6-luna",
   "display_name":"출시 회의",
   "segments":[{"id":"item_1","text":"출시는 다음 주 금요일로 확정하겠습니다."}]
 }
 ```
+
+`provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 지원하지 않는
+provider/model이거나 빠지면 `422`, 해당 provider의 API 키가 없으면 `503`이다.
 
 회의 녹음 종료 후 확정 전사를 발화 순서대로 전달한다. 구간 ID는 중복 없는 영문·숫자·`_`·`-`,
 최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면 `422`이며
@@ -102,7 +107,7 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 결과: display_name, markdown, summary, decisions, action_items, open_questions.
 네 배열의 각 항목은 text와 source_segment_ids를 가진다. 존재하지 않는 구간을
 참조하거나 근거가 없으면 `502`로 실패한다. 이는 참조 유효성 검증이며 의미적 정확성을
-보장하지 않는다. 모델은 기존 보안·개인정보 마스킹 경로의 `gpt-5-nano`다.
+보장하지 않는다. 모델은 요청의 `provider`·`model`로 호출한다.
 
 회의 발언은 자료로만 취급하고 Agent 라우터·Tool 실행에 전달하지 않는다. 담당자·기한·합의를
 추측하지 않도록 지시한다. 결과는 초안이며 문서 반영은 기존 승인·버전 검증을 거쳐야 한다.
@@ -196,7 +201,7 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 ### `POST /meeting-notes/preview`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingNotesClient.java`:32 (`app.speech.meeting-notes-endpoint`).
-- 아웃바운드 호출: OpenAI ChatCompletions(`gpt-5-nano`)를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
+- 아웃바운드 호출: 요청의 `provider`·`model`로 ChatCompletions를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동.**
 
 ### 묶음 동시 호출 (`/meeting-notes/preview` 구현 기준)

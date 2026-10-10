@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.modules.wiki_schema.domain.entities import SchemaFragments, WikiSchemaRecord
 from app.modules.wiki_schema.interfaces.http.routes import (
@@ -56,15 +57,20 @@ class FakeGetActiveSchemaUseCase:
 
 class SchemaStorageRoutesTest(unittest.TestCase):
     def test_create_draft_route_returns_saved_schema(self) -> None:
-        response = create_wiki_schema_draft(
-            payload=CreateWikiSchemaDraftRequest(
-                raw_markdown="답변은 한국어로 해줘.",
-                workspace_id="ws-1",
-                user_id="user-1",
-                name="기본 schema",
-            ),
-            use_case=FakeCreateSchemaDraftUseCase(),  # type: ignore[arg-type]
-        )
+        with patch(
+            "app.modules.wiki_schema.interfaces.http.routes.build_create_schema_draft_use_case",
+            return_value=FakeCreateSchemaDraftUseCase(),
+        ):
+            response = create_wiki_schema_draft(
+                payload=CreateWikiSchemaDraftRequest(
+                    raw_markdown="답변은 한국어로 해줘.",
+                    provider="openai",
+                    model="gpt-6-luna",
+                    workspace_id="ws-1",
+                    user_id="user-1",
+                    name="기본 schema",
+                ),
+            )
 
         self.assertEqual(response.wiki_schema.id, "schema-1")
         self.assertEqual(response.wiki_schema.status, "draft")
