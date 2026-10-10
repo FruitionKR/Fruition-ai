@@ -9,7 +9,7 @@ Accepted
 - **문서 삭제 정리(Fruition-ai#77)**: Agent 복구의 `delete_document`는 document가 AI의 `POST /tasks/documents/{id}/cancel`을 동기로 불러 정리 완료를 확인했다. 취소 범위는 workspace+user의 run인데 완료 판정은 문서 전체(다른 사용자의 run, `document_wiki_links`, `source_blocks`) 기준이라, 다른 사용자의 파생 데이터가 있으면 `cleanup_complete=false`가 영구히 나와 503이 반복되고 복구가 `rollback_failed`로 끝났다. 일반 문서 삭제는 이미 `document_deleted` command로 비동기 정리한다.
 
 ## Decision
-1. **짧은 동기 경로는 호출자 timeout보다 짧은 AI 전체 마감을 둔다.** Skill 게시·수정과 위키 스키마 preview·drafts는 55초, 채팅 음성 전사는 100초, converter는 대기열 대기를 포함한 요청 전체 840초다. 마감은 `ensure_task_active()`와 같은 확인 지점(`app/core/pipeline_control.py`의 `request_deadline`)으로 구현한다. 모델 호출 전에 남은 시간을 확인해 지났으면 호출하지 않고, 호출 중에는 공급사 timeout을 남은 시간으로 줄이며 내부 재시도는 끈다. 저장 직전에도 확인해 지났으면 Skill 게시와 스키마 초안 저장을 하지 않는다(`504 deadline_exceeded`). converter는 단계별 timeout을 남은 시간으로 줄이고 대기열 대기가 마감을 넘으면 `504`로 포기한다.
+1. **짧은 동기 경로는 호출자 timeout보다 짧은 AI 전체 마감을 둔다.** Skill 게시·수정과 위키 스키마 preview·drafts는 55초, 채팅 음성 전사는 100초, converter는 대기열 대기를 포함한 요청 전체 840초다. 마감은 `ensure_task_active()`와 같은 확인 지점(`app/core/pipeline_control.py`의 `request_deadline`)으로 구현한다. 모델 호출 전에 남은 시간을 확인해 지났으면 호출하지 않고, 호출 중에는 공급사 timeout을 남은 시간으로 줄이며 내부 재시도는 끈다. 저장 직전에도 확인해 지났으면 Skill 게시와 스키마 초안 저장을 하지 않는다(`504 deadline_exceeded`). converter는 단계별 timeout을 남은 시간으로 줄이고 대기열 대기가 마감을 넘으면 `504`로 포기한다. Skill은 여기에 더해 document가 timeout 때 같은 `run_id`로 취소를 보내 journal이 남은 변경을 되돌린다(A+B).
 2. **길이를 예측할 수 없는 작업은 동기 마감으로 줄이지 않고 비동기 작업으로 옮긴다.** 회의록은 후속 PR에서, PDF 변환은 별도 이슈에서 다룬다. 이번 변경은 두 경로를 건드리지 않는다.
 3. **재전달된 실행 중 작업은 종료하지 않고 seek해 기다린다.** `TaskAlreadyExecutingError`를 받으면 해당 offset으로 `seek`한 뒤 5초(고정)를 쉬고 다시 poll한다. 원래 worker가 끝나면 같은 메시지가 저장된 결과로 재생돼 정상 커밋된다. 재생한 결과(`ReplayedResult`)로는 세션 제목 생성을 건너뛴다. 충돌한 쪽이 무작위 대신 고정 간격으로 물러나는 CSMA/CA와 같은 방식이다.
 4. **문서 삭제 정리는 항상 `document_deleted` command로 워크스페이스 전체에 비동기 처리한다.** Agent 복구의 `delete_document`도 일반 삭제와 같은 경로를 쓰고, 동기 취소 API(`POST /internal/ai/tasks/documents/{document_id}/cancel`)와 `cleanup_complete` 확인은 없앤다. 대신 정리 뒤 늦게 도착하는 후속 작업이 데이터를 되살리지 못하게 한다. `document_deleted` 처리가 기록하는 `wiki_source_tombstones.deleted_at`(삭제마다 갱신)이 부모 ingest run의 생성 시각보다 늦으면 post_ingest는 모델을 호출하거나 개념 페이지·근거를 쓰지 않는다. 시각 비교라서 휴지통에서 복구해 같은 `document_id`로 다시 만든 ingest run은 막지 않는다. 확인은 삭제 정리와 같은 워크스페이스 잠금 안에서 한다.
@@ -18,7 +18,8 @@ Accepted
 ## Alternatives
 - **리밸런스 리스너에서 처리 중인 메시지 완료를 기다리기(#76 B안)**: `on_partitions_revoked`에서 기다리면 리밸런스가 멈춰 있는 동안 같은 그룹의 모든 소비자 할당이 지연된다. 처리 시간이 분 단위(max_poll_interval 30분)인 작업에서 그룹 전체가 그만큼 멈추고, 기다리는 동안 heartbeat·세션 timeout과 겹쳐 연쇄 리밸런스를 만들 수 있다. 소유권을 잃은 뒤에도 실행이 끝나지 않는 경우를 어차피 락 충돌로 처리해야 해서 seek 경로가 더 필요하다. 기각.
 - **동기 정리 확인 유지(취소 범위를 문서 전체로 넓히기)**: 다른 사용자의 진행 중 편입까지 취소해야 하고, 취소 범위(사용자)와 완료 판정(문서)의 범위 불일치가 교착을 만든 원인이라 범위를 맞추더라도 호출자가 정리 완료를 기다리는 구조가 남는다. 일반 삭제는 이미 비동기이므로 두 경로를 둘 이유가 없다. 기각.
-- **호출자 timeout을 늘리거나(C안) 포기할 때 취소를 보내기(B안, #75)**: ALB idle 120초에 묶인 경로에는 늘릴 수 없고, 취소는 호출자가 포기한 사실을 알아야 하며 취소가 도착하기 전의 비용을 막지 못한다. AI가 스스로 마감을 두면 호출자와 무관하게 낭비를 상한한다. 기각.
+- **호출자 timeout만 늘리기(C안, #75)**: ALB idle 120초에 묶인 경로에는 쓸 수 없고, 길이를 예측할 수 없는 작업은 어떤 값으로 늘려도 같은 문제가 남는다. 기각.
+- **호출자 취소만 두기(B안, #75)**: 취소는 호출자가 포기한 뒤에야 도착해 그 전의 비용을 막지 못하고, journal이 없는 경로(위키 스키마)는 되돌릴 대상도 없다. 단독으로는 기각하고, journal이 있는 Skill에서만 A의 보완으로 쓴다.
 - **삭제 tombstone을 영구 차단으로 두기**: 휴지통에서 복구한 문서를 같은 `document_id`로 다시 ingest할 수 없게 된다. 기각.
 - **재전달 대기 간격을 지수 backoff·지터로 하기**: 충돌 상대가 하나(원래 worker)이고 대기 중에도 poll을 계속하므로 단순한 고정 간격으로 충분하다. 필요해지면 바꾼다.
 
