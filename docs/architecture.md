@@ -8,7 +8,7 @@ AI 저장소는 FastAPI pipeline, Kafka worker와 PDF converter를 소유합니�
 - `pipeline/api-specs/openapi.yaml`: 내부 HTTP 계약
 - `converter/`: 변환 HTTP 서버. pipeline의 문서 복원 코드·Rust 도구를 사용하므로 같은 저장소에서 빌드합니다.
 
-pipeline 이미지 하나를 API와 각 worker가 command·환경변수를 달리해 사용합니다. converter는 별도 이미지이며, selective repair의 모델 호출을 기록하려고 ai_db의 `ai_model_usage`에만 씁니다(`AI_DATABASE_URL`, INSERT·UPDATE 권한). AI는 ai_db와 자신의 S3 prefix를 소유하며, Document의 업무 변경은 내부 API를 통해 처리합니다.
+pipeline 이미지 하나를 API와 각 worker가 command·환경변수를 달리해 사용합니다. converter는 별도 이미지이며, selective repair의 모델 호출을 기록하려고 ai_db의 `ai_model_usage`에만 씁니다. 접속 계정은 `ai_runtime`이 아닌 converter 전용 role(`AI_DATABASE_URL`)이고, 권한은 `ai_model_usage`의 INSERT, `finish_call`이 갱신하는 사용량·상태 컬럼의 UPDATE(귀속 컬럼 `run_id`·`workspace_id`·`user_id` 제외), `id`·`status`·`finished_at` 컬럼 SELECT뿐입니다. 다른 행의 사용량 값까지 막으려면 RLS가 필요합니다. role 생성과 CONNECT·schema USAGE는 platform `init-db-isolation.sh`가, 테이블 권한은 스키마 적용 경로(`migrate_ai_schema`·`ensure_ai_schema`)가 `AI_DB_CONVERTER_ROLE`로 부여합니다. AI는 ai_db와 자신의 S3 prefix를 소유하며, Document의 업무 변경은 내부 API를 통해 처리합니다.
 
 [API 계약](api/README.md)과 [전체 통신 구조](https://github.com/FruitionKR/Fruition-flatform/blob/main/docs/architecture.md)를 참고하세요.
 

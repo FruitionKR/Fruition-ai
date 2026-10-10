@@ -24,6 +24,8 @@ AI_DATABASE_URL=postgresql://...@postgresql:5432/ai_db
 S3_ENDPOINT=http://minio:9000
 ```
 
+스키마 적용 계정(`AI_DB_MIGRATION_URL`)으로 기동하는 경로와 `migrate_ai_schema`는 `AI_DB_CONVERTER_ROLE`이 있으면 converter 전용 role에 사용량 원장 기록 권한만 부여합니다.
+
 Web 검색을 허용한 Query의 근거와 Web 전환은 기본적으로 LLM evaluator가 검사합니다. 모든
 Query를 검사하려면 `QUERY_EVALUATOR_MODE=llm`, evaluator를 끄려면 `disabled`를 사용합니다.
 내부 검색은 기본적으로 `QUERY_EMBEDDING_MODE=bge-m3`의 keyword+vector hybrid를 사용하고,
