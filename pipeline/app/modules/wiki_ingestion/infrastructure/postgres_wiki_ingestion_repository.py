@@ -38,6 +38,7 @@ from app.modules.wiki_ingestion.infrastructure.markdown_sections import (
 from app.modules.wiki_ingestion.infrastructure.lint_operation_artifacts import (
     persist_lint_operation_artifacts,
 )
+from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
 from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     read_text_object,
@@ -534,6 +535,7 @@ def ensure_ai_schema() -> None:
         ddl = _AI_SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         with psycopg.connect(migration_url) as conn:
             conn.execute(ddl)
+            grant_converter_access(conn)
         logger.info("[startup] ai_db 스키마 적용 완료 (db/ai_schema.sql)")
     verify_ai_schema()
 
