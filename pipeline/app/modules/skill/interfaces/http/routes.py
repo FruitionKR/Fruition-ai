@@ -3,7 +3,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.pipeline_control import (
+    DOCUMENT_SYNC_DEADLINE_SECONDS,
+    DeadlineExceededError,
+    PipelineRunCancelledError,
+    request_deadline,
+)
 from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
@@ -66,7 +71,9 @@ def execute_skill_task(task: SkillTaskRequest):
             raise HTTPException(result.status_code, json.loads(result.body))
         return {**result.model_dump(mode="json"), "run_id": task.run_id}
     try:
-        return journal.execute(task.model_dump(mode="json", exclude_none=True), execute)
+        # document가 60초에 포기하므로 그 전에 끝내고, 넘기면 journal이 변경을 되돌린다(게시하지 않는다).
+        with request_deadline(DOCUMENT_SYNC_DEADLINE_SECONDS):
+            return journal.execute(task.model_dump(mode="json", exclude_none=True), execute)
     except SkillRequestRejectedError as exc:
         # journal 밖에서 HTTP로 바꿔야 journal이 거절 code를 error_code로 남긴다.
         raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
@@ -76,6 +83,8 @@ def execute_skill_task(task: SkillTaskRequest):
         raise HTTPException(409, {"code": exc.code, "message": "Skill task already failed."}) from exc
     except journal.TaskCommandMismatchError as exc:
         raise HTTPException(409, {"code": "task_command_mismatch", "message": str(exc)}) from exc
+    except DeadlineExceededError as exc:
+        raise HTTPException(504, {"code": exc.code, "message": str(exc)}) from exc
     except PipelineRunCancelledError as exc:
         raise HTTPException(409, {"code": "task_cancelled", "message": str(exc)}) from exc
     except journal.TaskAlreadyExecutingError as exc:

@@ -740,6 +740,46 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(result.skill.enabled_version.status, "published")  # type: ignore[union-attr]
         self.assertEqual(len(repository.skills), 1)
 
+    def test_final_publish_does_not_create_skill_after_request_deadline(self) -> None:
+        from app.core.pipeline_control import DeadlineExceededError, request_deadline
+
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+
+        with request_deadline(-1), self.assertRaises(DeadlineExceededError):
+            use_case.publish(
+                workspace_id="workspace-1",
+                user_id="user-1",
+                scope_type="personal",
+                name="concise-document-writer",
+                description="요청한 내용을 간결한 문서로 작성합니다.",
+                instructions_markdown="# 작성 절차\n\n- 핵심 내용을 먼저 정리한다.",
+                expected_capabilities=("document-create",),
+                expected_allowed_tools=("create_document", "list_folder_children", "list_root_items"),
+            )
+
+        self.assertEqual(repository.skills, {})
+
+    def test_task_route_runs_inside_document_sync_deadline(self) -> None:
+        from app.core.pipeline_control import DOCUMENT_SYNC_DEADLINE_SECONDS, remaining_seconds
+
+        seen = []
+        application = FastAPI()
+        application.include_router(skill_router)
+        with patch(
+            "app.modules.task_cancellation.infrastructure.postgres_task_journal.execute",
+            side_effect=lambda *args: seen.append(remaining_seconds()) or {"ok": True},
+        ):
+            response = TestClient(application).post(
+                "/skills/tasks",
+                json={"run_id": "skill-test", "kind": "skill_author", "workspace_id": "workspace-1", "user_id": "user-1", "payload": {
+                    "workspace_id": "workspace-1", "user_id": "user-1", "provider": "openai", "model": "gpt-5-nano",
+                    "scope_type": "personal", "instruction": "회의록 스킬", "reference_document_ids": [],
+                }},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(0 < seen[0] <= DOCUMENT_SYNC_DEADLINE_SECONDS)
+
     def test_final_publish_keeps_reviewed_tool_subset(self) -> None:
         use_case, _ = self.build_use_case(
             FixedGenerator(draft_result())
@@ -1346,7 +1386,7 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
                 self.assertEqual(response.json(), {"detail": {"code": code, "message": message}})
 
     def test_task_route_maps_journal_replay_errors(self) -> None:
-        from app.core.pipeline_control import PipelineRunCancelledError
+        from app.core.pipeline_control import DeadlineExceededError, PipelineRunCancelledError
         from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 
         cases = [
@@ -1354,6 +1394,7 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
             (journal.TaskFailedError("task_failed"), 409, "task_failed"),
             (journal.TaskCommandMismatchError("Task command identity mismatch."), 409, "task_command_mismatch"),
             (PipelineRunCancelledError("Task cancellation requested."), 409, "task_cancelled"),
+            (DeadlineExceededError("Request deadline exceeded."), 504, "deadline_exceeded"),
             (journal.TaskAlreadyExecutingError("Task is already executing."), 409, "task_in_progress"),
         ]
         application = FastAPI()

@@ -22,6 +22,8 @@ AUDIO_TYPES = {
 }
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
 TRANSCRIBE_MODEL = "gpt-transcribe"
+# 채팅 음성 전사는 ALB idle timeout(120초) 안에 응답해야 한다. 그 뒤에는 호출자가 끊어 결과를 쓸 곳이 없다.
+TRANSCRIBE_DEADLINE_SECONDS = 100
 TTS_MODEL = "gpt-realtime-2.1-mini"
 TTS_VOICE = "marin"
 TTS_INSTRUCTIONS = (
@@ -41,8 +43,9 @@ class OpenAISpeech:
             raise InvalidAudioError("지원하는 음성 파일을 24 MiB 이하로 보내주세요.")
         try:
             async with (
+                asyncio.timeout(TRANSCRIBE_DEADLINE_SECONDS),
                 track_call_async("openai", TRANSCRIBE_MODEL) as receipt,
-                httpx.AsyncClient(timeout=120) as client,
+                httpx.AsyncClient(timeout=TRANSCRIBE_DEADLINE_SECONDS) as client,
             ):
                 response = await client.post(
                     "https://api.openai.com/v1/audio/transcriptions",
@@ -59,7 +62,7 @@ class OpenAISpeech:
                 if not isinstance(text, str):
                     raise TypeError("invalid transcript")
                 return text.strip()
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
 
     async def synthesize(self, text: str) -> bytes:

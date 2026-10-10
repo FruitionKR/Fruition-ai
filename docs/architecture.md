@@ -19,6 +19,12 @@ pipeline 이미지 하나를 API와 각 worker가 command·환경변수를 달�
 Agent 업무 실행은 기존 Kafka 경로를 유지한다. 사용자 인증·전사 저장·문서 적용은 호출 서비스의
 책임이다. [음성 API와 연동 범위](api/speech.md)를 참고한다.
 
+## 처리 시간 예산과 재전달
+
+호출자가 기다리는 시간보다 AI의 최악 처리 시간이 길면 호출자가 포기한 뒤에도 모델 호출이 과금되고 결과가 저장된다. 그래서 짧은 동기 경로는 호출자 timeout보다 짧은 AI 마감을 둔다: Skill 게시·수정과 위키 스키마 preview·drafts 55초(document 60초), 채팅 음성 전사 100초(ALB idle 120초), converter 요청 전체 840초(document 900초, `/convert-source-batch`의 대기열 대기 포함). 마감이 지나면 모델 호출을 시작하지 않고 결과를 저장하지 않으며 실패한다. 길이를 예측할 수 없는 작업은 비동기 작업으로 옮긴다. 근거는 [ADR 0032](adr/0032-time-budget-and-redelivery.md)를 따른다.
+
+Kafka 리밸런스로 실행 중인 작업이 다른 worker에 재전달되면 새 worker는 종료하지 않고 해당 offset으로 되돌아가(seek) 5초 간격으로 기다린다. 원래 worker가 끝나면 같은 메시지가 저장된 결과로 재생돼 커밋되며, 재생한 결과로는 세션 제목 생성 같은 부수 효과를 다시 실행하지 않는다. 문서 삭제 정리는 동기 취소 API 없이 `document_deleted` command로 워크스페이스 전체에 비동기 처리한다.
+
 ## 선택적 Jev 판단
 
 Agent 라우팅, Query 근거 선택, ingest 개념 병합은 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.

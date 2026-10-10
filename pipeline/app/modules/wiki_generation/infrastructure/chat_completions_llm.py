@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 from langsmith import traceable, tracing_context
 
 from app.modules.model_usage.infrastructure.usage_ledger import track_call
-from app.core.pipeline_control import ensure_task_active
+from app.core.pipeline_control import DeadlineExceededError, ensure_task_active, remaining_seconds
 from app.core.langsmith_tracing import langsmith_tracing_enabled
 from app.core.llm_env import inference_profile, resolve_llm_selection
 from app.core.llm_prompt import (
@@ -65,14 +65,14 @@ class ChatCompletionsJsonClient:
         self._prompt_log_lock = Lock()
         self._model = self._build_model()
 
-    def _build_model(self) -> Any:
+    def _build_model(self, timeout_seconds: float | None = None, max_retries: int | None = None) -> Any:
         options: dict[str, object] = {
             "model": self.config.model,
             "api_key": self.config.api_key,
             "temperature": self.config.temperature,
-            "timeout": self.config.timeout_seconds,
+            "timeout": self.config.timeout_seconds if timeout_seconds is None else timeout_seconds,
             "max_tokens": self.config.max_tokens,
-            "max_retries": self.config.max_retries,
+            "max_retries": self.config.max_retries if max_retries is None else max_retries,
         }
         profile = inference_profile(self.provider, self.config.model)
         if self.provider == "openai":
@@ -184,13 +184,20 @@ class ChatCompletionsJsonClient:
         trusted_identifiers: tuple[str, ...],
     ) -> str:
         ensure_task_active()
+        model = self._model
+        remaining = remaining_seconds()
+        if remaining is not None:
+            # 요청 마감이 있으면 남은 시간 안에서만 호출한다. 내부 재시도는 마감을 넘길 수 있어 끈다.
+            model = self._build_model(min(self.config.timeout_seconds, remaining), 0)
         try:
             # LangChain 내부 trace는 마스킹 전 provider 응답을 기록할 수 있으므로,
             # 이 호출만 끄고 바깥의 sanitized wrapper trace만 남긴다.
             with tracing_context(enabled=False), track_call(self.provider, self.config.model) as receipt:
-                response = self._model.invoke(messages)
+                response = model.invoke(messages)
                 receipt["response"] = response
         except Exception as exc:
+            if remaining is not None and remaining_seconds() <= 0:
+                raise DeadlineExceededError("Request deadline exceeded.") from None
             detail = redact_numeric_personal_data(str(exc))
             status_code = getattr(exc, "status_code", None)
             if status_code is None:

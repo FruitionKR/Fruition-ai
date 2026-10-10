@@ -262,6 +262,44 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ConverterRequestDeadlineTest(unittest.IsolatedAsyncioTestCase):
+    def test_stage_timeouts_are_capped_to_remaining_time(self):
+        from app.core.pipeline_control import request_deadline
+        self.assertEqual(converter_app._within_deadline(60), 60)
+        with request_deadline(30):
+            self.assertLessEqual(converter_app._within_deadline(900), 30)
+            self.assertEqual(converter_app._within_deadline(5), 5)
+
+    def test_expired_deadline_stops_before_running_any_command(self):
+        from fastapi import HTTPException
+        from app.core.pipeline_control import request_deadline
+        with mock.patch.object(converter_app, "missing_commands", return_value=[]), \
+             mock.patch.object(converter_app, "run_to_file") as diagnostic, \
+             mock.patch.object(converter_app, "run") as restoration, \
+             request_deadline(-1), self.assertRaises(HTTPException) as raised:
+            converter_app.process_pdf(b"pdf")
+        self.assertEqual(raised.exception.status_code, 504)
+        diagnostic.assert_not_called()
+        restoration.assert_not_called()
+
+    async def test_source_batch_queue_wait_counts_against_deadline(self):
+        import asyncio
+        from fastapi import HTTPException
+        request = mock.Mock()
+        body = converter_app.SourceBatchRequest(source_url="signed", byte_size=10)
+        busy = asyncio.Semaphore(1)
+        await busy.acquire()
+        with mock.patch.object(converter_app, "_source_conversion_slots", busy), \
+             mock.patch.object(converter_app, "REQUEST_DEADLINE_SECONDS", 0.05), \
+             mock.patch.object(converter_app, "process_source_batch") as batch, \
+             self.assertRaises(HTTPException) as raised:
+            await converter_app.convert_source_batch(body, request, "r")
+        self.assertEqual(raised.exception.status_code, 504)
+        batch.assert_not_called()
+        # 대기하다 포기한 요청이 슬롯을 해제하거나 가로채면 안 된다.
+        self.assertTrue(busy.locked())
+
+
 class LargePdfRangeBatchTest(unittest.TestCase):
     def reader(self, size):
         from threading import Event
