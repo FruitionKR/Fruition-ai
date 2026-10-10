@@ -133,6 +133,9 @@ class OpenAISpeech:
                             audio.extend(base64.b64decode(event["delta"]))
                         elif event["type"] == "response.done":
                             receipt["usage"] = event["response"].get("usage")
+                            # 중간에 끊긴 응답의 일부 오디오를 성공으로 돌려주지 않는다.
+                            if event["response"].get("status") != "completed":
+                                raise ValueError("incomplete response")
                             break
                 if not audio:
                     raise ValueError("empty audio")

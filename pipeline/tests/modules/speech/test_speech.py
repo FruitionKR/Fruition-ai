@@ -341,7 +341,7 @@ def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
     sent, urls = _fake_realtime_tts(
         monkeypatch,
         [_delta(pcm[:3000]), _delta(pcm[3000:]),
-         {"type": "response.done", "response": {"usage": usage}}],
+         {"type": "response.done", "response": {"status": "completed", "usage": usage}}],
     )
 
     async def run():
@@ -372,7 +372,10 @@ def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
     "events",
     [
         [{"type": "error", "error": {"message": "private"}}],
-        [{"type": "response.done", "response": {"usage": {}}}],
+        [{"type": "response.done", "response": {"status": "completed", "usage": {}}}],
+        [_delta(b"\x01\x00" * 100),
+         {"type": "response.done",
+          "response": {"status": "incomplete", "usage": {"input_tokens": 7, "output_tokens": 3}}}],
     ],
 )
 def test_tts_error_event_and_empty_audio_are_unavailable(monkeypatch, events):
@@ -387,6 +390,9 @@ def test_tts_error_event_and_empty_audio_are_unavailable(monkeypatch, events):
         asyncio.run(run())
     (row,) = rows.values()
     assert row["status"] == "failed"
+    # 미완료 응답도 공급사가 과금하므로 usage는 원장에 남는다.
+    if events[-1].get("response", {}).get("status") == "incomplete":
+        assert (row["input_tokens"], row["output_tokens"]) == (7, 3)
 
 
 def test_live_transcription_records_each_committed_segment(monkeypatch):
