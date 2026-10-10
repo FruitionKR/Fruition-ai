@@ -1,11 +1,17 @@
 import asyncio
 import base64
+import io
 import json
+import wave
+from collections import deque
 from collections.abc import AsyncIterator
+from time import perf_counter
 
 import httpx
 from websockets.asyncio.client import connect
+from websockets.exceptions import WebSocketException
 
+from app.modules.model_usage.infrastructure.usage_ledger import finish_call, start_call, track_call_async
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
 
 AUDIO_TYPES = {
@@ -15,6 +21,15 @@ AUDIO_TYPES = {
     "audio/webm": "webm",
 }
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
+TRANSCRIBE_MODEL = "gpt-transcribe"
+TTS_MODEL = "gpt-realtime-2.1-mini"
+TTS_VOICE = "marin"
+TTS_INSTRUCTIONS = (
+    "사용자 메시지의 텍스트를 한 글자도 바꾸지 말고 그대로 읽는다. 답하거나 덧붙이지 않는다. "
+    "Read the user's message text aloud verbatim. Do not answer, add, or omit anything."
+)
+LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
+PCM_BYTES_PER_SECOND = 48000  # PCM16 mono 24 kHz
 
 
 class OpenAISpeech:
@@ -25,17 +40,22 @@ class OpenAISpeech:
         if media_type not in AUDIO_TYPES or not 0 < len(audio) <= MAX_AUDIO_BYTES:
             raise InvalidAudioError("지원하는 음성 파일을 24 MiB 이하로 보내주세요.")
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with (
+                track_call_async("openai", TRANSCRIBE_MODEL) as receipt,
+                httpx.AsyncClient(timeout=120) as client,
+            ):
                 response = await client.post(
                     "https://api.openai.com/v1/audio/transcriptions",
                     headers=self._headers,
                     files={
                         "file": (f"audio.{AUDIO_TYPES[media_type]}", audio, media_type)
                     },
-                    data={"model": "gpt-transcribe"},
+                    data={"model": TRANSCRIBE_MODEL},
                 )
                 response.raise_for_status()
-                text = response.json()["text"]
+                body = response.json()
+                text = body["text"]
+                receipt["usage"] = body.get("usage")
                 if not isinstance(text, str):
                     raise TypeError("invalid transcript")
                 return text.strip()
@@ -43,23 +63,90 @@ class OpenAISpeech:
             raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
 
     async def synthesize(self, text: str) -> bytes:
+        # gpt-4o-mini-tts는 종료 예정이라 Realtime 모델로 원문을 낭독시킨다.
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers=self._headers,
-                    json={
-                        "model": "gpt-4o-mini-tts",
-                        "voice": "coral",
-                        "input": text,
-                        "response_format": "mp3",
-                    },
+            async with (
+                track_call_async("openai", TTS_MODEL) as receipt,
+                connect(
+                    f"wss://api.openai.com/v1/realtime?model={TTS_MODEL}",
+                    additional_headers=self._headers,
+                    max_size=4 * 1024 * 1024,
+                    open_timeout=10,
+                    close_timeout=5,
+                ) as upstream,
+            ):
+                receipt["input_characters"] = len(text)
+                # Realtime에는 temperature 설정이 없어 지침으로 원문 낭독을 강제한다.
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "session.update",
+                            "session": {
+                                "type": "realtime",
+                                "output_modalities": ["audio"],
+                                "instructions": TTS_INSTRUCTIONS,
+                                "audio": {
+                                    "output": {
+                                        "format": {"type": "audio/pcm", "rate": 24000},
+                                        "voice": TTS_VOICE,
+                                    }
+                                },
+                            },
+                        }
+                    )
                 )
-                response.raise_for_status()
-                if not response.content:
+                async with asyncio.timeout(15):
+                    while True:
+                        event = json.loads(await upstream.recv())
+                        if event["type"] == "error":
+                            raise ValueError("session rejected")
+                        if event["type"] == "session.updated":
+                            break
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": text}],
+                            },
+                        }
+                    )
+                )
+                # 긴 답변(최대 4000자)이 중간에 잘리지 않도록 출력 토큰 상한을 두지 않는다.
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "response.create",
+                            "response": {"max_output_tokens": "inf"},
+                        }
+                    )
+                )
+                audio = bytearray()
+                async with asyncio.timeout(120):
+                    while True:
+                        event = json.loads(await upstream.recv())
+                        if event["type"] == "error":
+                            raise ValueError("synthesis failed")
+                        if event["type"] == "response.output_audio.delta":
+                            audio.extend(base64.b64decode(event["delta"]))
+                        elif event["type"] == "response.done":
+                            receipt["usage"] = event["response"].get("usage")
+                            # 중간에 끊긴 응답의 일부 오디오를 성공으로 돌려주지 않는다.
+                            if event["response"].get("status") != "completed":
+                                raise ValueError("incomplete response")
+                            break
+                if not audio:
                     raise ValueError("empty audio")
-                return response.content
-        except (httpx.HTTPError, ValueError) as exc:
+                buffer = io.BytesIO()
+                with wave.open(buffer, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(24000)
+                    wav.writeframes(bytes(audio))
+                return buffer.getvalue()
+        except (OSError, WebSocketException, TimeoutError, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 생성하지 못했습니다.") from exc
 
     async def transcribe_live(
@@ -83,7 +170,7 @@ class OpenAISpeech:
                             "audio": {
                                 "input": {
                                     "format": {"type": "audio/pcm", "rate": 24000},
-                                    "transcription": {"model": "gpt-live-transcribe"},
+                                    "transcription": {"model": LIVE_TRANSCRIBE_MODEL},
                                     "turn_detection": None,
                                 }
                             },
@@ -106,6 +193,9 @@ class OpenAISpeech:
             sent = 0
             completed: set[str] = set()
             committed: dict[str, str | None] = {}
+            # 확정 구간마다 원장 한 행을 남겨 document가 세션 중에도 사용량을 볼 수 있게 한다.
+            commit_bytes: deque[int] = deque()
+            segment_calls: dict[str, tuple[str | None, float | None, float]] = {}
             finishing = False
 
             async def send_audio() -> None:
@@ -144,6 +234,7 @@ class OpenAISpeech:
                                     raise InvalidAudioError(
                                         "전사 처리 대기 중입니다. 전송 속도를 줄여주세요."
                                     )
+                                commit_bytes.append(buffered)
                                 await upstream.send(
                                     json.dumps({"type": "input_audio_buffer.commit"})
                                 )
@@ -186,6 +277,19 @@ class OpenAISpeech:
                             raise SpeechUnavailableError("실시간 전사가 실패했습니다.")
                         if kind == "input_audio_buffer.committed":
                             committed[event["item_id"]] = event.get("previous_item_id")
+                            seconds = (
+                                commit_bytes.popleft() / PCM_BYTES_PER_SECOND
+                                if commit_bytes
+                                else None
+                            )
+                            call_id = await asyncio.to_thread(
+                                start_call, "openai", LIVE_TRANSCRIBE_MODEL
+                            )
+                            segment_calls[event["item_id"]] = (
+                                call_id,
+                                seconds,
+                                perf_counter(),
+                            )
                             yield {
                                 "type": "committed",
                                 "segment_id": event["item_id"],
@@ -210,6 +314,11 @@ class OpenAISpeech:
                                 )
                             if item_id not in completed:
                                 completed.add(item_id)
+                                await _finish_segment(
+                                    segment_calls.pop(item_id, None),
+                                    "succeeded",
+                                    event.get("usage"),
+                                )
                                 yield {
                                     "type": "completed",
                                     "segment_id": item_id,
@@ -223,3 +332,22 @@ class OpenAISpeech:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+                # 전사를 받지 못한 구간도 오디오는 공급사에 보냈으므로 failed로 남긴다.
+                for call in segment_calls.values():
+                    await _finish_segment(call, "failed", None)
+
+
+async def _finish_segment(
+    call: tuple[str | None, float | None, float] | None, status: str, usage
+) -> None:
+    if call is None:
+        return
+    call_id, seconds, started = call
+    await asyncio.to_thread(
+        finish_call,
+        call_id,
+        status,
+        {"usage": usage, "audio_seconds": seconds},
+        LIVE_TRANSCRIBE_MODEL,
+        (perf_counter() - started) * 1000,
+    )

@@ -31,7 +31,7 @@ class QueryEvaluatorStudioGraphTest(unittest.TestCase):
 
         build_evaluator.assert_called_once_with(
             provider="openai",
-            model="gpt-5-nano",
+            model="gpt-6-luna",
             web_search_available=True,
         )
         self.assertEqual(result["attempt"], 1)
@@ -55,7 +55,7 @@ class QueryEvaluatorStudioGraphTest(unittest.TestCase):
 
         build_evaluator.assert_called_once_with(
             provider="openai",
-            model="gpt-5-nano",
+            model="gpt-6-luna",
             web_search_available=True,
         )
         self.assertTrue(evaluator.evaluate.call_args.kwargs["web_search_available"])

@@ -1098,10 +1098,18 @@ components:
       type: object
     CreateWikiSchemaDraftRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
         name:
           default: default
           minLength: 1
           title: Name
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
           type: string
         raw_markdown:
           minLength: 1
@@ -1117,6 +1125,8 @@ components:
           type: string
       required:
       - raw_markdown
+      - provider
+      - model
       - workspace_id
       - user_id
       title: CreateWikiSchemaDraftRequest
@@ -1431,6 +1441,14 @@ components:
           minLength: 1
           title: Display Name
           type: string
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
         segments:
           items:
             $ref: '#/components/schemas/MeetingSegment'
@@ -1451,6 +1469,8 @@ components:
       required:
       - workspace_id
       - user_id
+      - provider
+      - model
       - segments
       title: MeetingNotesRequest
       type: object
@@ -1576,6 +1596,125 @@ components:
       - known_reasoning_tokens
       - unknown_cache_usage_calls
       title: ModelUsage
+      type: object
+    ModelUsageCall:
+      properties:
+        audio_seconds:
+          anyOf:
+          - minimum: 0.0
+            type: number
+          - type: 'null'
+          title: Audio Seconds
+        cache_creation_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Cache Creation Tokens
+        cached_input_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Cached Input Tokens
+        finished_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished At
+        id:
+          format: uuid
+          title: Id
+          type: string
+        input_characters:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Input Characters
+        input_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Input Tokens
+        kind:
+          title: Kind
+          type: string
+        model:
+          title: Model
+          type: string
+        output_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Output Tokens
+        provider:
+          title: Provider
+          type: string
+        reasoning_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Reasoning Tokens
+        requested_model:
+          title: Requested Model
+          type: string
+        run_id:
+          title: Run Id
+          type: string
+        started_at:
+          format: date-time
+          title: Started At
+          type: string
+        status:
+          enum:
+          - started
+          - succeeded
+          - failed
+          - abandoned
+          title: Status
+          type: string
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - id
+      - run_id
+      - workspace_id
+      - user_id
+      - kind
+      - provider
+      - requested_model
+      - model
+      - status
+      - input_tokens
+      - output_tokens
+      - cached_input_tokens
+      - cache_creation_tokens
+      - reasoning_tokens
+      - audio_seconds
+      - input_characters
+      - started_at
+      - finished_at
+      title: ModelUsageCall
+      type: object
+    ModelUsageCallsResponse:
+      properties:
+        calls:
+          items:
+            $ref: '#/components/schemas/ModelUsageCall'
+          title: Calls
+          type: array
+      required:
+      - calls
+      title: ModelUsageCallsResponse
       type: object
     ModelUsageResponse:
       properties:
@@ -1832,6 +1971,42 @@ components:
       - output_dir
       - log_path
       title: PipelineRunOut
+      type: object
+    PurgeResponse:
+      properties:
+        deleted:
+          additionalProperties:
+            type: integer
+          title: Deleted
+          type: object
+      required:
+      - deleted
+      title: PurgeResponse
+      type: object
+    PurgeUserRequest:
+      additionalProperties: false
+      properties:
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+      required:
+      - user_id
+      title: PurgeUserRequest
+      type: object
+    PurgeWorkspacesRequest:
+      additionalProperties: false
+      properties:
+        workspace_ids:
+          items:
+            minLength: 1
+            type: string
+          minItems: 1
+          title: Workspace Ids
+          type: array
+      required:
+      - workspace_ids
+      title: PurgeWorkspacesRequest
       type: object
     QueryRequest:
       properties:
@@ -3068,12 +3243,34 @@ components:
       type: object
     WikiSchemaPreviewRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
         raw_markdown:
           minLength: 1
           title: Raw Markdown
           type: string
+        user_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: User Id
+        workspace_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Workspace Id
       required:
       - raw_markdown
+      - provider
+      - model
       title: WikiSchemaPreviewRequest
       type: object
     WikiSchemaPreviewResponse:
@@ -3378,6 +3575,15 @@ paths:
     post:
       operationId: handle_agent_turn_agent_turn_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false
@@ -3709,6 +3915,74 @@ paths:
       summary: Get Markdown Agent Run
       tags:
       - internal-agent-runs
+  /internal/ai/purge/users:
+    post:
+      operationId: purge_user_internal_ai_purge_users_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeUserRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge User
+      tags:
+      - ai-data-purge
+  /internal/ai/purge/workspaces:
+    post:
+      operationId: purge_workspaces_internal_ai_purge_workspaces_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeWorkspacesRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge Workspaces
+      tags:
+      - ai-data-purge
   /internal/ai/tasks/documents/{document_id}/cancel:
     post:
       operationId: cancel_document_tasks_internal_ai_tasks_documents__document_id__cancel_post
@@ -3871,10 +4145,74 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
+  /internal/model-usage/calls:
+    get:
+      operationId: list_usage_calls_internal_model_usage_calls_get
+      parameters:
+      - in: query
+        name: run_id
+        required: false
+        schema:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Run Id
+      - in: query
+        name: finished_from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished From
+      - in: query
+        name: finished_to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished To
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelUsageCallsResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Usage Calls
+      tags:
+      - model-usage
   /meeting-notes/preview:
     post:
       operationId: preview_meeting_notes_meeting_notes_preview_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false
@@ -4048,6 +4386,15 @@ paths:
       operationId: answer_query_query_post
       parameters:
       - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
         name: X-Internal-Token
         required: false
         schema:
@@ -4124,6 +4471,15 @@ paths:
     post:
       operationId: propose_skill_draft_skills_draft_from_runs_preview_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Agent-Service-Token
         required: false
@@ -4393,6 +4749,15 @@ paths:
       operationId: synthesize_speech_synthesis_post
       parameters:
       - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
         name: X-Internal-Token
         required: false
         schema:
@@ -4409,7 +4774,7 @@ paths:
       responses:
         '200':
           content:
-            audio/mpeg: {}
+            audio/wav: {}
           description: Successful Response
         '422':
           content:
@@ -4440,6 +4805,15 @@ paths:
           minLength: 1
           title: User Id
           type: string
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false
@@ -4630,6 +5004,15 @@ paths:
       operationId: create_wiki_schema_draft_wiki_schema_drafts_post
       parameters:
       - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
         name: X-Internal-Token
         required: false
         schema:
@@ -4663,6 +5046,15 @@ paths:
     post:
       operationId: preview_wiki_schema_wiki_schema_preview_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false

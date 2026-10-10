@@ -21,7 +21,9 @@ from urllib.parse import unquote, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
-from app.core.llm_env import resolve_llm_selection
+from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
+from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 
 
 app = FastAPI(title="Fruition PDF Converter")
@@ -74,19 +76,22 @@ def embed_local_image_links(markdown: str, markdown_file: Path, output_dir: Path
 @app.get("/health")
 def health() -> dict[str, Any]:
     missing = missing_commands()
+    # 사용량 원장에 기록하지 못하면 selective repair가 공급사를 호출하지 않는다.
+    missing_config = [] if os.getenv("AI_DATABASE_URL") else ["AI_DATABASE_URL"]
     return {
-        "status": "ok" if not missing else "degraded",
+        "status": "ok" if not missing and not missing_config else "degraded",
         "missing_commands": missing,
+        "missing_config": missing_config,
     }
 
 
 def _run_command(command: list[str], working_dir: Path, timeout_seconds: int,
-                 stdout: Any, cancelled: Event | None) -> int:
+                 stdout: Any, cancelled: Event | None, env: dict[str, str] | None = None) -> int:
     if cancelled is not None and cancelled.is_set():
         raise HTTPException(status_code=499, detail="Conversion cancelled")
     # 프로세스 그룹 전체를 종료해야 변환기가 만든 자식 프로세스도 임시 파일 쓰기를 멈춘다.
     with subprocess.Popen(command, cwd=working_dir, stdout=stdout, stderr=subprocess.STDOUT,
-                          text=True, start_new_session=True) as process:
+                          text=True, start_new_session=True, env=env) as process:
         deadline = time.monotonic() + timeout_seconds
         try:
             while True:
@@ -117,11 +122,11 @@ def run_to_file(command: list[str], output_file: Path, working_dir: Path,
 
 
 def run(command: list[str], working_dir: Path, timeout_seconds: int,
-        log_file: Path, cancelled: Event | None = None) -> None:
+        log_file: Path, cancelled: Event | None = None, env: dict[str, str] | None = None) -> None:
     with log_file.open("a", encoding="utf-8") as log:
         log.write(f"$ {' '.join(command)}\n")
         log.flush()
-        code = _run_command(command, working_dir, timeout_seconds, log, cancelled)
+        code = _run_command(command, working_dir, timeout_seconds, log, cancelled, env)
         log.write(f"\nexit={code}\n\n")
         if code != 0:
             raise HTTPException(status_code=422, detail=f"Command failed: {command[0]}")
@@ -130,8 +135,9 @@ def run(command: list[str], working_dir: Path, timeout_seconds: int,
 def process_pdf(
     content: bytes | Path,
     provider: str = "gemini",
-    model: str = "gemini-3.1-flash-lite",
+    model: str = DEFAULT_LLM_MODELS["gemini"],
     cancelled: Event | None = None,
+    usage_actor: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     try:
         provider, model = resolve_llm_selection(provider, model)
@@ -143,6 +149,9 @@ def process_pdf(
             detail=f"Missing converter commands: {', '.join(missing)}",
         )
 
+    # 하위 프로세스의 귀속 경고는 요청별 process.log에만 남으므로 운영 로그에도 남긴다.
+    if not all((usage_actor or {}).get(key) for key in ("run_id", "workspace_id", "user_id")):
+        logger.warning("사용자 귀속 없는 변환 요청: usage_actor=%s", usage_actor)
     with tempfile.TemporaryDirectory(prefix="fruition-pdf-") as temp_dir:
         job_dir = Path(temp_dir) / str(uuid.uuid4())
         job_dir.mkdir(mode=0o700)
@@ -196,6 +205,8 @@ def process_pdf(
             RESTORATION_TIMEOUT_SECONDS,
             process_log,
             cancelled,
+            # selective repair 손자 프로세스까지 상속돼 공급사 호출이 이 actor로 기록된다.
+            {**os.environ, SCOPE_ENV: json.dumps({**(usage_actor or {}), "kind": "document_conversion"})},
         )
 
         if cancelled is not None and cancelled.is_set():
@@ -216,7 +227,10 @@ async def convert(
     request: Request,
     file: UploadFile = File(...),
     provider: str = Form("gemini"),
-    model: str = Form("gemini-3.1-flash-lite"),
+    model: str = Form(DEFAULT_LLM_MODELS["gemini"]),
+    workspace_id: str | None = Form(None, max_length=128),
+    user_id: str | None = Form(None, max_length=128),
+    run_id: RequestId = None,
 ) -> dict[str, Any]:
     content = await file.read()
     if len(content) > max_upload_bytes():
@@ -227,7 +241,8 @@ async def convert(
         raise HTTPException(status_code=415, detail="Only PDF files are supported in the MVP")
 
     cancelled = Event()
-    worker = asyncio.create_task(asyncio.to_thread(process_pdf, content, provider, model, cancelled))
+    actor = {"run_id": run_id, "workspace_id": workspace_id, "user_id": user_id}
+    worker = asyncio.create_task(asyncio.to_thread(process_pdf, content, provider, model, cancelled, actor))
     try:
         while not worker.done():
             if await request.is_disconnected():
@@ -358,7 +373,8 @@ class S3RangeReader:
 
 
 def process_source_batch(source_url: str, byte_size: int, start_page: int,
-                         provider: str, model: str, cancelled: Event):
+                         provider: str, model: str, cancelled: Event,
+                         usage_actor: dict[str, str | None] | None = None):
     from pypdf import PdfReader, PdfWriter
     stream = S3RangeReader(source_url, byte_size, cancelled)
     try:
@@ -382,7 +398,7 @@ def process_source_batch(source_url: str, byte_size: int, start_page: int,
             with pdf.open("wb") as output:
                 writer.write(output)
             writer.close()
-            result = process_pdf(pdf, provider, model, cancelled)
+            result = process_pdf(pdf, provider, model, cancelled, usage_actor)
         return {"page_start": start_page + 1, "page_end": end, "total_pages": total,
                 "markdown": result["markdown"], "done": end == total}
     finally:
@@ -396,20 +412,24 @@ class SourceBatchRequest(BaseModel):
     byte_size: int = Field(gt=0)
     start_page: int = Field(ge=0, default=0)
     provider: str = "gemini"
-    model: str = "gemini-3.1-flash-lite"
+    model: str = DEFAULT_LLM_MODELS["gemini"]
+    # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다. run_id는 X-Request-Id 헤더로 받는다.
+    workspace_id: str | None = Field(default=None, max_length=128)
+    user_id: str | None = Field(default=None, max_length=128)
 
 
 _source_conversion_slots = asyncio.Semaphore(max(1, int(os.getenv("PDF_BATCH_CONCURRENCY", "1"))))
 
 @app.post("/convert-source-batch")
-async def convert_source_batch(body: SourceBatchRequest, request: Request):
+async def convert_source_batch(body: SourceBatchRequest, request: Request, run_id: RequestId = None):
     async with _source_conversion_slots:
-        return await _convert_source_batch(body, request)
+        return await _convert_source_batch(body, request, run_id)
 
-async def _convert_source_batch(body: SourceBatchRequest, request: Request):
+async def _convert_source_batch(body: SourceBatchRequest, request: Request, run_id: str | None = None):
     cancelled = Event()
+    actor = {"run_id": run_id, "workspace_id": body.workspace_id, "user_id": body.user_id}
     worker = asyncio.create_task(asyncio.to_thread(process_source_batch, body.source_url,
-        body.byte_size, body.start_page, body.provider, body.model, cancelled))
+        body.byte_size, body.start_page, body.provider, body.model, cancelled, actor))
     try:
         while not worker.done():
             if await request.is_disconnected(): cancelled.set()

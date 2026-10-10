@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.query.application.answer_query import AnswerQueryUseCase
 from app.modules.query.domain.exceptions import QueryError
 from app.modules.query.domain.entities import ConversationContext, QueryAnswer
@@ -23,6 +25,7 @@ router = APIRouter(prefix="/query", tags=["query"])
 def answer_query(
     payload: QueryRequest,
     use_case: AnswerQueryUseCase = Depends(get_query_answer_use_case),
+    request_id: RequestId = None,
 ) -> QueryResponse:
     try:
         execute_kwargs: dict[str, object] = {
@@ -35,7 +38,9 @@ def answer_query(
             execute_kwargs["output_language"] = payload.output_language
         if payload.response_length is not None:
             execute_kwargs["response_length"] = payload.response_length
-        result = use_case.execute(payload.question, **execute_kwargs)
+        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
+                          "user_id": payload.user_id, "kind": "query"}):
+            result = use_case.execute(payload.question, **execute_kwargs)
     except QueryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

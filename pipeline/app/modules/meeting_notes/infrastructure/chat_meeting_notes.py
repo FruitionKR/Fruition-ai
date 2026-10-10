@@ -1,7 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict
-from itertools import repeat
 
 from app.modules.meeting_notes.domain.entities import TranscriptSegment
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
@@ -72,9 +72,10 @@ class ChatMeetingNotes:
                     break
                 # 전송 오류는 여기서 그대로 올라와 부분 회의록을 만들지 않는다.
                 # with 블록이 pool을 닫으며 남은 호출을 기다리므로 스레드는 남지 않는다.
+                # 사용량 원장 actor가 스레드로 넘어가도록 호출마다 컨텍스트를 복사한다.
                 outcomes = pool.map(
-                    self._complete_batch,
-                    repeat(display_name),
+                    lambda run, batch: run(self._complete_batch, display_name, batch),
+                    [copy_context().run for _ in pending],
                     [entries[i][0] for i in pending],
                 )
                 # 완료 순서가 결과에 새지 않도록 묶음 순서대로 반영한다.

@@ -21,8 +21,8 @@ class LlmEnvTest(unittest.TestCase):
         self.assertEqual(
             DEFAULT_LLM_MODELS,
             {
-                "openai": "gpt-5-nano",
-                "gemini": "gemini-3.1-flash-lite",
+                "openai": "gpt-6-luna",
+                "gemini": "gemini-3.5-flash-lite",
                 "claude": "claude-sonnet-5",
             },
         )

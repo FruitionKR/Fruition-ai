@@ -540,6 +540,14 @@ CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_versions
 DROP TRIGGER IF EXISTS ai_task_change ON skill_version_sources;
 CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_version_sources FOR EACH ROW EXECUTE FUNCTION record_ai_task_change('id');
 
+-- 파기한 워크스페이스·사용자. Kafka 재전달로 다시 들어온 작업이 파기한 범위에 데이터를 되살리지 않게 막는다.
+CREATE TABLE IF NOT EXISTS ai_purged_scopes (
+    scope_type text NOT NULL CHECK (scope_type IN ('workspace', 'user')),
+    scope_id text NOT NULL,
+    purged_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (scope_type, scope_id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_model_usage (
     id uuid PRIMARY KEY,
     run_id text NOT NULL,
@@ -549,7 +557,8 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
     provider text NOT NULL,
     requested_model text NOT NULL,
     model text NOT NULL,
-    status text NOT NULL CHECK (status IN ('started', 'succeeded', 'failed')),
+    status text NOT NULL CONSTRAINT ai_model_usage_status_check
+        CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned')),
     input_tokens bigint CHECK (input_tokens >= 0),
     output_tokens bigint CHECK (output_tokens >= 0),
     cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
@@ -561,3 +570,18 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_actor_time ON ai_model_usage (workspace_id, user_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_run ON ai_model_usage (run_id);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS audio_seconds double precision CHECK (audio_seconds >= 0);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS input_characters bigint CHECK (input_characters >= 0);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ai_model_usage_status_check' AND pg_get_constraintdef(oid) LIKE '%abandoned%'
+    ) THEN
+        ALTER TABLE ai_model_usage DROP CONSTRAINT IF EXISTS ai_model_usage_status_check;
+        ALTER TABLE ai_model_usage ADD CONSTRAINT ai_model_usage_status_check
+            CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_finished ON ai_model_usage (finished_at);
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_started ON ai_model_usage (started_at) WHERE status = 'started';

@@ -17,7 +17,7 @@ backend가 `ai.ingest.command` topic에 발행한 문서/채팅 Wiki ingest 명�
 
 from __future__ import annotations
 
-from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError
 
 import asyncio
 import json
@@ -194,6 +194,10 @@ async def _dispatch_post_ingest(
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command.get("kind") == "document_deleted":
+        # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 tombstone 행을 되살리지 않도록 직접 확인한다.
+        with journal.connect() as conn:
+            if journal.workspace_purged(conn, command["workspace_id"]):
+                raise ScopePurgedError("Task scope was purged.")
         return _handle(command)
     _build_payload(command)
     return journal.execute(command, lambda: _handle(command))
@@ -306,7 +310,7 @@ async def consume() -> None:
                             else "?",
                         )
                         raise
-                    except UnprocessableIngestCommand as exc:
+                    except (UnprocessableIngestCommand, ScopePurgedError) as exc:
                         # 재시도해도 같은 지점에서 실패한다. 실패로 확정하고 offset을 전진시켜
                         # 이 command 하나가 파티션 전체를 막지 않게 한다.
                         run_id = message.value.get("run_id") if isinstance(message.value, dict) else None

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.document_evaluation.application.ports import DocumentEvaluatorPort
 from app.modules.document_evaluation.domain.entities import DocumentEvaluationJob
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
@@ -49,7 +50,7 @@ def build_optional_document_evaluator() -> DocumentEvaluatorPort | None:
         client=ChatCompletionsJsonClient(
             ChatClientConfig(
                 api_key=api_key,
-                model="gpt-5-nano",
+                model=DEFAULT_LLM_MODELS["openai"],
                 temperature=None,
                 timeout_seconds=180,
                 json_mode=True,

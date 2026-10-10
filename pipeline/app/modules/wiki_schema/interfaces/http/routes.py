@@ -1,17 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.wiki_schema.application.activate_schema import ActivateSchemaUseCase
 from app.modules.wiki_schema.application.build_schema_preview import build_schema_preview
-from app.modules.wiki_schema.application.create_schema_draft import CreateSchemaDraftUseCase
 from app.modules.wiki_schema.application.get_active_schema import GetActiveSchemaUseCase
 from app.modules.wiki_schema.application.list_schema_drafts import ListSchemaDraftsUseCase
-from app.modules.wiki_schema.application.organize_schema import OrganizeSchemaUseCase
 from app.modules.wiki_schema.interfaces.http.dependencies import (
     get_activate_schema_use_case,
     get_active_schema_use_case,
-    get_create_schema_draft_use_case,
+    build_create_schema_draft_use_case,
+    build_organize_schema_use_case,
     get_list_schema_drafts_use_case,
-    get_organize_schema_use_case,
 )
 from app.modules.wiki_schema.interfaces.http.schemas import (
     CreateWikiSchemaDraftRequest,
@@ -29,10 +29,13 @@ router = APIRouter(prefix="/wiki-schema", tags=["wiki-schema"])
 @router.post("/preview", response_model=WikiSchemaPreviewResponse)
 def preview_wiki_schema(
     payload: WikiSchemaPreviewRequest,
-    use_case: OrganizeSchemaUseCase = Depends(get_organize_schema_use_case),
+    request_id: RequestId = None,
 ) -> WikiSchemaPreviewResponse:
+    use_case = build_organize_schema_use_case(payload.provider, payload.model)
     try:
-        result = use_case.execute(payload.raw_markdown)
+        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
+                          "user_id": payload.user_id, "kind": "wiki_schema_preview"}):
+            result = use_case.execute(payload.raw_markdown)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -47,15 +50,18 @@ def preview_wiki_schema(
 @router.post("/drafts", response_model=CreateWikiSchemaDraftResponse)
 def create_wiki_schema_draft(
     payload: CreateWikiSchemaDraftRequest,
-    use_case: CreateSchemaDraftUseCase = Depends(get_create_schema_draft_use_case),
+    request_id: RequestId = None,
 ) -> CreateWikiSchemaDraftResponse:
+    use_case = build_create_schema_draft_use_case(payload.provider, payload.model)
     try:
-        record = use_case.execute(
-            raw_markdown=payload.raw_markdown,
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            name=payload.name,
-        )
+        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
+                          "user_id": payload.user_id, "kind": "wiki_schema_draft"}):
+            record = use_case.execute(
+                raw_markdown=payload.raw_markdown,
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                name=payload.name,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

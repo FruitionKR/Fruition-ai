@@ -17,6 +17,8 @@ from fastapi import (
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.speech.application.ports import SpeechPort
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
 from app.modules.speech.interfaces.http.dependencies import authorize_speech, get_speech
@@ -44,6 +46,7 @@ router = APIRouter(prefix="/speech", tags=["speech"])
 async def transcribe(
     request: Request,
     speech: Annotated[SpeechPort, Depends(get_speech)],
+    request_id: RequestId = None,
     workspace_id: str = Query(min_length=1, max_length=128),
     user_id: str = Query(min_length=1, max_length=128),
 ) -> TranscriptionResponse:
@@ -58,10 +61,12 @@ async def transcribe(
         audio.extend(chunk)
     if not audio:
         raise HTTPException(422, "음성 파일이 비어 있습니다.")
+    scope = {"run_id": request_id, "workspace_id": workspace_id, "user_id": user_id,
+             "kind": "speech_transcription"}
     try:
-        return TranscriptionResponse(
-            text=await speech.transcribe(bytes(audio), media_type)
-        )
+        with usage_scope(scope):
+            text = await speech.transcribe(bytes(audio), media_type)
+        return TranscriptionResponse(text=text)
     except InvalidAudioError as exc:
         raise HTTPException(422, str(exc)) from exc
     except SpeechUnavailableError as exc:
@@ -71,18 +76,23 @@ async def transcribe(
 @router.post(
     "/synthesis",
     response_class=Response,
-    responses={200: {"content": {"audio/mpeg": {}}}},
+    responses={200: {"content": {"audio/wav": {}}}},
 )
 async def synthesize(
-    payload: SpeechSynthesisRequest, speech: Annotated[SpeechPort, Depends(get_speech)]
+    payload: SpeechSynthesisRequest,
+    speech: Annotated[SpeechPort, Depends(get_speech)],
+    request_id: RequestId = None,
 ) -> Response:
     await run_in_threadpool(authorize_speech, payload.workspace_id, payload.user_id)
+    scope = {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "speech_synthesis"}
     try:
-        audio = await speech.synthesize(payload.answer)
+        with usage_scope(scope):
+            audio = await speech.synthesize(payload.answer)
     except SpeechUnavailableError as exc:
         raise HTTPException(502, "음성을 생성하지 못했습니다.") from exc
     return Response(
-        audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"}
+        audio, media_type="audio/wav", headers={"Cache-Control": "no-store"}
     )
 
 
@@ -131,13 +141,16 @@ async def transcribe_live(websocket: WebSocket) -> None:
                 if command["type"] == "finish":
                     return
 
+    scope = {"run_id": websocket.headers.get("X-Request-Id", "")[:128], "workspace_id": workspace_id,
+             "user_id": user_id, "kind": "speech_live_transcription"}
     try:
-        async with (
-            asyncio.timeout(3600),
-            aclosing(speech.transcribe_live(packets())) as events,
-        ):
-            async for event in events:
-                await websocket.send_json(event)
+        with usage_scope(scope):
+            async with (
+                asyncio.timeout(3600),
+                aclosing(speech.transcribe_live(packets())) as events,
+            ):
+                async for event in events:
+                    await websocket.send_json(event)
         await websocket.close(code=1000)
     except WebSocketDisconnect:
         return

@@ -15,6 +15,8 @@ from app.modules.agent.interfaces.http.schemas import (
     MarkdownEditTargetResponse,
     SkillCandidateResponse,
 )
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
@@ -33,9 +35,12 @@ logger = logging.getLogger(__name__)
 def handle_agent_turn(
     payload: AgentTurnRequestBody,
     use_case: HandleAgentTurnUseCase = Depends(get_handle_agent_turn_use_case),
+    request_id: RequestId = None,
 ) -> AgentTurnResponse:
     try:
-        result = use_case.execute(payload.to_domain())
+        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
+                          "user_id": payload.user_id, "kind": "agent_turn"}):
+            result = use_case.execute(payload.to_domain())
     except MarkdownOutputContractError as exc:
         raise HTTPException(
             status_code=422,

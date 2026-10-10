@@ -13,8 +13,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
-from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, task_run_id
+from app.core.ai_database import ai_database_url
 
 
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks", "source_block_snapshots",
@@ -52,6 +52,7 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:
+        reject_purged(conn, command)
         parent_id = command.get("ingest_run_id")
         if parent_id:
             parent = conn.execute("SELECT status, workspace_id, user_id FROM ai_task_runs WHERE id = %s FOR SHARE", (parent_id,)).fetchone()
@@ -67,6 +68,19 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
     if row["command_hash"] != digest:
         raise TaskCommandMismatchError("Task command identity mismatch.")
     return row
+
+
+def reject_purged(conn, command: dict[str, Any]) -> None:
+    if conn.execute("SELECT 1 FROM ai_purged_scopes WHERE (scope_type = 'workspace' AND scope_id = %s) "
+                    "OR (scope_type = 'user' AND scope_id = %s)",
+                    (str(command.get("workspace_id")), str(command.get("user_id")))).fetchone():
+        raise ScopePurgedError("Task scope was purged.")
+
+
+def workspace_purged(conn, workspace_id: str) -> bool:
+    """사용자 정보가 없는 이벤트(편집 이벤트·문서 삭제 command)용으로 워크스페이스 파기만 확인한다."""
+    return conn.execute("SELECT 1 FROM ai_purged_scopes WHERE scope_type = 'workspace' AND scope_id = %s",
+                        (str(workspace_id),)).fetchone() is not None
 
 
 def active(run_id: str) -> bool:

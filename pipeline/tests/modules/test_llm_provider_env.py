@@ -26,8 +26,8 @@ from app.modules.wiki_schema.infrastructure.chat_completions_schema_organizer im
 
 
 EXPECTED = {
-    "openai": ("OPENAI_API_KEY", "gpt-5-nano"),
-    "gemini": ("GEMINI_API_KEY", "gemini-3.1-flash-lite"),
+    "openai": ("OPENAI_API_KEY", "gpt-6-luna"),
+    "gemini": ("GEMINI_API_KEY", "gemini-3.5-flash-lite"),
     "claude": ("ANTHROPIC_API_KEY", "claude-sonnet-5"),
 }
 

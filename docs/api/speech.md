@@ -2,6 +2,8 @@
 
 AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을 검증하고
 `X-Internal-Token`을 전달한다. AI에서도 Access의 workspace membership을 확인한다.
+모든 음성·회의록 요청(WebSocket 포함)은 선택 헤더 `X-Request-Id`(최대 128자)를 받아 사용량 원장의
+`run_id`로 쓴다. 없으면 `unattributed`로 기록한다([사용량 기록](tasks.md#모델별-사용량-조회)).
 브라우저에는 내부 토큰과 OpenAI API 키를 전달하지 않는다.
 
 ## Agent 음성 대화
@@ -38,8 +40,8 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 - action은 `chat_answer`만 허용한다. 호출 서비스는 **서버의 실제 Agent 결과에서 action·answer를
   가져와야 한다. 클라이언트가 주장하는 action으로 음성 재생 여부를 결정하면 안 된다.**
 - answer: 공백 제거 후 1–4,000자. 긴 답변은 호출 서비스가 문장 단위로 나눠 순차 요청·재생한다.
-- 성공: 전체 생성된 MP3 bytes, `Content-Type: audio/mpeg`, `Cache-Control: no-store`.
-- 모델 `gpt-4o-mini-tts`, 음색 `coral`. 제공자 실패는 `502`, 입력 오류는 `422`다.
+- 성공: 전체 생성된 WAV bytes(PCM16 mono 24 kHz), `Content-Type: audio/wav`, `Cache-Control: no-store`. 비압축이라 약 48 KB/s다.
+- 모델 `gpt-realtime-2.1-mini`(Realtime WebSocket, 원문 낭독 지침, `max_output_tokens="inf"`), 음색 `marin`. 제공자 실패는 `502`, 입력 오류는 `422`다.
 - 화면에서 AI 생성 음성임을 안내한다. 재생 중지는 클라이언트가 처리한다.
 
 ## 실시간 전사
@@ -88,10 +90,15 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 {
   "workspace_id":"workspace-id",
   "user_id":"user-id",
+  "provider":"openai",
+  "model":"gpt-6-luna",
   "display_name":"출시 회의",
   "segments":[{"id":"item_1","text":"출시는 다음 주 금요일로 확정하겠습니다."}]
 }
 ```
+
+`provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 지원하지 않는
+provider/model이거나 빠지면 `422`, 해당 provider의 API 키가 없으면 `503`이다.
 
 회의 녹음 종료 후 확정 전사를 발화 순서대로 전달한다. 구간 ID는 중복 없는 영문·숫자·`_`·`-`,
 최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면 `422`이며
@@ -100,7 +107,7 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 결과: display_name, markdown, summary, decisions, action_items, open_questions.
 네 배열의 각 항목은 text와 source_segment_ids를 가진다. 존재하지 않는 구간을
 참조하거나 근거가 없으면 `502`로 실패한다. 이는 참조 유효성 검증이며 의미적 정확성을
-보장하지 않는다. 모델은 기존 보안·개인정보 마스킹 경로의 `gpt-5-nano`다.
+보장하지 않는다. 모델은 요청의 `provider`·`model`로 호출한다.
 
 회의 발언은 자료로만 취급하고 Agent 라우터·Tool 실행에 전달하지 않는다. 담당자·기한·합의를
 추측하지 않도록 지시한다. 결과는 초안이며 문서 반영은 기존 승인·버전 검증을 거쳐야 한다.
@@ -176,25 +183,25 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 ### `POST /speech/transcriptions`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechTranscriptionClient.java`:31-38 (공개 `POST /api/workspaces/{workspace_id}/speech/transcriptions` 중계), 그리고 회의 녹음 파일 전사 worker `src/main/java/fruition/core/meeting/MeetingTranscriptionWorker.java`:69-72. 둘 다 `app.speech.transcription-endpoint`를 쓴다.
-- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:30), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:40), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — 호출하는 화면이 없다.
 
 ### `POST /speech/synthesis`
 
 - 인바운드 호출자: **호출자 없음.** document-svc에 `synthesis` 문자열과 TTS endpoint 설정이 없다. `app.speech.*` 설정은 전사·실시간·회의록 세 개뿐이다(Fruition-document `src/main/resources/application.properties`:98,100,103).
-- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/speech`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:49), access-svc 권한 확인.
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/speech`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:65), access-svc 권한 확인.
 - 미연동 표시: **전 구간 미연동.** 중계하는 backend도, 재생하는 화면도 없다.
 
 ### `WS /speech/transcriptions/live`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingLiveHandler.java`:146-152. JDK `HttpClient.newWebSocketBuilder`로 `app.speech.live-endpoint`에 `X-Internal-Token`을 붙여 접속하고, 사용자 쪽은 `/api/meetings/{meetingId}/live`로 받는다.
-- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:70), access-svc 권한 확인.
+- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:97), access-svc 권한 확인.
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — WebSocket을 여는 코드가 없다.
 
 ### `POST /meeting-notes/preview`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingNotesClient.java`:32 (`app.speech.meeting-notes-endpoint`).
-- 아웃바운드 호출: OpenAI ChatCompletions(`gpt-5-nano`)를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
+- 아웃바운드 호출: 요청의 `provider`·`model`로 ChatCompletions를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동.**
 
 ### 묶음 동시 호출 (`/meeting-notes/preview` 구현 기준)
