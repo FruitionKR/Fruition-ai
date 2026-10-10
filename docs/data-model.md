@@ -10,7 +10,7 @@
 | document_derived_state | ai-svc | 문서 파생물 stale 추적 | `document.edit.event` consumer가 갱신 |
 | wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | workspace 범위 unique, DB 밖 document ID는 논리 참조 |
 | source_blocks·source_block_snapshots | ai-svc | 문서 block 텍스트·문서 내 순서·줄 범위, block 집합을 만든 편입 입력 Markdown의 SHA-256 | 복합 PK `(block_id, document_id)`. 영구 `block_id`는 문서 순서가 아니므로 `position`(1부터) 순으로 조회한다. `line_start`·`line_end`는 입력 Markdown을 `\n`으로 나눈 1-based 양끝 포함 값이며 채팅 문서·기존 행은 null. 스냅샷 해시는 블록과 같은 트랜잭션에서 갱신해 편입 실패 시 직전 성공 값을 유지한다 |
-| wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다 |
+| wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록(`deleted_at`은 삭제마다 갱신)하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다. post_ingest는 `deleted_at`이 부모 ingest run 생성 시각보다 늦으면 개념 페이지·근거를 쓰지 않는다(복구 뒤 다시 만든 run은 통과) |
 | pipeline_runs | ai-svc | pipeline 실행 상태 | Spring이 만든 `run_id`, `user_id`·`workspace_id` 보존. ingest manifest의 `post_ingest.status`는 `running/retrying/ready/needs_review` 품질 진단 상태를 보존 |
 | wiki_page_embeddings·wiki_embedding_vectors·wiki_embedding_units | ai-svc | 검색용 embedding과 페이지 embedding 재처리 예약 | `wiki_page_embeddings.status`의 `pending`·`failed`는 maintenance worker가 재처리, page FK는 ai_db 내부, document ID는 논리 참조 |
 | ai_task_runs·ai_task_changes | ai-svc | 비 Agent 작업·부모/자식·AI DB/객체 저장소 변경 기록 | command hash, 취소 상태, 역순 복구 기록. `attempt`는 handler 시작 횟수이며 worker가 죽어 중단된 run은 재전달 시 부분 변경을 되돌리고 같은 전달 안에서 다시 실행한다(`AI_TASK_MAX_INTERRUPTED_ATTEMPTS`, 기본 3회 초과 시 `failed`/`interrupted_attempts_exhausted`) |

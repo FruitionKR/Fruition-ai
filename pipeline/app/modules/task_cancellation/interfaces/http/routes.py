@@ -3,7 +3,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from app.modules.task_cancellation.infrastructure.backend_rollback import rollback_backend
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository, register_cancelled_turn
-from app.modules.task_cancellation.interfaces.http.schemas import CancelTaskRequest, TaskStatusResponse, DocumentCleanupResponse
+from app.modules.task_cancellation.interfaces.http.schemas import CancelTaskRequest, TaskStatusResponse
 
 from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 
@@ -57,7 +57,3 @@ def rollback_backend_task(run_id: str, request: CancelTaskRequest):
             raise HTTPException(409, "Backend rollback conflicts with a later change.") from exc
         raise
 
-
-@router.post("/documents/{document_id}/cancel", response_model=DocumentCleanupResponse)
-def cancel_document_tasks(document_id: str, request: CancelTaskRequest):
-    return {"cleanup_complete": journal.cancel_document_tasks(document_id, request.workspace_id, request.user_id)}

@@ -747,7 +747,7 @@ def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
             """
             INSERT INTO wiki_source_tombstones (workspace_id, document_id)
             VALUES (%s, %s)
-            ON CONFLICT (workspace_id, document_id) DO NOTHING
+            ON CONFLICT (workspace_id, document_id) DO UPDATE SET deleted_at = now()
             """,
             (workspace_id, document_id),
         )
@@ -1044,11 +1044,35 @@ def update_pipeline_run_cluster_contribution(
         )
 
 
+def source_deleted_after_ingest(conn: psycopg.Connection, ingest_run_id: str) -> bool:
+    """ingest run을 만든 뒤에 원본 문서가 삭제됐는지 본다.
+
+    같은 document_id를 휴지통에서 복구해 다시 ingest한 run은 삭제 뒤에 만들어졌으므로 막지 않는다.
+    """
+    return conn.execute(
+        """
+        SELECT 1
+        FROM pipeline_runs r
+        JOIN wiki_source_tombstones t
+          ON t.workspace_id = r.workspace_id AND t.document_id = r.document_id
+        WHERE r.id = %s AND t.deleted_at > r.created_at
+        """,
+        (ingest_run_id,),
+    ).fetchone() is not None
+
+
+def reject_deleted_source(ingest_run_id: str) -> None:
+    with connect() as conn:
+        if source_deleted_after_ingest(conn, ingest_run_id):
+            raise PipelineRunCancelledError("Source document was deleted after the ingest run.")
+
+
 def persist_post_ingest_clusters(
     document_id: str,
     user_id: str,
     workspace_id: str,
     artifact: dict[str, Any],
+    ingest_run_id: str,
 ) -> list[str]:
     manifest = {
         "user_id": user_id,
@@ -1057,6 +1081,9 @@ def persist_post_ingest_clusters(
     }
     with concept_write_lock(workspace_id, f"post-ingest:{document_id}"):
         with connect() as conn:
+            # 문서 삭제 정리와 같은 잠금 아래서 확인해, 정리가 끝난 문서의 개념 페이지에 근거를 다시 쓰지 않는다.
+            if source_deleted_after_ingest(conn, ingest_run_id):
+                raise PipelineRunCancelledError("Source document was deleted after the ingest run.")
             changed_pages = _persist_meaning_cluster_artifacts(
                 conn,
                 document_id,

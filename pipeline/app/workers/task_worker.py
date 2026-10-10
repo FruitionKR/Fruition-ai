@@ -666,6 +666,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(command.get("page_ids", []), list):
         raise ValueError("post_ingest page_ids must be a list")
 
+    # 삭제 정리 뒤 늦게 도착한 후속 작업이 모델 호출 비용을 쓰기 전에 거절한다. 쓰기 직전에 한 번 더 확인한다.
+    database.reject_deleted_source(str(command["ingest_run_id"]))
     run_id = str(command["run_id"])
     existing = database.get_pipeline_run(run_id)
     if existing:
@@ -729,6 +731,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 str(command["user_id"]),
                 str(command["workspace_id"]),
                 dict(state["cluster_artifact"]),
+                str(command["ingest_run_id"]),
             )
             database.update_pipeline_run_cluster_contribution(
                 str(command["ingest_run_id"]),

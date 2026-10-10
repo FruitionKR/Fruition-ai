@@ -482,6 +482,7 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(
             task_worker.database,
             "checkpoint_pipeline_run",
@@ -586,6 +587,7 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
             "get_pipeline_run",
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else existing,
         ),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(
@@ -852,6 +854,7 @@ def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -918,6 +921,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -1730,3 +1734,21 @@ def test_replayed_result_does_not_regenerate_session_title(kind) -> None:
     assert events == ["succeeded"]
     assert consumer.commit.await_count == 1
     assert titles == []
+
+
+def test_post_ingest_for_deleted_source_stops_before_run_registration_and_model_calls() -> None:
+    command = {"run_id": "post-run-1", "ingest_run_id": "ingest-run-1", "kind": "post_ingest",
+               "document_id": "document-1", "workspace_id": "workspace-1", "user_id": "user-1",
+               "provider": "openai", "model": "gpt-5-nano", "cluster_normalized": {}, "page_ids": []}
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {"cluster_normalized": {}, "page_ids": []}}}
+    with (
+        patch.object(task_worker.database, "get_pipeline_run", return_value=parent),
+        patch.object(task_worker.database, "reject_deleted_source",
+                     side_effect=task_worker.PipelineRunCancelledError("deleted")),
+        patch.object(task_worker.database, "create_pipeline_run") as create,
+        patch.object(task_worker, "build_post_ingest_cluster_artifact") as build,
+        pytest.raises(task_worker.PipelineRunCancelledError),
+    ):
+        task_worker._handle_post_ingest(command)
+    create.assert_not_called()
+    build.assert_not_called()

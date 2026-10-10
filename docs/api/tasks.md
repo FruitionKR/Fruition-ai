@@ -9,7 +9,6 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 | `POST /internal/ai/tasks/{run_id}/cancel` | `X-Internal-Token` | `workspace_id`, `user_id`, 선택 `command` | `200`: AI 취소 상태. 전달 전 command도 등록해 실행 차단 |
 | `GET /internal/ai/tasks/{run_id}` | `X-Internal-Token` | query `workspace_id`, `user_id` | `200`: AI 복구 상태 |
 | `POST /internal/ai/tasks/{run_id}/rollback-backend` | `X-Internal-Token` | 같은 actor와 선택 `command` | `204`: Python이 업무 변경을 역순 복구. AI 복구 미완료·충돌 `409` |
-| `POST /internal/ai/tasks/documents/{document_id}/cancel` | `X-Internal-Token` | `workspace_id`, `user_id` | `200`: `cleanup_complete`로 연결된 수집·Wiki 복구 완료 확인 |
 
 취소 command의 ID·actor는 경로·body와 같아야 하며 기존 command와 내용이 다르면 `409`입니다.
 내부 상태 응답의 `error_code`는 오류가 없을 때 `null`입니다. 목록 pagination은 없습니다.
@@ -81,12 +80,6 @@ LangChain usage는 공급사 원값을 다음처럼 정규화한다. 금액을 �
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:32.
 - 아웃바운드 호출: document-svc `POST /internal/agent/tools/rollback/{run_id}/changes`, 이어서 각 변경의 `.../changes/{change_id}`와 `.../rollback/{run_id}/finalize-edits`를 `X-Agent-Service-Token`으로 호출한다(`pipeline/app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20). base URL은 `AGENT_BACKEND_URL`(기본 `http://document-svc:8080`)이다.
-- 미연동 표시: 없음.
-
-### `POST /internal/ai/tasks/documents/{document_id}/cancel`
-
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/aitask/repository/PipelineTaskCancellationClient.java`:45.
-- 아웃바운드 호출: 없음(AI DB 조회).
 - 미연동 표시: 없음.
 
 ### `GET /usage/models`

@@ -307,20 +307,3 @@ def rollback_pending() -> None:
         except TaskAlreadyExecutingError:
             continue
 
-
-def cancel_document_tasks(document_id: str, workspace_id: str, user_id: str) -> bool:
-    with connect() as conn:
-        rows = conn.execute("SELECT id FROM ai_task_runs WHERE workspace_id = %s AND user_id = %s "
-                            "AND command->>'document_id' = %s", (workspace_id, user_id, document_id)).fetchall()
-    for row in rows:
-        request_cancel(row["id"], workspace_id, user_id)
-    rollback_pending()
-    # 자식 복구가 끝난 뒤 부모가 같은 호출에서 진행할 수 있다.
-    rollback_pending()
-    with connect() as conn:
-        pending = conn.execute("SELECT 1 FROM ai_task_runs WHERE workspace_id = %s AND command->>'document_id' = %s "
-                               "AND status <> 'cancelled' LIMIT 1", (workspace_id, document_id)).fetchone()
-        links = conn.execute("SELECT 1 FROM document_wiki_links WHERE workspace_id = %s AND document_id = %s LIMIT 1",
-                             (workspace_id, document_id)).fetchone()
-        blocks = conn.execute("SELECT 1 FROM source_blocks WHERE document_id = %s LIMIT 1", (document_id,)).fetchone()
-    return not (pending or links or blocks)
