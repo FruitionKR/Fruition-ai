@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, task_run_id
+from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, task_run_id
 from app.core.ai_database import ai_database_url
 
 
@@ -21,7 +21,7 @@ TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
                     "document_derived_state", "skills", "skill_versions", "skill_version_sources"})
 class TaskAlreadyExecutingError(RuntimeError):
-    pass
+    """다른 worker가 같은 run을 실행 중이다. 리밸런스로 재전달된 메시지는 끝날 때까지 seek해 기다린다."""
 
 
 class TaskFailedError(ValueError):
@@ -39,6 +39,8 @@ class TaskCommandMismatchError(ValueError):
 STOPPING = frozenset({"cancel_requested", "rolling_back", "rollback_failed", "cancelled"})
 # worker가 죽어 중단된 run을 같은 재전달 안에서 다시 실행하는 최대 횟수. 넘어서면 실패로 닫아 crash loop가 LLM 호출을 반복하지 않게 한다.
 MAX_INTERRUPTED_ATTEMPTS = int(os.environ.get("AI_TASK_MAX_INTERRUPTED_ATTEMPTS", "3"))
+# 재전달된 실행 중 run을 다시 poll하기 전에 기다리는 고정 간격(초). max_poll_interval보다 훨씬 짧다.
+REDELIVERY_BACKOFF_SECONDS = 5
 logger = logging.getLogger("task_journal")
 
 
@@ -229,7 +231,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
     with execution_lock(run_id):
         row = register(command)
         if row["status"] == "completed":
-            return row["result"] or {}
+            return ReplayedResult(row["result"] or {})
         if row["status"] == "failed":
             raise TaskFailedError(row["error_code"] or "task_failed")
         if row["status"] in STOPPING:

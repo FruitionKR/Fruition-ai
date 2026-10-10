@@ -11,6 +11,10 @@ class ScopePurgedError(PipelineRunCancelledError):
     """파기된 워크스페이스·사용자의 작업이다. 재시도해도 같으므로 실패로 확정한다."""
 
 
+class ReplayedResult(dict):
+    """이미 저장된 결과를 재전달 때 그대로 돌려준 것이다. 새로 실행한 결과와 구분해 부수 효과(제목 생성 등)를 건너뛴다."""
+
+
 task_run_id: ContextVar[str | None] = ContextVar("ai_task_run_id", default=None)
 
 
