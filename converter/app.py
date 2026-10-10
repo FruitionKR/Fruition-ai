@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
-from app.core.llm_env import resolve_llm_selection
+from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
 from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV
 
 
@@ -134,7 +134,7 @@ def run(command: list[str], working_dir: Path, timeout_seconds: int,
 def process_pdf(
     content: bytes | Path,
     provider: str = "gemini",
-    model: str = "gemini-3.1-flash-lite",
+    model: str = DEFAULT_LLM_MODELS["gemini"],
     cancelled: Event | None = None,
     usage_actor: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
@@ -226,7 +226,7 @@ async def convert(
     request: Request,
     file: UploadFile = File(...),
     provider: str = Form("gemini"),
-    model: str = Form("gemini-3.1-flash-lite"),
+    model: str = Form(DEFAULT_LLM_MODELS["gemini"]),
     run_id: str | None = Form(None, max_length=128),
     workspace_id: str | None = Form(None, max_length=128),
     user_id: str | None = Form(None, max_length=128),
@@ -411,7 +411,7 @@ class SourceBatchRequest(BaseModel):
     byte_size: int = Field(gt=0)
     start_page: int = Field(ge=0, default=0)
     provider: str = "gemini"
-    model: str = "gemini-3.1-flash-lite"
+    model: str = DEFAULT_LLM_MODELS["gemini"]
     # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다.
     run_id: str | None = Field(default=None, max_length=128)
     workspace_id: str | None = Field(default=None, max_length=128)

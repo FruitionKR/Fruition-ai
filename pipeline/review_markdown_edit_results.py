@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
@@ -21,7 +22,7 @@ def assess(item, *, api_key):
         ChatClientConfig(
             api_key=api_key,
             provider="gemini",
-            model="gemini-3.1-flash-lite",
+            model=DEFAULT_LLM_MODELS["gemini"],
             temperature=None,
             json_mode=True,
             timeout_seconds=90,
@@ -58,7 +59,7 @@ def main():
             for c, r in zip(cases, pool.map(assess_output, cases))
         ]
     payload = {
-        "model": "gemini-3.1-flash-lite",
+        "model": DEFAULT_LLM_MODELS["gemini"],
         "prompt": PROMPT,
         "calibration": calibration,
         "assessments": {},
