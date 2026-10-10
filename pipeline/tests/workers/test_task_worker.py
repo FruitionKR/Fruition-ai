@@ -13,6 +13,7 @@ from app.modules.query.domain.entities import (
 )
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
 from app.core.pipeline_control import ReplayedResult
+from app.modules.meeting_notes.domain.entities import InvalidMeetingNotesError
 from app.workers import task_worker
 from tests.modules.query.test_answer_query import (
     EmptyTextSearch,
@@ -377,6 +378,104 @@ def test_lint_command_passes_runtime_model_without_command_overrides() -> None:
     assert lint_command.provider == "openai"
     assert lint_command.model == "gpt-5-nano"
     assert result == {"ok": True}
+
+
+def _meeting_command(**overrides) -> dict:
+    return {
+        "run_id": "meeting-run-1",
+        "kind": "meeting_notes",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "meeting_id": "meeting-1",
+        "display_name": "출시 회의",
+        "segments": [{"id": "s1", "text": "기록"}],
+        **overrides,
+    }
+
+
+def _meeting_generator(result: dict | Exception) -> MagicMock:
+    from app.modules.meeting_notes.application.generate_meeting_notes import GenerateMeetingNotes
+
+    generator = MagicMock()
+    if isinstance(result, Exception):
+        generator.generate.side_effect = result
+    else:
+        generator.generate.return_value = result
+    return GenerateMeetingNotes(generator)
+
+
+def test_meeting_notes_command_returns_draft_payload() -> None:
+    notes = {
+        "summary": [{"text": "출시 일정을 논의했다.", "source_segment_ids": ["s1"]}],
+        "decisions": [], "action_items": [], "open_questions": [],
+    }
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
+        payload = task_worker._handle(_meeting_command())
+
+    assert set(payload) == {"display_name", "markdown", "summary", "decisions", "action_items", "open_questions"}
+    assert payload["display_name"] == "출시 회의"
+    assert payload["markdown"].startswith("# 출시 회의\n")
+    event = task_worker._event(_meeting_command(), "succeeded", payload=payload, with_request=False)
+    assert "request" not in event and event["payload"] == payload
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"segments": [{"id": "s1", "text": "a"}, {"id": "s1", "text": "b"}]}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"model": "unknown-model"}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"title": "이전 필드"}, "MEETING_NOTES_INPUT_REJECTED"),
+    ],
+)
+def test_meeting_notes_command_rejects_invalid_input_with_code(overrides, code) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    with pytest.raises(TaskFailedError) as error:
+        task_worker._handle(_meeting_command(**overrides))
+    assert error.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (InvalidMeetingNotesError("근거 없음"), "MEETING_NOTES_FAILED"),
+        (RuntimeError("공급사 오류"), "MEETING_NOTES_FAILED"),
+    ],
+)
+def test_meeting_notes_command_maps_generation_failure_to_code(failure, code) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(failure)):
+        with pytest.raises(TaskFailedError) as error:
+            task_worker._handle(_meeting_command())
+    assert error.value.code == code
+
+
+def test_meeting_notes_command_without_provider_key_is_unavailable(monkeypatch) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(TaskFailedError) as error:
+        task_worker._handle(_meeting_command())
+    assert error.value.code == "MEETING_NOTES_UNAVAILABLE"
+
+
+def test_completed_meeting_notes_run_replays_draft_without_model_call() -> None:
+    from contextlib import nullcontext
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    draft = {"display_name": "출시 회의", "markdown": "# 출시 회의"}
+    with (
+        patch.object(journal, "execution_lock", return_value=nullcontext()),
+        patch.object(journal, "register", return_value={"status": "completed", "result": draft}),
+        patch.object(task_worker, "build_meeting_notes") as build,
+    ):
+        result = task_worker._execute_controlled(_meeting_command())
+
+    assert isinstance(result, ReplayedResult) and result == draft
+    build.assert_not_called()
 
 
 def test_restore_rejects_changed_contribution_manifest() -> None:
@@ -958,7 +1057,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
     fail.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "restore_ingest", "restore_lint"])
+@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint"])
 @pytest.mark.parametrize("status", [None, "running", "failed", "cancel_requested", "rolling_back", "rollback_failed", "cancelled"])
 def test_failure_is_durable_only_with_registered_terminal_or_rollback_state(kind, status):
     connection = MagicMock()

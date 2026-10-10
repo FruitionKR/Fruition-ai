@@ -1,5 +1,3 @@
-from fastapi import HTTPException
-
 from app.core.llm_env import api_key_from_env, provider_api_key_env
 from app.modules.meeting_notes.application.generate_meeting_notes import (
     GenerateMeetingNotes,
@@ -16,11 +14,15 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
 )
 
 
+class MeetingNotesUnavailableError(RuntimeError):
+    """공급사 키가 없어 회의록을 생성할 수 없다."""
+
+
 def build_meeting_notes(provider: str, model: str) -> GenerateMeetingNotes:
     key = api_key_from_env(provider=provider, strip=True)
     if not key:
-        raise HTTPException(
-            503, f"회의록 생성 모델이 설정되지 않았습니다. {provider_api_key_env(provider)}를 확인해주세요."
+        raise MeetingNotesUnavailableError(
+            f"회의록 생성 모델이 설정되지 않았습니다. {provider_api_key_env(provider)}를 확인해주세요."
         )
     return GenerateMeetingNotes(
         ChatMeetingNotes(

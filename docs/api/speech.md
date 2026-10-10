@@ -47,7 +47,7 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 ## 실시간 전사
 
 문서의 회의록 기능에서 청취하는 회의 내용은 수행 자료다. `delta`와 `completed`의 text를
-Agent 명령으로 전달하지 않고, 확정 구간을 모아 회의 종료 후 `/meeting-notes/preview`에 전달한다.
+Agent 명령으로 전달하지 않고, 확정 구간을 모아 회의 종료 후 회의록 command(`kind: meeting_notes`)로 전달한다.
 
 `WS /speech/transcriptions/live?workspace_id=...&user_id=...`
 
@@ -84,10 +84,17 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 
 ## 회의록 초안
 
-`POST /meeting-notes/preview`
+회의록은 HTTP route가 아니라 Kafka `ai.maintenance.command`의 command다(ADR 0032 결정 2).
+document-svc가 command를 발행하면 `task_worker`가 실행하고 결과를 `ai.task.event`로 보낸다.
+전사 길이에 따라 최악 약 720초까지 걸릴 수 있어 동기 응답 기한이 없다.
+
+Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. `display_name`만 생략 가능, 기본 `회의록`):
 
 ```json
 {
+  "run_id":"run-uuid",
+  "kind":"meeting_notes",
+  "meeting_id":"meeting-id",
   "workspace_id":"workspace-id",
   "user_id":"user-id",
   "provider":"openai",
@@ -98,20 +105,39 @@ AI는 오디오와 전사를 영구 저장하지 않는다. 호출 서비스는 
 ```
 
 `provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 지원하지 않는
-provider/model이거나 빠지면 `422`, 해당 provider의 API 키가 없으면 `503`이다.
+provider/model이거나 빠지면 `MEETING_NOTES_INPUT_REJECTED`, 해당 provider의 API 키가 없으면 `MEETING_NOTES_UNAVAILABLE`로 실패한다.
 
 회의 녹음 종료 후 확정 전사를 발화 순서대로 전달한다. 구간 ID는 중복 없는 영문·숫자·`_`·`-`,
-최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면 `422`이며
-내용을 조용히 자르지 않는다.
+최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면
+`MEETING_NOTES_INPUT_REJECTED`로 실패하며 내용을 조용히 자르지 않는다.
 
-결과: display_name, markdown, summary, decisions, action_items, open_questions.
-네 배열의 각 항목은 text와 source_segment_ids를 가진다. 존재하지 않는 구간을
-참조하거나 근거가 없으면 `502`로 실패한다. 이는 참조 유효성 검증이며 의미적 정확성을
+run은 task journal로 실행한다(`ai_task_runs`에 AI가 첫 수신 때 등록). 같은 command가 재전달되면 완료된 run은 저장된
+초안을 모델 호출 없이 재생하고, 실행 중이면 끝날 때까지 기다린다.
+
+결과 이벤트(`ai.task.event`, 전사가 커서 `request`는 싣지 않는다. document는 `run_id`로 행을 찾는다):
+
+```json
+{"event_id":"meeting_notes:<run_id>:succeeded","run_id":"<run_id>","kind":"meeting_notes","status":"succeeded",
+ "workspace_id":"...","user_id":"...","operation_id":null,
+ "payload":{"display_name":"...","markdown":"...","summary":[],"decisions":[],"action_items":[],"open_questions":[]},
+ "error":null}
+```
+
+payload의 네 배열 항목은 text와 source_segment_ids를 가진다. 실패하면 `status: "failed"`, `payload: null`,
+`error`에 아래 코드 하나를 싣는다(journal이 failed로 닫으므로 재전달돼도 같은 코드로 재생된다).
+
+| error | 사유 |
+|---|---|
+| `MEETING_NOTES_INPUT_REJECTED` | command 검증 실패(필드·provider/model·구간 수·길이·ID 중복) |
+| `MEETING_NOTES_UNAVAILABLE` | provider API 키 미설정 |
+| `MEETING_NOTES_FAILED` | 모델 호출 실패, 또는 존재하지 않는 구간을 참조하거나 근거가 없는 초안 |
+
+근거 검증은 참조 유효성 검증이며 의미적 정확성을 보장하지 않는다. 이는 참조 유효성 검증이며 의미적 정확성을
 보장하지 않는다. 모델은 요청의 `provider`·`model`로 호출한다.
 
 회의 발언은 자료로만 취급하고 Agent 라우터·Tool 실행에 전달하지 않는다. 담당자·기한·합의를
 추측하지 않도록 지시한다. 결과는 초안이며 문서 반영은 기존 승인·버전 검증을 거쳐야 한다.
-실패 시 호출 서비스가 전사를 유지하고 초안 생성만 재시도한다.
+실패 시 호출 서비스가 전사를 유지하고 새 `run_id`로 초안 생성만 재시도한다.
 
 현재 구현은 `GenerateMeetingNotes` → `ChatMeetingNotes`의 별도 초안 생성 경로다.
 Agent의 `GenerateMarkdownEditUseCase`나 편집 평가·재시도 로직을 호출하지 않으며,
@@ -198,13 +224,13 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 - 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:97), access-svc 권한 확인.
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — WebSocket을 여는 코드가 없다.
 
-### `POST /meeting-notes/preview`
+### Kafka `ai.maintenance.command` `kind: meeting_notes`
 
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingNotesClient.java`:32 (`app.speech.meeting-notes-endpoint`).
-- 아웃바운드 호출: 요청의 `provider`·`model`로 ChatCompletions를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`), access-svc 권한 확인(`routes.py`의 `authorize_speech`).
+- 인바운드 호출자: Fruition-document가 command를 outbox로 발행한다. HTTP route는 없다.
+- 아웃바운드 호출: 요청의 `provider`·`model`로 ChatCompletions를 묶음마다 호출한다(`pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py`). 권한은 command를 발행한 document-svc가 확인하며 worker는 다시 묻지 않는다.
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동.**
 
-### 묶음 동시 호출 (`/meeting-notes/preview` 구현 기준)
+### 묶음 동시 호출 (`meeting_notes` command 구현 기준)
 
 `pipeline/app/modules/meeting_notes/infrastructure/chat_meeting_notes.py` 기준이다.
 
@@ -215,7 +241,8 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
   출력 예산 `MAX_OUTPUT_TOKENS = 16000`이다.
 - 응답 JSON이 잘리면(`JsonParseError`) 그 묶음을 절반으로 쪼개 다시 묻는다. 라운드 상한은
   `MAX_SPLIT_ROUNDS = 2`이고, 더 쪼갤 수 없거나 라운드가 남지 않으면 실패로 올린다.
-  최악의 경우 60초 × (재시도 1 + 1) × 라운드 2 = 240초다.
+  최악의 경우 호출 하나 60초 × (재시도 1 + 1) = 120초이고, 첫 라운드 최대 7묶음은 동시성 4로 2파 240초,
+  둘째 라운드에서 잘린 묶음을 쪼갠 최대 14묶음은 4파 480초라 합쳐 약 720초다(Fruition-ai#75).
 - 묶음별 결과는 완료 순서가 아니라 전사 순서로 합친다. 각 항목의 `source_segment_ids`는
   그 묶음에 실제로 있는 구간 id만 남기고, 근거가 하나도 남지 않으면 항목을 버린다.
   합칠 때 섹션당 `MAX_SECTION_ITEMS = 100`개, 항목당 `MAX_ITEM_CHARS = 2000`자로 맞춘다.

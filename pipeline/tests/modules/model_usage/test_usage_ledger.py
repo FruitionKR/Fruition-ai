@@ -181,7 +181,6 @@ def test_list_calls_by_run_or_finished_period(monkeypatch):
 
 def test_sync_http_routes_attribute_calls_to_request_id(monkeypatch):
     from app.modules.agent.interfaces.http import routes as agent_routes
-    from app.modules.meeting_notes.interfaces.http import routes as meeting_routes
     from app.modules.query.interfaces.http import routes as query_routes
     from app.modules.skill.interfaces.http import routes as skill_routes
     from app.modules.wiki_schema.interfaces.http import routes as schema_routes
@@ -193,24 +192,21 @@ def test_sync_http_routes_attribute_calls_to_request_id(monkeypatch):
                 raise ValueError('stop')
             return call
     app = FastAPI()
-    for router in (agent_routes.router, meeting_routes.router, query_routes.router,
+    for router in (agent_routes.router, query_routes.router,
                    skill_routes.agent_router, schema_routes.router):
         app.include_router(router)
     app.dependency_overrides.update({
         agent_routes.get_handle_agent_turn_use_case: Model,
         query_routes.get_query_answer_use_case: Model,
     })
-    monkeypatch.setattr(meeting_routes, 'build_meeting_notes', lambda provider, model: Model())
     monkeypatch.setattr(schema_routes, 'build_organize_schema_use_case', lambda provider, model: Model())
     monkeypatch.setattr(schema_routes, 'build_create_schema_draft_use_case', lambda provider, model: Model())
-    monkeypatch.setattr(meeting_routes, 'authorize_speech', lambda *args: None)
     monkeypatch.setattr(skill_routes, 'get_propose_skill_draft_use_case', lambda **kwargs: Model())
     monkeypatch.setattr(skill_routes, 'get_author_skill_use_case', lambda **kwargs: Model())
     actor = {'workspace_id': 'w', 'user_id': 'u'}
     llm = {'provider': 'openai', 'model': 'gpt-5-nano'}
     requests = {
         '/agent/turn': ('agent_turn', {'message': 'hi', **llm, **actor}),
-        '/meeting-notes/preview': ('meeting_notes', {'segments': [{'id': 's1', 'text': '안건'}], **llm, **actor}),
         '/query': ('query', {'question': '질문', 'allow_web_search': False, **llm, **actor}),
         '/skills/draft-from-runs/preview': ('skill_draft_preview', {
             **llm, **actor, 'scope_type': 'personal', 'source_runs': [{
