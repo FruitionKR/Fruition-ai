@@ -23,6 +23,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
 from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
 from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 
 
 app = FastAPI(title="Fruition PDF Converter")
@@ -227,9 +228,9 @@ async def convert(
     file: UploadFile = File(...),
     provider: str = Form("gemini"),
     model: str = Form(DEFAULT_LLM_MODELS["gemini"]),
-    run_id: str | None = Form(None, max_length=128),
     workspace_id: str | None = Form(None, max_length=128),
     user_id: str | None = Form(None, max_length=128),
+    run_id: RequestId = None,
 ) -> dict[str, Any]:
     content = await file.read()
     if len(content) > max_upload_bytes():
@@ -412,8 +413,7 @@ class SourceBatchRequest(BaseModel):
     start_page: int = Field(ge=0, default=0)
     provider: str = "gemini"
     model: str = DEFAULT_LLM_MODELS["gemini"]
-    # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다.
-    run_id: str | None = Field(default=None, max_length=128)
+    # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다. run_id는 X-Request-Id 헤더로 받는다.
     workspace_id: str | None = Field(default=None, max_length=128)
     user_id: str | None = Field(default=None, max_length=128)
 
@@ -421,13 +421,13 @@ class SourceBatchRequest(BaseModel):
 _source_conversion_slots = asyncio.Semaphore(max(1, int(os.getenv("PDF_BATCH_CONCURRENCY", "1"))))
 
 @app.post("/convert-source-batch")
-async def convert_source_batch(body: SourceBatchRequest, request: Request):
+async def convert_source_batch(body: SourceBatchRequest, request: Request, run_id: RequestId = None):
     async with _source_conversion_slots:
-        return await _convert_source_batch(body, request)
+        return await _convert_source_batch(body, request, run_id)
 
-async def _convert_source_batch(body: SourceBatchRequest, request: Request):
+async def _convert_source_batch(body: SourceBatchRequest, request: Request, run_id: str | None = None):
     cancelled = Event()
-    actor = {"run_id": body.run_id, "workspace_id": body.workspace_id, "user_id": body.user_id}
+    actor = {"run_id": run_id, "workspace_id": body.workspace_id, "user_id": body.user_id}
     worker = asyncio.create_task(asyncio.to_thread(process_source_batch, body.source_url,
         body.byte_size, body.start_page, body.provider, body.model, cancelled, actor))
     try:
