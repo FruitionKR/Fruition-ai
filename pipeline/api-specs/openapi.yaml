@@ -1139,15 +1139,6 @@ components:
       - wiki_schema
       title: CreateWikiSchemaDraftResponse
       type: object
-    DocumentCleanupResponse:
-      properties:
-        cleanup_complete:
-          title: Cleanup Complete
-          type: boolean
-      required:
-      - cleanup_complete
-      title: DocumentCleanupResponse
-      type: object
     EvidenceSnippetResponse:
       properties:
         rank:
@@ -3983,46 +3974,6 @@ paths:
       summary: Purge Workspaces
       tags:
       - ai-data-purge
-  /internal/ai/tasks/documents/{document_id}/cancel:
-    post:
-      operationId: cancel_document_tasks_internal_ai_tasks_documents__document_id__cancel_post
-      parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
-      - in: header
-        name: X-Internal-Token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Internal-Token
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CancelTaskRequest'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DocumentCleanupResponse'
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Cancel Document Tasks
-      tags:
-      - ai-task-cancellation
   /internal/ai/tasks/{run_id}:
     get:
       operationId: task_status_internal_ai_tasks__run_id__get
