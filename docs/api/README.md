@@ -72,7 +72,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `POST /speech/synthesis` | **호출자 없음** | 중계 설정조차 없다 |
 | `WS /speech/transcriptions/live` | `core/meeting/MeetingLiveHandler.java`:146-152 | |
 | `POST /meeting-notes/preview` | `core/meeting/MeetingNotesClient.java`:32 | |
-| `POST /internal/ai/tasks/{run_id}/cancel`, `GET /internal/ai/tasks/{run_id}`, `POST .../rollback-backend`, `POST /internal/ai/tasks/documents/{document_id}/cancel` | `core/aitask/repository/PipelineTaskCancellationClient.java`:26,38-40,32,45 | |
+| `POST /internal/ai/tasks/{run_id}/cancel`, `GET /internal/ai/tasks/{run_id}`, `POST .../rollback-backend` | `core/aitask/repository/PipelineTaskCancellationClient.java`:26,38-40,32 | |
 | `GET /usage/models` | `core/usage/service/ModelUsageService.java`:35-40 | |
 | `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
 | `POST /internal/ai/purge/workspaces`, `POST /internal/ai/purge/users` | **호출자 없음** | Document 파기 API 구현 전 |

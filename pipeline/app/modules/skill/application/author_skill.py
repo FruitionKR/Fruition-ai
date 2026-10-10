@@ -2,6 +2,7 @@ from dataclasses import replace
 from typing import cast
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.pipeline_control import ensure_task_active
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.ports import (
     SkillAuthoringGeneratorPort,
@@ -339,6 +340,8 @@ class AuthorSkillUseCase:
             return reviewed
         # 분류를 건너뛰었으므로 검토 결과의 권한은 호출자가 확인한 권한과 같다.
         proposal = reviewed.proposal
+        # 호출자가 포기한 뒤에는 게시하지 않는다.
+        ensure_task_active()
         skill = self._skill_manager.create_published(
             workspace_id=workspace_id,
             user_id=user_id,
@@ -377,6 +380,7 @@ class AuthorSkillUseCase:
         if reviewed.status != "proposal_ready" or reviewed.proposal is None:
             return reviewed
         proposal = reviewed.proposal
+        ensure_task_active()
         updated = self._skill_manager.update_published(
             workspace_id=workspace_id,
             user_id=user_id,

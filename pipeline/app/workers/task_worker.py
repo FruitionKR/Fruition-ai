@@ -14,14 +14,14 @@ import signal
 from itertools import count
 from typing import Any
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
 from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
-from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError, ensure_task_active, task_cancellation_scope
+from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
     AgentTurnRouteContractError,
@@ -168,7 +168,7 @@ def _handle_agent(
     run_id = str(command["run_id"])
     state, replay = _register_agent_command(command)
     if state == "completed":
-        return replay or {}
+        return ReplayedResult(replay or {})
 
     try:
         payload = AgentTurnRequestBody.model_validate({
@@ -666,6 +666,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(command.get("page_ids", []), list):
         raise ValueError("post_ingest page_ids must be a list")
 
+    # 삭제 정리 뒤 늦게 도착한 후속 작업이 모델 호출 비용을 쓰기 전에 거절한다. 쓰기 직전에 한 번 더 확인한다.
+    database.reject_deleted_source(str(command["ingest_run_id"]))
     run_id = str(command["run_id"])
     existing = database.get_pipeline_run(run_id)
     if existing:
@@ -729,6 +731,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 str(command["user_id"]),
                 str(command["workspace_id"]),
                 dict(state["cluster_artifact"]),
+                str(command["ingest_run_id"]),
             )
             database.update_pipeline_run_cluster_contribution(
                 str(command["ingest_run_id"]),
@@ -1064,6 +1067,13 @@ async def consume() -> None:
                             payload=result,
                             with_request=command.get("kind") != "post_ingest",
                         )
+                    except journal.TaskAlreadyExecutingError:
+                        # 리밸런스로 재전달된 실행 중 run이다. 죽이지 않고 해당 offset으로 되돌아가 원래 worker가
+                        # 끝나기를 기다린다. 끝나면 같은 메시지가 저장된 결과로 재생돼 정상 커밋된다.
+                        logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", command.get("run_id"), message.offset)
+                        consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
+                        await asyncio.sleep(journal.REDELIVERY_BACKOFF_SECONDS)
+                        break
                     except Exception as exc:
                         if command.get("kind") == "agent":
                             error = _agent_failure_code(exc)
@@ -1089,7 +1099,9 @@ async def consume() -> None:
                             with_request=command.get("kind") != "post_ingest",
                         )
                     await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
-                    if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"}:
+                    if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
+                            and not isinstance(result, ReplayedResult):
+                        # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
                         # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
                         task = asyncio.create_task(_publish_session_title(producer, command, result))
                         title_tasks.add(task)

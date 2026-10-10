@@ -2,7 +2,8 @@
 
 백엔드 연결 계약:
 - delete_folder(folder_id, base_version, require_empty=True)는 원자적으로 빈 폴더만 삭제한다.
-- delete_document(document_id, base_version)는 파생 Wiki 정리가 끝나야 cleanup_complete=True를 반환한다.
+- delete_document(document_id, base_version)는 일반 문서 삭제와 같게 문서를 휴지통으로 옮기고, 파생 Wiki 정리는
+  document_deleted command로 비동기 처리한다(정리 완료를 기다리거나 응답으로 확인하지 않는다).
 - 삭제에도 기존 execute 경로의 승인 검사와 Idempotency-Key 처리가 필요하다.
 """
 
@@ -73,6 +74,9 @@ class RollbackAgentRunUseCase:
                 if type(restored.get("current_version")) is int:
                     versions[target] = restored["current_version"]
             except ToolGatewayError as exc:
+                if exc.retryable:
+                    # 일시 오류(429·5xx)는 job backoff 재시도에 맡긴다. 재시도를 다 쓰면 job이 rollback_failed로 닫는다.
+                    raise
                 self._repository.finish_rollback(run_id, f"rollback_tool_http_{exc.status_code or 'unavailable'}")
                 return
             except (ValueError, KeyError, TypeError) as exc:
@@ -155,9 +159,6 @@ class RollbackAgentRunUseCase:
         target_type = "folder" if tool.endswith("folder") else "document"
         target_id = arguments[f"{target_type}_id"]
         if tool.startswith("delete_"):
-            # 문서 삭제로 파생된 Wiki 정리까지 끝났다는 서버 확인이 필요하다.
-            if tool == "delete_document" and restored.get("cleanup_complete") is not True:
-                return False
             try:
                 self._read(context, "get_breadcrumb", {f"{target_type}_id": target_id})
             except ToolGatewayError as exc:

@@ -12,6 +12,7 @@ from app.modules.query.domain.entities import (
     ConversationMessage,
 )
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
+from app.core.pipeline_control import ReplayedResult
 from app.workers import task_worker
 from tests.modules.query.test_answer_query import (
     EmptyTextSearch,
@@ -481,6 +482,7 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(
             task_worker.database,
             "checkpoint_pipeline_run",
@@ -585,6 +587,7 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
             "get_pipeline_run",
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else existing,
         ),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(
@@ -851,6 +854,7 @@ def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -917,6 +921,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -1596,6 +1601,15 @@ def test_repeated_identical_agent_command_reuses_completed_result() -> None:
     assert connection.execute.call_count == 2
 
 
+def test_agent_handler_marks_completed_run_as_replay() -> None:
+    command = {"run_id": "agent-1", "workspace_id": "ws", "user_id": "user", "message": "안녕"}
+    with patch.object(task_worker, "_register_agent_command", return_value=("completed", {"outcome": "chat"})):
+        result = task_worker._handle_agent(command)
+
+    assert result == {"outcome": "chat"}
+    assert isinstance(result, ReplayedResult)
+
+
 @pytest.mark.parametrize("title_fails", [False, True])
 def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(title_fails) -> None:
     async def run_test() -> None:
@@ -1652,3 +1666,89 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
         consumer.stop.assert_awaited_once()
 
     asyncio.run(run_test())
+
+
+def _run_consume(handled: list, kind: str = "query"):
+    """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓰며 같은 offset 메시지를 되풀이해 받는다."""
+    async def run_test():
+        stop_callbacks = []
+        events = []
+        titles = []
+        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), seek=MagicMock())
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        message = SimpleNamespace(topic="t", partition=3, offset=42, value={"kind": kind, "run_id": "run-1"})
+
+        async def getmany(**kwargs):
+            if handled:
+                return {"partition": [message]}
+            stop_callbacks[0]()
+            return {}
+
+        async def send(topic, event, **kwargs):
+            events.append(event["status"])
+
+        async def to_thread(function, *args):
+            if function is task_worker._handle_controlled:
+                outcome = handled.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            if function is task_worker.generate_chat_session_title:
+                titles.append(args[0]["run_id"])
+                return "제목"
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(task_worker.database, "ensure_ai_schema"), \
+                patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
+                patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            await asyncio.wait_for(task_worker.consume(), timeout=1)
+        return consumer, events, titles
+
+    return asyncio.run(run_test())
+
+
+def test_redelivered_running_task_seeks_back_and_waits_instead_of_crashing() -> None:
+    from aiokafka import TopicPartition
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    consumer, events, titles = _run_consume([journal.TaskAlreadyExecutingError("busy"), {"answer": "답변"}])
+
+    consumer.seek.assert_called_once_with(TopicPartition("t", 3), 42)
+    # 대기 중에는 커밋하지 않고, 원래 worker가 끝난 뒤의 재처리에서만 커밋한다.
+    assert events == ["succeeded", "session_title"]
+    assert consumer.commit.await_count == 1
+    assert titles == ["run-1"]
+
+
+@pytest.mark.parametrize("kind", ["query", "agent"])
+def test_replayed_result_does_not_regenerate_session_title(kind) -> None:
+    consumer, events, titles = _run_consume([ReplayedResult({"answer": "답변"})], kind)
+
+    assert events == ["succeeded"]
+    assert consumer.commit.await_count == 1
+    assert titles == []
+
+
+def test_post_ingest_for_deleted_source_stops_before_run_registration_and_model_calls() -> None:
+    command = {"run_id": "post-run-1", "ingest_run_id": "ingest-run-1", "kind": "post_ingest",
+               "document_id": "document-1", "workspace_id": "workspace-1", "user_id": "user-1",
+               "provider": "openai", "model": "gpt-5-nano", "cluster_normalized": {}, "page_ids": []}
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {"cluster_normalized": {}, "page_ids": []}}}
+    with (
+        patch.object(task_worker.database, "get_pipeline_run", return_value=parent),
+        patch.object(task_worker.database, "reject_deleted_source",
+                     side_effect=task_worker.PipelineRunCancelledError("deleted")),
+        patch.object(task_worker.database, "create_pipeline_run") as create,
+        patch.object(task_worker, "build_post_ingest_cluster_artifact") as build,
+        pytest.raises(task_worker.PipelineRunCancelledError),
+    ):
+        task_worker._handle_post_ingest(command)
+    create.assert_not_called()
+    build.assert_not_called()

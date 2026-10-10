@@ -415,3 +415,56 @@ def test_handle_delete_gives_up_after_bounded_lock_attempts() -> None:
         ingest_worker._handle(command)
 
     assert delete.call_count == ingest_worker.DELETE_LOCK_ATTEMPTS
+
+
+def test_redelivered_running_ingest_seeks_back_and_waits_instead_of_crashing() -> None:
+    from types import SimpleNamespace
+
+    from aiokafka import TopicPartition
+
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    handled = [journal.TaskAlreadyExecutingError("busy"), {"status": "succeeded"}]
+    message = SimpleNamespace(topic="t", partition=5, offset=7, value={"run_id": "run-1", "kind": "document"})
+
+    async def run_test():
+        stop_callbacks = []
+        events = []
+        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), seek=MagicMock())
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+
+        async def getmany(**kwargs):
+            if handled:
+                return {"partition": [message]}
+            stop_callbacks[0]()
+            return {}
+
+        async def send(topic, event, **kwargs):
+            events.append(event["status"])
+
+        async def to_thread(function, *args):
+            if function is ingest_worker._handle_controlled:
+                outcome = handled.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(database, "ensure_ai_schema"), \
+                patch.object(ingest_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(ingest_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(ingest_worker, "_dispatch_post_ingest", AsyncMock()), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(journal, "REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            await asyncio.wait_for(ingest_worker.consume(), timeout=1)
+        return consumer, events
+
+    consumer, events = asyncio.run(run_test())
+
+    consumer.seek.assert_called_once_with(TopicPartition("t", 5), 7)
+    assert events == ["succeeded"]
+    assert consumer.commit.await_count == 1

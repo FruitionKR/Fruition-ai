@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
 from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
+from app.core.pipeline_control import remaining_seconds, request_deadline
 from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
 
@@ -31,6 +32,8 @@ logger = logging.getLogger("converter")
 
 RESTORATION_TIMEOUT_SECONDS = int(os.getenv("RESTORATION_TIMEOUT_SECONDS", "900"))
 PDF_DIAGNOSTIC_TIMEOUT_SECONDS = int(os.getenv("PDF_DIAGNOSTIC_TIMEOUT_SECONDS", "60"))
+# document 호출 READ_TIMEOUT(900초)보다 짧게, /convert-source-batch의 대기열 대기까지 포함한 요청 전체 마감이다.
+REQUEST_DEADLINE_SECONDS = int(os.getenv("CONVERT_REQUEST_DEADLINE_SECONDS", "840"))
 RESTORATION_COMMAND = os.getenv("RESTORATION_COMMAND", "document-restoration")
 RANGE_RETRY_DELAY_SECONDS = 0.5
 
@@ -111,6 +114,16 @@ def _run_command(command: list[str], working_dir: Path, timeout_seconds: int,
             process.wait()
 
 
+def _within_deadline(timeout_seconds: float) -> float:
+    """요청 마감이 있으면 단계별 timeout을 남은 시간으로 줄이고, 이미 지났으면 단계를 시작하지 않는다."""
+    remaining = remaining_seconds()
+    if remaining is None:
+        return timeout_seconds
+    if remaining <= 0:
+        raise HTTPException(status_code=504, detail="Conversion deadline exceeded")
+    return min(timeout_seconds, remaining)
+
+
 def run_to_file(command: list[str], output_file: Path, working_dir: Path,
                 timeout_seconds: int, log_file: Path, cancelled: Event | None = None) -> None:
     with output_file.open("w", encoding="utf-8") as stdout, log_file.open("a", encoding="utf-8") as log:
@@ -173,7 +186,7 @@ def process_pdf(
             ["pdfinfo", input_pdf.name],
             info_txt,
             job_dir,
-            PDF_DIAGNOSTIC_TIMEOUT_SECONDS,
+            _within_deadline(PDF_DIAGNOSTIC_TIMEOUT_SECONDS),
             process_log,
             cancelled,
         )
@@ -181,7 +194,7 @@ def process_pdf(
             ["pdffonts", input_pdf.name],
             fonts_txt,
             job_dir,
-            PDF_DIAGNOSTIC_TIMEOUT_SECONDS,
+            _within_deadline(PDF_DIAGNOSTIC_TIMEOUT_SECONDS),
             process_log,
             cancelled,
         )
@@ -202,7 +215,7 @@ def process_pdf(
                 model,
             ],
             job_dir,
-            RESTORATION_TIMEOUT_SECONDS,
+            _within_deadline(RESTORATION_TIMEOUT_SECONDS),
             process_log,
             cancelled,
             # selective repair 손자 프로세스까지 상속돼 공급사 호출이 이 actor로 기록된다.
@@ -242,7 +255,8 @@ async def convert(
 
     cancelled = Event()
     actor = {"run_id": run_id, "workspace_id": workspace_id, "user_id": user_id}
-    worker = asyncio.create_task(asyncio.to_thread(process_pdf, content, provider, model, cancelled, actor))
+    with request_deadline(REQUEST_DEADLINE_SECONDS):
+        worker = asyncio.create_task(asyncio.to_thread(process_pdf, content, provider, model, cancelled, actor))
     try:
         while not worker.done():
             if await request.is_disconnected():
@@ -422,8 +436,16 @@ _source_conversion_slots = asyncio.Semaphore(max(1, int(os.getenv("PDF_BATCH_CON
 
 @app.post("/convert-source-batch")
 async def convert_source_batch(body: SourceBatchRequest, request: Request, run_id: RequestId = None):
-    async with _source_conversion_slots:
-        return await _convert_source_batch(body, request, run_id)
+    with request_deadline(REQUEST_DEADLINE_SECONDS):
+        try:
+            async with asyncio.timeout(remaining_seconds()):
+                await _source_conversion_slots.acquire()
+        except TimeoutError:
+            raise HTTPException(status_code=504, detail="Conversion queue wait exceeded the deadline") from None
+        try:
+            return await _convert_source_batch(body, request, run_id)
+        finally:
+            _source_conversion_slots.release()
 
 async def _convert_source_batch(body: SourceBatchRequest, request: Request, run_id: str | None = None):
     cancelled = Event()

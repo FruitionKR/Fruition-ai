@@ -173,3 +173,17 @@ def test_delete_document_wiki_data_scopes_pipeline_update() -> None:
     )
     assert "workspace_id = %s" in pipeline_update[0]
     assert pipeline_update[1] == ("doc-1", "ws-1")
+
+
+def test_source_deleted_after_ingest_compares_deletion_with_run_creation() -> None:
+    connection = Mock()
+    connection.execute.return_value.fetchone.return_value = {"?column?": 1}
+
+    assert database.source_deleted_after_ingest(connection, "run-1") is True
+
+    query, params = connection.execute.call_args.args
+    # 삭제 시각이 run 생성 시각보다 늦을 때만 막는다. 복구 뒤 다시 만든 run은 통과해야 한다.
+    assert "t.deleted_at > r.created_at" in query
+    assert params == ("run-1",)
+    connection.execute.return_value.fetchone.return_value = None
+    assert database.source_deleted_after_ingest(connection, "run-1") is False

@@ -26,7 +26,7 @@ import os
 import signal
 from uuid import NAMESPACE_URL, uuid5
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 
 from app.core.kafka_security import kafka_security_options
 from pydantic import ValidationError
@@ -310,6 +310,12 @@ async def consume() -> None:
                             else "?",
                         )
                         raise
+                    except journal.TaskAlreadyExecutingError:
+                        # 리밸런스로 재전달된 실행 중 run이다. 죽이지 않고 해당 offset으로 되돌아가 원래 worker가 끝나기를 기다린다.
+                        logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", message.value.get("run_id"), message.offset)
+                        consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
+                        await asyncio.sleep(journal.REDELIVERY_BACKOFF_SECONDS)
+                        break
                     except (UnprocessableIngestCommand, ScopePurgedError) as exc:
                         # 재시도해도 같은 지점에서 실패한다. 실패로 확정하고 offset을 전진시켜
                         # 이 command 하나가 파티션 전체를 막지 않게 한다.

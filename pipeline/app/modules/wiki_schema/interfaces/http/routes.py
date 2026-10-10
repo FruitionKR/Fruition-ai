@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.pipeline_control import DOCUMENT_SYNC_DEADLINE_SECONDS, DeadlineExceededError, request_deadline
 from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.wiki_schema.application.activate_schema import ActivateSchemaUseCase
@@ -33,11 +34,14 @@ def preview_wiki_schema(
 ) -> WikiSchemaPreviewResponse:
     use_case = build_organize_schema_use_case(payload.provider, payload.model)
     try:
-        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
-                          "user_id": payload.user_id, "kind": "wiki_schema_preview"}):
+        with request_deadline(DOCUMENT_SYNC_DEADLINE_SECONDS), usage_scope(
+            {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "wiki_schema_preview"}):
             result = use_case.execute(payload.raw_markdown)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DeadlineExceededError as exc:
+        raise HTTPException(status_code=504, detail=exc.code) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -54,8 +58,9 @@ def create_wiki_schema_draft(
 ) -> CreateWikiSchemaDraftResponse:
     use_case = build_create_schema_draft_use_case(payload.provider, payload.model)
     try:
-        with usage_scope({"run_id": request_id, "workspace_id": payload.workspace_id,
-                          "user_id": payload.user_id, "kind": "wiki_schema_draft"}):
+        with request_deadline(DOCUMENT_SYNC_DEADLINE_SECONDS), usage_scope(
+            {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "wiki_schema_draft"}):
             record = use_case.execute(
                 raw_markdown=payload.raw_markdown,
                 workspace_id=payload.workspace_id,
@@ -64,6 +69,8 @@ def create_wiki_schema_draft(
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DeadlineExceededError as exc:
+        raise HTTPException(status_code=504, detail=exc.code) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return CreateWikiSchemaDraftResponse(wiki_schema=WikiSchemaResponse.from_domain(record))
