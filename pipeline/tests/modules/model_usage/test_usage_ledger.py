@@ -237,3 +237,15 @@ def test_openai_realtime_cached_tokens_key_is_normalized(monkeypatch):
             receipt['usage'] = {'input_tokens': 100, 'output_tokens': 20,
                                 'input_token_details': {'cached_tokens': 30, 'audio_tokens': 0}}
     assert calls[1][:5] == ('succeeded', 'gpt-realtime-2.1-mini', 100, 20, 30)
+
+
+def test_anthropic_ttl_cache_creation_is_summed_without_double_count(monkeypatch):
+    calls = _record(monkeypatch)
+    # langchain_anthropic은 TTL별 값이 있으면 cache_creation을 0으로 둔다.
+    ttl = {'cache_read': 0, 'cache_creation': 0, 'ephemeral_5m_input_tokens': 30, 'ephemeral_1h_input_tokens': 5}
+    both = {**ttl, 'cache_creation': 40}
+    with ledger.usage_scope({'run_id': 'r', 'workspace_id': 'w', 'user_id': 'u'}):
+        for details in (ttl, both):
+            with ledger.track_call('anthropic', 'claude') as receipt:
+                receipt['usage'] = {'input_tokens': 100, 'output_tokens': 2, 'input_token_details': details}
+    assert calls[1][1][5] == 35 and calls[3][1][5] == 40

@@ -209,13 +209,28 @@ class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
         request = mock.Mock()
         request.is_disconnected = mock.AsyncMock(return_value=False)
         body = converter_app.SourceBatchRequest(
-            source_url="signed", byte_size=10, run_id="r", workspace_id="w", user_id="u"
+            source_url="signed", byte_size=10, workspace_id="w", user_id="u"
         )
         with mock.patch.object(
             converter_app, "process_source_batch", return_value={"done": True}
         ) as batch:
-            await converter_app._convert_source_batch(body, request)
+            await converter_app._convert_source_batch(body, request, "r")
         self.assertEqual(batch.call_args.args[-1], {"run_id": "r", "workspace_id": "w", "user_id": "u"})
+
+    def test_run_id_is_read_from_x_request_id_header_only(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(converter_app.app)
+        payload = {"source_url": "signed", "byte_size": 10, "run_id": "body-id", "workspace_id": "w", "user_id": "u"}
+        with mock.patch.object(converter_app, "process_source_batch", return_value={"done": True}) as batch:
+            client.post("/convert-source-batch", json=payload, headers={"X-Request-Id": "hdr"})
+        self.assertEqual(batch.call_args.args[-1]["run_id"], "hdr")
+        with mock.patch.object(converter_app, "process_pdf", return_value={}) as pdf:
+            client.post("/convert", files={"file": ("a.pdf", b"pdf", "application/pdf")},
+                        data={"run_id": "form-id", "workspace_id": "w", "user_id": "u"}, headers={"X-Request-Id": "hdr"})
+        self.assertEqual(pdf.call_args.args[-1], {"run_id": "hdr", "workspace_id": "w", "user_id": "u"})
+        with mock.patch.object(converter_app, "process_pdf", return_value={}) as pdf:
+            client.post("/convert", files={"file": ("a.pdf", b"pdf", "application/pdf")}, data={"run_id": "form-id"})
+        self.assertIsNone(pdf.call_args.args[-1]["run_id"])
 
     def test_cancellation_terminates_running_process(self):
         import tempfile

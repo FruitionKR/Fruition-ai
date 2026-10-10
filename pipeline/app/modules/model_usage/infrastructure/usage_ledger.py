@@ -72,6 +72,11 @@ def finish_call(call_id, status, receipt, model, duration_ms):
     cached = (_count(input_details, 'cache_read') if _count(input_details, 'cache_read') is not None
               else _count(input_details, 'cached_tokens')) if isinstance(input_details, dict) else None
     created = _count(input_details, 'cache_creation') if isinstance(input_details, dict) else None
+    # langchain_anthropic은 TTL별 값이 있으면 cache_creation을 0으로 두므로 TTL별 합계로 대신한다.
+    if isinstance(input_details, dict) and not created:
+        ttl = [_count(input_details, key) for key in ('ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens')]
+        if any(ttl):
+            created = sum(v or 0 for v in ttl)
     reasoning = _count(output_details, 'reasoning') if isinstance(output_details, dict) else None
     if incoming is not None and cached is not None and cached > incoming:
         cached = None
