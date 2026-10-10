@@ -40,8 +40,8 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 - action은 `chat_answer`만 허용한다. 호출 서비스는 **서버의 실제 Agent 결과에서 action·answer를
   가져와야 한다. 클라이언트가 주장하는 action으로 음성 재생 여부를 결정하면 안 된다.**
 - answer: 공백 제거 후 1–4,000자. 긴 답변은 호출 서비스가 문장 단위로 나눠 순차 요청·재생한다.
-- 성공: 전체 생성된 MP3 bytes, `Content-Type: audio/mpeg`, `Cache-Control: no-store`.
-- 모델 `gpt-4o-mini-tts`, 음색 `coral`. 제공자 실패는 `502`, 입력 오류는 `422`다.
+- 성공: 전체 생성된 WAV bytes(PCM16 mono 24 kHz), `Content-Type: audio/wav`, `Cache-Control: no-store`. 비압축이라 약 48 KB/s다.
+- 모델 `gpt-realtime-2.1-mini`(Realtime WebSocket, 원문 낭독 지침, `max_output_tokens="inf"`), 음색 `marin`. 제공자 실패는 `502`, 입력 오류는 `422`다.
 - 화면에서 AI 생성 음성임을 안내한다. 재생 중지는 클라이언트가 처리한다.
 
 ## 실시간 전사

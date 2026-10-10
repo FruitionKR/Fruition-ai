@@ -4774,7 +4774,7 @@ paths:
       responses:
         '200':
           content:
-            audio/mpeg: {}
+            audio/wav: {}
           description: Successful Response
         '422':
           content:
