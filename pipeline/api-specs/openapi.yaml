@@ -1098,10 +1098,18 @@ components:
       type: object
     CreateWikiSchemaDraftRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
         name:
           default: default
           minLength: 1
           title: Name
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
           type: string
         raw_markdown:
           minLength: 1
@@ -1117,6 +1125,8 @@ components:
           type: string
       required:
       - raw_markdown
+      - provider
+      - model
       - workspace_id
       - user_id
       title: CreateWikiSchemaDraftRequest
@@ -1431,6 +1441,14 @@ components:
           minLength: 1
           title: Display Name
           type: string
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
         segments:
           items:
             $ref: '#/components/schemas/MeetingSegment'
@@ -1451,6 +1469,8 @@ components:
       required:
       - workspace_id
       - user_id
+      - provider
+      - model
       - segments
       title: MeetingNotesRequest
       type: object
@@ -3223,6 +3243,14 @@ components:
       type: object
     WikiSchemaPreviewRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
         raw_markdown:
           minLength: 1
           title: Raw Markdown
@@ -3241,6 +3269,8 @@ components:
           title: Workspace Id
       required:
       - raw_markdown
+      - provider
+      - model
       title: WikiSchemaPreviewRequest
       type: object
     WikiSchemaPreviewResponse:
@@ -4973,6 +5003,15 @@ paths:
     post:
       operationId: create_wiki_schema_draft_wiki_schema_drafts_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false

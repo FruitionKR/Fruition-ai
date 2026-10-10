@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 
-from app.core.llm_env import api_key_from_env
+from app.core.llm_env import api_key_from_env, provider_api_key_env
 from app.modules.meeting_notes.application.generate_meeting_notes import (
     GenerateMeetingNotes,
 )
@@ -16,17 +16,19 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
 )
 
 
-def get_meeting_notes() -> GenerateMeetingNotes:
-    key = api_key_from_env(provider="openai", strip=True)
+def build_meeting_notes(provider: str, model: str) -> GenerateMeetingNotes:
+    key = api_key_from_env(provider=provider, strip=True)
     if not key:
-        raise HTTPException(503, "회의록 생성 모델이 설정되지 않았습니다.")
+        raise HTTPException(
+            503, f"회의록 생성 모델이 설정되지 않았습니다. {provider_api_key_env(provider)}를 확인해주세요."
+        )
     return GenerateMeetingNotes(
         ChatMeetingNotes(
             ChatCompletionsJsonClient(
                 ChatClientConfig(
                     api_key=key,
-                    provider="openai",
-                    model="gpt-5-nano",
+                    provider=provider,
+                    model=model,
                     json_mode=True,
                     max_tokens=MAX_OUTPUT_TOKENS,
                     timeout_seconds=BATCH_TIMEOUT_SECONDS,

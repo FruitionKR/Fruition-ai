@@ -198,10 +198,11 @@ def test_sync_http_routes_attribute_calls_to_request_id(monkeypatch):
         app.include_router(router)
     app.dependency_overrides.update({
         agent_routes.get_handle_agent_turn_use_case: Model,
-        meeting_routes.get_meeting_notes: Model,
         query_routes.get_query_answer_use_case: Model,
-        schema_routes.get_organize_schema_use_case: Model,
     })
+    monkeypatch.setattr(meeting_routes, 'build_meeting_notes', lambda provider, model: Model())
+    monkeypatch.setattr(schema_routes, 'build_organize_schema_use_case', lambda provider, model: Model())
+    monkeypatch.setattr(schema_routes, 'build_create_schema_draft_use_case', lambda provider, model: Model())
     monkeypatch.setattr(meeting_routes, 'authorize_speech', lambda *args: None)
     monkeypatch.setattr(skill_routes, 'get_propose_skill_draft_use_case', lambda **kwargs: Model())
     monkeypatch.setattr(skill_routes, 'get_author_skill_use_case', lambda **kwargs: Model())
@@ -209,13 +210,14 @@ def test_sync_http_routes_attribute_calls_to_request_id(monkeypatch):
     llm = {'provider': 'openai', 'model': 'gpt-5-nano'}
     requests = {
         '/agent/turn': ('agent_turn', {'message': 'hi', **llm, **actor}),
-        '/meeting-notes/preview': ('meeting_notes', {'segments': [{'id': 's1', 'text': '안건'}], **actor}),
+        '/meeting-notes/preview': ('meeting_notes', {'segments': [{'id': 's1', 'text': '안건'}], **llm, **actor}),
         '/query': ('query', {'question': '질문', 'allow_web_search': False, **llm, **actor}),
         '/skills/draft-from-runs/preview': ('skill_draft_preview', {
             **llm, **actor, 'scope_type': 'personal', 'source_runs': [{
                 'run_id': 'source', 'status': 'completed', 'request_summary': '정리', 'plan_summary': '이동',
                 'successful_operations': [{'tool_name': 'create_folder', 'reason': '생성'}]}]}),
-        '/wiki-schema/preview': ('wiki_schema_preview', {'raw_markdown': '# 스키마', **actor}),
+        '/wiki-schema/preview': ('wiki_schema_preview', {'raw_markdown': '# 스키마', **llm, **actor}),
+        '/wiki-schema/drafts': ('wiki_schema_draft', {'raw_markdown': '# 스키마', **llm, **actor}),
     }
     with TestClient(app, raise_server_exceptions=False) as client:
         for path, (kind, body) in requests.items():

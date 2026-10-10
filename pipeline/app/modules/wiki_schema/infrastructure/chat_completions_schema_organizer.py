@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.core.llm_env import api_key_from_env
+from app.core.llm_env import api_key_from_env, provider_api_key_env
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import ChatClientConfig, ChatCompletionsJsonClient
 from app.modules.wiki_schema.application.ports import SchemaOrganizerPort
 from app.modules.wiki_schema.domain.entities import SchemaFragments, SchemaOrganizerCandidate
@@ -40,11 +40,10 @@ class ChatCompletionsSchemaOrganizer(SchemaOrganizerPort):
         return _normalize_candidate(raw)
 
 
-def build_schema_organizer() -> SchemaOrganizerPort:
-    api_key = _api_key()
+def build_schema_organizer(provider: str, model: str) -> SchemaOrganizerPort:
+    api_key = api_key_from_env(provider=provider, strip=True)
     if not api_key:
-        raise RuntimeError("Set OPENAI_API_KEY.")
-    model = "gpt-5-nano"
+        raise RuntimeError(f"Set {provider_api_key_env(provider)}.")
     prompt_path = Path(os.environ.get("WIKI_SCHEMA_SYSTEM_PROMPT", str(DEFAULT_SCHEMA_ORGANIZER_PROMPT)))
     return ChatCompletionsSchemaOrganizer(
         ChatCompletionsJsonClient(
@@ -55,7 +54,7 @@ def build_schema_organizer() -> SchemaOrganizerPort:
                 timeout_seconds=180,
                 max_tokens=1200,
                 json_mode=True,
-                provider="openai",
+                provider=provider,
             )
         ),
         system_prompt=prompt_path.read_text(encoding="utf-8"),
@@ -91,13 +90,6 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()] if str(value).strip() else []
-
-
-def _api_key() -> str | None:
-    return api_key_from_env(
-        provider="openai",
-        strip=True,
-    )
 
 
 def _float_env(name: str, default: float) -> float:

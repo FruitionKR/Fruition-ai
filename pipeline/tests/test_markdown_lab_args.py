@@ -20,7 +20,7 @@ def test_markdown_labs_default_to_openai_contract(monkeypatch) -> None:
 
         assert not hasattr(args, "endpoint")
         assert args.api_key == "test-openai-key"
-        assert args.model == "gpt-5-nano"
+        assert args.model == "gpt-6-luna"
 
 
 def test_markdown_labs_build_clients_without_legacy_endpoint(monkeypatch) -> None:

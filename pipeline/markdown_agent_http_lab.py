@@ -10,6 +10,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 import api
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
     DEFAULT_AGENT_TURN_ROUTER_PROMPT,
@@ -159,7 +160,7 @@ def _partial_fence_rejection(client: TestClient, model: str) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="실제 /agent/turn + OpenAI Markdown 편집 E2E")
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
-    parser.add_argument("--model", default="gpt-5-nano")
+    parser.add_argument("--model", default=DEFAULT_LLM_MODELS["openai"])
     parser.add_argument("--prompt", default=str(DEFAULT_MARKDOWN_EDIT_PROMPT))
     parser.add_argument("--source-edit-prompt", default=str(DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT))
     parser.add_argument("--router-prompt", default=str(DEFAULT_AGENT_TURN_ROUTER_PROMPT))

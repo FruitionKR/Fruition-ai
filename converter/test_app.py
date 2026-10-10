@@ -161,7 +161,7 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(
             command[command.index("--selective-model") + 1],
-            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
         )
         self.assertEqual(result["repair_summary"]["provider"], "gemini")
         # user_id가 빠진 요청은 converter 운영 로그에 경고로 남는다.

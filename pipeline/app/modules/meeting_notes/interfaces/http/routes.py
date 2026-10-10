@@ -1,15 +1,10 @@
-from typing import Annotated
+from fastapi import APIRouter, HTTPException
 
-from fastapi import APIRouter, Depends, HTTPException
-
-from app.modules.meeting_notes.application.generate_meeting_notes import (
-    GenerateMeetingNotes,
-)
 from app.modules.meeting_notes.domain.entities import (
     InvalidMeetingNotesError,
     TranscriptSegment,
 )
-from app.modules.meeting_notes.interfaces.http.dependencies import get_meeting_notes
+from app.modules.meeting_notes.interfaces.http.dependencies import build_meeting_notes
 from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.meeting_notes.interfaces.http.schemas import (
@@ -24,10 +19,10 @@ router = APIRouter(prefix="/meeting-notes", tags=["meeting-notes"])
 @router.post("/preview", response_model=MeetingNotesResponse)
 def preview_meeting_notes(
     payload: MeetingNotesRequest,
-    use_case: Annotated[GenerateMeetingNotes, Depends(get_meeting_notes)],
     request_id: RequestId = None,
 ) -> MeetingNotesResponse:
     authorize_speech(payload.workspace_id, payload.user_id)
+    use_case = build_meeting_notes(payload.provider, payload.model)
     scope = {"run_id": request_id, "workspace_id": payload.workspace_id,
              "user_id": payload.user_id, "kind": "meeting_notes"}
     try:

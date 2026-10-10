@@ -11,10 +11,9 @@ from app.modules.wiki_schema.infrastructure.chat_completions_schema_organizer im
 from app.modules.wiki_schema.infrastructure.postgres_wiki_schema_repository import PostgresWikiSchemaRepository
 
 
-@lru_cache(maxsize=1)
-def get_organize_schema_use_case() -> OrganizeSchemaUseCase:
+def build_organize_schema_use_case(provider: str, model: str) -> OrganizeSchemaUseCase:
     try:
-        organizer = build_schema_organizer()
+        organizer = build_schema_organizer(provider, model)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return OrganizeSchemaUseCase(organizer=organizer)
@@ -25,9 +24,9 @@ def get_wiki_schema_repository() -> PostgresWikiSchemaRepository:
     return PostgresWikiSchemaRepository()
 
 
-def get_create_schema_draft_use_case() -> CreateSchemaDraftUseCase:
+def build_create_schema_draft_use_case(provider: str, model: str) -> CreateSchemaDraftUseCase:
     try:
-        organizer = build_schema_organizer()
+        organizer = build_schema_organizer(provider, model)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return CreateSchemaDraftUseCase(

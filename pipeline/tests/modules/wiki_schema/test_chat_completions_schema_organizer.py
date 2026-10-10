@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from app.modules.wiki_schema.infrastructure.chat_completions_schema_organizer import (
     ChatCompletionsSchemaOrganizer,
-    _api_key,
+    build_schema_organizer,
 )
 
 
@@ -44,13 +44,10 @@ class ChatCompletionsSchemaOrganizerTest(unittest.TestCase):
         self.assertEqual(payload["raw_markdown"], "답변은 한국어로 해줘.")
         self.assertIn("global_markdown", payload["target_sections"])
 
-    def test_api_key_is_none_when_no_shared_or_override_key_exists(self) -> None:
-        env_keys = [
-            "LLM_API_KEY",
-            "OPENAI_API_KEY",
-        ]
-        with patch.dict(os.environ, {key: "" for key in env_keys}, clear=False):
-            self.assertIsNone(_api_key())
+    def test_missing_selected_provider_key_raises_runtime_error(self) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "ANTHROPIC_API_KEY"):
+                build_schema_organizer("claude", "claude-sonnet-5")
 
 
 if __name__ == "__main__":
