@@ -18,6 +18,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
+from pydantic import ValidationError
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
 from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
@@ -34,6 +35,12 @@ from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownOutputContractError,
 )
 from app.modules.markdown_edit.domain.markdown_target_scope import MarkdownTargetBoundaryError
+from app.modules.meeting_notes.domain.entities import TranscriptSegment
+from app.modules.meeting_notes.interfaces.command.dependencies import (
+    MeetingNotesUnavailableError,
+    build_meeting_notes,
+)
+from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCommand, MeetingNotesResponse
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.domain.entities import ConversationContext, ConversationMessage
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
@@ -442,6 +449,30 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+    # 실패는 journal이 failed로 닫고 error_code로 남기므로 문자열 code를 가진 TaskFailedError로 올린다.
+    try:
+        request = MeetingNotesCommand.model_validate(command)
+    except ValidationError as exc:
+        raise TaskFailedError("MEETING_NOTES_INPUT_REJECTED") from exc
+    try:
+        use_case = build_meeting_notes(request.provider, request.model)
+    except MeetingNotesUnavailableError as exc:
+        raise TaskFailedError("MEETING_NOTES_UNAVAILABLE") from exc
+    try:
+        result = use_case.execute(
+            request.display_name,
+            [TranscriptSegment(s.id, s.text) for s in request.segments],
+        )
+    except PipelineRunCancelledError:
+        raise
+    except Exception as exc:
+        # 근거 검증 실패(InvalidMeetingNotesError)와 공급사 오류는 사용자에게 같은 실패로 보인다.
+        raise TaskFailedError("MEETING_NOTES_FAILED") from exc
+    return MeetingNotesResponse(**result).model_dump(mode="json")
+
+
 def _validate_restore_contributions(command: dict[str, Any]) -> None:
     expected = command.get("expected_contributions") or {}
     if not expected:
@@ -836,6 +867,8 @@ def _handle(
         return _handle_agent(command, event_publisher)
     if kind == "lint":
         return _handle_lint(command)
+    if kind == "meeting_notes":
+        return _handle_meeting_notes(command)
     if kind == "post_ingest":
         for attempt in range(POST_INGEST_MAX_ATTEMPTS):
             try:
@@ -978,6 +1011,7 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         "query",
         "agent",
         "lint",
+        "meeting_notes",
         "post_ingest",
         "restore_ingest",
         "restore_lint",
@@ -1065,7 +1099,7 @@ async def consume() -> None:
                             command,
                             "succeeded",
                             payload=result,
-                            with_request=command.get("kind") != "post_ingest",
+                            with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
                         )
                     except journal.TaskAlreadyExecutingError:
                         # 리밸런스로 재전달된 실행 중 run이다. 죽이지 않고 해당 offset으로 되돌아가 원래 worker가
@@ -1096,7 +1130,7 @@ async def consume() -> None:
                             command,
                             "failed",
                             error=error,
-                            with_request=command.get("kind") != "post_ingest",
+                            with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
                         )
                     await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
                     if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \

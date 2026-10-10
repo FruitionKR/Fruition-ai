@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.llm_env import resolve_llm_selection
@@ -10,7 +12,12 @@ class MeetingSegment(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
 
 
-class MeetingNotesRequest(SpeechScope):
+class MeetingNotesCommand(SpeechScope):
+    """`ai.maintenance.command`의 회의록 생성 command. document가 run을 정하고 보낸다."""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    kind: Literal["meeting_notes"]
+    meeting_id: str = Field(min_length=1, max_length=128)
     provider: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
     display_name: str = Field(default="회의록", min_length=1, max_length=200)
