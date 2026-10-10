@@ -1,6 +1,7 @@
 """탈퇴 사용자·삭제된 워크스페이스의 AI 데이터를 지운다.
 
 ai_model_usage는 워크스페이스 사용량 정산에 쓰이므로 지우지 않는다(보관 기간은 법률 검토 뒤 정한다).
+AI 실행 로그(pipeline-runs/)는 지우지 않고 S3 lifecycle 만료에 맡긴다(로그에는 문서 본문이 없다).
 S3를 DB보다 먼저 지운다. DB를 먼저 지우면 S3 삭제가 실패한 뒤 재호출할 때 지울 키를 다시 찾을 수 없다.
 """
 
@@ -29,16 +30,14 @@ def _mark_purged(scope_type: str, scope_id: str) -> None:
 def purge_workspace(workspace_id: str) -> dict[str, int]:
     _mark_purged("workspace", workspace_id)
     with connect() as conn:
-        users = _column(conn, "SELECT user_id FROM wiki_pages WHERE workspace_id = %(ws)s "
-                              "UNION SELECT user_id FROM pipeline_runs WHERE workspace_id = %(ws)s AND user_id IS NOT NULL "
-                              "UNION SELECT user_id FROM ai_task_runs WHERE workspace_id = %(ws)s "
-                              "UNION SELECT user_id FROM wiki_schemas WHERE workspace_id = %(ws)s", {"ws": workspace_id})
-        runs = _column(conn, "SELECT id::text FROM pipeline_runs WHERE workspace_id = %s", (workspace_id,))
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE workspace_id = %s AND object_key IS NOT NULL", (workspace_id,))
-    # wiki 객체 키는 wiki/{user_id}/{workspace_id}/...(페이지·클러스터·로그)와 wiki/{workspace_id}/pages/...(작업 산출물) 두 형태다.
-    prefixes = [f"wiki/{user}/{workspace_id}/" for user in users] + [f"wiki/{workspace_id}/"]
-    keys = [object_storage.pipeline_log_uri(run) for run in runs] + artifacts
+    # wiki 객체 키는 wiki/{user_id}/{workspace_id}/...(페이지·클러스터)와 wiki/{workspace_id}/pages/...(작업 산출물) 두 형태다.
+    # 사용자 prefix는 DB가 아니라 S3 목록에서 찾는다. 사용자를 먼저 파기했거나 lint 산출물만 남은 경우 DB에 흔적이 없다.
+    # ponytail: wiki/ 바로 아래 prefix를 전부 나열하므로 비용이 사용자 수에 비례한다. 수만 명을 넘으면 워크스페이스 prefix 구조 변경이 필요하다.
+    prefixes = [f"{entry.object_name}{workspace_id}/" for entry in _list_dirs("wiki/")] + [f"wiki/{workspace_id}/"]
+    # 실행 로그(pipeline-runs/*/pipeline.log)는 지우지 않는다. AI 역할에 삭제 권한이 없고 S3 30일 lifecycle로 만료된다.
+    keys = artifacts
     deleted = {"s3_objects": _delete_objects(prefixes, keys)}
 
     with connect() as conn:
@@ -98,6 +97,11 @@ def purge_user(user_id: str) -> dict[str, int]:
         ]
         deleted.update((table, conn.execute(statement, {"user": user_id}).rowcount) for table, statement in statements)
     return deleted
+
+
+def _list_dirs(prefix: str):
+    return [item for item in object_storage.client().list_objects(object_storage.bucket_name(), prefix=prefix, recursive=False)
+            if item.is_dir]
 
 
 def _column(conn, query: str, params) -> list[str]:

@@ -194,6 +194,10 @@ async def _dispatch_post_ingest(
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command.get("kind") == "document_deleted":
+        # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 tombstone 행을 되살리지 않도록 직접 확인한다.
+        with journal.connect() as conn:
+            if journal.workspace_purged(conn, command["workspace_id"]):
+                raise ScopePurgedError("Task scope was purged.")
         return _handle(command)
     _build_payload(command)
     return journal.execute(command, lambda: _handle(command))

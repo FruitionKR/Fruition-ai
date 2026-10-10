@@ -77,6 +77,12 @@ def reject_purged(conn, command: dict[str, Any]) -> None:
         raise ScopePurgedError("Task scope was purged.")
 
 
+def workspace_purged(conn, workspace_id: str) -> bool:
+    """사용자 정보가 없는 이벤트(편집 이벤트·문서 삭제 command)용으로 워크스페이스 파기만 확인한다."""
+    return conn.execute("SELECT 1 FROM ai_purged_scopes WHERE scope_type = 'workspace' AND scope_id = %s",
+                        (str(workspace_id),)).fetchone() is not None
+
+
 def active(run_id: str) -> bool:
     with connect() as conn:
         row = conn.execute("SELECT status FROM ai_task_runs WHERE id = %s", (run_id,)).fetchone()

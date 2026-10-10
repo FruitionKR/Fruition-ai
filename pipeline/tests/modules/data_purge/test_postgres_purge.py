@@ -22,7 +22,12 @@ class FakeStorage:
         self.objects = set(keys)
 
     def list_objects(self, bucket, prefix, recursive):
-        return [SimpleNamespace(object_name=key) for key in sorted(self.objects) if key.startswith(prefix)]
+        keys = sorted(key for key in self.objects if key.startswith(prefix))
+        if recursive:
+            return [SimpleNamespace(object_name=key, is_dir=False) for key in keys]
+        # delimiter="/" 동작: prefix 바로 아래 하위 경로는 "…/" 디렉터리 항목 하나로 묶는다.
+        dirs = {prefix + key[len(prefix):].split("/", 1)[0] + "/" for key in keys if "/" in key[len(prefix):]}
+        return [SimpleNamespace(object_name=name, is_dir=True) for name in sorted(dirs)]
 
     def remove_object(self, bucket, key):
         assert bucket == BUCKET
@@ -65,6 +70,7 @@ def storage(monkeypatch):
             "agent-runs/c/artifacts/bob-other.md",
         }
         | {f"pipeline-runs/{RUN_WS}/pipeline.log", f"pipeline-runs/{RUN_OTHER}/pipeline.log"}
+        | {"wiki/carol/ws/lint/report.md"}
     )
     monkeypatch.setattr(object_storage, "client", lambda: fake)
     monkeypatch.setenv("S3_BUCKET", BUCKET)
@@ -150,7 +156,7 @@ def test_workspace_purge_removes_workspace_ai_data_except_usage(database, storag
 
     first = purge.purge_workspace("ws")
 
-    assert first["wiki_pages"] == 1 and first["s3_objects"] == 5
+    assert first["wiki_pages"] == 1 and first["s3_objects"] == 5  # alice·bob·carol 객체, 작업 산출물, 에이전트 산출물(실행 로그 제외)
     with database() as conn:
         assert ids(conn, "wiki_pages") == {"page-other"}
         assert ids(conn, "wiki_embedding_vectors") == {"shared"}
@@ -168,7 +174,8 @@ def test_workspace_purge_removes_workspace_ai_data_except_usage(database, storag
         assert ids(conn, "checkpoint_blobs", "thread_id") == {"agent-alice", "agent-bob"}
         assert ids(conn, "ai_model_usage", "workspace_id") == {"ws"}
     assert storage.objects == {"wiki/alice/other/sources/keep.md", "agent-runs/b/artifacts/alice-other.md",
-                               "agent-runs/c/artifacts/bob-other.md", f"pipeline-runs/{RUN_OTHER}/pipeline.log"}
+                               "agent-runs/c/artifacts/bob-other.md", f"pipeline-runs/{RUN_WS}/pipeline.log",
+                               f"pipeline-runs/{RUN_OTHER}/pipeline.log"}  # 실행 로그는 lifecycle 만료에 맡긴다
 
     second = purge.purge_workspace("ws")
     assert set(second.values()) == {0}
@@ -224,3 +231,43 @@ def test_purge_routes_require_internal_token(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"deleted": {"wiki_pages": 2}}
     assert calls == ["ws", "ws2"]
+
+
+def test_workspace_purge_removes_files_of_user_without_db_rows(database, storage):
+    """사용자를 먼저 파기해 DB 흔적이 없고 lint 산출물만 남은 wiki/U/W/ 도 S3 목록으로 찾아 지운다."""
+    storage.objects.add("wiki/dave/ws/lint/only.md")  # dave는 어느 테이블에도 행이 없다.
+
+    purge.purge_workspace("ws")
+
+    assert not {key for key in storage.objects if key.startswith(("wiki/dave/ws/", "wiki/carol/ws/"))}
+
+
+def test_edit_event_in_purged_workspace_does_not_revive_derived_state(database, monkeypatch, caplog):
+    from app.workers import edit_event_consumer as consumer
+
+    monkeypatch.setattr(consumer.database, "connect_ai", database)
+    event = (b'{"document_id": "doc-x", "workspace_id": "ws", "revision": 1, "content_hash": "h",'
+             b' "created_at": "2026-10-11T00:00:00Z"}')
+    purge.purge_workspace("ws")
+
+    with caplog.at_level("INFO", logger="edit_event_consumer"):
+        consumer._handle(event)
+    with database() as conn:
+        assert ids(conn, "document_derived_state", "document_id") == set()
+    assert "skip" in caplog.text
+
+    consumer._handle(event.replace(b'"ws"', b'"other"'))
+    with database() as conn:
+        assert ids(conn, "document_derived_state", "document_id") == {"doc-x"}
+
+
+def test_document_deleted_in_purged_workspace_is_discarded_without_tombstone(database):
+    from app.workers import ingest_worker
+
+    command = {"kind": "document_deleted", "workspace_id": "ws", "document_id": "doc-x", "user_id": "alice"}
+    purge.purge_workspace("ws")
+
+    with pytest.raises(ScopePurgedError):
+        ingest_worker._handle_controlled(command)
+    with database() as conn:
+        assert ids(conn, "wiki_source_tombstones", "document_id") == set()

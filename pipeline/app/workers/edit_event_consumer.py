@@ -25,6 +25,7 @@ from aiokafka import AIOKafkaConsumer
 
 from app.core.kafka_security import kafka_security_options
 
+from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
@@ -69,6 +70,10 @@ def _parse_event(raw: bytes) -> tuple[str, str, int, str, datetime]:
 def _handle(raw: bytes) -> None:
     document_id, workspace_id, revision, content_hash, created_at = _parse_event(raw)
     with database.connect_ai() as conn:
+        if journal.workspace_purged(conn, workspace_id):
+            # 파기한 워크스페이스의 재전달·지연 이벤트가 document_derived_state 행을 되살리지 않게 한다.
+            logger.info("[파기된 워크스페이스 이벤트 skip] document_id=%s workspace_id=%s", document_id, workspace_id)
+            return
         conn.execute(
             _UPSERT_SQL,
             (document_id, workspace_id, revision, content_hash, created_at),
