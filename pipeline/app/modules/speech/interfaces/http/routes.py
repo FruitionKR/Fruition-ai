@@ -76,7 +76,7 @@ async def transcribe(
 @router.post(
     "/synthesis",
     response_class=Response,
-    responses={200: {"content": {"audio/mpeg": {}}}},
+    responses={200: {"content": {"audio/wav": {}}}},
 )
 async def synthesize(
     payload: SpeechSynthesisRequest,
@@ -92,7 +92,7 @@ async def synthesize(
     except SpeechUnavailableError as exc:
         raise HTTPException(502, "음성을 생성하지 못했습니다.") from exc
     return Response(
-        audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"}
+        audio, media_type="audio/wav", headers={"Cache-Control": "no-store"}
     )
 
 

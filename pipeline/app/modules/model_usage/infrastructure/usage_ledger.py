@@ -68,7 +68,9 @@ def finish_call(call_id, status, receipt, model, duration_ms):
     incoming, outgoing = _count(usage, 'input_tokens'), _count(usage, 'output_tokens')
     input_details = usage.get('input_token_details') or {}
     output_details = usage.get('output_token_details') or {}
-    cached = _count(input_details, 'cache_read') if isinstance(input_details, dict) else None
+    # LangChain은 cache_read, OpenAI Realtime·음성 usage는 cached_tokens 키를 쓴다.
+    cached = (_count(input_details, 'cache_read') if _count(input_details, 'cache_read') is not None
+              else _count(input_details, 'cached_tokens')) if isinstance(input_details, dict) else None
     created = _count(input_details, 'cache_creation') if isinstance(input_details, dict) else None
     reasoning = _count(output_details, 'reasoning') if isinstance(output_details, dict) else None
     if incoming is not None and cached is not None and cached > incoming:

@@ -25,7 +25,7 @@ def client(monkeypatch):
     monkeypatch.setattr(routes, "authorize_speech", lambda *args: None)
     speech = AsyncMock()
     speech.transcribe.return_value = "문서를 찾아줘"
-    speech.synthesize.return_value = b"mp3-audio"
+    speech.synthesize.return_value = b"wav-audio"
     api.app.dependency_overrides[routes.get_speech] = lambda: speech
     yield TestClient(api.app), speech
     api.app.dependency_overrides.pop(routes.get_speech, None)
@@ -71,8 +71,8 @@ def test_query_speech_and_failure_keep_text_separate(client):
     http, speech = client
     payload = {**SCOPE, "action": "chat_answer", "answer": "검색 결과입니다."}
     response = http.post("/speech/synthesis", headers=HEADERS, json=payload)
-    assert response.content == b"mp3-audio"
-    assert response.headers["content-type"] == "audio/mpeg"
+    assert response.content == b"wav-audio"
+    assert response.headers["content-type"] == "audio/wav"
     assert response.headers["cache-control"] == "no-store"
     speech.synthesize.side_effect = SpeechUnavailableError("private-provider-detail")
     response = http.post("/speech/synthesis", headers=HEADERS, json=payload)
@@ -151,12 +151,9 @@ def test_provider_http_contract_and_redacted_errors(monkeypatch):
     async def run():
         provider = openai_speech.OpenAISpeech("fake-key")
         assert await provider.transcribe(b"audio", "audio/webm") == "전사"
-        with pytest.raises(SpeechUnavailableError, match="음성을 생성"):
-            await provider.synthesize("답변")
 
     asyncio.run(run())
     assert b"gpt-transcribe" in requests[0].content
-    assert json.loads(requests[1].content)["model"] == "gpt-4o-mini-tts"
 
 
 def test_realtime_drains_last_segment_and_preserves_order(monkeypatch):
@@ -273,22 +270,13 @@ def _ledger_rows(monkeypatch):
     return usage_ledger.usage_scope({"run_id": "req", **SCOPE}), rows
 
 
-def test_file_transcription_and_tts_are_recorded(monkeypatch):
+def test_file_transcription_is_recorded(monkeypatch):
     scope, rows = _ledger_rows(monkeypatch)
 
     def handler(request):
-        if request.url.path.endswith("transcriptions"):
-            return httpx.Response(
-                200, json={"text": "전사", "usage": {"type": "duration", "seconds": 4}}
-            )
-        assert json.loads(request.content)["stream_format"] == "sse"
-        events = [
-            {"type": "speech.audio.delta", "audio": base64.b64encode(b"mp").decode()},
-            {"type": "speech.audio.delta", "audio": base64.b64encode(b"3").decode()},
-            {"type": "speech.audio.done", "usage": {"input_tokens": 6, "output_tokens": 90}},
-        ]
-        body = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
-        return httpx.Response(200, text=body)
+        return httpx.Response(
+            200, json={"text": "전사", "usage": {"type": "duration", "seconds": 4}}
+        )
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
@@ -301,14 +289,110 @@ def test_file_transcription_and_tts_are_recorded(monkeypatch):
         with scope:
             provider = openai_speech.OpenAISpeech("fake-key")
             await provider.transcribe(b"audio", "audio/webm")
-            assert await provider.synthesize("답변입니다") == b"mp3"
 
     asyncio.run(run())
-    transcribe, tts = rows.values()
+    (transcribe,) = rows.values()
     assert transcribe["model"] == "gpt-transcribe" and transcribe["status"] == "succeeded"
     assert transcribe["audio_seconds"] == 4.0
-    assert tts["model"] == "gpt-4o-mini-tts" and tts["input_characters"] == 5
-    assert (tts["input_tokens"], tts["output_tokens"]) == (6, 90)
+
+
+def _fake_realtime_tts(monkeypatch, response_events):
+    """session.updated 이후 response.create를 받으면 response_events를 돌려주는 가짜 upstream."""
+    sent = []
+    urls = []
+
+    class Upstream:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            sent.append(event)
+            if event["type"] == "session.update":
+                await self.queue.put({"type": "session.updated"})
+            if event["type"] == "response.create":
+                for item in response_events:
+                    await self.queue.put(item)
+
+        async def recv(self):
+            return json.dumps(await self.queue.get())
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        urls.append(url)
+        yield Upstream()
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+    return sent, urls
+
+
+def _delta(raw):
+    return {"type": "response.output_audio.delta", "delta": base64.b64encode(raw).decode()}
+
+
+def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
+    import io
+    import wave
+
+    scope, rows = _ledger_rows(monkeypatch)
+    pcm = b"\x01\x00" * 2400
+    usage = {"input_tokens": 12, "output_tokens": 90,
+             "input_token_details": {"cached_tokens": 4}}
+    sent, urls = _fake_realtime_tts(
+        monkeypatch,
+        [_delta(pcm[:3000]), _delta(pcm[3000:]),
+         {"type": "response.done", "response": {"status": "completed", "usage": usage}}],
+    )
+
+    async def run():
+        with scope:
+            return await openai_speech.OpenAISpeech("fake").synthesize("답변입니다")
+
+    wav_bytes = asyncio.run(run())
+    assert urls == ["wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini"]
+    assert [e["type"] for e in sent] == [
+        "session.update", "conversation.item.create", "response.create"]
+    session = sent[0]["session"]
+    assert session["output_modalities"] == ["audio"]
+    assert session["audio"]["output"] == {
+        "format": {"type": "audio/pcm", "rate": 24000}, "voice": "marin"}
+    assert sent[1]["item"]["content"] == [{"type": "input_text", "text": "답변입니다"}]
+    assert sent[2]["response"]["max_output_tokens"] == "inf"
+    assert wav_bytes[:4] == b"RIFF"
+    with wave.open(io.BytesIO(wav_bytes)) as wav:
+        assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (24000, 1, 2)
+        assert wav.readframes(wav.getnframes()) == pcm
+    (row,) = rows.values()
+    assert row["model"] == "gpt-realtime-2.1-mini" and row["status"] == "succeeded"
+    assert row["input_characters"] == 5
+    assert (row["input_tokens"], row["output_tokens"]) == (12, 90)
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [{"type": "error", "error": {"message": "private"}}],
+        [{"type": "response.done", "response": {"status": "completed", "usage": {}}}],
+        [_delta(b"\x01\x00" * 100),
+         {"type": "response.done",
+          "response": {"status": "incomplete", "usage": {"input_tokens": 7, "output_tokens": 3}}}],
+    ],
+)
+def test_tts_error_event_and_empty_audio_are_unavailable(monkeypatch, events):
+    scope, rows = _ledger_rows(monkeypatch)
+    _fake_realtime_tts(monkeypatch, events)
+
+    async def run():
+        with scope:
+            await openai_speech.OpenAISpeech("fake").synthesize("답변")
+
+    with pytest.raises(SpeechUnavailableError, match="음성을 생성"):
+        asyncio.run(run())
+    (row,) = rows.values()
+    assert row["status"] == "failed"
+    # 미완료 응답도 공급사가 과금하므로 usage는 원장에 남는다.
+    if events[-1].get("response", {}).get("status") == "incomplete":
+        assert (row["input_tokens"], row["output_tokens"]) == (7, 3)
 
 
 def test_live_transcription_records_each_committed_segment(monkeypatch):
@@ -397,7 +481,7 @@ def test_speech_routes_attribute_calls_to_request_id(client, monkeypatch):
 
     async def synthesize(*args):
         actors.append(usage_ledger._actor.get())
-        return b"mp3"
+        return b"wav"
 
     class LiveSpeech:
         async def transcribe_live(self, packets):

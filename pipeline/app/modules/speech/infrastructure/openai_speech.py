@@ -1,12 +1,15 @@
 import asyncio
 import base64
+import io
 import json
+import wave
 from collections import deque
 from collections.abc import AsyncIterator
 from time import perf_counter
 
 import httpx
 from websockets.asyncio.client import connect
+from websockets.exceptions import WebSocketException
 
 from app.modules.model_usage.infrastructure.usage_ledger import finish_call, start_call, track_call_async
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
@@ -19,7 +22,12 @@ AUDIO_TYPES = {
 }
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
 TRANSCRIBE_MODEL = "gpt-transcribe"
-TTS_MODEL = "gpt-4o-mini-tts"
+TTS_MODEL = "gpt-realtime-2.1-mini"
+TTS_VOICE = "marin"
+TTS_INSTRUCTIONS = (
+    "사용자 메시지의 텍스트를 한 글자도 바꾸지 말고 그대로 읽는다. 답하거나 덧붙이지 않는다. "
+    "Read the user's message text aloud verbatim. Do not answer, add, or omit anything."
+)
 LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
 PCM_BYTES_PER_SECOND = 48000  # PCM16 mono 24 kHz
 
@@ -55,38 +63,90 @@ class OpenAISpeech:
             raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
 
     async def synthesize(self, text: str) -> bytes:
+        # gpt-4o-mini-tts는 종료 예정이라 Realtime 모델로 원문을 낭독시킨다.
         try:
             async with (
                 track_call_async("openai", TTS_MODEL) as receipt,
-                httpx.AsyncClient(timeout=120) as client,
+                connect(
+                    f"wss://api.openai.com/v1/realtime?model={TTS_MODEL}",
+                    additional_headers=self._headers,
+                    max_size=4 * 1024 * 1024,
+                    open_timeout=10,
+                    close_timeout=5,
+                ) as upstream,
             ):
                 receipt["input_characters"] = len(text)
-                response = await client.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers=self._headers,
-                    json={
-                        "model": TTS_MODEL,
-                        "voice": "coral",
-                        "input": text,
-                        "response_format": "mp3",
-                        # 토큰 usage는 SSE 완료 이벤트에만 실려 온다. 출력 오디오 토큰이 비용의 대부분이다.
-                        "stream_format": "sse",
-                    },
+                # Realtime에는 temperature 설정이 없어 지침으로 원문 낭독을 강제한다.
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "session.update",
+                            "session": {
+                                "type": "realtime",
+                                "output_modalities": ["audio"],
+                                "instructions": TTS_INSTRUCTIONS,
+                                "audio": {
+                                    "output": {
+                                        "format": {"type": "audio/pcm", "rate": 24000},
+                                        "voice": TTS_VOICE,
+                                    }
+                                },
+                            },
+                        }
+                    )
                 )
-                response.raise_for_status()
+                async with asyncio.timeout(15):
+                    while True:
+                        event = json.loads(await upstream.recv())
+                        if event["type"] == "error":
+                            raise ValueError("session rejected")
+                        if event["type"] == "session.updated":
+                            break
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": text}],
+                            },
+                        }
+                    )
+                )
+                # 긴 답변(최대 4000자)이 중간에 잘리지 않도록 출력 토큰 상한을 두지 않는다.
+                await upstream.send(
+                    json.dumps(
+                        {
+                            "type": "response.create",
+                            "response": {"max_output_tokens": "inf"},
+                        }
+                    )
+                )
                 audio = bytearray()
-                for line in response.text.splitlines():
-                    if not line.startswith("data:"):
-                        continue
-                    event = json.loads(line[5:])
-                    if event.get("type") == "speech.audio.delta":
-                        audio.extend(base64.b64decode(event["audio"]))
-                    elif event.get("type") == "speech.audio.done":
-                        receipt["usage"] = event.get("usage")
+                async with asyncio.timeout(120):
+                    while True:
+                        event = json.loads(await upstream.recv())
+                        if event["type"] == "error":
+                            raise ValueError("synthesis failed")
+                        if event["type"] == "response.output_audio.delta":
+                            audio.extend(base64.b64decode(event["delta"]))
+                        elif event["type"] == "response.done":
+                            receipt["usage"] = event["response"].get("usage")
+                            # 중간에 끊긴 응답의 일부 오디오를 성공으로 돌려주지 않는다.
+                            if event["response"].get("status") != "completed":
+                                raise ValueError("incomplete response")
+                            break
                 if not audio:
                     raise ValueError("empty audio")
-                return bytes(audio)
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                buffer = io.BytesIO()
+                with wave.open(buffer, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(24000)
+                    wav.writeframes(bytes(audio))
+                return buffer.getvalue()
+        except (OSError, WebSocketException, TimeoutError, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 생성하지 못했습니다.") from exc
 
     async def transcribe_live(

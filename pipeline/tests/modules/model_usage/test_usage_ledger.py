@@ -224,3 +224,16 @@ def test_sync_http_routes_attribute_calls_to_request_id(monkeypatch):
             response = client.post(path, json=body, headers={'X-Request-Id': f'req-{kind}'})
             assert actors, (path, response.status_code, response.text)
             assert actors.pop() == {'run_id': f'req-{kind}', 'workspace_id': 'w', 'user_id': 'u', 'kind': kind}, path
+
+
+def test_openai_realtime_cached_tokens_key_is_normalized(monkeypatch):
+    calls = []
+    @contextmanager
+    def connect():
+        yield SimpleNamespace(execute=lambda sql, params: calls.append(params))
+    monkeypatch.setattr(ledger.database, 'connect_ai', connect)
+    with ledger.usage_scope({'run_id': 'r', 'workspace_id': 'w', 'user_id': 'u'}):
+        with ledger.track_call('openai', 'gpt-realtime-2.1-mini') as receipt:
+            receipt['usage'] = {'input_tokens': 100, 'output_tokens': 20,
+                                'input_token_details': {'cached_tokens': 30, 'audio_tokens': 0}}
+    assert calls[1][:5] == ('succeeded', 'gpt-realtime-2.1-mini', 100, 20, 30)
