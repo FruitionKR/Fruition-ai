@@ -55,6 +55,9 @@ def test_schema_bootstrap_grants_only_ledger_privileges(converter_db, monkeypatc
     role, scoped, connect_as_converter = converter_db
     # migration Job과 기동 부트스트랩 두 경로를 차례로 적용해 반복 적용도 확인한다.
     migrate_ai_schema.main()
+    with psycopg.connect(scoped) as conn:
+        # 이전 버전이 준 테이블 단위 UPDATE가 다음 적용에서 회수되는지 본다.
+        conn.execute(sql.SQL("GRANT UPDATE ON ai_model_usage TO {}").format(sql.Identifier(role)))
     repository.ensure_ai_schema()
 
     with psycopg.connect(scoped) as conn:
@@ -64,8 +67,12 @@ def test_schema_bootstrap_grants_only_ledger_privileges(converter_db, monkeypatc
         columns = conn.execute(
             """SELECT column_name FROM information_schema.column_privileges
                WHERE grantee = %s AND privilege_type = 'SELECT' ORDER BY column_name""", (role,)).fetchall()
-    assert [row[0] for row in granted] == ["INSERT", "UPDATE"]
+        updatable = conn.execute(
+            """SELECT column_name FROM information_schema.column_privileges
+               WHERE grantee = %s AND privilege_type = 'UPDATE'""", (role,)).fetchall()
+    assert [row[0] for row in granted] == ["INSERT"]
     assert [row[0] for row in columns] == ["finished_at", "id", "status"]
+    assert {row[0] for row in updatable} == set(migrate_ai_schema._CONVERTER_UPDATE_COLUMNS)
 
     monkeypatch.setattr(ledger.database, "connect_ai", connect_as_converter)
     with ledger.usage_scope({"run_id": "r", "workspace_id": "w", "user_id": "u", "kind": "conversion"}):
@@ -76,6 +83,8 @@ def test_schema_bootstrap_grants_only_ledger_privileges(converter_db, monkeypatc
                            (call_id,)).fetchone()
     assert row["status"] == "succeeded" and row["input_tokens"] == 3 and row["finished_at"] is not None
 
-    for statement in ("SELECT * FROM ai_model_usage", "DELETE FROM ai_model_usage", "SELECT id FROM ai_task_runs"):
+    for statement in ("SELECT * FROM ai_model_usage", "DELETE FROM ai_model_usage", "SELECT id FROM ai_task_runs",
+                      *(f"UPDATE ai_model_usage SET {column} = 'x' WHERE id = '{call_id}'"
+                        for column in ("user_id", "run_id", "workspace_id"))):
         with connect_as_converter() as conn, pytest.raises(errors.InsufficientPrivilege):
             conn.execute(statement)
