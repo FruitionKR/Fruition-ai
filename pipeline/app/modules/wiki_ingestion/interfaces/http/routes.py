@@ -297,7 +297,6 @@ def _run_pipeline_request(
     elif isinstance(payload, ReingestRunIn):
         reingest_source_context = _require_reingest_source_context(
             payload.document_id,
-            user_id,
             workspace_id,
             repository,
         )
@@ -451,14 +450,12 @@ def _load_existing_concept_index_for_run(
 
 def _require_reingest_source_context(
     document_id: str,
-    user_id: str,
     workspace_id: str,
     repository: PipelineRunRepositoryPort,
 ) -> dict[str, Any]:
     try:
         context = repository.latest_source_page_context(
             document_id,
-            user_id,
             workspace_id,
         )
     except Exception as exc:

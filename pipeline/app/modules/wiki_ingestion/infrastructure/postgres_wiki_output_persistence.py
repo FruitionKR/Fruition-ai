@@ -90,7 +90,6 @@ def persist_wiki_outputs(
         )
         prepared_concept_updates = _prepare_concept_update_decisions(
             conn,
-            user_id,
             workspace_id,
             (manifest.get("meaning_clusters") or {}).get(
                 "concept_update_decisions",
@@ -107,7 +106,7 @@ def persist_wiki_outputs(
         concept_id_by_slug=concept_id_by_slug,
     )
     _persist_page_links(conn, links, source_page_id, concept_id_by_slug, workspace_id)
-    delete_source_related_links(conn, user_id, workspace_id)
+    delete_source_related_links(conn, workspace_id)
     updated_concept_pages = _persist_meaning_cluster_artifacts(
         conn,
         document_id,
@@ -182,7 +181,6 @@ def _prepare_concept_page_ids(
     }
     concept_id_by_slug = load_existing_concept_ids_by_slug(
         conn,
-        user_id,
         workspace_id,
     )
     for concept in normalized.get("concept_ledger", []):
@@ -285,7 +283,6 @@ def _persist_concept_pages(
     persisted_page_ids: list[str] = []
     concept_id_by_slug = concept_id_by_slug or load_existing_concept_ids_by_slug(
         conn,
-        user_id,
         workspace_id,
     )
     for concept in normalized.get("concept_ledger", []):
@@ -296,10 +293,10 @@ def _persist_concept_pages(
             """
             SELECT id, title, summary, markdown_uri
             FROM wiki_pages
-            WHERE user_id = %s AND workspace_id = %s
+            WHERE workspace_id = %s
               AND page_type = 'concept' AND slug = %s AND status = 'active'
             """,
-            (user_id, workspace_id, slug),
+            (workspace_id, slug),
         ).fetchone()
         page_id = resolve_or_create_wiki_page_id(
             conn,
@@ -522,7 +519,6 @@ def _apply_concept_update_decisions(
 ) -> list[dict[str, Any]]:
     prepared = _prepare_concept_update_decisions(
         conn,
-        user_id,
         workspace_id,
         decisions,
     )
@@ -538,7 +534,6 @@ def _apply_concept_update_decisions(
 
 def _prepare_concept_update_decisions(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
     decisions: Any,
 ) -> list[dict[str, Any]]:
@@ -571,11 +566,10 @@ def _prepare_concept_update_decisions(
             FROM wiki_pages
             WHERE page_type = 'concept'
               AND status = 'active'
-              AND user_id = %s
               AND workspace_id = %s
               AND slug = %s
             """,
-            (user_id, workspace_id, concept_slug),
+            (workspace_id, concept_slug),
         ).fetchone()
         if not row:
             continue

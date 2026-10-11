@@ -84,12 +84,10 @@ class PostgresPipelineRunRepository:
     def latest_source_page_context(
         self,
         document_id: str,
-        user_id: str,
         workspace_id: str,
     ) -> dict[str, Any] | None:
         return database.latest_source_page_context(
             document_id,
-            user_id,
             workspace_id,
         )
 

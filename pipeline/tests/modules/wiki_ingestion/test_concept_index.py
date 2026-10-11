@@ -1036,9 +1036,10 @@ def test_delete_source_related_links_is_scoped_to_workspace() -> None:
 
     conn = FakeConn()
 
-    _delete_source_related_links(conn, "user_1", "workspace_1")
+    _delete_source_related_links(conn, "workspace_1")
 
     assert len(conn.calls) == 1
-    assert conn.calls[0][1] == ("user_1", "workspace_1", "user_1", "workspace_1")
+    assert conn.calls[0][1] == ("workspace_1", "workspace_1")
+    assert "user_id" not in conn.calls[0][0]
     assert "DELETE FROM wiki_page_links" in conn.calls[0][0]
     assert "from_page.workspace_id = %s" in conn.calls[0][0]

@@ -1178,7 +1178,6 @@ def latest_source_extraction_artifact(document_id: str) -> dict[str, Any] | None
 
 def latest_source_page_context(
     document_id: str,
-    user_id: str = "local-user",
     workspace_id: str = "local-workspace",
 ) -> dict[str, Any] | None:
     artifact = latest_source_extraction_artifact(document_id)
@@ -1192,12 +1191,11 @@ def latest_source_page_context(
             WHERE page_type = 'source'
               AND slug = %s
               AND status = 'active'
-              AND user_id = %s
               AND workspace_id = %s
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (slugify(document_id), user_id, workspace_id),
+            (slugify(document_id), workspace_id),
         ).fetchone()
     if not row:
         return None
@@ -1754,7 +1752,7 @@ def _materialize_promotion_candidates(
     materialized_promotions: list[dict[str, Any]] = []
     merged_promotions: list[dict[str, Any]] = []
     page_changes: list[dict[str, Any]] = []
-    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, user_id, workspace_id)
+    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     eligible_cluster_ids = {cluster["id"] for cluster in clusters}
     prepared_pages: dict[str, dict[str, Any]] = {}
     for cluster in clusters:
@@ -1821,7 +1819,7 @@ def _materialize_promotion_candidates(
         if cluster["id"] in eligible_cluster_ids
     ]
     active_sections = _cluster_sections_by_id(latest_active_markdown)
-    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, user_id, workspace_id)
+    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     for cluster in clusters:
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
@@ -1940,11 +1938,10 @@ def _merge_promotion_into_existing_concept(
         FROM wiki_pages
         WHERE page_type = 'concept'
           AND status = 'active'
-          AND user_id = %s
           AND workspace_id = %s
           AND slug = %s
         """,
-        (user_id, workspace_id, concept_slug),
+        (workspace_id, concept_slug),
     ).fetchone()
     if not row:
         return None

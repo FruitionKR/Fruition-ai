@@ -67,7 +67,6 @@ class PipelineRunRepositoryPort(Protocol):
     def latest_source_page_context(
         self,
         document_id: str,
-        user_id: str,
         workspace_id: str,
     ) -> dict[str, Any] | None: ...
 
