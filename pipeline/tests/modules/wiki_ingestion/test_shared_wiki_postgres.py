@@ -119,3 +119,61 @@ def test_schema_replaces_per_user_key_once_wiki_is_reset(scoped_dsn):
 
     with psycopg.connect(scoped_dsn) as conn:
         assert _constraints(conn) == {"uq_wiki_pages_workspace_page_type_slug"}
+
+
+def test_restoring_source_page_to_earlier_ingest_keeps_filename_title(scoped_dsn, monkeypatch):
+    """편입 두 번 뒤 첫 편입으로 복구해도 스냅샷 본문의 생성 제목으로 바뀌지 않는다(ADR 0033)."""
+    from app.modules.wiki_ingestion.application.models import SourceSnapshotRestoreCommand
+    from app.modules.wiki_ingestion.infrastructure import (
+        postgres_wiki_ingestion_repository as database,
+    )
+    from app.modules.wiki_ingestion.infrastructure.wiki_page_restore import (
+        ObjectStorageWikiPageRestore,
+    )
+
+    stored: dict[str, str] = {}
+
+    def write(key: str, text: str, *_args) -> str:
+        stored[key] = text
+        return key
+
+    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda text, key: write(key, text))
+    monkeypatch.setattr(persistence, "write_text_object", write)
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
+
+    for operation_id, user_id in (("op-1", "member-a"), ("op-2", "member-b")):
+        manifest = _manifest(user_id, f"{user_id} 근거")
+        manifest["operation_id"] = operation_id
+        manifest["source_page"] = {"markdown": f"# 생성 제목 {operation_id}\n\n## Summary\n{operation_id} 요약\n"}
+        with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+            persistence.persist_wiki_outputs(conn, "doc-1", manifest)
+
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        page_id = conn.execute("SELECT id FROM wiki_pages WHERE page_type = 'source'").fetchone()["id"]
+
+    restored = ObjectStorageWikiPageRestore(
+        read_text=lambda key: stored[key],
+        write_text=write,
+        apply_current_state_and_cleanup=lambda *_args: [],
+    ).restore_source_page(
+        "restore-1",
+        "op-1",
+        "workspace-1",
+        SourceSnapshotRestoreCommand(page_id, "doc-1"),
+    )
+    monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
+    monkeypatch.setattr(database, "connect", lambda: psycopg.connect(scoped_dsn, row_factory=dict_row))
+    monkeypatch.setattr(database, "read_text_object", lambda uri: stored[uri.removeprefix("s3://wiki-bucket/")])
+    monkeypatch.setattr(database, "invalidate_concept_index", lambda _workspace_id: None)
+    database.apply_restored_wiki_state(
+        "workspace-1",
+        [restored],
+        {"removed_links": [], "restored_links": []},
+        False,
+    )
+
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        row = conn.execute("SELECT title, summary, markdown_uri FROM wiki_pages WHERE id = %s", (page_id,)).fetchone()
+    assert row["title"] == "공유 문서"
+    assert row["summary"] == "op-1 요약"
+    assert stored[row["markdown_uri"].removeprefix("s3://wiki-bucket/")].startswith("# 생성 제목 op-1")

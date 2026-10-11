@@ -264,29 +264,21 @@ def _run_pipeline_request(
     out = Path(payload.out) if payload.out else Path("runs") / f"api_{run_id}"
     log_path = pipeline_log_uri(run_id)
     try:
-        use_case.register(
-            PipelineRunRegistration(
-                run_id=run_id,
-                document_id=payload.document_id,
-                user_id=payload.user_id,
-                workspace_id=payload.workspace_id,
-                input_source=f"document:{payload.document_id}",
-                output_dir=str(out),
-                mode=payload.mode,
-            )
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    document = _load_document(payload.document_id, repository)
+        document = _load_document(payload.document_id, repository)
+    except HTTPException:
+        # 문서를 찾지 못해도 실패를 기록할 run은 남긴다.
+        _register_run(use_case, payload, run_id, out, payload.user_id)
+        raise
+    # 공동 편집 문서는 소유자가 아닌 멤버도 편입을 요청한다. user_id는 요청자 귀속 정보이며
+    # run 기록과 위키 행에 같은 값을 쓴다. 요청자가 없으면 문서 소유자로 기록한다.
+    user_id = payload.user_id or str(document["user_id"])
+    _register_run(use_case, payload, run_id, out, user_id)
     workspace_id = str(document["workspace_id"])
     if payload.workspace_id is not None and payload.workspace_id != workspace_id:
         raise HTTPException(
             status_code=409,
             detail="Pipeline command workspace does not match the document.",
         )
-    # 공동 편집 문서는 소유자가 아닌 멤버도 편입을 요청한다. user_id는 요청자 귀속 정보다.
-    user_id = payload.user_id or str(document["user_id"])
     input_name = payload.input_name or "inline.md"
     reingest_source_context = None
     reingest_source_blocks: list[dict[str, Any]] = []
@@ -362,6 +354,29 @@ def _run_pipeline_request(
         output_dir=str(out),
         log_path=str(log_path),
     )
+
+
+def _register_run(
+    use_case: RunPipelineUseCase,
+    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
+    run_id: str,
+    out: Path,
+    user_id: str | None,
+) -> None:
+    try:
+        use_case.register(
+            PipelineRunRegistration(
+                run_id=run_id,
+                document_id=payload.document_id,
+                user_id=user_id,
+                workspace_id=payload.workspace_id,
+                input_source=f"document:{payload.document_id}",
+                output_dir=str(out),
+                mode=payload.mode,
+            )
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _build_pipeline_command(

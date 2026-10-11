@@ -653,6 +653,8 @@ def test_pipeline_command_falls_back_to_document_owner_without_requester() -> No
         run_id="run-1",
     )
 
+    # run 기록과 위키 행이 같은 귀속 값을 쓴다.
+    assert use_case.register.call_args.args[0].user_id == "owner"
     assert background_tasks.tasks[0].args[1].user_id == "owner"
 
 
@@ -698,11 +700,12 @@ def test_chat_wiki_inline_markdown_requires_existing_document() -> None:
         input_markdown="# Chat Export\n\n[session_1:pair_2]Q : 새 질문\nA : 새 답변",
     )
 
+    use_case = _use_case()
     try:
         pipeline_routes._run_pipeline_request(
             payload,
             BackgroundTasks(),
-            _use_case(),
+            use_case,
             repository,
             _source_reader(),
         )
@@ -711,6 +714,8 @@ def test_chat_wiki_inline_markdown_requires_existing_document() -> None:
         assert exc.detail == "Document not found"
     else:
         raise AssertionError("chat wiki inline input should require an existing backend document")
+    # 문서를 찾지 못해도 실패를 기록할 run은 남긴다.
+    use_case.register.assert_called_once()
 
 
 def test_agent_service_token_is_required_when_not_configured(monkeypatch) -> None:

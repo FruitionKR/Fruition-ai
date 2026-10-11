@@ -13,6 +13,17 @@ from app.modules.wiki_ingestion.infrastructure import (
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 
 
+_SNAPSHOT_OBJECT = wiki_maintenance._snapshot_object
+_RESTORE_OBJECT = wiki_maintenance._restore_object
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_object_storage(monkeypatch) -> None:
+    # 공유 객체 보관·복원은 객체 저장소를 읽으므로 기본으로 비운다. 복원 테스트는 따로 바꾼다.
+    monkeypatch.setattr(wiki_maintenance, "_snapshot_object", lambda _key: None)
+    monkeypatch.setattr(wiki_maintenance, "_restore_object", lambda _key, _before: None)
+
+
 def WikiMaintenanceCommand(**data: object) -> _WikiMaintenanceCommand:
     data.setdefault("provider", "openai")
     data.setdefault("model", "gpt-5-nano")
@@ -291,7 +302,7 @@ def test_wiki_maintenance_reserves_embedding_before_commit_and_keeps_result_when
     monkeypatch.setattr(
         wiki_maintenance.database,
         "write_wiki_lint_log",
-        lambda result: calls.append(("log", result["removed_orphan_links"])),
+        lambda result, _lint_date: calls.append(("log", result["removed_orphan_links"])),
     )
     monkeypatch.setattr(
         wiki_maintenance.database,
@@ -385,7 +396,7 @@ def test_wiki_maintenance_rolls_back_when_operation_log_persistence_fails(
             raise OSError("artifact write failed")
         return []
 
-    def write_log(_result):
+    def write_log(_result, _lint_date):
         calls.append("log")
         if failure_step == "log":
             raise OSError("lint log write failed")
@@ -477,7 +488,7 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
         ),
     )
 
-    def write_log(_result):
+    def write_log(_result, _lint_date):
         calls.append("log")
         raise OSError("lint log write failed")
 
@@ -492,6 +503,7 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
         "delete_object",
         lambda key: deleted_keys.append(key),
     )
+    monkeypatch.setattr(wiki_maintenance, "_snapshot_object", lambda _key: None)
 
     with pytest.raises(OSError):
         wiki_maintenance.PostgresWikiMaintenance().lint(
@@ -504,10 +516,131 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
         )
 
     assert calls == ["begin", "artifact", "log", "rollback"]
-    assert deleted_keys == [
+    assert deleted_keys[:2] == [
         "wiki/ws-1/pages/page-1/ops/lint-op-1.md",
         "wiki/ws-1/pages/page-1/ops/lint-op-1.json",
     ]
+
+
+def test_failed_lint_restores_workspace_shared_objects_instead_of_deleting(
+    monkeypatch,
+) -> None:
+    """클러스터·로그는 다른 멤버의 편입도 쓰는 공유 객체다. lint가 실패하면 지우지 않고 되돌린다."""
+    from app.modules.wiki_ingestion.infrastructure import object_storage
+
+    class Response:
+        def __init__(self, text: str) -> None:
+            self._text = text
+            self.headers = {"Content-Type": "text/markdown; charset=utf-8"}
+
+        def read(self) -> bytes:
+            return self._text.encode("utf-8")
+
+        def close(self) -> None:
+            return None
+
+        def release_conn(self) -> None:
+            return None
+
+    class Storage:
+        def __init__(self) -> None:
+            self.objects = {
+                "wiki/ws-1/clusters/active.md": "멤버 A의 클러스터\n",
+                "wiki/ws-1/logs/2026-10-11.md": "멤버 A의 편입 로그\n",
+            }
+
+        def get_object(self, _bucket, key):
+            from minio.error import S3Error
+
+            if key not in self.objects:
+                raise S3Error(response=None, code="NoSuchKey", message="missing", resource=key, request_id="req", host_id="host")
+            return Response(self.objects[key])
+
+    storage = Storage()
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def write(key: str, text: str, _content_type: str = "") -> str:
+        storage.objects[key] = text
+        return key
+
+    monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
+    monkeypatch.setattr(object_storage, "client", lambda: storage)
+    monkeypatch.setattr(wiki_maintenance, "storage_client", lambda: storage)
+    monkeypatch.setattr(wiki_maintenance, "_snapshot_object", _SNAPSHOT_OBJECT)
+    monkeypatch.setattr(wiki_maintenance, "_restore_object", _RESTORE_OBJECT)
+    monkeypatch.setattr(wiki_maintenance, "write_text_object", write)
+    monkeypatch.setattr(
+        wiki_maintenance,
+        "delete_object",
+        lambda key: storage.objects.pop(key, None),
+    )
+    monkeypatch.setattr(
+        wiki_maintenance.database,
+        "lint_shared_object_keys",
+        lambda workspace_id, _date: [
+            f"wiki/{workspace_id}/clusters/active.md",
+            f"wiki/{workspace_id}/clusters/archived.md",
+            f"wiki/{workspace_id}/logs/2026-10-11.md",
+        ],
+    )
+    monkeypatch.setattr(wiki_maintenance.database, "connect", lambda: Transaction())
+    monkeypatch.setattr(wiki_maintenance, "concept_write_lock", lambda *_args: nullcontext())
+    monkeypatch.setattr(
+        wiki_maintenance.database,
+        "lint_wiki_workspace",
+        lambda *_args, **_kwargs: {"workspace_id": "ws-1", "materialized_promotions": [{"page_id": "page-1"}]},
+    )
+    monkeypatch.setattr(
+        wiki_maintenance.database,
+        "lint_orphan_wiki_links",
+        lambda *_args, **_kwargs: {"orphan_link_candidates": [], "removed_orphan_links": []},
+    )
+    monkeypatch.setattr(
+        wiki_maintenance.database,
+        "persist_lint_operation_result",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        wiki_maintenance.database,
+        "write_wiki_lint_log",
+        lambda _result, _date: write("wiki/ws-1/logs/2026-10-11.md", "멤버 A의 편입 로그\nlint 로그\n"),
+    )
+
+    def apply_objects(_result):
+        write("wiki/ws-1/clusters/active.md", "lint가 고친 클러스터\n")
+        write("wiki/ws-1/clusters/archived.md", "lint가 보관한 클러스터\n")
+
+    monkeypatch.setattr(wiki_maintenance.database, "apply_lint_object_changes", apply_objects)
+
+    def fail_reservation(*_args):
+        raise RuntimeError("embedding reservation failed")
+
+    monkeypatch.setattr(wiki_maintenance, "reserve_page_embeddings", fail_reservation)
+
+    class EmbeddingJob:
+        def start(self, *_args) -> None:
+            raise AssertionError("실패한 lint는 임베딩을 시작하지 않는다")
+
+    with pytest.raises(RuntimeError, match="embedding reservation failed"):
+        wiki_maintenance.PostgresWikiMaintenance(EmbeddingJob()).lint(
+            WikiMaintenanceCommand(
+                user_id="member-b",
+                workspace_id="ws-1",
+                operation_id="lint-op-1",
+                dry_run=False,
+            )
+        )
+
+    assert storage.objects == {
+        "wiki/ws-1/clusters/active.md": "멤버 A의 클러스터\n",
+        "wiki/ws-1/logs/2026-10-11.md": "멤버 A의 편입 로그\n",
+    }
 
 
 def test_wiki_maintenance_dry_run_does_not_persist_operation_artifacts(

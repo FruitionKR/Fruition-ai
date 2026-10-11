@@ -1551,6 +1551,15 @@ def lint_orphan_wiki_links(
     }
 
 
+def lint_shared_object_keys(workspace_id: str, lint_date: str) -> list[str]:
+    """lint가 편입과 함께 덧붙이거나 병합하는 워크스페이스 공유 객체 키."""
+    return [
+        f"wiki/{workspace_id}/clusters/active.md",
+        f"wiki/{workspace_id}/clusters/archived.md",
+        f"wiki/{workspace_id}/logs/{lint_date}.md",
+    ]
+
+
 def write_wiki_lint_log(
     result: dict[str, Any],
     lint_date: str | None = None,
