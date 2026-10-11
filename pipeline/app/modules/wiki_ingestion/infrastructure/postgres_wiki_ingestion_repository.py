@@ -242,7 +242,7 @@ def _apply_restored_wiki_state(
         page_ids = [str(page["page_id"]) for page in changed_pages]
         rows = conn.execute(
             """
-            SELECT id, page_type, slug, user_id,
+            SELECT id, page_type, slug,
                    (
                        SELECT link.document_id
                        FROM document_wiki_links link
@@ -277,27 +277,20 @@ def _apply_restored_wiki_state(
             f'{row["page_type"]}:{row["slug"]}': row
             for row in linkable_rows
         }
-        target_by_ref = {
-            (str(row["user_id"]), f'{row["page_type"]}:{row["slug"]}'): row
-            for row in linkable_rows
-        }
-        source_user_ids = {str(row["user_id"]) for row in rows}
-        if source_user_ids and any(link_changes.values()):
+        # 공유 위키라 ref(page_type:slug)가 워크스페이스 안에서 페이지 하나를 가리킨다.
+        target_by_ref = dict(by_ref)
+        if rows and any(link_changes.values()):
             active_rows = conn.execute(
                 """
-                SELECT id, page_type, slug, user_id
+                SELECT id, page_type, slug
                 FROM wiki_pages
                 WHERE workspace_id = %s
-                  AND user_id = ANY(%s)
                   AND status = 'active'
                 """,
-                (workspace_id, list(source_user_ids)),
+                (workspace_id,),
             ).fetchall()
             for row in active_rows:
-                target_by_ref.setdefault(
-                    (str(row["user_id"]), f'{row["page_type"]}:{row["slug"]}'),
-                    row,
-                )
+                target_by_ref.setdefault(f'{row["page_type"]}:{row["slug"]}', row)
         for page in changed_pages:
             if str(page["page_id"]) in skipped_page_ids:
                 continue
@@ -410,8 +403,8 @@ def _apply_restored_wiki_state(
                 (page_ids,),
             )
 
-        def resolve(reference: str, user_id: str) -> str | None:
-            known = target_by_ref.get((user_id, reference))
+        def resolve(reference: str) -> str | None:
+            known = target_by_ref.get(reference)
             if known is None:
                 return None
             return str(known["id"])
@@ -420,7 +413,7 @@ def _apply_restored_wiki_state(
             source = by_ref.get(str(link.get("source")))
             if source is None:
                 continue
-            target_id = resolve(str(link.get("target")), str(source["user_id"]))
+            target_id = resolve(str(link.get("target")))
             if target_id:
                 conn.execute(
                     """
@@ -433,7 +426,7 @@ def _apply_restored_wiki_state(
             source = by_ref.get(str(link.get("source")))
             if source is None:
                 continue
-            target_id = resolve(str(link.get("target")), str(source["user_id"]))
+            target_id = resolve(str(link.get("target")))
             if target_id and target_id != str(source["id"]):
                 _upsert_wiki_page_link(
                     conn,
@@ -809,21 +802,21 @@ def get_last_wiki_updated_at(workspace_id: str) -> Any | None:
 
 def rename_wiki_page(
     page_id: str,
-    user_id: str,
     workspace_id: str,
     title: str,
     update_slug: bool,
 ) -> dict[str, Any] | None:
+    # 작성자를 확인하지 않는다. 누가 바꿀 수 있는지는 document가 정한다(ADR 0033).
     with connect() as conn:
         page = conn.execute(
             """
             SELECT id, page_type, title, slug
             FROM wiki_pages
-            WHERE id = %s AND user_id = %s AND workspace_id = %s
+            WHERE id = %s AND workspace_id = %s
               AND status = 'active'
             FOR UPDATE
             """,
-            (page_id, user_id, workspace_id),
+            (page_id, workspace_id),
         ).fetchone()
         if page is None:
             return None

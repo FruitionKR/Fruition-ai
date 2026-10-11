@@ -267,7 +267,10 @@ class WikiPageLookupIn(BaseModel):
 class WikiPageRenameIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(min_length=1)
+    user_id: str = Field(
+        min_length=1,
+        description="이름을 바꾸는 사용자입니다. 권한은 document가 확인하며 ai는 작성자를 확인하지 않습니다.",
+    )
     workspace_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     update_slug: bool = False

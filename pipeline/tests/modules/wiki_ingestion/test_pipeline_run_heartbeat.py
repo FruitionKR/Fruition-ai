@@ -54,7 +54,6 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     run_cursor = Mock()
     run_cursor.fetchone.return_value = {
         "document_id": "doc-1",
-        "user_id": "user-1",
         "workspace_id": "ws-1",
     }
     active_cursor = Mock()
@@ -108,19 +107,17 @@ def test_restore_updates_current_markdown_and_links(monkeypatch) -> None:
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [
                 {
                     "id": "page-c3",
                     "page_type": "concept",
                     "slug": "c3",
-                    "user_id": "user-1",
                 },
                 {
                     "id": "page-target",
                     "page_type": "concept",
                     "slug": "target",
-                    "user_id": "user-1",
                 },
             ]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
@@ -185,20 +182,13 @@ def test_restore_resolves_unchanged_active_link_target(monkeypatch) -> None:
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             if "status = 'active'" in normalized:
                 cursor.fetchall.return_value = [
-                    {
-                        "id": "other-user-target",
-                        "page_type": "concept",
-                        "slug": "target",
-                        "user_id": "user-2",
-                    },
                     {
                         "id": "page-target",
                         "page_type": "concept",
                         "slug": "target",
-                        "user_id": "user-1",
                     },
                 ]
             else:
@@ -206,7 +196,6 @@ def test_restore_resolves_unchanged_active_link_target(monkeypatch) -> None:
                     "id": "page-c3",
                     "page_type": "concept",
                     "slug": "c3",
-                    "user_id": "user-1",
                 }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -248,6 +237,14 @@ def test_restore_resolves_unchanged_active_link_target(monkeypatch) -> None:
         None,
         "ws-1",
     )
+    # 링크 대상은 누가 편입했든 같은 워크스페이스의 활성 페이지에서 ref로 찾는다.
+    active_call = next(
+        call
+        for call in connection.execute.call_args_list
+        if "status = 'active'" in str(call.args[0])
+    )
+    assert "user_id" not in str(active_call.args[0])
+    assert active_call.args[1] == ("ws-1",)
 
 
 def test_restore_does_not_resolve_unchanged_active_link_source(monkeypatch) -> None:
@@ -259,20 +256,18 @@ def test_restore_does_not_resolve_unchanged_active_link_source(monkeypatch) -> N
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             if "status = 'active'" in normalized:
                 cursor.fetchall.return_value = [{
                     "id": "page-unchanged-source",
                     "page_type": "concept",
                     "slug": "unchanged-source",
-                    "user_id": "user-1",
                 }]
             else:
                 cursor.fetchall.return_value = [{
                     "id": "page-c3",
                     "page_type": "concept",
                     "slug": "c3",
-                    "user_id": "user-1",
                 }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -318,12 +313,11 @@ def test_restore_reactivates_deleted_page_without_linking_unrelated_deleted_page
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-restored",
                 "page_type": "concept",
                 "slug": "restored",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -377,12 +371,11 @@ def test_restore_after_delete_and_rename_skips_stale_slug_link(monkeypatch) -> N
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-renamed",
                 "page_type": "concept",
                 "slug": "renamed",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -432,12 +425,11 @@ def test_restore_source_recreates_source_link_and_embedding_provenance_after_cle
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-source",
                 "page_type": "source",
                 "slug": "renamed-source",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -492,12 +484,11 @@ def test_restore_legacy_concept_skips_document_bound_embeddings(monkeypatch) -> 
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-c3",
                 "page_type": "concept",
                 "slug": "c3",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -533,12 +524,11 @@ def test_restore_state_and_cleanup_share_lock_and_rollback(monkeypatch) -> None:
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-c3",
                 "page_type": "source",
                 "slug": "renamed-source",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
@@ -647,12 +637,11 @@ def _restore_connection(page_type: str) -> Mock:
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             cursor.fetchall.return_value = [{
                 "id": "page-1",
                 "page_type": page_type,
                 "slug": "page-1",
-                "user_id": "user-1",
             }]
         elif normalized.startswith("SELECT document_id FROM wiki_source_tombstones"):
             cursor.fetchall.return_value = [{"document_id": "doc-deleted"}]
@@ -724,13 +713,13 @@ def test_restore_returns_tombstoned_source_page_and_skips_its_links(monkeypatch)
     connection = Mock()
     connection.__enter__ = Mock(return_value=connection)
     connection.__exit__ = Mock(return_value=False)
-    source_row = {"id": "page-1", "page_type": "source", "slug": "page-1", "user_id": "user-1"}
-    target_row = {"id": "page-t", "page_type": "concept", "slug": "target", "user_id": "user-1"}
+    source_row = {"id": "page-1", "page_type": "source", "slug": "page-1"}
+    target_row = {"id": "page-t", "page_type": "concept", "slug": "target"}
 
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, page_type, slug, user_id"):
+        if normalized.startswith("SELECT id, page_type, slug"):
             # 두 번째 조회는 링크 대상이 될 활성 페이지 목록이다.
             cursor.fetchall.return_value = (
                 [target_row] if "status = 'active'" in normalized else [source_row]

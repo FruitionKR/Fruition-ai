@@ -78,7 +78,6 @@ def rename_wiki_page(page_id: str, payload: WikiPageRenameIn) -> dict[str, Any]:
     try:
         page = database.rename_wiki_page(
             page_id,
-            payload.user_id,
             payload.workspace_id,
             payload.title,
             payload.update_slug,

@@ -3124,6 +3124,7 @@ components:
           title: Update Slug
           type: boolean
         user_id:
+          description: 이름을 바꾸는 사용자입니다. 권한은 document가 확인하며 ai는 작성자를 확인하지 않습니다.
           minLength: 1
           title: User Id
           type: string
