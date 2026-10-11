@@ -280,14 +280,14 @@ def _run_pipeline_request(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     document = _load_document(payload.document_id, repository)
-    user_id = str(document["user_id"])
     workspace_id = str(document["workspace_id"])
-    if ((payload.user_id is not None and payload.user_id != user_id)
-            or (payload.workspace_id is not None and payload.workspace_id != workspace_id)):
+    if payload.workspace_id is not None and payload.workspace_id != workspace_id:
         raise HTTPException(
             status_code=409,
-            detail="Pipeline command actor context does not match the document.",
+            detail="Pipeline command workspace does not match the document.",
         )
+    # 공동 편집 문서는 소유자가 아닌 멤버도 편입을 요청한다. user_id는 요청자 귀속 정보다.
+    user_id = payload.user_id or str(document["user_id"])
     input_name = payload.input_name or "inline.md"
     reingest_source_context = None
     reingest_source_blocks: list[dict[str, Any]] = []
@@ -329,6 +329,7 @@ def _run_pipeline_request(
         repository,
         reingest_source_context=reingest_source_context,
         reingest_source_blocks=reingest_source_blocks,
+        display_name=_source_display_name(payload, document),
     )
 
     if not payload.wait:
@@ -379,6 +380,7 @@ def _build_pipeline_command(
     *,
     reingest_source_context: dict[str, Any] | None = None,
     reingest_source_blocks: list[dict[str, Any]] | None = None,
+    display_name: str | None = None,
 ) -> PipelineRunCommand:
     existing_concept_index = _load_existing_concept_index_for_run(
         user_id,
@@ -401,6 +403,7 @@ def _build_pipeline_command(
             for block in getattr(payload, "input_blocks", None) or []
         ],
         input_name=input_name,
+        display_name=display_name,
         out=str(out),
         mode=payload.mode,
         provider=payload.provider,
@@ -476,6 +479,21 @@ def _load_existing_source_blocks(
         return repository.list_source_blocks(document_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _source_display_name(
+    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
+    document: dict[str, Any],
+) -> str | None:
+    """소스 페이지 제목. 채팅 export는 document가 생성 제목으로 파일 이름을 정하므로 넘기지 않는다."""
+    if isinstance(payload, ChatWikiRunIn):
+        return None
+    if payload.display_name:
+        return payload.display_name
+    filename = str(document.get("filename") or "")
+    # document `Document.displayNameOf`와 같은 규칙: 마지막 확장자만 떼고, 점으로 시작하면 그대로 둔다.
+    extension_index = filename.rfind(".")
+    return (filename[:extension_index] if extension_index > 0 else filename) or None
 
 
 def _safe_name(value: str) -> str:

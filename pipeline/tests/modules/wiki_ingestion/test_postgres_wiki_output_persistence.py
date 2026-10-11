@@ -929,3 +929,34 @@ def test_persist_wiki_outputs_reads_normalized_and_links_artifacts(
         "concept-page-1",
         "related_to",
     )
+
+
+@pytest.mark.parametrize(
+    ("display_name", "expected_title"),
+    [("분기 보고서", "분기 보고서"), (None, "본문 제목")],
+)
+def test_persist_source_page_titles_with_document_display_name(
+    monkeypatch,
+    display_name,
+    expected_title,
+) -> None:
+    upserts: list[tuple] = []
+    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda *_args: "s3://wiki/source.md")
+    monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *args: upserts.append(args))
+    monkeypatch.setattr(persistence, "upsert_document_wiki_link", lambda *_args: None)
+    monkeypatch.setattr(persistence, "persist_embedding_units", lambda *_args, **_kwargs: None)
+
+    persistence._persist_source_page(
+        Mock(),
+        "doc-1",
+        {
+            "display_name": display_name,
+            "source_page": {"title": "본문 제목", "markdown": "# 본문 제목\n"},
+        },
+        {"document": {"title": "본문 제목"}},
+        "user-1",
+        "workspace-1",
+        page_id="source-page-1",
+    )
+
+    assert upserts[0][3] == expected_title

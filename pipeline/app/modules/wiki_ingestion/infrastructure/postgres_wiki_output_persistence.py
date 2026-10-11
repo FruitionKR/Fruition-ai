@@ -238,7 +238,8 @@ def _persist_source_page(
         f"wiki/{user_id}/{workspace_id}/sources/{document_id}.md",
     )
     source_title = (
-        source_page.get("title")
+        manifest.get("display_name")
+        or source_page.get("title")
         or markdown_title(source_markdown)
         or normalized["document"].get("title")
         or document_id

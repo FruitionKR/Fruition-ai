@@ -159,6 +159,24 @@ def test_build_payload_uses_workspace_command_snapshot() -> None:
 
     assert payload.provider == "openai"
     assert payload.model == "gpt-5-nano"
+    assert payload.display_name is None
+
+
+def test_build_payload_carries_document_display_name() -> None:
+    payload = ingest_worker._build_payload(
+        {
+            "run_id": "run-1",
+            "kind": "document",
+            "document_id": "document-1",
+            "workspace_id": "workspace-1",
+            "user_id": "user-1",
+            "provider": "openai",
+            "model": "gpt-5-nano",
+            "display_name": "분기 보고서",
+        }
+    )
+
+    assert payload.display_name == "분기 보고서"
 
 
 def test_build_chat_payload_defaults_to_partial_selection_mode() -> None:

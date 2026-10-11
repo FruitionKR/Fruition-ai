@@ -369,6 +369,7 @@ def test_pipeline_endpoint_runs_stored_document_in_background() -> None:
     assert registration.input_source == "document:document_1"
     assert command.input_markdown == "# Stored Document"
     assert command.source_document_id == "document_1"
+    assert command.display_name == "document"
 
 
 def test_reingest_endpoint_uses_inline_markdown_and_previous_source() -> None:
@@ -413,6 +414,7 @@ def test_reingest_endpoint_uses_inline_markdown_and_previous_source() -> None:
     assert command.input_markdown == "# 수정 문서"
     assert command.existing_source_artifact == {"document_id": "document_1"}
     assert command.existing_source_blocks == repository.list_source_blocks.return_value
+    assert command.display_name == "document"
     source_reader.read_text.assert_not_called()
 
 
@@ -556,7 +558,105 @@ def test_chat_wiki_inline_markdown_uses_document_id_as_source_key() -> None:
     source_reader.read_text.assert_not_called()
 
 
-def test_pipeline_command_rejects_actor_mismatch_after_registering_run() -> None:
+def test_chat_wiki_run_keeps_generated_source_title() -> None:
+    # document는 채팅 export 파일 이름을 생성 제목으로 정하므로 파일명 제목을 넘기지 않는다.
+    payload = _chat_wiki_run_in(document_id="chat_document_1", display_name="무시")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": "chat-export.md"},
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("보고서.final.pdf", "보고서.final"),
+        (".env", ".env"),
+        ("README", "README"),
+        (None, None),
+    ],
+)
+def test_source_display_name_strips_last_extension_like_document(
+    filename: str | None,
+    expected: str | None,
+) -> None:
+    payload = _pipeline_run_in(document_id="document_1")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": filename},
+    ) == expected
+
+
+def test_source_display_name_prefers_command_value() -> None:
+    payload = _pipeline_run_in(document_id="document_1", display_name="회의록")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": "meeting.md"},
+    ) == "회의록"
+
+
+def test_pipeline_command_records_requester_who_is_not_document_owner() -> None:
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "owner",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+    payload = _pipeline_run_in(
+        document_id="document_1",
+        user_id="co-editor",
+        workspace_id="workspace_1",
+    )
+
+    background_tasks = BackgroundTasks()
+    pipeline_routes._run_pipeline_request(
+        payload,
+        background_tasks,
+        use_case,
+        repository,
+        _source_reader(),
+        run_id="run-1",
+    )
+
+    assert use_case.register.call_args.args[0].user_id == "co-editor"
+    assert background_tasks.tasks[0].args[1].user_id == "co-editor"
+
+
+def test_pipeline_command_falls_back_to_document_owner_without_requester() -> None:
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "owner",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+
+    background_tasks = BackgroundTasks()
+    pipeline_routes._run_pipeline_request(
+        _pipeline_run_in(document_id="document_1"),
+        background_tasks,
+        use_case,
+        repository,
+        _source_reader(),
+        run_id="run-1",
+    )
+
+    assert background_tasks.tasks[0].args[1].user_id == "owner"
+
+
+def test_pipeline_command_rejects_workspace_mismatch_after_registering_run() -> None:
     repository = _repository(
         document={
             "id": "document_1",
@@ -567,8 +667,8 @@ def test_pipeline_command_rejects_actor_mismatch_after_registering_run() -> None
     use_case = _use_case()
     payload = _pipeline_run_in(
         document_id="document_1",
-        user_id="other-user",
-        workspace_id="workspace_1",
+        user_id="user_1",
+        workspace_id="other-workspace",
     )
 
     with pytest.raises(HTTPException) as exc_info:

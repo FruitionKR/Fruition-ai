@@ -7,6 +7,13 @@
 현재 Backend는 POST 실행 API를 호출하지 않고 Kafka `ai.ingest.command`를 발행한다.
 `GET /pipeline/runs/{run_id}`만 상태 확인용 내부 HTTP로 사용하며, 나머지는 수동·운영 인터페이스다.
 
+실행 요청(HTTP body와 Kafka command 공통)의 범위와 제목 규칙:
+- `workspace_id`가 문서의 워크스페이스와 다르면 `409`다. `user_id`는 편입을 요청한 사람으로 기록하는 귀속 정보라
+  문서 소유자와 달라도 된다(공동 편집). 없으면 문서 소유자로 기록한다.
+- 문서 편입·재편입의 소스 페이지 제목은 `display_name`이다. 없으면 `pipeline-source` 응답의 `filename`에서
+  마지막 확장자를 뗀 이름(document `Document.displayNameOf`와 같은 규칙)을 쓴다. 채팅 Wiki 내보내기는 이 값을 쓰지 않고
+  생성 제목을 유지한다. document가 그 제목으로 내보내기 파일 이름을 정하기 때문이다.
+
 - API 수: 7
 
 ## API 목차
