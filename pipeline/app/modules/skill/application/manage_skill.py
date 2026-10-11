@@ -21,6 +21,11 @@ class ManageSkillUseCase:
     def __init__(self, repository: ManageSkillRepositoryPort) -> None:
         self._repository = repository
 
+    def require_manage_scope(self, workspace_id: str | None, user_id: str, scope_type: str) -> None:
+        """팀 Skill은 작성(LLM 호출) 전에 관리 권한을 확인한다. 게시 때 거절하면 생성 비용만 쓰고 버려진다."""
+        if scope_type != "personal" and not self._repository.can_manage_team(workspace_id, user_id):
+            raise ValueError("Workspace Skill management is not allowed.")
+
     def preview(
         self,
         *,

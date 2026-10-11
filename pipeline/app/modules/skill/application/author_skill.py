@@ -73,6 +73,7 @@ class AuthorSkillUseCase:
         preserved_capabilities: tuple[SkillCapability, ...] | None = None,
         preserved_allowed_tools: tuple[SkillTool, ...] | None = None,
     ) -> SkillAuthoringResult:
+        self._skill_manager.require_manage_scope(workspace_id, user_id, scope_type)
         instruction = instruction.strip()
         max_instruction_chars = (
             MAX_INSTRUCTIONS_CHARS if authoring_mode == "preserve" else MAX_INSTRUCTION_CHARS
