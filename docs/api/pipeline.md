@@ -7,6 +7,13 @@
 현재 Backend는 POST 실행 API를 호출하지 않고 Kafka `ai.ingest.command`를 발행한다.
 `GET /pipeline/runs/{run_id}`만 상태 확인용 내부 HTTP로 사용하며, 나머지는 수동·운영 인터페이스다.
 
+`ai.ingest.command`에는 편입 외에 문서 단위 bookkeeping command가 있다. 둘 다 작업 journal·크레딧 예약·LLM 호출 없이 처리하고,
+파기한 워크스페이스면 `ScopePurgedError`로 폐기한다. 결과 event는 각각 `document_cleanup`, `document_rename` kind이며 document는 처리하지 않고 건너뛴다.
+- `document_deleted`: `{run_id, kind, document_id, workspace_id}`. 문서 파생 Wiki 데이터를 정리한다.
+- `document_renamed`: `{run_id, kind, document_id, workspace_id, title}`. `title`은 새 표시 이름(파일명에서 확장자를 뗀 이름)이며 비어 있으면 폐기한다.
+  해당 문서의 소스 페이지 제목(`wiki_pages.title`)만 바꾼다. 본문·개념 페이지는 그대로이고, 임베딩 텍스트에 들어간 옛 제목은 다음 편입 때 새 제목으로 다시 만든다.
+  같은 문서의 편입과 같은 파티션(key=`document_id`)으로 순서대로 처리하므로 편입 결과가 새 제목을 덮어쓰지 않는다. 다만 수동 실행 API(`POST /pipeline/runs`)는 이 순서 밖이라, rename 전에 시작해 뒤에 끝나면 옛 제목이 남을 수 있다. 아직 편입되지 않은 문서는 바꿀 행이 없어 아무 일도 하지 않고, 같은 command를 다시 받아도 결과가 같다.
+
 실행 요청(HTTP body와 Kafka command 공통)의 범위와 제목 규칙:
 - `workspace_id`가 문서의 워크스페이스와 다르면 `409`다. `user_id`는 편입을 요청한 사람으로 기록하는 귀속 정보라
   문서 소유자와 달라도 된다(공동 편집). 없으면 문서 소유자로 기록한다.

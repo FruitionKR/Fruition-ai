@@ -65,6 +65,11 @@ MAX_POLL_INTERVAL_MS = int(os.environ.get("INGEST_MAX_POLL_INTERVAL_MS", "180000
 DELETE_LOCK_ATTEMPTS = 10
 
 
+# journal을 거치지 않는 문서 단위 bookkeeping command와 그 결과 event kind. document 결과 consumer는 이 kind들을 처리하지 않고 건너뛴다.
+_EVENT_KINDS = {"document_deleted": "document_cleanup", "document_renamed": "document_rename"}
+_BOOKKEEPING_KINDS = frozenset(_EVENT_KINDS)
+
+
 class UnprocessableIngestCommand(ValueError):
     """다시 읽어도 성공할 수 없는 command.
 
@@ -129,7 +134,7 @@ def _event(command: dict, status: str, payload: dict | None = None, error: str |
     return {
         "event_id": f"ingest:{run_id}:{status}",
         "run_id": run_id,
-        "kind": "ingest" if command.get("kind") != "document_deleted" else "document_cleanup",
+        "kind": _EVENT_KINDS.get(command.get("kind"), "ingest"),
         "status": status,
         "workspace_id": command.get("workspace_id"),
         "user_id": command.get("user_id"),
@@ -148,7 +153,7 @@ def _result_event(command: dict, result: dict) -> dict:
 
 
 def _post_ingest_command(command: dict) -> dict | None:
-    if command.get("kind") == "document_deleted":
+    if command.get("kind") in _BOOKKEEPING_KINDS:
         return None
     run_id = str(command.get("run_id") or "")
     run = get_pipeline_run_repository().get_run(run_id)
@@ -194,8 +199,8 @@ async def _dispatch_post_ingest(
 
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
-    if command.get("kind") == "document_deleted":
-        # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 tombstone 행을 되살리지 않도록 직접 확인한다.
+    if command.get("kind") in _BOOKKEEPING_KINDS:
+        # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 행을 되살리거나 고치지 않도록 직접 확인한다.
         with journal.connect() as conn:
             if journal.workspace_purged(conn, command["workspace_id"]):
                 raise ScopePurgedError("Task scope was purged.")
@@ -221,6 +226,12 @@ def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
 def _handle(command: dict) -> dict:
     if command.get("kind") == "document_deleted":
         _delete_document_wiki_data(command["workspace_id"], command["document_id"])
+        return {}
+    if command.get("kind") == "document_renamed":
+        title = str(command.get("title") or "").strip()
+        if not title:
+            raise UnprocessableIngestCommand("document_renamed command requires title")
+        database.rename_source_page(command["workspace_id"], command["document_id"], title)
         return {}
 
     run_id = command["run_id"]

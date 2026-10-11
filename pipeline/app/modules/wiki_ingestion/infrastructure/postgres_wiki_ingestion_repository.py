@@ -791,6 +791,21 @@ def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
         )
 
 
+def rename_source_page(workspace_id: str, document_id: str, title: str) -> int:
+    """문서 이름이 바뀌면 소스 페이지 제목을 맞춘다. 편입 전 문서는 0행이라 아무 일도 하지 않는다."""
+    with connect() as conn:
+        return conn.execute(
+            """
+            UPDATE wiki_pages
+            SET title = %s, updated_at = now()
+            WHERE workspace_id = %s
+              AND page_type = 'source'
+              AND slug = %s
+            """,
+            (title, workspace_id, slugify(document_id)),
+        ).rowcount
+
+
 def get_last_wiki_updated_at(workspace_id: str) -> Any | None:
     with connect() as conn:
         row = conn.execute(
