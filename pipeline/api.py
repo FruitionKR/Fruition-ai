@@ -78,9 +78,9 @@ async def lifespan(app: FastAPI):
     if AGENT_SKILLS_ENABLED:
         try:
             database.verify_agent_schema()
-            logger.info("[startup] core_db Agent 스키마 확인 완료")
+            logger.info("[startup] ai_db Agent 스키마 확인 완료")
         except Exception:
-            logger.exception("[startup] core_db Agent 스키마 확인 실패")
+            logger.exception("[startup] ai_db Agent 스키마 확인 실패")
             raise
     yield
 
