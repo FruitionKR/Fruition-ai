@@ -149,9 +149,9 @@ def test_lint_merge_does_not_overwrite_previous_operation_snapshot(
         ],
     )
 
-    assert writes[0][0] == "wiki/user-1/ws/concepts/shared.md"
+    assert writes[0][0] == "wiki/ws/concepts/shared.md"
     assert all("ops/ingest-A.md" not in key for key, _text in writes)
-    assert upserts[0][6] == "wiki/user-1/ws/concepts/shared.md"
+    assert upserts[0][6] == "wiki/ws/concepts/shared.md"
     assert change is not None
     assert "lint 근거" in change["markdown"]
 
@@ -165,7 +165,7 @@ def test_promotion_merge_neutralizes_external_links_in_claims(monkeypatch) -> No
                 "id": "page-shared",
                 "title": "Shared",
                 "summary": "공유 개념",
-                "markdown_uri": "wiki/user-1/ws/concepts/shared.md",
+                "markdown_uri": "wiki/ws/concepts/shared.md",
             }
 
     class Connection:
@@ -613,7 +613,7 @@ source_refs: [doc-1]
                 "id": "page-shared",
                 "title": "Shared",
                 "summary": "공유 개념",
-                "markdown_uri": "wiki/user-1/workspace-1/concepts/shared.md",
+                "markdown_uri": "wiki/workspace-1/concepts/shared.md",
             }
 
     class Connection:
@@ -749,7 +749,7 @@ def test_lint_wiki_workspace_dry_run_does_not_write_log(monkeypatch) -> None:
 
     result = repository.lint_wiki_workspace("user_1", "workspace_1", write_log=False)
 
-    assert result["active_path"] == "wiki/user_1/workspace_1/clusters/active.md"
+    assert result["active_path"] == "wiki/workspace_1/clusters/active.md"
     assert writes == []
 
 

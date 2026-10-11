@@ -1060,13 +1060,11 @@ def reject_deleted_source(ingest_run_id: str) -> None:
 
 def persist_post_ingest_clusters(
     document_id: str,
-    user_id: str,
     workspace_id: str,
     artifact: dict[str, Any],
     ingest_run_id: str,
 ) -> list[str]:
     manifest = {
-        "user_id": user_id,
         "workspace_id": workspace_id,
         "meaning_clusters": artifact,
     }
@@ -1281,9 +1279,8 @@ def lint_wiki_workspace(
     write_log: bool = True,
     connection: psycopg.Connection | None = None,
 ) -> dict[str, Any]:
-    active_path = f"wiki/{user_id}/{workspace_id}/clusters/active.md"
+    active_path = f"wiki/{workspace_id}/clusters/active.md"
     lint_date = _today_iso()
-    log_path = f"wiki/{user_id}/{workspace_id}/logs/{lint_date}.md"
     active_markdown = _read_optional_text_object(active_path)
     with _connection_scope(connection) as conn:
         reconciliation_candidates = _list_reconciliation_candidates(
@@ -1573,7 +1570,7 @@ def write_wiki_lint_log(
 ) -> str:
     date_value = lint_date or _today_iso()
     log_path = (
-        f"wiki/{result['user_id']}/{result['workspace_id']}/logs/"
+        f"wiki/{result['workspace_id']}/logs/"
         f"{date_value}.md"
     )
     existing_log = _read_optional_text_object(log_path)
@@ -1680,7 +1677,6 @@ def apply_lint_object_changes(result: dict[str, Any]) -> list[str]:
         write_text_object(active_path, str(active_markdown))
         written_keys.append(active_path)
     archive_path = _append_archived_clusters(
-        str(result["user_id"]),
         str(result["workspace_id"]),
         list(changes.get("archived_sections") or []),
     )
@@ -1787,7 +1783,7 @@ def _materialize_promotion_candidates(
             _active_relation_keys(conn, user_id, workspace_id),
         )
     latest_active_markdown = _read_optional_text_object(
-        f"wiki/{user_id}/{workspace_id}/clusters/active.md"
+        f"wiki/{workspace_id}/clusters/active.md"
     ) or ""
     removed_claims: list[dict[str, Any]] = []
     removed_relations: list[dict[str, Any]] = []
@@ -1871,7 +1867,7 @@ def _materialize_promotion_candidates(
         else:
             markdown_uri = _upload_wiki_markdown(
                 markdown + "\n",
-                f"wiki/{user_id}/{workspace_id}/concepts/{slug}.md",
+                f"wiki/{workspace_id}/concepts/{slug}.md",
             )
         _upsert_wiki_page(conn, page_id, "concept", title, slug, _markdown_section(markdown, "Definition"), markdown_uri, user_id, workspace_id)
         first_document_id = source_refs[0].split(":", 1)[0] if source_refs else ""
@@ -1953,7 +1949,7 @@ def _merge_promotion_into_existing_concept(
         )
     else:
         current_markdown_key = (
-            f"wiki/{user_id}/{workspace_id}/concepts/{concept_slug}.md"
+            f"wiki/{workspace_id}/concepts/{concept_slug}.md"
         )
         current_markdown_uri = write_text_object(
             current_markdown_key,
@@ -2071,11 +2067,11 @@ def _source_blocks_for_refs(conn: psycopg.Connection, refs: list[str]) -> list[d
 
 
 def _append_archived_clusters(
-    user_id: str, workspace_id: str, sections: list[str]
+    workspace_id: str, sections: list[str]
 ) -> str | None:
     if not sections:
         return None
-    archive_path = f"wiki/{user_id}/{workspace_id}/clusters/archived.md"
+    archive_path = f"wiki/{workspace_id}/clusters/archived.md"
     existing = _read_optional_text_object(archive_path)
     separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
     write_text_object(archive_path, f"{existing}{separator}" + "\n\n".join(sections).rstrip() + "\n")

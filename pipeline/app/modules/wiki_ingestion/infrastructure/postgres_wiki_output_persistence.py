@@ -232,7 +232,7 @@ def _persist_source_page(
     source_markdown = source_page["markdown"]
     source_markdown_uri = upload_wiki_markdown(
         source_markdown,
-        f"wiki/{user_id}/{workspace_id}/sources/{document_id}.md",
+        f"wiki/{workspace_id}/sources/{document_id}.md",
     )
     source_title = (
         manifest.get("display_name")
@@ -330,7 +330,7 @@ def _persist_concept_pages(
             summary = existing.get("summary") or summary
         concept_markdown_uri = upload_wiki_markdown(
             concept_markdown,
-            f"wiki/{user_id}/{workspace_id}/concepts/{slug}.md",
+            f"wiki/{workspace_id}/concepts/{slug}.md",
         )
         upsert_wiki_page(
             conn,
@@ -475,20 +475,19 @@ def _persist_meaning_cluster_artifacts(
     artifact = manifest.get("meaning_clusters")
     if not isinstance(artifact, dict):
         return []
-    user_id = str(manifest.get("user_id") or "local-user")
     workspace_id = str(manifest.get("workspace_id") or "local-workspace")
     updated_concept_pages = _apply_concept_update_decisions(
         conn,
         document_id,
-        user_id,
         workspace_id,
         artifact.get("concept_update_decisions", []),
     )
-    active_path = artifact.get("active_path")
+    # 저장 위치는 artifact가 아니라 워크스페이스로 정한다. 로그 파일 이름(편입 날짜)만 artifact에서 가져온다.
+    active_path = f"wiki/{workspace_id}/clusters/active.md"
     active_markdown = artifact.get("active_markdown")
-    log_path = artifact.get("log_path")
+    artifact_log_path = artifact.get("log_path")
     log_markdown = artifact.get("log_markdown")
-    if isinstance(active_path, str) and isinstance(active_markdown, str):
+    if isinstance(active_markdown, str):
         existing_active = read_optional_text_object(active_path)
         merged_active = merge_active_cluster_markdown(
             existing_active,
@@ -496,7 +495,8 @@ def _persist_meaning_cluster_artifacts(
         )
         active_uri = write_text_object(active_path, merged_active)
         artifact["active_uri"] = active_uri
-    if isinstance(log_path, str) and isinstance(log_markdown, str):
+    if isinstance(artifact_log_path, str) and isinstance(log_markdown, str):
+        log_path = f"wiki/{workspace_id}/logs/{Path(artifact_log_path).name}"
         existing_log = read_optional_text_object(log_path)
         separator = "\n" if existing_log and not existing_log.endswith("\n") else ""
         merged_log = (
@@ -512,7 +512,6 @@ def _persist_meaning_cluster_artifacts(
 def _apply_concept_update_decisions(
     conn: psycopg.Connection,
     document_id: str,
-    user_id: str,
     workspace_id: str,
     decisions: Any,
 ) -> list[dict[str, Any]]:
@@ -524,7 +523,6 @@ def _apply_concept_update_decisions(
     _persist_prepared_concept_updates(
         conn,
         document_id,
-        user_id,
         workspace_id,
         prepared,
     )
@@ -591,13 +589,12 @@ def _prepare_concept_update_decisions(
 def _persist_prepared_concept_updates(
     conn: psycopg.Connection,
     document_id: str,
-    user_id: str,
     workspace_id: str,
     changed_pages: list[dict[str, Any]],
 ) -> None:
     for page in changed_pages:
         current_markdown_key = (
-            f"wiki/{user_id}/{workspace_id}/concepts/{page['slug']}.md"
+            f"wiki/{workspace_id}/concepts/{page['slug']}.md"
         )
         current_markdown_uri = write_text_object(
             current_markdown_key,

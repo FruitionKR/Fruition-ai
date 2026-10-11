@@ -41,8 +41,8 @@ class MeaningClusterArtifactAssembler:
             ingest_date,
         )
         return {
-            "active_path": f"wiki/{user_id}/{workspace_id}/clusters/active.md",
-            "log_path": f"wiki/{user_id}/{workspace_id}/logs/{ingest_date}.md",
+            "active_path": f"wiki/{workspace_id}/clusters/active.md",
+            "log_path": f"wiki/{workspace_id}/logs/{ingest_date}.md",
             "active_markdown": active_markdown,
             "log_markdown": log_markdown,
             "clusters": clusters,

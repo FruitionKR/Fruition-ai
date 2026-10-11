@@ -268,7 +268,7 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
                         "id": "concept-page-1",
                         "title": "Shared",
                         "summary": "공유 개념",
-                        "markdown_uri": "wiki/user-1/workspace-1/concepts/shared.md",
+                        "markdown_uri": "wiki/workspace-1/concepts/shared.md",
                     }
                 )
             return Result()
@@ -287,7 +287,7 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
 
     def write_markdown(markdown: str, _key: str) -> str:
         stored_markdown["value"] = markdown
-        return "wiki/user-1/workspace-1/concepts/shared.md"
+        return "wiki/workspace-1/concepts/shared.md"
 
     monkeypatch.setattr(
         persistence,
@@ -557,9 +557,9 @@ def test_persist_wiki_outputs_connects_operation_artifacts(monkeypatch) -> None:
     # 트랜잭션 롤백 시 orphan object가 남지 않는다.
     assert events[-1] == "artifact"
     assert markdown_uploads == [
-        "wiki/user-1/workspace-1/sources/doc-1.md",
-        "wiki/user-1/workspace-1/concepts/concept-a.md",
-        "wiki/user-1/workspace-1/concepts/concept-b.md",
+        "wiki/workspace-1/sources/doc-1.md",
+        "wiki/workspace-1/concepts/concept-a.md",
+        "wiki/workspace-1/concepts/concept-b.md",
     ]
     assert len(page_upserts) == 3
     assert captured["concept_pages"] == [
@@ -762,7 +762,6 @@ def test_existing_concept_update_writes_canonical_current_markdown(
     changes = persistence._apply_concept_update_decisions(
         Connection(),
         "doc-1",
-        "user-1",
         "ws",
         [
             {
@@ -775,7 +774,7 @@ def test_existing_concept_update_writes_canonical_current_markdown(
         ],
     )
 
-    assert writes[0][0] == "wiki/user-1/ws/concepts/existing.md"
+    assert writes[0][0] == "wiki/ws/concepts/existing.md"
     assert all("ops/op-old.md" not in key for key, _text in writes)
     assert changes[0]["page_id"] == "existing-page-1"
     assert "새 근거" in changes[0]["markdown"]
@@ -786,7 +785,7 @@ def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> Non
 
     class Result:
         def fetchone(self):
-            return {"id": "existing-page-1", "markdown_uri": "wiki/user-1/ws/concepts/existing.md"}
+            return {"id": "existing-page-1", "markdown_uri": "wiki/ws/concepts/existing.md"}
 
     class Connection:
         def execute(self, _query, _params):
@@ -804,7 +803,6 @@ def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> Non
     changes = persistence._apply_concept_update_decisions(
         Connection(),
         "doc-1",
-        "user-1",
         "ws",
         [
             {
@@ -847,7 +845,7 @@ def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> Non
         "doc-1",
         {
             "meaning_clusters": {
-                "log_path": "wiki/user-1/ws/logs/2026-08-21.md",
+                "log_path": "wiki/ws/logs/2026-08-21.md",
                 "log_markdown": log_markdown,
             },
             "user_id": "user-1",
@@ -855,7 +853,7 @@ def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> Non
         },
     )
 
-    assert writes == [("wiki/user-1/ws/logs/2026-08-21.md", log_markdown)]
+    assert writes == [("wiki/ws/logs/2026-08-21.md", log_markdown)]
 
 
 def test_persist_wiki_outputs_reads_normalized_and_links_artifacts(
@@ -960,3 +958,31 @@ def test_persist_source_page_titles_with_document_display_name(
     )
 
     assert upserts[0][3] == expected_title
+
+
+def test_meaning_cluster_artifacts_are_written_under_workspace_prefix(monkeypatch) -> None:
+    writes = []
+    monkeypatch.setattr(persistence, "_apply_concept_update_decisions", lambda *_args: [])
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda _path: "")
+    monkeypatch.setattr(
+        persistence,
+        "write_text_object",
+        lambda path, text: writes.append(path) or path,
+    )
+
+    persistence._persist_meaning_cluster_artifacts(
+        object(),  # type: ignore[arg-type]
+        "doc-1",
+        {
+            "meaning_clusters": {
+                # 다른 범위의 경로가 실려 와도 저장 위치는 워크스페이스로 정한다.
+                "active_path": "wiki/user-1/ws/clusters/active.md",
+                "active_markdown": "# Active Meaning Clusters\n",
+                "log_path": "wiki/user-1/ws/logs/2026-10-11.md",
+                "log_markdown": "## 2026-10-11 ingest: doc-1\n",
+            },
+            "workspace_id": "ws",
+        },
+    )
+
+    assert writes == ["wiki/ws/clusters/active.md", "wiki/ws/logs/2026-10-11.md"]
