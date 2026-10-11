@@ -24,6 +24,10 @@ class _PipelineRunBase(BaseModel):
     document_id: str
     operation_id: str | None = None
     input_name: str | None = None
+    display_name: str | None = Field(
+        default=None,
+        description="소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.",
+    )
     out: str | None = None
     mode: Literal["api", "generic-chat"] = "api"
     provider: Literal["openai", "gemini", "claude"]
@@ -60,7 +64,7 @@ class _PipelineRunBase(BaseModel):
     )
     user_id: str | None = Field(
         default=None,
-        description="기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.",
+        description="편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.",
     )
     workspace_id: str | None = Field(
         default=None,
@@ -263,7 +267,10 @@ class WikiPageLookupIn(BaseModel):
 class WikiPageRenameIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(min_length=1)
+    user_id: str = Field(
+        min_length=1,
+        description="이름을 바꾸는 사용자입니다. 권한은 document가 확인하며 ai는 작성자를 확인하지 않습니다.",
+    )
     workspace_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     update_slug: bool = False

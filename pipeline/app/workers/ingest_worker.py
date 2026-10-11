@@ -91,6 +91,7 @@ def _build_payload(command: dict) -> PipelineRunIn | ChatWikiRunIn:
             "operation_id": command.get("operation_id"),
             "source_revision": command.get("source_revision"),
             "source_content_hash": command.get("source_content_hash"),
+            "display_name": command.get("display_name"),
             "model": str(command["model"]).strip(),
             "provider": str(command.get("provider") or "").strip(),
             "wait": True,

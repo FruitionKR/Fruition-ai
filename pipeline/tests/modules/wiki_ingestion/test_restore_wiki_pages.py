@@ -534,7 +534,7 @@ def test_ingest_operation_restore_returns_from_a5_to_a2() -> None:
     assert store.writes[0][1] == "# A2 Source\n"
 
 
-def test_source_restore_carries_title_and_summary_metadata() -> None:
+def test_source_restore_keeps_current_title_and_carries_summary() -> None:
     store = ArtifactStore(
         {"wiki/ws-1/pages/S1/ops/A.md": "# A 제목\n\n## Summary\nA 요약\n"}
     )
@@ -550,7 +550,8 @@ def test_source_restore_carries_title_and_summary_metadata() -> None:
         )
     )
 
-    assert result["changed_pages"][0]["title"] == "A 제목"
+    # 소스 페이지 제목은 파일명이라 스냅샷 본문의 제목으로 되돌리지 않는다(None이면 현재 제목 유지).
+    assert result["changed_pages"][0]["title"] is None
     assert result["changed_pages"][0]["summary"] == "A 요약"
 
 

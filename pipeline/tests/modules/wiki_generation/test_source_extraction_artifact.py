@@ -252,7 +252,7 @@ def test_meaning_cluster_artifact_accumulates_promote_hint_without_immediate_pro
     active_markdown = active_path.read_text(encoding="utf-8")
     log_markdown = log_path.read_text(encoding="utf-8")
 
-    assert artifact["active_path"] == "wiki/user_1/workspace_1/clusters/active.md"
+    assert artifact["active_path"] == "wiki/workspace_1/clusters/active.md"
     assert active_path.exists()
     assert log_path.exists()
     assert "### Evidence Claims" in active_markdown

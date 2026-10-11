@@ -18,9 +18,6 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     load_concept_contributions,
     rebuild_concept_page,
 )
-from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
-    markdown_title,
-)
 from app.modules.wiki_ingestion.infrastructure.markdown_sections import markdown_section
 
 
@@ -145,7 +142,9 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "page_type": "source",
             "markdown_key": target_key,
             "content_hash": f"sha256:{digest}",
-            "title": markdown_title(markdown),
+            # 소스 페이지 제목은 문서 파일명이다(ADR 0033). 스냅샷 본문의 생성 제목으로 되돌리지 않도록
+            # 비워 두면 저장 단계가 현재 제목을 유지한다.
+            "title": None,
             "summary": markdown_section(markdown, "Summary"),
             "source_document_id": source_page.document_id,
         }

@@ -595,12 +595,12 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             side_effect=lambda **_kwargs: calls.append("cluster") or artifact,
         ),
         patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
-        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(task_worker, "read_optional_text_object", return_value="") as read_active,
         patch.object(
             task_worker.database,
             "persist_post_ingest_clusters",
             side_effect=lambda *_args: calls.append("persist") or [],
-        ),
+        ) as persist,
         patch.object(
             task_worker,
             "build_wiki_embeddings",
@@ -626,6 +626,8 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
         result = task_worker._handle_post_ingest(command)
 
     assert result["quality_status"] == "ready"
+    read_active.assert_called_once_with("wiki/workspace-1/clusters/active.md")
+    assert persist.call_args.args == ("document-1", "workspace-1", artifact, "ingest-run-1")
     assert calls.index("cluster") < calls.index("persist")
     assert calls.index("persist") < calls.index("quality")
     if runs_embedding:

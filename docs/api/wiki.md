@@ -7,6 +7,10 @@ Wiki 조회·페이지 관리·lint·복구 내부 API다. 공개 Gateway 계약
 lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest 실행과 run 조회는
 [`Wiki Ingest Pipeline API`](pipeline.md)에서 다룬다.
 
+위키는 워크스페이스 공유 자산이다([ADR 0033](../adr/0033-workspace-shared-wiki.md)). 객체 저장소 키는 모두
+`wiki/{workspace_id}/` 아래에 있다: 페이지 본문 `sources/{document_id}.md`·`concepts/{slug}.md`, 의미 클러스터
+`clusters/active.md`·`clusters/archived.md`, 편입·lint 로그 `logs/{날짜}.md`, 페이지 이력 `pages/{page_id}/ops/`.
+
 - API 수: 10
 
 ## API 목차
@@ -1045,6 +1049,7 @@ Wiki 페이지 이름을 변경합니다.
 
 - 올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.
 - 요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다.
+- 페이지는 `workspace_id`로만 찾고 작성자(`user_id`)를 확인하지 않는다. 누가 이름을 바꿀 수 있는지는 document가 정한다(ADR 0033). 공개 이름 변경 API는 document에서 닫혀 있다.
 
 #### 9. 예시 요청/응답
 

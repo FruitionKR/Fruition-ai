@@ -32,10 +32,8 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
     with connect() as conn:
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE workspace_id = %s AND object_key IS NOT NULL", (workspace_id,))
-    # wiki 객체 키는 wiki/{user_id}/{workspace_id}/...(페이지·클러스터)와 wiki/{workspace_id}/pages/...(작업 산출물) 두 형태다.
-    # 사용자 prefix는 DB가 아니라 S3 목록에서 찾는다. 사용자를 먼저 파기했거나 lint 산출물만 남은 경우 DB에 흔적이 없다.
-    # ponytail: wiki/ 바로 아래 prefix를 전부 나열하므로 비용이 사용자 수에 비례한다. 수만 명을 넘으면 워크스페이스 prefix 구조 변경이 필요하다.
-    prefixes = [f"{entry.object_name}{workspace_id}/" for entry in _list_dirs("wiki/")] + [f"wiki/{workspace_id}/"]
+    # wiki 객체(본문·클러스터·로그·페이지 이력)는 모두 wiki/{workspace_id}/ 아래에 있다(ADR 0033).
+    prefixes = [f"wiki/{workspace_id}/"]
     # 실행 로그(pipeline-runs/*/pipeline.log)는 지우지 않는다. AI 역할에 삭제 권한이 없고 S3 30일 lifecycle로 만료된다.
     keys = artifacts
     deleted = {"s3_objects": _delete_objects(prefixes, keys)}
@@ -97,11 +95,6 @@ def purge_user(user_id: str) -> dict[str, int]:
         ]
         deleted.update((table, conn.execute(statement, {"user": user_id}).rowcount) for table, statement in statements)
     return deleted
-
-
-def _list_dirs(prefix: str):
-    return [item for item in object_storage.client().list_objects(object_storage.bucket_name(), prefix=prefix, recursive=False)
-            if item.is_dir]
 
 
 def _column(conn, query: str, params) -> list[str]:

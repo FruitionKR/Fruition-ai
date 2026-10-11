@@ -5,7 +5,7 @@ def test_render_lint_log_markdown_uses_given_date_and_change_queues() -> None:
     result = {
         "user_id": "user_1",
         "workspace_id": "workspace_1",
-        "active_path": "wiki/user_1/workspace_1/clusters/active.md",
+        "active_path": "wiki/workspace_1/clusters/active.md",
         "orphan_refs": ["doc_1:B0001"],
         "promotion_candidates": ["cluster_1"],
         "needs_review": [],

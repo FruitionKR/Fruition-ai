@@ -39,9 +39,31 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     status varchar(255) NOT NULL CHECK (status IN ('draft', 'active', 'failed', 'deleted')),
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT uq_wiki_pages_workspace_type_slug
-        UNIQUE (user_id, workspace_id, page_type, slug)
+    CONSTRAINT uq_wiki_pages_workspace_page_type_slug
+        UNIQUE (workspace_id, page_type, slug)
 );
+
+-- 위키는 워크스페이스 공유 자산이다(ADR 0033). user_id는 마지막 편입 요청자 귀속 정보로만 남는다.
+-- 기존 DB의 사용자별 고유 키를 바꾼다. 사용자별 중복 행은 옮기지 않으므로 남아 있으면 기동을 멈춘다.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'wiki_pages'::regclass
+          AND conname = 'uq_wiki_pages_workspace_page_type_slug'
+    ) THEN
+        IF EXISTS (
+            SELECT 1 FROM wiki_pages
+            GROUP BY workspace_id, page_type, slug
+            HAVING count(*) > 1
+        ) THEN
+            RAISE EXCEPTION 'wiki_pages에 같은 (workspace_id, page_type, slug)를 가진 사용자별 페이지가 있습니다. 위키 데이터를 초기화한 뒤 배포하세요(ADR 0033).';
+        END IF;
+        ALTER TABLE wiki_pages DROP CONSTRAINT IF EXISTS uq_wiki_pages_workspace_type_slug;
+        ALTER TABLE wiki_pages ADD CONSTRAINT uq_wiki_pages_workspace_page_type_slug
+            UNIQUE (workspace_id, page_type, slug);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_workspace
     ON wiki_pages (workspace_id, status, updated_at DESC);

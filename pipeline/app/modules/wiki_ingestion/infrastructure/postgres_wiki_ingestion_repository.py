@@ -110,12 +110,12 @@ def _cleanup_deleted_wiki_pages(
     conn: psycopg.Connection,
     workspace_id: str,
     page_ids: list[str],
-) -> set[str]:
+) -> None:
     if not page_ids:
-        return set()
+        return
     rows = conn.execute(
         """
-        SELECT id, user_id
+        SELECT id
         FROM wiki_pages
         WHERE workspace_id = %s
           AND id = ANY(%s)
@@ -126,8 +126,7 @@ def _cleanup_deleted_wiki_pages(
     ).fetchall()
     target_ids = [row["id"] for row in rows]
     if not target_ids:
-        return set()
-    user_ids = {str(row["user_id"]) for row in rows if row.get("user_id")}
+        return
     vector_rows = conn.execute(
         """
         SELECT DISTINCT embedding_vector_id
@@ -174,7 +173,6 @@ def _cleanup_deleted_wiki_pages(
         "UPDATE wiki_pages SET status = 'deleted', updated_at = now() WHERE id = ANY(%s)",
         (target_ids,),
     )
-    return user_ids
 
 
 def apply_restored_wiki_state(
@@ -183,17 +181,16 @@ def apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
 ) -> None:
-    user_ids, _ = _apply_restored_wiki_state(
+    _apply_restored_wiki_state(
         workspace_id,
         changed_pages,
         link_changes,
         replace_links,
     )
-    for user_id in user_ids:
-        try:
-            invalidate_concept_index(user_id, workspace_id)
-        except Exception:
-            logger.warning("concept index cache invalidation failed", exc_info=True)
+    try:
+        invalidate_concept_index(workspace_id)
+    except Exception:
+        logger.warning("concept index cache invalidation failed", exc_info=True)
 
 
 def apply_restored_wiki_state_and_cleanup(
@@ -209,21 +206,18 @@ def apply_restored_wiki_state_and_cleanup(
         return []
     with concept_write_lock(workspace_id, operation_id):
         with connect() as conn:
-            user_ids, skipped_page_ids = _apply_restored_wiki_state(
+            skipped_page_ids = _apply_restored_wiki_state(
                 workspace_id,
                 changed_pages,
                 link_changes,
                 replace_links,
                 conn,
             )
-            user_ids.update(
-                _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
-            )
-        for user_id in user_ids:
-            try:
-                invalidate_concept_index(user_id, workspace_id)
-            except Exception:
-                logger.warning("concept index cache invalidation failed", exc_info=True)
+            _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
+        try:
+            invalidate_concept_index(workspace_id)
+        except Exception:
+            logger.warning("concept index cache invalidation failed", exc_info=True)
     return sorted(skipped_page_ids)
 
 
@@ -241,15 +235,14 @@ def _apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     conn: psycopg.Connection | None = None,
-) -> tuple[set[str], set[str]]:
+) -> set[str]:
     if not changed_pages and not any(link_changes.values()):
-        return set(), set()
-    user_ids: set[str] = set()
+        return set()
     with (connect() if conn is None else nullcontext(conn)) as conn:
         page_ids = [str(page["page_id"]) for page in changed_pages]
         rows = conn.execute(
             """
-            SELECT id, page_type, slug, user_id,
+            SELECT id, page_type, slug,
                    (
                        SELECT link.document_id
                        FROM document_wiki_links link
@@ -284,27 +277,20 @@ def _apply_restored_wiki_state(
             f'{row["page_type"]}:{row["slug"]}': row
             for row in linkable_rows
         }
-        target_by_ref = {
-            (str(row["user_id"]), f'{row["page_type"]}:{row["slug"]}'): row
-            for row in linkable_rows
-        }
-        source_user_ids = {str(row["user_id"]) for row in rows}
-        if source_user_ids and any(link_changes.values()):
+        # 공유 위키라 ref(page_type:slug)가 워크스페이스 안에서 페이지 하나를 가리킨다.
+        target_by_ref = dict(by_ref)
+        if rows and any(link_changes.values()):
             active_rows = conn.execute(
                 """
-                SELECT id, page_type, slug, user_id
+                SELECT id, page_type, slug
                 FROM wiki_pages
                 WHERE workspace_id = %s
-                  AND user_id = ANY(%s)
                   AND status = 'active'
                 """,
-                (workspace_id, list(source_user_ids)),
+                (workspace_id,),
             ).fetchall()
             for row in active_rows:
-                target_by_ref.setdefault(
-                    (str(row["user_id"]), f'{row["page_type"]}:{row["slug"]}'),
-                    row,
-                )
+                target_by_ref.setdefault(f'{row["page_type"]}:{row["slug"]}', row)
         for page in changed_pages:
             if str(page["page_id"]) in skipped_page_ids:
                 continue
@@ -417,8 +403,8 @@ def _apply_restored_wiki_state(
                 (page_ids,),
             )
 
-        def resolve(reference: str, user_id: str) -> str | None:
-            known = target_by_ref.get((user_id, reference))
+        def resolve(reference: str) -> str | None:
+            known = target_by_ref.get(reference)
             if known is None:
                 return None
             return str(known["id"])
@@ -427,7 +413,7 @@ def _apply_restored_wiki_state(
             source = by_ref.get(str(link.get("source")))
             if source is None:
                 continue
-            target_id = resolve(str(link.get("target")), str(source["user_id"]))
+            target_id = resolve(str(link.get("target")))
             if target_id:
                 conn.execute(
                     """
@@ -436,12 +422,11 @@ def _apply_restored_wiki_state(
                     """,
                     (source["id"], target_id, link.get("relation") or "related_to"),
                 )
-        user_ids = {str(row["user_id"]) for row in rows}
         for link in link_changes.get("restored_links", []):
             source = by_ref.get(str(link.get("source")))
             if source is None:
                 continue
-            target_id = resolve(str(link.get("target")), str(source["user_id"]))
+            target_id = resolve(str(link.get("target")))
             if target_id and target_id != str(source["id"]):
                 _upsert_wiki_page_link(
                     conn,
@@ -452,7 +437,7 @@ def _apply_restored_wiki_state(
                     link.get("confidence"),
                     workspace_id,
                 )
-    return user_ids, skipped_page_ids
+    return skipped_page_ids
 
 
 REQUIRED_TABLES = (
@@ -817,21 +802,21 @@ def get_last_wiki_updated_at(workspace_id: str) -> Any | None:
 
 def rename_wiki_page(
     page_id: str,
-    user_id: str,
     workspace_id: str,
     title: str,
     update_slug: bool,
 ) -> dict[str, Any] | None:
+    # 작성자를 확인하지 않는다. 누가 바꿀 수 있는지는 document가 정한다(ADR 0033).
     with connect() as conn:
         page = conn.execute(
             """
             SELECT id, page_type, title, slug
             FROM wiki_pages
-            WHERE id = %s AND user_id = %s AND workspace_id = %s
+            WHERE id = %s AND workspace_id = %s
               AND status = 'active'
             FOR UPDATE
             """,
-            (page_id, user_id, workspace_id),
+            (page_id, workspace_id),
         ).fetchone()
         if page is None:
             return None
@@ -896,11 +881,10 @@ def finish_pipeline_run(
     embedded_page_ids: list[str] = []
     with connect() as conn:
         row = conn.execute(
-            "SELECT document_id, user_id, workspace_id FROM pipeline_runs WHERE id = %s",
+            "SELECT document_id, workspace_id FROM pipeline_runs WHERE id = %s",
             (run_id,),
         ).fetchone()
     document_id = row["document_id"] if row else None
-    user_id = row["user_id"] if row else None
     workspace_id = row["workspace_id"] if row else None
     lock = concept_write_lock(str(workspace_id), run_id) if document_id else nullcontext()
     with lock:
@@ -933,7 +917,7 @@ def finish_pipeline_run(
             )
     if document_id:
         try:
-            invalidate_concept_index(str(user_id), str(workspace_id))
+            invalidate_concept_index(str(workspace_id))
         except Exception:
             logger.warning("concept index cache invalidation failed", exc_info=True)
     # core 트랜잭션 커밋 후 ai_db 파생 추적을 갱신한다.
@@ -1069,13 +1053,11 @@ def reject_deleted_source(ingest_run_id: str) -> None:
 
 def persist_post_ingest_clusters(
     document_id: str,
-    user_id: str,
     workspace_id: str,
     artifact: dict[str, Any],
     ingest_run_id: str,
 ) -> list[str]:
     manifest = {
-        "user_id": user_id,
         "workspace_id": workspace_id,
         "meaning_clusters": artifact,
     }
@@ -1090,7 +1072,7 @@ def persist_post_ingest_clusters(
                 manifest,
             )
     if changed_pages:
-        invalidate_concept_index(user_id, workspace_id)
+        invalidate_concept_index(workspace_id)
     return [str(page["page_id"]) for page in changed_pages]
 
 
@@ -1124,9 +1106,9 @@ def get_pipeline_run(run_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def list_active_concept_index(user_id: str = "local-user", workspace_id: str = "local-workspace") -> list[dict[str, Any]]:
+def list_active_concept_index(workspace_id: str = "local-workspace") -> list[dict[str, Any]]:
     try:
-        cached = get_concept_index(user_id, workspace_id)
+        cached = get_concept_index(workspace_id)
         if cached is not None:
             return cached
     except Exception:
@@ -1138,18 +1120,17 @@ def list_active_concept_index(user_id: str = "local-user", workspace_id: str = "
             FROM wiki_pages
             WHERE page_type = 'concept'
               AND status = 'active'
-              AND user_id = %s
               AND workspace_id = %s
             ORDER BY slug
             """,
-            (user_id, workspace_id),
+            (workspace_id,),
         ).fetchall()
     concepts = []
     for row in rows:
         markdown = _read_optional_text_object(row["markdown_uri"])
         concepts.append(_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown))
     try:
-        put_concept_index(user_id, workspace_id, concepts)
+        put_concept_index(workspace_id, concepts)
     except Exception:
         logger.warning("concept index cache write failed", exc_info=True)
     return concepts
@@ -1178,7 +1159,6 @@ def latest_source_extraction_artifact(document_id: str) -> dict[str, Any] | None
 
 def latest_source_page_context(
     document_id: str,
-    user_id: str = "local-user",
     workspace_id: str = "local-workspace",
 ) -> dict[str, Any] | None:
     artifact = latest_source_extraction_artifact(document_id)
@@ -1192,12 +1172,11 @@ def latest_source_page_context(
             WHERE page_type = 'source'
               AND slug = %s
               AND status = 'active'
-              AND user_id = %s
               AND workspace_id = %s
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (slugify(document_id), user_id, workspace_id),
+            (slugify(document_id), workspace_id),
         ).fetchone()
     if not row:
         return None
@@ -1293,14 +1272,12 @@ def lint_wiki_workspace(
     write_log: bool = True,
     connection: psycopg.Connection | None = None,
 ) -> dict[str, Any]:
-    active_path = f"wiki/{user_id}/{workspace_id}/clusters/active.md"
+    active_path = f"wiki/{workspace_id}/clusters/active.md"
     lint_date = _today_iso()
-    log_path = f"wiki/{user_id}/{workspace_id}/logs/{lint_date}.md"
     active_markdown = _read_optional_text_object(active_path)
     with _connection_scope(connection) as conn:
         reconciliation_candidates = _list_reconciliation_candidates(
             conn,
-            user_id,
             workspace_id,
         )
     stale_source_refs = {
@@ -1413,7 +1390,7 @@ def lint_wiki_workspace(
             {
                 key: value
                 for key, value in candidate.items()
-                if key not in {"user_id", "workspace_id"}
+                if key != "workspace_id"
                 and not key.startswith("_")
             }
             for candidate in reconciliation_candidates
@@ -1431,7 +1408,7 @@ def lint_wiki_workspace(
             result["applied_reconciliations"] = _apply_structural_reconciliation(
                 conn,
                 reconciliation_candidates,
-                _active_relation_keys(conn, user_id, workspace_id),
+                _active_relation_keys(conn, workspace_id),
             )
     if materialize_promotions and promotion_page_generator is not None:
         with _connection_scope(connection) as conn:
@@ -1476,7 +1453,6 @@ def lint_wiki_workspace(
 
 
 def lint_orphan_wiki_links(
-    user_id: str,
     workspace_id: str,
     *,
     apply: bool,
@@ -1495,7 +1471,6 @@ def lint_orphan_wiki_links(
             FROM wiki_pages page
             WHERE page.page_type = 'concept'
               AND page.status = 'active'
-              AND page.user_id = %s
               AND page.workspace_id = %s
               AND EXISTS (
                   SELECT 1
@@ -1503,7 +1478,7 @@ def lint_orphan_wiki_links(
                   WHERE link.from_page_id = page.id
               )
             """,
-            (user_id, workspace_id),
+            (workspace_id,),
         ).fetchall()
         contribution_rows = read_contributions(
             [str(row["id"]) for row in contribution_page_rows],
@@ -1519,12 +1494,10 @@ def lint_orphan_wiki_links(
             FROM wiki_page_links link
             JOIN wiki_pages source_page ON source_page.id = link.from_page_id
             JOIN wiki_pages target_page ON target_page.id = link.to_page_id
-            WHERE source_page.user_id = %s
-              AND source_page.workspace_id = %s
-              AND target_page.user_id = %s
+            WHERE source_page.workspace_id = %s
               AND target_page.workspace_id = %s
             """,
-            (user_id, workspace_id, user_id, workspace_id),
+            (workspace_id, workspace_id),
         ).fetchall()
 
         managed_contributions = []
@@ -1567,7 +1540,6 @@ def lint_orphan_wiki_links(
                 conn,
                 candidates,
                 set(),
-                user_id,
                 workspace_id,
             )
             if apply
@@ -1579,13 +1551,22 @@ def lint_orphan_wiki_links(
     }
 
 
+def lint_shared_object_keys(workspace_id: str, lint_date: str) -> list[str]:
+    """lint가 편입과 함께 덧붙이거나 병합하는 워크스페이스 공유 객체 키."""
+    return [
+        f"wiki/{workspace_id}/clusters/active.md",
+        f"wiki/{workspace_id}/clusters/archived.md",
+        f"wiki/{workspace_id}/logs/{lint_date}.md",
+    ]
+
+
 def write_wiki_lint_log(
     result: dict[str, Any],
     lint_date: str | None = None,
 ) -> str:
     date_value = lint_date or _today_iso()
     log_path = (
-        f"wiki/{result['user_id']}/{result['workspace_id']}/logs/"
+        f"wiki/{result['workspace_id']}/logs/"
         f"{date_value}.md"
     )
     existing_log = _read_optional_text_object(log_path)
@@ -1598,7 +1579,6 @@ def write_wiki_lint_log(
 
 
 def persist_lint_operation_result(
-    user_id: str,
     workspace_id: str,
     operation_id: str,
     result: dict[str, Any],
@@ -1644,11 +1624,10 @@ def persist_lint_operation_result(
                 SELECT id, slug, title, summary, markdown_uri
                 FROM wiki_pages
                 WHERE page_type = 'concept'
-                  AND user_id = %s
                   AND workspace_id = %s
                   AND slug = ANY(%s)
                 """,
-                (user_id, workspace_id, missing_slugs),
+                (workspace_id, missing_slugs),
             ).fetchall()
         for row in rows:
             # _read_optional_text_object는 읽기 실패도 빈 문자열로 삼켜서, 저장소 장애를
@@ -1692,7 +1671,6 @@ def apply_lint_object_changes(result: dict[str, Any]) -> list[str]:
         write_text_object(active_path, str(active_markdown))
         written_keys.append(active_path)
     archive_path = _append_archived_clusters(
-        str(result["user_id"]),
         str(result["workspace_id"]),
         list(changes.get("archived_sections") or []),
     )
@@ -1754,7 +1732,7 @@ def _materialize_promotion_candidates(
     materialized_promotions: list[dict[str, Any]] = []
     merged_promotions: list[dict[str, Any]] = []
     page_changes: list[dict[str, Any]] = []
-    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, user_id, workspace_id)
+    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     eligible_cluster_ids = {cluster["id"] for cluster in clusters}
     prepared_pages: dict[str, dict[str, Any]] = {}
     for cluster in clusters:
@@ -1775,7 +1753,7 @@ def _materialize_promotion_candidates(
             }
         )
 
-    _lock_concept_persistence(conn, user_id, workspace_id)
+    _lock_concept_persistence(conn, workspace_id)
     applied_reconciliations: list[dict[str, Any]] = []
     reconciliation_source_refs: set[str] = set()
     current_claim_signatures: set[tuple[str, str, str]] = set()
@@ -1785,7 +1763,6 @@ def _materialize_promotion_candidates(
     if apply_reconciliation:
         reconciliation_candidates = _list_reconciliation_candidates(
             conn,
-            user_id,
             workspace_id,
         )
         (
@@ -1796,10 +1773,10 @@ def _materialize_promotion_candidates(
         applied_reconciliations = _apply_structural_reconciliation(
             conn,
             reconciliation_candidates,
-            _active_relation_keys(conn, user_id, workspace_id),
+            _active_relation_keys(conn, workspace_id),
         )
     latest_active_markdown = _read_optional_text_object(
-        f"wiki/{user_id}/{workspace_id}/clusters/active.md"
+        f"wiki/{workspace_id}/clusters/active.md"
     ) or ""
     removed_claims: list[dict[str, Any]] = []
     removed_relations: list[dict[str, Any]] = []
@@ -1821,7 +1798,7 @@ def _materialize_promotion_candidates(
         if cluster["id"] in eligible_cluster_ids
     ]
     active_sections = _cluster_sections_by_id(latest_active_markdown)
-    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, user_id, workspace_id)
+    existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     for cluster in clusters:
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
@@ -1883,7 +1860,7 @@ def _materialize_promotion_candidates(
         else:
             markdown_uri = _upload_wiki_markdown(
                 markdown + "\n",
-                f"wiki/{user_id}/{workspace_id}/concepts/{slug}.md",
+                f"wiki/{workspace_id}/concepts/{slug}.md",
             )
         _upsert_wiki_page(conn, page_id, "concept", title, slug, _markdown_section(markdown, "Definition"), markdown_uri, user_id, workspace_id)
         first_document_id = source_refs[0].split(":", 1)[0] if source_refs else ""
@@ -1940,11 +1917,10 @@ def _merge_promotion_into_existing_concept(
         FROM wiki_pages
         WHERE page_type = 'concept'
           AND status = 'active'
-          AND user_id = %s
           AND workspace_id = %s
           AND slug = %s
         """,
-        (user_id, workspace_id, concept_slug),
+        (workspace_id, concept_slug),
     ).fetchone()
     if not row:
         return None
@@ -1966,7 +1942,7 @@ def _merge_promotion_into_existing_concept(
         )
     else:
         current_markdown_key = (
-            f"wiki/{user_id}/{workspace_id}/concepts/{concept_slug}.md"
+            f"wiki/{workspace_id}/concepts/{concept_slug}.md"
         )
         current_markdown_uri = write_text_object(
             current_markdown_key,
@@ -2084,11 +2060,11 @@ def _source_blocks_for_refs(conn: psycopg.Connection, refs: list[str]) -> list[d
 
 
 def _append_archived_clusters(
-    user_id: str, workspace_id: str, sections: list[str]
+    workspace_id: str, sections: list[str]
 ) -> str | None:
     if not sections:
         return None
-    archive_path = f"wiki/{user_id}/{workspace_id}/clusters/archived.md"
+    archive_path = f"wiki/{workspace_id}/clusters/archived.md"
     existing = _read_optional_text_object(archive_path)
     separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
     write_text_object(archive_path, f"{existing}{separator}" + "\n\n".join(sections).rstrip() + "\n")

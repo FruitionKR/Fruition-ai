@@ -736,10 +736,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         if "cluster_artifact" not in state:
-            object_name = (
-                f"wiki/{command['user_id']}/{command['workspace_id']}"
-                "/clusters/active.md"
-            )
+            object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
             existing_active = read_optional_text_object(object_name)
             state["cluster_artifact"] = build_post_ingest_cluster_artifact(
                 completion=_post_ingest_client(command),
@@ -759,7 +756,6 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if not state.get("cluster_applied"):
             changed_page_ids = database.persist_post_ingest_clusters(
                 str(command["document_id"]),
-                str(command["user_id"]),
                 str(command["workspace_id"]),
                 dict(state["cluster_artifact"]),
                 str(command["ingest_run_id"]),

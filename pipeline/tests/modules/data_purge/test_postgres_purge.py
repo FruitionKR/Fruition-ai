@@ -22,12 +22,8 @@ class FakeStorage:
         self.objects = set(keys)
 
     def list_objects(self, bucket, prefix, recursive):
-        keys = sorted(key for key in self.objects if key.startswith(prefix))
-        if recursive:
-            return [SimpleNamespace(object_name=key, is_dir=False) for key in keys]
-        # delimiter="/" 동작: prefix 바로 아래 하위 경로는 "…/" 디렉터리 항목 하나로 묶는다.
-        dirs = {prefix + key[len(prefix):].split("/", 1)[0] + "/" for key in keys if "/" in key[len(prefix):]}
-        return [SimpleNamespace(object_name=name, is_dir=True) for name in sorted(dirs)]
+        assert recursive
+        return [SimpleNamespace(object_name=key) for key in sorted(key for key in self.objects if key.startswith(prefix))]
 
     def remove_object(self, bucket, key):
         assert bucket == BUCKET
@@ -61,16 +57,17 @@ def database(monkeypatch):
 def storage(monkeypatch):
     fake = FakeStorage(
         {
-            "wiki/alice/ws/sources/doc.md",
-            "wiki/bob/ws/concepts/topic.md",
+            "wiki/ws/sources/doc.md",
+            "wiki/ws/concepts/topic.md",
             "wiki/ws/pages/page-ws/ops/1.json",
-            "wiki/alice/other/sources/keep.md",
+            "wiki/ws/logs/2026-10-11.md",  # DB에 흔적이 없는 lint 로그도 같은 prefix라 지워진다.
+            "wiki/other/sources/keep.md",
+            "wiki/ws2/sources/keep.md",  # 이름이 ws로 시작하는 다른 워크스페이스는 남는다.
             "agent-runs/a/artifacts/alice-ws.md",
             "agent-runs/b/artifacts/alice-other.md",
             "agent-runs/c/artifacts/bob-other.md",
         }
         | {f"pipeline-runs/{RUN_WS}/pipeline.log", f"pipeline-runs/{RUN_OTHER}/pipeline.log"}
-        | {"wiki/carol/ws/lint/report.md"}
     )
     monkeypatch.setattr(object_storage, "client", lambda: fake)
     monkeypatch.setenv("S3_BUCKET", BUCKET)
@@ -156,7 +153,7 @@ def test_workspace_purge_removes_workspace_ai_data_except_usage(database, storag
 
     first = purge.purge_workspace("ws")
 
-    assert first["wiki_pages"] == 1 and first["s3_objects"] == 5  # alice·bob·carol 객체, 작업 산출물, 에이전트 산출물(실행 로그 제외)
+    assert first["wiki_pages"] == 1 and first["s3_objects"] == 5  # wiki/ws/ 아래 객체 4개, 에이전트 산출물(실행 로그 제외)
     with database() as conn:
         assert ids(conn, "wiki_pages") == {"page-other"}
         assert ids(conn, "wiki_embedding_vectors") == {"shared"}
@@ -173,7 +170,7 @@ def test_workspace_purge_removes_workspace_ai_data_except_usage(database, storag
         assert ids(conn, "checkpoints", "thread_id") == {"agent-alice", "agent-bob"}
         assert ids(conn, "checkpoint_blobs", "thread_id") == {"agent-alice", "agent-bob"}
         assert ids(conn, "ai_model_usage", "workspace_id") == {"ws"}
-    assert storage.objects == {"wiki/alice/other/sources/keep.md", "agent-runs/b/artifacts/alice-other.md",
+    assert storage.objects == {"wiki/other/sources/keep.md", "wiki/ws2/sources/keep.md", "agent-runs/b/artifacts/alice-other.md",
                                "agent-runs/c/artifacts/bob-other.md", f"pipeline-runs/{RUN_WS}/pipeline.log",
                                f"pipeline-runs/{RUN_OTHER}/pipeline.log"}  # 실행 로그는 lifecycle 만료에 맡긴다
 
@@ -231,15 +228,6 @@ def test_purge_routes_require_internal_token(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"deleted": {"wiki_pages": 2}}
     assert calls == ["ws", "ws2"]
-
-
-def test_workspace_purge_removes_files_of_user_without_db_rows(database, storage):
-    """사용자를 먼저 파기해 DB 흔적이 없고 lint 산출물만 남은 wiki/U/W/ 도 S3 목록으로 찾아 지운다."""
-    storage.objects.add("wiki/dave/ws/lint/only.md")  # dave는 어느 테이블에도 행이 없다.
-
-    purge.purge_workspace("ws")
-
-    assert not {key for key in storage.objects if key.startswith(("wiki/dave/ws/", "wiki/carol/ws/"))}
 
 
 def test_edit_event_in_purged_workspace_does_not_revive_derived_state(database, monkeypatch, caplog):

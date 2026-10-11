@@ -1046,6 +1046,7 @@ def run_pipeline(
             "concept_page_mode": page_outputs.concept_page_mode,
             "document_id": document.document_id,
             "source_document_id": getattr(args, "source_document_id", None),
+            "display_name": getattr(args, "display_name", None),
             "source_page": page_outputs.source_page,
             "source_extraction_artifact": source_extraction_artifact,
             "source_blocks": source_block_records,

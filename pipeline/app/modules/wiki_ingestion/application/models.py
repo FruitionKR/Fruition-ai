@@ -81,6 +81,8 @@ class PipelineRunCommand:
     selection_mode: str | None = None
     reingest: bool = False
     input_markdown: str | None = None
+    # 소스 페이지 제목. 문서 편입·재편입에만 있고 채팅 export는 생성 제목을 쓴다.
+    display_name: str | None = None
     # 채팅 경로 전용. 있으면 Markdown을 다시 쪼개지 않고 이 블록 목록을 그대로 쓴다.
     input_blocks: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "api"

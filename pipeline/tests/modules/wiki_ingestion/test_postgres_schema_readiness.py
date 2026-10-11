@@ -75,8 +75,8 @@ def test_cleanup_deleted_wiki_pages_removes_only_workspace_targets() -> None:
         normalized = " ".join(query.split())
         queries.append((normalized, params))
         result = Mock()
-        if normalized.startswith("SELECT id, user_id FROM wiki_pages"):
-            result.fetchall.return_value = [{"id": "C1", "user_id": "user-1"}]
+        if normalized.startswith("SELECT id FROM wiki_pages"):
+            result.fetchall.return_value = [{"id": "C1"}]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             result.fetchall.return_value = [{"embedding_vector_id": "vector-1"}]
         else:
@@ -115,6 +115,27 @@ def test_lookup_wiki_pages_casts_optional_workspace_parameter() -> None:
     query, params = connection.execute.call_args.args
     assert "(%s::text IS NULL OR workspace_id = %s)" in query
     assert params == (["C1"], "ws-1", "ws-1")
+
+
+def test_rename_wiki_page_lets_any_workspace_member_rename() -> None:
+    connection = Mock()
+    page = Mock()
+    page.fetchone.return_value = {"id": "C1", "page_type": "concept", "title": "Old", "slug": "old"}
+    updated = Mock()
+    updated.fetchone.return_value = {"updated_at": "2026-10-11T00:00:00Z"}
+    connection.execute.side_effect = [page, updated]
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+
+    with patch.object(database, "connect", return_value=connection):
+        result = database.rename_wiki_page("C1", "ws-1", "New Title", True)
+
+    # 작성자 확인은 document 권한 검사로 옮겼다. ai는 워크스페이스만 맞춘다.
+    select_query, select_params = connection.execute.call_args_list[0].args
+    assert "user_id" not in select_query
+    assert select_params == ("C1", "ws-1")
+    assert result["slug"] == "new-title"
+    assert result["previous_title"] == "Old"
 
 
 def test_delete_document_wiki_data_rejects_wrong_workspace() -> None:

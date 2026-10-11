@@ -876,6 +876,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -977,7 +983,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -1708,6 +1714,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -1796,7 +1808,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -2044,6 +2056,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -2135,7 +2153,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -3106,6 +3124,7 @@ components:
           title: Update Slug
           type: boolean
         user_id:
+          description: 이름을 바꾸는 사용자입니다. 권한은 document가 확인하며 ai는 작성자를 확인하지 않습니다.
           minLength: 1
           title: User Id
           type: string

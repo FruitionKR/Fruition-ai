@@ -110,7 +110,7 @@ def test_persists_link_only_lint_change_for_its_source_page(monkeypatch) -> None
 
     class Connection:
         def execute(self, query, params):
-            assert params == ("user-1", "ws-1", ["shared"])
+            assert params == ("ws-1", ["shared"])
             assert "status = 'active'" not in query
             return Result()
 
@@ -135,7 +135,6 @@ def test_persists_link_only_lint_change_for_its_source_page(monkeypatch) -> None
     )
 
     artifacts = repository.persist_lint_operation_result(
-        "user-1",
         "ws-1",
         "lint-op-1",
         {
@@ -198,7 +197,6 @@ def test_missing_slug_markdown_read_failure_propagates_instead_of_empty_markdown
 
     try:
         repository.persist_lint_operation_result(
-            "user-1",
             "ws-1",
             "lint-op-1",
             {
