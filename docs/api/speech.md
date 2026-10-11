@@ -123,8 +123,12 @@ provider/model이거나 빠지면 `MEETING_NOTES_INPUT_REJECTED`, 해당 provide
 최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면
 `MEETING_NOTES_INPUT_REJECTED`로 실패하며 내용을 조용히 자르지 않는다.
 
-run은 task journal로 실행한다(`ai_task_runs`에 AI가 첫 수신 때 등록). 같은 command가 재전달되면 완료된 run은 저장된
-초안을 모델 호출 없이 재생하고, 실행 중이면 끝날 때까지 기다린다.
+run은 task journal로 실행한다(`ai_task_runs`에 AI가 첫 수신 때 등록). 전사는 작업이 끝날 때까지만 journal을 거치고,
+완료·실패·취소로 닫히는 즉시 command의 `segments`와 result의 초안 본문을 지운다(전사·초안의 소유자는 document다).
+command hash, 상태, `error_code`, `run_id`만 남는다. 같은 command가 재전달되면 완료된 run은 모델 호출 없이 본문 없는
+결과(`{"scrubbed": true}`)를 재생한다. document는 첫 결과 이벤트로 이미 초안을 저장했고 `generating`이 아닌 행은 바꾸지 않으므로
+재생 이벤트가 초안을 덮어쓰지 않는다. 첫 결과 이벤트가 유실된 채 재전달되면 초안을 복원할 수 없어 `MEETING_NOTES_INVALID`로
+실패하며 호출 서비스가 새 `run_id`로 재시도한다. 실행 중이면 끝날 때까지 기다린다.
 
 결과 이벤트(`ai.task.event`, 전사가 커서 `request`는 싣지 않는다. document는 `run_id`로 행을 찾는다):
 

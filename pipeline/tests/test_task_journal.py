@@ -433,3 +433,49 @@ def test_first_execution_records_attempt_without_warning(journal_database, caplo
     assert "[중단된 run 재실행]" not in caplog.text
     with connect() as conn:
         assert conn.execute("SELECT attempt FROM ai_task_runs WHERE id = 'run'").fetchone()["attempt"] == 1
+
+
+def meeting_command():
+    return dict(run_id="meet", workspace_id="ws", user_id="user", kind="meeting_notes", meeting_id="m",
+                segments=[dict(id="s1", text="비밀 전사")])
+
+
+def stored(connect):
+    with connect() as conn:
+        return conn.execute("SELECT status, command, result, command_hash FROM ai_task_runs WHERE id = 'meet'").fetchone()
+
+
+def test_meeting_notes_completion_scrubs_transcript_and_draft_but_replays(journal_database):
+    from app.core.pipeline_control import ReplayedResult
+    result = journal.execute(meeting_command(), lambda: {"summary": ["비밀 초안"]})
+    assert result == {"summary": ["비밀 초안"]}
+    row = stored(journal_database)
+    assert row["status"] == "completed" and "segments" not in row["command"] and row["result"] == {"scrubbed": True}
+    assert row["command"]["meeting_id"] == "m"
+    def unexpected():
+        pytest.fail("완료한 작업의 handler를 호출했습니다.")
+    replay = journal.execute(meeting_command(), unexpected)
+    assert isinstance(replay, ReplayedResult) and "summary" not in replay
+    with pytest.raises(journal.TaskCommandMismatchError):
+        journal.execute({**meeting_command(), "segments": [dict(id="s1", text="다른 전사")]}, unexpected)
+
+
+def test_meeting_notes_failure_scrubs_transcript_and_replays_code(journal_database):
+    class Rejected(ValueError):
+        code = "MEETING_NOTES_FAILED"
+    def reject():
+        raise Rejected("x")
+    with pytest.raises(Rejected):
+        journal.execute(meeting_command(), reject)
+    row = stored(journal_database)
+    assert row["status"] == "failed" and "segments" not in row["command"]
+    with pytest.raises(journal.TaskFailedError) as replay:
+        journal.execute(meeting_command(), reject)
+    assert replay.value.code == "MEETING_NOTES_FAILED"
+
+
+def test_other_kinds_keep_command_and_result(journal_database):
+    journal.execute({**command(), "payload": "keep"}, lambda: {"ok": 1})
+    with journal_database() as conn:
+        row = conn.execute("SELECT command, result FROM ai_task_runs WHERE id = 'run'").fetchone()
+    assert row["command"]["payload"] == "keep" and row["result"] == {"ok": 1}
