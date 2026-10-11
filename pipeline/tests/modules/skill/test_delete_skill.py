@@ -29,7 +29,7 @@ def test_delete_route_returns_empty_success_or_hides_unmanageable_skill(manageab
 @pytest.mark.parametrize("manageable", [True, False])
 def test_delete_checks_actor_under_row_lock_before_mutating(owner, manageable):
     conn = MagicMock()
-    with patch.object(storage, "_is_team_owner", return_value=owner), \
+    with patch.object(storage, "_can_manage_team", return_value=owner), \
          patch.object(storage.database, "connect_ai") as connect, \
          patch.object(storage, "_lock_manageable", return_value={"id": "skill-1"} if manageable else None) as lock:
         connect.return_value.__enter__.return_value = conn

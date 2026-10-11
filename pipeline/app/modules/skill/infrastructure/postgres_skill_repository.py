@@ -9,7 +9,7 @@ from app.core.pipeline_control import PipelineRunCancelledError
 
 from app.modules.skill.application.ports import ManageSkillRepositoryPort, SkillRepositoryPort
 from app.modules.skill.domain.entities import Skill, SkillVersion
-from app.modules.skill.infrastructure.workspace_authorization import get_workspace_role
+from app.modules.skill.infrastructure.workspace_authorization import can_manage_team_skills, get_workspace_role
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 
@@ -128,7 +128,7 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
         return self._get_with_access_filter(workspace_id, user_id, "s.command = %s", slug)
 
     def get_manageable(self, workspace_id: str | None, user_id: str, skill_id: str) -> Skill | None:
-        team_owner = _is_team_owner(workspace_id, user_id)
+        team_manager = _can_manage_team(workspace_id, user_id)
         with database.connect_ai() as conn:
             row = conn.execute(
                 SKILL_SELECT
@@ -143,7 +143,7 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
                       )
                   )
                 """,
-                (skill_id, user_id, workspace_id, team_owner),
+                (skill_id, user_id, workspace_id, team_manager),
             ).fetchone()
         return _row_to_skill(row) if row else None
 
@@ -172,7 +172,7 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
         return saved
 
     def save_published_version(self, skill: Skill, version: SkillVersion) -> Skill:
-        team_owner = _is_team_owner(skill.workspace_id, version.created_by or "")
+        team_manager = _can_manage_team(skill.workspace_id, version.created_by or "")
         with database.connect_ai() as conn:
             self._lock_parent(conn, version.created_by or "")
             if _lock_manageable(
@@ -180,7 +180,7 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
                 skill.workspace_id,
                 version.created_by or "",
                 skill.id,
-                team_owner,
+                team_manager,
             ) is None:
                 raise ValueError("Skill not found or not manageable.")
             before = (conn.execute("SELECT to_jsonb(s) AS snapshot FROM skills s WHERE id = %s",
@@ -204,9 +204,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
         return saved
 
     def set_enabled(self, workspace_id: str, user_id: str, skill_id: str, enabled: bool) -> Skill:
-        team_owner = _is_team_owner(workspace_id, user_id)
+        team_manager = _can_manage_team(workspace_id, user_id)
         with database.connect_ai() as conn:
-            manageable = _lock_manageable(conn, workspace_id, user_id, skill_id, team_owner)
+            manageable = _lock_manageable(conn, workspace_id, user_id, skill_id, team_manager)
             if manageable is None:
                 raise ValueError("Skill not found or not manageable.")
             row = conn.execute(
@@ -226,9 +226,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
         return saved
 
     def delete(self, workspace_id: str, user_id: str, skill_id: str) -> None:
-        team_owner = _is_team_owner(workspace_id, user_id)
+        team_manager = _can_manage_team(workspace_id, user_id)
         with database.connect_ai() as conn:
-            if _lock_manageable(conn, workspace_id, user_id, skill_id, team_owner) is None:
+            if _lock_manageable(conn, workspace_id, user_id, skill_id, team_manager) is None:
                 raise ValueError("Skill not found or not manageable.")
             # 버전은 CASCADE로 삭제하고, 과거 실행 기록의 버전 참조는 SET NULL로 보존한다.
             conn.execute("DELETE FROM skills WHERE id = %s", (skill_id,))
@@ -300,7 +300,7 @@ def _require_manage_scope(workspace_id: str | None, user_id: str, scope_type: st
         return
     if not workspace_id:
         raise ValueError("Team Skill requires a workspace.")
-    if get_workspace_role(workspace_id, user_id) != "OWNER":
+    if not can_manage_team_skills(workspace_id, user_id):
         raise ValueError("Workspace Skill management is not allowed.")
 
 
@@ -346,7 +346,7 @@ def _lock_manageable(
     workspace_id: str | None,
     user_id: str,
     skill_id: str,
-    team_owner: bool,
+    team_manager: bool,
 ) -> dict[str, Any] | None:
     return conn.execute(
         """
@@ -363,7 +363,7 @@ def _lock_manageable(
           )
         FOR UPDATE
         """,
-        (skill_id, user_id, workspace_id, team_owner),
+        (skill_id, user_id, workspace_id, team_manager),
     ).fetchone()
 
 
@@ -371,8 +371,8 @@ def _is_team_member(workspace_id: str | None, user_id: str) -> bool:
     return bool(workspace_id and get_workspace_role(workspace_id, user_id) != "NONE")
 
 
-def _is_team_owner(workspace_id: str | None, user_id: str) -> bool:
-    return bool(workspace_id and get_workspace_role(workspace_id, user_id) == "OWNER")
+def _can_manage_team(workspace_id: str | None, user_id: str) -> bool:
+    return bool(workspace_id and can_manage_team_skills(workspace_id, user_id))
 
 
 def _row_to_skill(row: dict[str, Any]) -> Skill:

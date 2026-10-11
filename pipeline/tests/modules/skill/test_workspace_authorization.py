@@ -22,3 +22,27 @@ def test_get_workspace_role_uses_access_internal_api(monkeypatch) -> None:
         timeout=3.0,
     )
     response.raise_for_status.assert_called_once_with()
+
+
+def _access_body(monkeypatch, body):
+    monkeypatch.setenv("ACCESS_INTERNAL_BASE_URL", "http://access-svc:8081")
+    monkeypatch.setenv("INTERNAL_CALLBACK_TOKEN", "internal-token")
+    response = Mock()
+    response.json.return_value = body
+    return patch("app.modules.skill.infrastructure.workspace_authorization.httpx.get", return_value=response)
+
+
+def test_team_skill_management_needs_owner_or_skill_author(monkeypatch) -> None:
+    from app.modules.skill.infrastructure.workspace_authorization import can_manage_team_skills
+
+    cases = [
+        ({"role": "OWNER", "permissions": []}, True),
+        ({"role": "MEMBER", "permissions": ["skill.author"]}, True),
+        ({"role": "MEMBER", "permissions": ["wiki.ingest"]}, False),
+        # permissions를 내리기 전 access 응답은 권한 없음으로 본다.
+        ({"role": "MEMBER"}, False),
+        ({"role": "NONE", "permissions": ["skill.author"]}, False),
+    ]
+    for body, expected in cases:
+        with _access_body(monkeypatch, body):
+            assert can_manage_team_skills("ws", "user") is expected, body
