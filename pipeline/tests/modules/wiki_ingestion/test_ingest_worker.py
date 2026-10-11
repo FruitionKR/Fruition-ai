@@ -435,6 +435,70 @@ def test_handle_delete_gives_up_after_bounded_lock_attempts() -> None:
     assert delete.call_count == ingest_worker.DELETE_LOCK_ATTEMPTS
 
 
+RENAME_COMMAND = {
+    "run_id": "run-1",
+    "kind": "document_renamed",
+    "document_id": "Document-1",
+    "workspace_id": "workspace-1",
+    "title": "새 이름",
+}
+
+
+def test_handle_rename_updates_source_page_title() -> None:
+    with patch.object(database, "rename_source_page") as rename:
+        assert ingest_worker._handle(RENAME_COMMAND) == {}
+
+    rename.assert_called_once_with("workspace-1", "Document-1", "새 이름")
+
+
+def test_handle_rename_rejects_blank_title() -> None:
+    with (
+        patch.object(database, "rename_source_page") as rename,
+        pytest.raises(ingest_worker.UnprocessableIngestCommand),
+    ):
+        ingest_worker._handle({**RENAME_COMMAND, "title": "  "})
+
+    rename.assert_not_called()
+
+
+def test_rename_skips_journal_and_rejects_purged_workspace() -> None:
+    from app.core.pipeline_control import ScopePurgedError
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    with (
+        patch.object(journal, "connect"),
+        patch.object(journal, "workspace_purged", return_value=True),
+        patch.object(journal, "execute") as execute,
+        patch.object(database, "rename_source_page") as rename,
+        pytest.raises(ScopePurgedError),
+    ):
+        ingest_worker._handle_controlled(RENAME_COMMAND)
+
+    execute.assert_not_called()
+    rename.assert_not_called()
+
+
+def test_rename_event_has_own_kind_and_no_post_ingest() -> None:
+    assert ingest_worker._event(RENAME_COMMAND, "succeeded")["kind"] == "document_rename"
+    assert ingest_worker._post_ingest_command(RENAME_COMMAND) is None
+
+
+def test_rename_source_page_matches_slugified_source_page_in_workspace() -> None:
+    connection = MagicMock()
+    execute = connection.__enter__.return_value.execute
+    execute.return_value.rowcount = 0
+
+    with patch.object(database, "connect", return_value=connection):
+        # 편입 전 문서는 0행이어도 오류가 아니고, 같은 command를 다시 받아도 같은 UPDATE일 뿐이다.
+        assert database.rename_source_page("workspace-1", "Doc_1", "새 이름") == 0
+        database.rename_source_page("workspace-1", "Doc_1", "새 이름")
+
+    query, params = execute.call_args.args
+    assert "UPDATE wiki_pages" in query and "page_type = 'source'" in query
+    assert params == ("새 이름", "workspace-1", "doc-1")
+    assert execute.call_count == 2
+
+
 def test_redelivered_running_ingest_seeks_back_and_waits_instead_of_crashing() -> None:
     from types import SimpleNamespace
 
