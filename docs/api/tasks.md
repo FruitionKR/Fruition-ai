@@ -14,6 +14,22 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 내부 상태 응답의 `error_code`는 오류가 없을 때 `null`입니다. 목록 pagination은 없습니다.
 실패(`failed`)로 닫힌 작업의 `error_code`는 실패 예외가 사유 코드를 가지면 그 코드(예: Skill 거절 `intent_ambiguous`), 없으면 `task_failed`입니다.
 
+## 실패 코드 계약
+
+`ai.task.event`의 실패 이벤트 `error`, `agent_runs.error_code`, `pipeline_runs.error`, ingest·post_ingest 실패 payload의 `summary`는 예외 원문이 아니라 코드만 담습니다. 사용자에게 보이는 문구는 Document가 코드별로 정하며, 예외 원문은 AI 로그에만 남습니다.
+
+| 코드 | 의미 |
+|---|---|
+| `provider_rate_limited` | 모델 공급사 429·rate limit |
+| `provider_unavailable` | 공급사 5xx·시간 초과·연결 오류·과부하 |
+| `input_rejected` | 검증 실패·`ValueError` 등 처리할 수 없는 입력 |
+| `deadline_exceeded` | 호출자가 기다리는 시간 초과 |
+| `cancelled` | 취소 요청·대상 비활성화·파기된 범위 |
+| `internal_error` | 그 외 모든 실패 |
+| `mutation_intent_required` | Agent 계획 단계에서 변경 의도를 확인해야 하는 되묻기(clarification) 사유 |
+
+기능별 기존 코드(`agent_turn_failed`, `agent_turn_cancelled`, `invalid_agent_turn_request`, `agent_not_configured`, `agent_turn_route_contract_failed`, `markdown_*`, `SKILL_NOT_FOUND`, `SKILL_DISABLED`, `invalid_llm_selection`, `agent_turn_interrupted`, `task_failed`, `interrupted_attempts_exhausted`, `rollback_child_failed`, `MEETING_NOTES_*`, `rollback_*`)는 그대로 유지합니다. 분류는 `app/core/failure_codes.py`의 `failure_code(exc)`가 맡으며, 우리 예외(`TaskFailedError` 등)의 `code`만 그대로 쓰고 SDK 예외의 본문 code는 무시합니다. 저장된 값이 코드 모양이 아니면 재전달 때 `task_failed`로 바꿉니다.
+
 
 상태 의미·복구 순서·검증 범위는 [공통 계약](https://github.com/FruitionKR/Fruition-flatform/blob/main/docs/api/ai-task-cancellation.md)을 따릅니다. 업무 DB 복구 API는 [Document](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/tasks.md#업무-변경-복구-내부-api)가 제공합니다.
 

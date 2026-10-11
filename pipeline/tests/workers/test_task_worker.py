@@ -701,7 +701,8 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
     ):
         task_worker._handle_post_ingest(command)
 
-    fail.assert_called_once_with("post-run-1", "embedding unavailable")
+    fail.assert_called_once_with("post-run-1", "internal_error")
+    assert update_parent.call_args.args[1]["error"] == "internal_error"
     assert update_parent.call_args.args[1]["status"] == "needs_review"
 
 

@@ -1,6 +1,8 @@
+import logging
 from collections.abc import Callable
 from typing import Any
 
+from app.core.failure_codes import failure_code
 from app.core.pipeline_control import PipelineRunCancelledError, task_cancellation_scope
 from app.modules.wiki_ingestion.application.models import (
     PipelineRunCommand,
@@ -11,6 +13,8 @@ from app.modules.wiki_ingestion.application.ports import (
     PipelineRunRepositoryPort,
     WikiEmbeddingJobPort,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RunPipelineUseCase:
@@ -83,7 +87,8 @@ class RunPipelineUseCase:
             self._embedding_job.start(run_id, page_ids)
             return manifest
         except Exception as exc:
-            self._repository.fail(run_id, str(exc))
+            logger.warning("[pipeline 실행 실패] run_id=%s", run_id, exc_info=True)
+            self._repository.fail(run_id, failure_code(exc))
             raise
 
     def _ensure_current_source(self, command: PipelineRunCommand) -> None:

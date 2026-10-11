@@ -106,9 +106,7 @@ def test_handle_rejects_command_that_reuses_another_run_context() -> None:
                 }
             )
 
-    repository.fail.assert_called_once_with(
-        "run-1", "ingest command does not match the registered run context"
-    )
+    repository.fail.assert_called_once_with("run-1", "input_rejected")
 
 
 def test_handle_records_failure_after_run_registration() -> None:
@@ -134,7 +132,7 @@ def test_handle_records_failure_after_run_registration() -> None:
         with pytest.raises(RuntimeError, match="document lookup failed"):
             ingest_worker._handle(command)
 
-    repository.fail.assert_called_once_with("run-1", "document lookup failed")
+    repository.fail.assert_called_once_with("run-1", "internal_error")
 
 
 def test_build_payload_requires_actor_context() -> None:
@@ -266,13 +264,13 @@ def test_build_payload_accepts_chat_command_with_source_blocks() -> None:
 
 def test_terminal_failed_result_keeps_failed_event_status() -> None:
     command = {"run_id": "run-1", "kind": "document"}
-    result = {"status": "failed", "summary": "pipeline failed"}
+    result = {"status": "failed", "summary": "internal_error"}
 
     event = ingest_worker._result_event(command, result)
 
     assert event["event_id"] == "ingest:run-1:failed"
     assert event["status"] == "failed"
-    assert event["error"] == "pipeline failed"
+    assert event["error"] == "internal_error"
 
 
 def test_post_ingest_command_is_stable_for_redelivery() -> None:

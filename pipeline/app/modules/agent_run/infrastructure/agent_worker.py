@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from langsmith import tracing_context
 
+from app.core.failure_codes import failure_code
 from app.modules.agent_run.application.rollback_agent_run import RollbackAgentRunUseCase
 from app.modules.agent_run.application.ports import (
     AgentJobRepositoryPort,
@@ -82,14 +83,16 @@ class AgentWorker:
                 self._run_job(job)
             self._repository.complete(job)
         except Exception as exc:
+            code = failure_code(exc)
             logger.error(
-                "Agent job 처리 실패: job_id=%s job_type=%s type=%s detail=%s",
+                "Agent job 처리 실패: job_id=%s job_type=%s type=%s error_code=%s detail=%s",
                 job.id,
                 job.job_type,
                 type(exc).__name__,
+                code,
                 _failure_detail(exc),
             )
-            self._repository.fail(job, _failure_detail(exc))
+            self._repository.fail(job, code)
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
@@ -661,6 +664,7 @@ def _route_job_event(state: AgentRunGraphState) -> str:
 
 
 def _failure_detail(exc: Exception) -> str:
+    # 로그 전용이다. agent_runs에는 failure_code만 저장한다. 외부 예외 원문은 비밀을 담을 수 있어 타입 이름만 남긴다.
     if type(exc) is ValueError and _is_internal_value_error(exc):
         detail = " ".join(str(exc).split())
         if detail:

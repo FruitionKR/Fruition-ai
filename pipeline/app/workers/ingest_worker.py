@@ -17,6 +17,7 @@ backend가 `ai.ingest.command` topic에 발행한 문서/채팅 Wiki ingest 명�
 
 from __future__ import annotations
 
+from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError
 
 import asyncio
@@ -147,7 +148,7 @@ def _event(command: dict, status: str, payload: dict | None = None, error: str |
 
 def _result_event(command: dict, result: dict) -> dict:
     if result.get("status") == "failed":
-        error = str(result.get("summary") or "Wiki ingest에 실패했습니다.")
+        error = str(result.get("summary") or INTERNAL_ERROR)
         return _event(command, "failed", payload=result, error=error)
     return _event(command, "succeeded", payload=result)
 
@@ -244,7 +245,7 @@ def _handle(command: dict) -> dict:
     ):
         error = "ingest command does not match the registered run context"
         if existing.get("status") not in TERMINAL_STATUSES:
-            repository.fail(run_id, error)
+            repository.fail(run_id, INPUT_REJECTED)
         raise ValueError(error)
     if existing and existing.get("status") in TERMINAL_STATUSES:
         logger.info(
@@ -253,7 +254,7 @@ def _handle(command: dict) -> dict:
             existing.get("status"),
         )
         manifest = existing.get("manifest") or {}
-        return _result_payload(command, manifest, str(existing.get("status")), existing.get("error"))
+        return _result_payload(command, manifest, str(existing.get("status")), stored_code(existing.get("error")) if existing.get("error") else None)
     payload = _build_payload(command)
     logger.info(
         "[ingest 실행 시작] run_id=%s kind=%s document_id=%s workspace_id=%s",
@@ -269,7 +270,7 @@ def _handle(command: dict) -> dict:
             run_id=run_id,
         )
     except Exception as exc:
-        repository.fail(run_id, str(exc))
+        repository.fail(run_id, failure_code(exc))
         raise
     logger.info("[ingest 실행 완료] run_id=%s", run_id)
     return _result_payload(command, response.manifest, "succeeded")
@@ -336,14 +337,14 @@ async def consume() -> None:
                         if run_id:
                             try:
                                 # 이미 등록된 run이면 실패로 남긴다(미등록이면 아무 일도 하지 않는다).
-                                get_pipeline_run_repository().fail(run_id, str(exc))
+                                get_pipeline_run_repository().fail(run_id, failure_code(exc))
                             except Exception:
                                 logger.exception("[ingest command 폐기] run 실패 기록 실패 run_id=%s", run_id)
                         event = _event(
                             message.value,
                             "failed",
-                            payload=_result_payload(message.value, None, "failed", str(exc)),
-                            error=str(exc)[:1000],
+                            payload=_result_payload(message.value, None, "failed", failure_code(exc)),
+                            error=failure_code(exc),
                         )
                     except Exception as exc:
                         logger.exception(
@@ -366,8 +367,8 @@ async def consume() -> None:
                         event = _event(
                             message.value,
                             "failed",
-                            payload=_result_payload(message.value, durable.get("manifest"), "failed", str(exc)),
-                            error=str(exc)[:1000],
+                            payload=_result_payload(message.value, durable.get("manifest"), "failed", failure_code(exc)),
+                            error=failure_code(exc),
                         )
                     await producer.send_and_wait(
                         RESULT_TOPIC, event, key=event["run_id"].encode("utf-8")

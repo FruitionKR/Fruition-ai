@@ -168,7 +168,7 @@ class RunPipelineUseCaseTest(unittest.TestCase):
             [
                 ("touch", "run-1"),
                 ("run", command),
-                ("fail", "run-1", "pipeline failed"),
+                ("fail", "run-1", "internal_error"),
             ],
         )
 
@@ -238,7 +238,7 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                 (
                     "fail",
                     "run-1",
-                    "Pipeline run cancelled because its document or workspace is inactive.",
+                    "cancelled",
                 ),
             ],
         )
@@ -274,7 +274,7 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                 (
                     "fail",
                     "run-1",
-                    "Pipeline run cancelled because its document or workspace is inactive.",
+                    "cancelled",
                 ),
             ],
         )
