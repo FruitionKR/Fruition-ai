@@ -145,9 +145,12 @@ def test_postgres_lint_reads_active_contribution_logs_and_removes_orphan(
         def fetchall(self):
             return self._rows
 
+    scope_params = []
+
     class Connection:
-        def execute(self, query, _params):
+        def execute(self, query, params):
             normalized = " ".join(query.split())
+            scope_params.append(params)
             if "SELECT page.id" in normalized:
                 return Result([{"id": "page-shared"}])
             if "FROM wiki_page_links link" in normalized:
@@ -207,18 +210,19 @@ def test_postgres_lint_reads_active_contribution_logs_and_removes_orphan(
     monkeypatch.setattr(
         repository,
         "_remove_stale_relations",
-        lambda _conn, relations, _active, _user, _workspace: (
+        lambda _conn, relations, _active, _workspace: (
             removed.extend(relations) or relations
         ),
     )
 
     result = repository.lint_orphan_wiki_links(
-        "user-1",
         "ws-1",
         apply=True,
         connection=connection,
     )
 
+    # 공유 위키라 사용자를 가리지 않고 워크스페이스 전체 링크를 본다.
+    assert scope_params == [("ws-1",), ("ws-1", "ws-1")]
     assert read_keys == [
         "wiki/ws/pages/shared/ops/B.json",
         "wiki/ws/pages/shared/ops/A.json",

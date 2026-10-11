@@ -1285,7 +1285,6 @@ def lint_wiki_workspace(
     with _connection_scope(connection) as conn:
         reconciliation_candidates = _list_reconciliation_candidates(
             conn,
-            user_id,
             workspace_id,
         )
     stale_source_refs = {
@@ -1398,7 +1397,7 @@ def lint_wiki_workspace(
             {
                 key: value
                 for key, value in candidate.items()
-                if key not in {"user_id", "workspace_id"}
+                if key != "workspace_id"
                 and not key.startswith("_")
             }
             for candidate in reconciliation_candidates
@@ -1416,7 +1415,7 @@ def lint_wiki_workspace(
             result["applied_reconciliations"] = _apply_structural_reconciliation(
                 conn,
                 reconciliation_candidates,
-                _active_relation_keys(conn, user_id, workspace_id),
+                _active_relation_keys(conn, workspace_id),
             )
     if materialize_promotions and promotion_page_generator is not None:
         with _connection_scope(connection) as conn:
@@ -1461,7 +1460,6 @@ def lint_wiki_workspace(
 
 
 def lint_orphan_wiki_links(
-    user_id: str,
     workspace_id: str,
     *,
     apply: bool,
@@ -1480,7 +1478,6 @@ def lint_orphan_wiki_links(
             FROM wiki_pages page
             WHERE page.page_type = 'concept'
               AND page.status = 'active'
-              AND page.user_id = %s
               AND page.workspace_id = %s
               AND EXISTS (
                   SELECT 1
@@ -1488,7 +1485,7 @@ def lint_orphan_wiki_links(
                   WHERE link.from_page_id = page.id
               )
             """,
-            (user_id, workspace_id),
+            (workspace_id,),
         ).fetchall()
         contribution_rows = read_contributions(
             [str(row["id"]) for row in contribution_page_rows],
@@ -1504,12 +1501,10 @@ def lint_orphan_wiki_links(
             FROM wiki_page_links link
             JOIN wiki_pages source_page ON source_page.id = link.from_page_id
             JOIN wiki_pages target_page ON target_page.id = link.to_page_id
-            WHERE source_page.user_id = %s
-              AND source_page.workspace_id = %s
-              AND target_page.user_id = %s
+            WHERE source_page.workspace_id = %s
               AND target_page.workspace_id = %s
             """,
-            (user_id, workspace_id, user_id, workspace_id),
+            (workspace_id, workspace_id),
         ).fetchall()
 
         managed_contributions = []
@@ -1552,7 +1547,6 @@ def lint_orphan_wiki_links(
                 conn,
                 candidates,
                 set(),
-                user_id,
                 workspace_id,
             )
             if apply
@@ -1583,7 +1577,6 @@ def write_wiki_lint_log(
 
 
 def persist_lint_operation_result(
-    user_id: str,
     workspace_id: str,
     operation_id: str,
     result: dict[str, Any],
@@ -1629,11 +1622,10 @@ def persist_lint_operation_result(
                 SELECT id, slug, title, summary, markdown_uri
                 FROM wiki_pages
                 WHERE page_type = 'concept'
-                  AND user_id = %s
                   AND workspace_id = %s
                   AND slug = ANY(%s)
                 """,
-                (user_id, workspace_id, missing_slugs),
+                (workspace_id, missing_slugs),
             ).fetchall()
         for row in rows:
             # _read_optional_text_object는 읽기 실패도 빈 문자열로 삼켜서, 저장소 장애를
@@ -1769,7 +1761,6 @@ def _materialize_promotion_candidates(
     if apply_reconciliation:
         reconciliation_candidates = _list_reconciliation_candidates(
             conn,
-            user_id,
             workspace_id,
         )
         (
@@ -1780,7 +1771,7 @@ def _materialize_promotion_candidates(
         applied_reconciliations = _apply_structural_reconciliation(
             conn,
             reconciliation_candidates,
-            _active_relation_keys(conn, user_id, workspace_id),
+            _active_relation_keys(conn, workspace_id),
         )
     latest_active_markdown = _read_optional_text_object(
         f"wiki/{workspace_id}/clusters/active.md"

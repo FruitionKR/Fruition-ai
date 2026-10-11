@@ -76,7 +76,6 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
             )
             result.update(
                 database.lint_orphan_wiki_links(
-                    command.user_id,
                     command.workspace_id,
                     apply=not command.dry_run,
                     connection=connection,
@@ -87,7 +86,6 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                 written_object_keys: list[str] = []
                 try:
                     operation_artifacts = database.persist_lint_operation_result(
-                        command.user_id,
                         command.workspace_id,
                         str(command.operation_id),
                         result,

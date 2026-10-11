@@ -13,7 +13,6 @@ from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
 
 def list_reconciliation_candidates(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
@@ -21,7 +20,6 @@ def list_reconciliation_candidates(
         WITH scoped_runs AS (
             SELECT run.id AS pipeline_run_id,
                    run.document_id,
-                   run.user_id,
                    run.workspace_id,
                    run.manifest,
                    row_number() OVER (
@@ -33,12 +31,10 @@ def list_reconciliation_candidates(
             FROM pipeline_runs run
             WHERE run.status = 'succeeded'
               AND run.manifest IS NOT NULL
-              AND run.user_id = %s
               AND run.workspace_id = %s
         )
         SELECT current_run.pipeline_run_id,
                current_run.document_id,
-               current_run.user_id,
                current_run.workspace_id,
                current_run.manifest,
                COALESCE(previous.manifests, '[]'::jsonb) AS previous_manifests,
@@ -71,7 +67,7 @@ def list_reconciliation_candidates(
           ) > 0
         ORDER BY current_run.document_id
         """,
-        (user_id, workspace_id),
+        (workspace_id,),
     ).fetchall()
     return [_reconciliation_candidate(row) for row in rows]
 
@@ -94,7 +90,6 @@ def apply_structural_reconciliation(
             conn,
             candidate["stale_relations"],
             active_relation_keys,
-            candidate["user_id"],
             candidate["workspace_id"],
         )
         conn.execute(
@@ -130,7 +125,6 @@ def apply_structural_reconciliation(
 
 def active_relation_keys(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
 ) -> set[tuple[str, str, str]]:
     rows = conn.execute(
@@ -140,14 +134,13 @@ def active_relation_keys(
         FROM pipeline_runs run
         WHERE run.status = 'succeeded'
           AND run.manifest IS NOT NULL
-          AND run.user_id = %s
           AND run.workspace_id = %s
         ORDER BY run.document_id,
                  run.finished_at DESC NULLS LAST,
                  run.created_at DESC,
                  run.id DESC
         """,
-        (user_id, workspace_id),
+        (workspace_id,),
     ).fetchall()
     return {
         _relation_key(relation)
@@ -233,7 +226,6 @@ def _reconciliation_candidate(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "pipeline_run_id": str(row["pipeline_run_id"]),
         "document_id": document_id,
-        "user_id": str(row["user_id"]),
         "workspace_id": str(row["workspace_id"]),
         "invalidated_source_refs": [
             f"{document_id}:{block_id}" for block_id in invalidated_ids
@@ -333,7 +325,6 @@ def _remove_stale_relations(
     conn: psycopg.Connection,
     relations: list[dict[str, str]],
     active_keys: set[tuple[str, str, str]],
-    user_id: str,
     workspace_id: str,
 ) -> list[dict[str, str]]:
     removed: list[dict[str, str]] = []
@@ -351,9 +342,7 @@ def _remove_stale_relations(
               AND target_page.page_type = split_part(%s, ':', 1)
               AND target_page.slug = split_part(%s, ':', 2)
               AND link.link_type = %s
-              AND source_page.user_id = %s
               AND source_page.workspace_id = %s
-              AND target_page.user_id = %s
               AND target_page.workspace_id = %s
             RETURNING link.from_page_id
             """,
@@ -363,9 +352,7 @@ def _remove_stale_relations(
                 relation["target"],
                 relation["target"],
                 relation["relation"],
-                user_id,
                 workspace_id,
-                user_id,
                 workspace_id,
             ),
         ).fetchone()
