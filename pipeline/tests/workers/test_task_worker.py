@@ -1854,3 +1854,15 @@ def test_post_ingest_for_deleted_source_stops_before_run_registration_and_model_
         task_worker._handle_post_ingest(command)
     create.assert_not_called()
     build.assert_not_called()
+
+
+def test_post_ingest_event_carries_parent_ingest_run_id_without_request() -> None:
+    from app.workers import task_worker
+
+    command = {"run_id": "pi-1", "kind": "post_ingest", "ingest_run_id": "ingest-1",
+               "workspace_id": "ws", "user_id": "u", "document_id": "d"}
+    event = task_worker._event(command, "succeeded", payload={}, with_request=False)
+
+    assert event["ingest_run_id"] == "ingest-1"
+    assert "request" not in event
+    assert "ingest_run_id" not in task_worker._event({"run_id": "q-1", "kind": "query"}, "failed")
