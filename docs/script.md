@@ -65,9 +65,10 @@ Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행�
 
 access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이터를 파기한 워크스페이스·사용자는 AI 데이터(위키, 스킬, 에이전트 기록, S3 객체)가 남아 있다. 일회성 스크립트 `pipeline/reconcile_purged_scopes.py`가 access에 없는 ID를 찾아 기존 파기 함수(`purge_workspace`·`purge_user`)로 지운다. 파기 함수는 멱등이라 재실행해도 같다. `ai_model_usage`는 정산용이라 지우지 않는다.
 
-1. access DB에서 **현재 존재하는** ID를 내보낸다. 삭제 유예 중인 워크스페이스(`deleted_at`이 있는 행)는 아직 파기 대상이 아니므로 포함한다.
+1. access DB에서 **현재 존재하는** ID를 내보내고, 내보낸 시각을 기록한다. 삭제 유예 중인 워크스페이스(`deleted_at`이 있는 행)는 아직 파기 대상이 아니므로 포함한다.
 
    ```sql
+   SELECT now();  -- 내보낸 시각. --exported-at에 시간대 포함 ISO-8601로 쓴다.
    \copy (SELECT id FROM workspaces) TO 'workspace_ids.txt'
    \copy (SELECT id FROM users) TO 'user_ids.txt'
    ```
@@ -75,7 +76,10 @@ access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이�
 2. `pipeline/`에서 AI DB(`AI_DATABASE_URL`)와 S3 환경변수를 주입하고 dry-run으로 파기 대상을 확인한다. 파일이 비어 있으면 전체 파기를 막기 위해 실행을 거부한다.
 
    ```bash
-   python reconcile_purged_scopes.py --workspace-ids-file workspace_ids.txt --user-ids-file user_ids.txt
+   python reconcile_purged_scopes.py --workspace-ids-file workspace_ids.txt --user-ids-file user_ids.txt \
+     --exported-at 2026-10-11T12:00:00+09:00
    ```
 
-3. 출력의 `stale_workspace_ids`·`stale_user_ids`가 의도한 목록인지 확인한 뒤 `--apply`를 붙여 실행한다. 내보낸 뒤 새로 만들어진 워크스페이스·사용자는 파일에 없어 파기되므로, 내보내기부터 `--apply`까지 시간을 짧게 두고 목록의 ID에 최근 생성분이 없는지 본다.
+   AI 테이블에서 가장 이르게 나타난 시각이 `--exported-at`보다 1시간 넘게 앞선 ID만 `to_purge_*`에 오른다. export 뒤에 생긴 ID와 시각 근거가 없는 ID는 `skipped_*`에 사유와 함께 남고 파기하지 않는다.
+
+3. `to_purge_workspaces`·`to_purge_users`(ID별 최초 확인 시각)가 의도한 목록인지 확인한 뒤 `--apply`를 붙여 실행한다.
