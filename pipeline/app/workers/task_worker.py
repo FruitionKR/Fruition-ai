@@ -933,6 +933,9 @@ def _event(
     }
     if with_request:
         event["request"] = without_top_level_secrets(command)
+    if command.get("ingest_run_id"):
+        # post_ingest는 원본 command를 싣지 않으므로, document가 어느 편입의 후속인지 알도록 부모 편입 run만 싣는다.
+        event["ingest_run_id"] = str(command["ingest_run_id"])
     event["payload"] = payload
     event["error"] = error
     return event

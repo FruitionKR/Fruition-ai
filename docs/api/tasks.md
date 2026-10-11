@@ -16,6 +16,8 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 
 ## 실패 코드 계약
 
+`kind=post_ingest` 결과 이벤트는 원본 command(`request`)를 싣지 않는 대신, 어느 편입의 후속인지 알 수 있게 부모 편입 run id를 최상위 `ingest_run_id`에 담습니다.
+
 `ai.task.event`의 실패 이벤트 `error`, `agent_runs.error_code`, `pipeline_runs.error`, ingest·post_ingest 실패 payload의 `summary`는 예외 원문이 아니라 코드만 담습니다. 사용자에게 보이는 문구는 Document가 코드별로 정하며, 예외 원문은 AI 로그에만 남습니다.
 
 | 코드 | 의미 |
