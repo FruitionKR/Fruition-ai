@@ -49,6 +49,8 @@ async def transcribe(
     request_id: RequestId = None,
     workspace_id: str = Query(min_length=1, max_length=128),
     user_id: str = Query(min_length=1, max_length=128),
+    # 채팅처럼 ALB idle timeout 안에 끝나야 하는 호출자만 보낸다. 없으면 전체 시간 상한이 없다.
+    deadline_seconds: int | None = Query(default=None, ge=1, le=600),
 ) -> TranscriptionResponse:
     await run_in_threadpool(authorize_speech, workspace_id, user_id)
     media_type = request.headers.get("content-type", "").split(";")[0].strip()
@@ -65,7 +67,7 @@ async def transcribe(
              "kind": "speech_transcription"}
     try:
         with usage_scope(scope):
-            text = await speech.transcribe(bytes(audio), media_type)
+            text = await speech.transcribe(bytes(audio), media_type, deadline_seconds)
         return TranscriptionResponse(text=text)
     except InvalidAudioError as exc:
         raise HTTPException(422, str(exc)) from exc

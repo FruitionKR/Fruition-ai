@@ -49,7 +49,13 @@ def test_transcription_requires_auth_and_valid_audio(client):
     )
     response = http.post(url, params=SCOPE, headers=headers, content=b"audio")
     assert response.json() == {"text": "문서를 찾아줘"}
-    speech.transcribe.assert_awaited_once_with(b"audio", "audio/webm")
+    speech.transcribe.assert_awaited_once_with(b"audio", "audio/webm", None)
+    # 채팅 호출자만 deadline_seconds를 보내고, 범위(1..600) 밖이면 거절한다.
+    http.post(url, params={**SCOPE, "deadline_seconds": 100}, headers=headers, content=b"audio")
+    speech.transcribe.assert_awaited_with(b"audio", "audio/webm", 100)
+    for bad in (0, 601):
+        assert http.post(url, params={**SCOPE, "deadline_seconds": bad}, headers=headers,
+                         content=b"audio").status_code == 422
 
 
 @pytest.mark.parametrize(

@@ -19,12 +19,13 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 
 ### `POST /speech/transcriptions`
 
-- Query: `workspace_id`, `user_id` (각 1–128자).
+- Query: `workspace_id`, `user_id` (각 1–128자), 선택 `deadline_seconds`(정수 1–600).
 - Body: multipart가 아닌 마이크 발화의 오디오 bytes. 아래 형식은 전송 인코딩이며 파일 첨부 UI 계약이 아니다.
 - Content-Type: `audio/wav`, `audio/mpeg`, `audio/mp4`, `audio/webm`.
 - 최대 24 MiB. 빈 파일은 거부한다. 모델: `gpt-transcribe`.
 - 성공: `{"text":"사용자 발화"}`. 빈 text는 발화 없음으로 처리한다.
-- 오류: 인증 `401/503`, workspace 거부 `403`, 크기 `413`, 형식 `415`, 빈 입력 `422`, 제공자 실패 `502`. 전사는 100초(ALB idle 120초보다 짧게) 안에 끝나지 않으면 `502`로 포기한다.
+- 오류: 인증 `401/503`, workspace 거부 `403`, 크기 `413`, 형식 `415`, 빈 입력 `422`, 제공자 실패 `502`, `deadline_seconds` 범위 오류 `422`.
+- 시간 상한: `deadline_seconds`를 보내면 그 시간 안에 전사가 끝나지 않을 때 `502`로 포기한다. ALB idle timeout(120초) 뒤에는 호출자가 끊어 결과를 쓸 곳이 없으므로 채팅 호출자는 `100`을 보낸다. 보내지 않으면(백그라운드 회의 녹음 파일, 최대 24 MiB) 전체 시간 상한 없이 공급사 응답을 최대 900초까지 기다린다.
 
 이 API는 전사만 반환하고 Agent를 실행하지 않는다. 오디오 bytes만으로 마이크 발화와
 첨부 파일의 출처를 판별할 수 없으므로 호출 서비스가 입력 경로를 구분해야 한다.
