@@ -5,6 +5,8 @@ Accepted
 
 개정 2026-10-11: 실행 로그 보관 기간을 최대 30일에서 약 60일로, S3 이전 버전 정리의 적용 상태를 정정했다.
 
+개정 2026-10-11(ADR 0033): 위키 객체 키가 `wiki/{workspace_id}/` 하나로 통일돼, S3 목록으로 사용자 prefix를 찾던 결정과 그 비용 결과를 대체했다.
+
 ## Context
 탈퇴한 사용자와 영구 삭제된 워크스페이스의 AI 데이터(위키, 스킬, 에이전트 기록, 질의 원문이 담긴 작업 기록, S3 객체)는 파기돼야 한다(Fruition-ai#61). 파기 API는 만들었지만 호출하는 곳이 없었고, 점검에서 다음 결함이 나왔다.
 
@@ -17,7 +19,7 @@ Accepted
 - **호출자와 순서**: Access가 Document 파기가 성공한 뒤 AI 파기를 부른다. Document 파기가 한 트랜잭션으로 미발행 outbox를 지우므로 "보내지 않은 명령이 남은 채 AI 파기가 끝나는" 경합이 없고, 이미 나간 메시지는 `ai_purged_scopes`가 거절한다. Document는 AI를 알 필요가 없다.
 - **실행 로그는 지우지 않는다**: 로그에는 단계·ID·개수·소요 시간·오류 메시지만 있고 문서 본문이 없다. `pipeline-runs/` prefix의 30일 만료 lifecycle(Fruition-flatform)로 정리한다. 버킷이 버전 관리 대상이라 `expiration days=30`은 객체를 지우지 않고 delete marker만 추가하고, 이전 버전은 `noncurrent_version_expiration` 30일 규칙이 그 뒤 30일에 지워 실제 삭제는 약 60일 걸린다. 이미 발행된 Kafka 메시지는 최대 72시간 보관된다. 이전 버전 만료와 `pipeline-runs/` 만료 규칙은 Fruition-flatform PR #77에만 있고 아직 적용되지 않았다. 적용 전에는 삭제한 S3 객체가 이전 버전으로 무기한 남는다(기존 규칙은 `tmp/`만 다룬다).
 - **`ai_model_usage`는 정산용으로 남긴다.** 보관 기간은 법률 검토 뒤 정한다.
-- **사용자 prefix는 S3 목록으로 찾는다**: `wiki/`를 구분자 `/`로 나열한 하위 prefix마다 `wiki/{p}/{workspace_id}/` 아래를 지우고, `wiki/{workspace_id}/`도 지운다. DB에서 사용자 목록을 만드는 코드는 제거한다.
+- **워크스페이스 파기는 `wiki/{workspace_id}/` 하나만 지운다(ADR 0033)**: 위키 본문·클러스터·로그·페이지 이력이 모두 이 prefix 아래에 있다. 사용자 목록을 DB나 S3 목록에서 만들지 않는다.
 
 ## Alternatives
 - **호출 순서 A, Document가 동기로 AI를 호출**: Document가 AI를 알아야 하고 Document 파기가 AI 장애에 묶인다. 기각.
@@ -28,5 +30,4 @@ Accepted
 ## Consequences
 - 파기 요청이 와도 실행 로그는 약 60일(만료 30일 + 이전 버전 30일) 남는다. 개인정보 처리 안내에 이 보관 예외를 반영해야 한다.
 - 파기가 지운 S3 객체(위키·산출물)도 flatform PR #77의 이전 버전 만료가 적용돼야 약 30일 뒤 실제로 사라진다. 적용 전 파기는 DB와 현재 버전만 지운 상태다.
-- 워크스페이스 파기 시 `wiki/` 최상위 prefix를 나열하므로 비용이 사용자 수에 비례한다(`ponytail:` 주석). 사용자가 매우 많아지면 객체 키 구조를 바꿔야 한다.
 - 배포 순서는 flatform(lifecycle·권한) → AI(이 변경) → Document#88 → Access#29다.
