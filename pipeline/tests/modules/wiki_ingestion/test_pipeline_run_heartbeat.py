@@ -173,7 +173,7 @@ def test_restore_updates_current_markdown_and_links(monkeypatch) -> None:
     )
     assert any("DELETE FROM wiki_page_links WHERE from_page_id" in str(call.args[0]) for call in calls)
     assert any("INSERT INTO wiki_page_links" in str(call.args[0]) for call in calls)
-    invalidate.assert_called_once_with("user-1", "ws-1")
+    invalidate.assert_called_once_with("ws-1")
 
 
 def test_restore_resolves_unchanged_active_link_target(monkeypatch) -> None:
@@ -328,12 +328,7 @@ def test_restore_reactivates_deleted_page_without_linking_unrelated_deleted_page
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
         elif normalized.startswith("SELECT id FROM wiki_pages"):
-            cursor.fetchone.return_value = None
-        elif normalized.startswith("SELECT id, user_id FROM wiki_pages"):
-            cursor.fetchall.return_value = [{
-                "id": "page-deleted",
-                "user_id": "user-1",
-            }]
+            cursor.fetchall.return_value = [{"id": "page-deleted"}]
         return cursor
 
     connection.execute.side_effect = execute
@@ -391,13 +386,8 @@ def test_restore_after_delete_and_rename_skips_stale_slug_link(monkeypatch) -> N
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
-        elif normalized.startswith("SELECT id, user_id FROM wiki_pages"):
-            cursor.fetchall.return_value = [{
-                "id": "page-deleted",
-                "user_id": "user-1",
-            }]
         elif normalized.startswith("SELECT id FROM wiki_pages"):
-            cursor.fetchone.return_value = {"id": "stale-page"}
+            cursor.fetchall.return_value = [{"id": "page-deleted"}]
         return cursor
 
     connection.execute.side_effect = execute
@@ -552,7 +542,7 @@ def test_restore_state_and_cleanup_share_lock_and_rollback(monkeypatch) -> None:
             }]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
-        elif normalized.startswith("SELECT id, user_id FROM wiki_pages"):
+        elif normalized.startswith("SELECT id FROM wiki_pages"):
             cursor.fetchall.return_value = [{"id": "page-deleted"}]
         elif normalized.startswith("UPDATE wiki_pages SET status = 'deleted'"):
             raise RuntimeError("cleanup failed")
@@ -597,7 +587,7 @@ def test_restore_state_and_cleanup_share_lock_and_rollback(monkeypatch) -> None:
     invalidate.assert_not_called()
 
 
-def test_delete_only_restore_invalidates_deleted_page_owner(monkeypatch) -> None:
+def test_delete_only_restore_invalidates_workspace_concept_index(monkeypatch) -> None:
     monkeypatch.setenv("S3_BUCKET", "wiki-bucket")
     connection = Mock()
     connection.__enter__ = Mock(return_value=connection)
@@ -606,10 +596,8 @@ def test_delete_only_restore_invalidates_deleted_page_owner(monkeypatch) -> None
     def execute(query, params=None):
         cursor = Mock()
         normalized = " ".join(str(query).split())
-        if normalized.startswith("SELECT id, user_id FROM wiki_pages"):
-            cursor.fetchall.return_value = [
-                {"id": "page-deleted", "user_id": "user-1"}
-            ]
+        if normalized.startswith("SELECT id FROM wiki_pages"):
+            cursor.fetchall.return_value = [{"id": "page-deleted"}]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             cursor.fetchall.return_value = []
         return cursor
@@ -629,7 +617,7 @@ def test_delete_only_restore_invalidates_deleted_page_owner(monkeypatch) -> None
             ["page-deleted"],
         )
 
-    invalidate.assert_called_once_with("user-1", "ws-1")
+    invalidate.assert_called_once_with("ws-1")
 
 
 @pytest.mark.parametrize("status", ["cancel_requested", "rolling_back", "rollback_failed", "cancelled", "failed", "succeeded"])

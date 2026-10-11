@@ -110,12 +110,12 @@ def _cleanup_deleted_wiki_pages(
     conn: psycopg.Connection,
     workspace_id: str,
     page_ids: list[str],
-) -> set[str]:
+) -> None:
     if not page_ids:
-        return set()
+        return
     rows = conn.execute(
         """
-        SELECT id, user_id
+        SELECT id
         FROM wiki_pages
         WHERE workspace_id = %s
           AND id = ANY(%s)
@@ -126,8 +126,7 @@ def _cleanup_deleted_wiki_pages(
     ).fetchall()
     target_ids = [row["id"] for row in rows]
     if not target_ids:
-        return set()
-    user_ids = {str(row["user_id"]) for row in rows if row.get("user_id")}
+        return
     vector_rows = conn.execute(
         """
         SELECT DISTINCT embedding_vector_id
@@ -174,7 +173,6 @@ def _cleanup_deleted_wiki_pages(
         "UPDATE wiki_pages SET status = 'deleted', updated_at = now() WHERE id = ANY(%s)",
         (target_ids,),
     )
-    return user_ids
 
 
 def apply_restored_wiki_state(
@@ -183,17 +181,16 @@ def apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
 ) -> None:
-    user_ids, _ = _apply_restored_wiki_state(
+    _apply_restored_wiki_state(
         workspace_id,
         changed_pages,
         link_changes,
         replace_links,
     )
-    for user_id in user_ids:
-        try:
-            invalidate_concept_index(user_id, workspace_id)
-        except Exception:
-            logger.warning("concept index cache invalidation failed", exc_info=True)
+    try:
+        invalidate_concept_index(workspace_id)
+    except Exception:
+        logger.warning("concept index cache invalidation failed", exc_info=True)
 
 
 def apply_restored_wiki_state_and_cleanup(
@@ -209,21 +206,18 @@ def apply_restored_wiki_state_and_cleanup(
         return []
     with concept_write_lock(workspace_id, operation_id):
         with connect() as conn:
-            user_ids, skipped_page_ids = _apply_restored_wiki_state(
+            skipped_page_ids = _apply_restored_wiki_state(
                 workspace_id,
                 changed_pages,
                 link_changes,
                 replace_links,
                 conn,
             )
-            user_ids.update(
-                _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
-            )
-        for user_id in user_ids:
-            try:
-                invalidate_concept_index(user_id, workspace_id)
-            except Exception:
-                logger.warning("concept index cache invalidation failed", exc_info=True)
+            _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
+        try:
+            invalidate_concept_index(workspace_id)
+        except Exception:
+            logger.warning("concept index cache invalidation failed", exc_info=True)
     return sorted(skipped_page_ids)
 
 
@@ -241,10 +235,9 @@ def _apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     conn: psycopg.Connection | None = None,
-) -> tuple[set[str], set[str]]:
+) -> set[str]:
     if not changed_pages and not any(link_changes.values()):
-        return set(), set()
-    user_ids: set[str] = set()
+        return set()
     with (connect() if conn is None else nullcontext(conn)) as conn:
         page_ids = [str(page["page_id"]) for page in changed_pages]
         rows = conn.execute(
@@ -436,7 +429,6 @@ def _apply_restored_wiki_state(
                     """,
                     (source["id"], target_id, link.get("relation") or "related_to"),
                 )
-        user_ids = {str(row["user_id"]) for row in rows}
         for link in link_changes.get("restored_links", []):
             source = by_ref.get(str(link.get("source")))
             if source is None:
@@ -452,7 +444,7 @@ def _apply_restored_wiki_state(
                     link.get("confidence"),
                     workspace_id,
                 )
-    return user_ids, skipped_page_ids
+    return skipped_page_ids
 
 
 REQUIRED_TABLES = (
@@ -896,11 +888,10 @@ def finish_pipeline_run(
     embedded_page_ids: list[str] = []
     with connect() as conn:
         row = conn.execute(
-            "SELECT document_id, user_id, workspace_id FROM pipeline_runs WHERE id = %s",
+            "SELECT document_id, workspace_id FROM pipeline_runs WHERE id = %s",
             (run_id,),
         ).fetchone()
     document_id = row["document_id"] if row else None
-    user_id = row["user_id"] if row else None
     workspace_id = row["workspace_id"] if row else None
     lock = concept_write_lock(str(workspace_id), run_id) if document_id else nullcontext()
     with lock:
@@ -933,7 +924,7 @@ def finish_pipeline_run(
             )
     if document_id:
         try:
-            invalidate_concept_index(str(user_id), str(workspace_id))
+            invalidate_concept_index(str(workspace_id))
         except Exception:
             logger.warning("concept index cache invalidation failed", exc_info=True)
     # core 트랜잭션 커밋 후 ai_db 파생 추적을 갱신한다.
@@ -1090,7 +1081,7 @@ def persist_post_ingest_clusters(
                 manifest,
             )
     if changed_pages:
-        invalidate_concept_index(user_id, workspace_id)
+        invalidate_concept_index(workspace_id)
     return [str(page["page_id"]) for page in changed_pages]
 
 
@@ -1124,9 +1115,9 @@ def get_pipeline_run(run_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def list_active_concept_index(user_id: str = "local-user", workspace_id: str = "local-workspace") -> list[dict[str, Any]]:
+def list_active_concept_index(workspace_id: str = "local-workspace") -> list[dict[str, Any]]:
     try:
-        cached = get_concept_index(user_id, workspace_id)
+        cached = get_concept_index(workspace_id)
         if cached is not None:
             return cached
     except Exception:
@@ -1138,18 +1129,17 @@ def list_active_concept_index(user_id: str = "local-user", workspace_id: str = "
             FROM wiki_pages
             WHERE page_type = 'concept'
               AND status = 'active'
-              AND user_id = %s
               AND workspace_id = %s
             ORDER BY slug
             """,
-            (user_id, workspace_id),
+            (workspace_id,),
         ).fetchall()
     concepts = []
     for row in rows:
         markdown = _read_optional_text_object(row["markdown_uri"])
         concepts.append(_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown))
     try:
-        put_concept_index(user_id, workspace_id, concepts)
+        put_concept_index(workspace_id, concepts)
     except Exception:
         logger.warning("concept index cache write failed", exc_info=True)
     return concepts
@@ -1773,7 +1763,7 @@ def _materialize_promotion_candidates(
             }
         )
 
-    _lock_concept_persistence(conn, user_id, workspace_id)
+    _lock_concept_persistence(conn, workspace_id)
     applied_reconciliations: list[dict[str, Any]] = []
     reconciliation_source_refs: set[str] = set()
     current_claim_signatures: set[tuple[str, str, str]] = set()

@@ -60,7 +60,6 @@ class PipelineRunRepositoryPort(Protocol):
 
     def list_active_concept_index(
         self,
-        user_id: str,
         workspace_id: str,
     ) -> list[dict[str, Any]]: ...
 

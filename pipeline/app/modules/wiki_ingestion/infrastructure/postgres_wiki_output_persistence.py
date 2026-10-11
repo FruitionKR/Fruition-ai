@@ -38,12 +38,11 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
 
 def lock_concept_persistence(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
 ) -> None:
     conn.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-        (f"concept-persistence:{user_id}:{workspace_id}",),
+        (f"concept-persistence:{workspace_id}",),
     )
 
 
@@ -79,7 +78,7 @@ def persist_wiki_outputs(
         page_id=source_page_id,
         source_blocks=source_blocks,
     )
-    lock_concept_persistence(conn, user_id, workspace_id)
+    lock_concept_persistence(conn, workspace_id)
     if operation_id:
         concept_id_by_slug = _prepare_concept_page_ids(
             conn,

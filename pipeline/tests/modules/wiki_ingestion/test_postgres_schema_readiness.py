@@ -75,8 +75,8 @@ def test_cleanup_deleted_wiki_pages_removes_only_workspace_targets() -> None:
         normalized = " ".join(query.split())
         queries.append((normalized, params))
         result = Mock()
-        if normalized.startswith("SELECT id, user_id FROM wiki_pages"):
-            result.fetchall.return_value = [{"id": "C1", "user_id": "user-1"}]
+        if normalized.startswith("SELECT id FROM wiki_pages"):
+            result.fetchall.return_value = [{"id": "C1"}]
         elif normalized.startswith("SELECT DISTINCT embedding_vector_id"):
             result.fetchall.return_value = [{"embedding_vector_id": "vector-1"}]
         else:

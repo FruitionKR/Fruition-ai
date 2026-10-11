@@ -382,7 +382,6 @@ def _build_pipeline_command(
     display_name: str | None = None,
 ) -> PipelineRunCommand:
     existing_concept_index = _load_existing_concept_index_for_run(
-        user_id,
         workspace_id,
         repository,
     )
@@ -437,12 +436,11 @@ def _build_pipeline_command(
 
 
 def _load_existing_concept_index_for_run(
-    user_id: str,
     workspace_id: str,
     repository: PipelineRunRepositoryPort,
 ) -> list[dict[str, Any]]:
     try:
-        return repository.list_active_concept_index(user_id, workspace_id)
+        return repository.list_active_concept_index(workspace_id)
     except Exception:
         logger.exception("failed to load existing concept index for pipeline run")
         return []

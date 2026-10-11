@@ -76,10 +76,9 @@ class PostgresPipelineRunRepository:
 
     def list_active_concept_index(
         self,
-        user_id: str,
         workspace_id: str,
     ) -> list[dict[str, Any]]:
-        return database.list_active_concept_index(user_id, workspace_id)
+        return database.list_active_concept_index(workspace_id)
 
     def latest_source_page_context(
         self,

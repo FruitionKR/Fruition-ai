@@ -89,7 +89,7 @@ def test_concept_lock_timeout_fails_without_unlock(monkeypatch) -> None:
     ]
 
 
-def test_concept_index_cache_is_scoped_by_user_and_workspace(monkeypatch) -> None:
+def test_concept_index_cache_is_scoped_by_workspace(monkeypatch) -> None:
     calls: list[tuple] = []
 
     class Redis:
@@ -105,14 +105,14 @@ def test_concept_index_cache_is_scoped_by_user_and_workspace(monkeypatch) -> Non
 
     monkeypatch.setattr(workspace_concept_lock, "_client", lambda: Redis())
 
-    workspace_concept_lock.get_concept_index("user-1", "workspace-1")
-    workspace_concept_lock.put_concept_index("user-1", "workspace-1", [])
-    workspace_concept_lock.invalidate_concept_index("user-1", "workspace-1")
+    workspace_concept_lock.get_concept_index("workspace-1")
+    workspace_concept_lock.put_concept_index("workspace-1", [])
+    workspace_concept_lock.invalidate_concept_index("workspace-1")
 
     assert [call[1] for call in calls] == [
-        "wiki:concept-index:user-1:workspace-1",
-        "wiki:concept-index:user-1:workspace-1",
-        "wiki:concept-index:user-1:workspace-1",
+        "wiki:concept-index:workspace-1",
+        "wiki:concept-index:workspace-1",
+        "wiki:concept-index:workspace-1",
     ]
 
 

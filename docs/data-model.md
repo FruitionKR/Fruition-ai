@@ -19,7 +19,7 @@
 | agent_approvals·agent_jobs·agent_tool_executions·agent_run_artifacts | ai-svc | 승인·lease/retry·Tool 멱등 실행·비동기 artifact | run/plan/operation FK, Tool 호출 수 40회 제한 |
 | checkpoint_migrations·checkpoints·checkpoint_blobs·checkpoint_writes | ai-svc | LangGraph Agent 중단·재개 상태 | `PostgresSaver`가 `AI_DATABASE_URL`로 사용 |
 
-Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 `(user_id, workspace_id)` PostgreSQL transaction advisory lock을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다.
+Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다.
 
 LLM provider/model은 workspace 설정 또는 chat/request에서 snapshot되어 command와 실행에 전달된다. API key는 DB·Kafka payload·log에 저장하지 않고 ai-svc secret env에서만 읽으며, 기존 AI 작업 로그 조회/결과 경로에는 LLM 설정 컬럼이 없다.
 

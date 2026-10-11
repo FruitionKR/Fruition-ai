@@ -258,7 +258,7 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
 
         def execute(self, query, params):
             if "pg_advisory_xact_lock" in query:
-                assert params == ("concept-persistence:user-1:workspace-1",)
+                assert params == ("concept-persistence:workspace-1",)
                 advisory_lock.acquire()
                 self.locked = True
                 return Result()
