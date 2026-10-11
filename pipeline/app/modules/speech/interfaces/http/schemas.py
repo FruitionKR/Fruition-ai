@@ -11,7 +11,7 @@ class SpeechScope(BaseModel):
 
 class SpeechSynthesisRequest(SpeechScope):
     action: Literal["chat_answer"]
-    answer: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1)
 
 
 class TranscriptionResponse(BaseModel):

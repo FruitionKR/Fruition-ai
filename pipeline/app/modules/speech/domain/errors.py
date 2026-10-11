@@ -1,5 +1,9 @@
 class SpeechUnavailableError(RuntimeError):
-    """음성 제공자 설정 누락 또는 호출 실패."""
+    """음성 제공자 설정 누락 또는 호출 실패. code는 스트림 error 이벤트의 공통 코드다."""
+
+    def __init__(self, message: str = "", code: str = "provider_unavailable") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class InvalidAudioError(ValueError):

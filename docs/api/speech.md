@@ -40,10 +40,21 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 
 - action은 `chat_answer`만 허용한다. 호출 서비스는 **서버의 실제 Agent 결과에서 action·answer를
   가져와야 한다. 클라이언트가 주장하는 action으로 음성 재생 여부를 결정하면 안 된다.**
-- answer: 공백 제거 후 1–4,000자. 긴 답변은 호출 서비스가 문장 단위로 나눠 순차 요청·재생한다.
-- 성공: 전체 생성된 WAV bytes(PCM16 mono 24 kHz), `Content-Type: audio/wav`, `Cache-Control: no-store`. 비압축이라 약 48 KB/s다.
-- 모델 `gpt-realtime-2.1-mini`(Realtime WebSocket, 원문 낭독 지침, `max_output_tokens="inf"`), 음색 `marin`. 제공자 실패는 `502`, 입력 오류는 `422`다.
-- 화면에서 AI 생성 음성임을 안내한다. 재생 중지는 클라이언트가 처리한다.
+- answer: 공백 제거 후 1자 이상. 제품 글자 수 상한은 없고, 모델이 한 응답에 낼 수 있는 출력(32,000 토큰, 음성 약 26분)에 맞춘 기술 상한 8,000자만 있다. 넘으면 공급사 호출 전에 `400`이다.
+- 성공 `200`: `Content-Type: application/x-ndjson`, `Cache-Control: no-store`. 한 줄에 JSON 이벤트 하나이며 생성되는 대로 즉시 흘려보낸다.
+
+```
+{"type":"audio","delta":"<base64 PCM16 LE mono 24kHz>"}
+{"type":"audio","delta":"..."}
+{"type":"done"}
+```
+
+- 스트림은 `audio` 0개 이상 뒤에 터미널 이벤트 정확히 하나(`done` 또는 `error`)로 끝난다. `done` 없이 끝난 스트림은 불완전하다.
+  `{"type":"error","code":"<code>"}`의 code는 `provider_unavailable`, `provider_rate_limited`, `deadline_exceeded`, `internal_error`다.
+- HTTP 상태 오류는 스트림 시작 전(인증 `401/503`, workspace 거부 `403`, 입력 `422`, 길이 `400`)에만 난다. 공급사 연결·생성 실패는 `200` 뒤 `error` 이벤트로 온다.
+- 모델 `gpt-realtime-2.1-mini`(Realtime WebSocket, 원문 낭독 지침, `max_output_tokens="inf"`), 음색 `marin`. 오디오는 공급사 delta를 버퍼링·WAV 변환 없이 그대로 전달한다(약 48 KB/s). 저장·WAV 변환은 호출 서비스 몫이다.
+- **중지 = 연결 끊기.** 호출자가 연결을 닫으면 AI가 감지해 공급사에 `response.cancel`을 보내고 최대 5초 `response.done`을 기다려 `usage`를 원장에 기록한다. 취소된 응답도 생성된 만큼 과금되며, 원장 status는 `cancelled`로 남는다. 공급사 이벤트 간격 60초 초과(`deadline_exceeded`)도 같은 방식으로 `response.cancel` 뒤 최대 5초 usage를 기다려 `cancelled`로 기록한다.
+- 화면에서 AI 생성 음성임을 안내한다.
 
 ## 실시간 전사
 
@@ -215,9 +226,9 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 
 ### `POST /speech/synthesis`
 
-- 인바운드 호출자: **호출자 없음.** document-svc에 `synthesis` 문자열과 TTS endpoint 설정이 없다. `app.speech.*` 설정은 전사·실시간·회의록 세 개뿐이다(Fruition-document `src/main/resources/application.properties`:98,100,103).
-- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/speech`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:65), access-svc 권한 확인.
-- 미연동 표시: **전 구간 미연동.** 중계하는 backend도, 재생하는 화면도 없다.
+- 인바운드 호출자: Fruition-document가 `POST /api/workspaces/{workspace_id}/speech/synthesis`로 이 스트림을 그대로 중계한다(Fruition-document#113). 호출자가 연결을 닫으면 위 중지 규칙이 적용된다.
+- 아웃바운드 호출: OpenAI Realtime `wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`), access-svc 권한 확인.
+- 미연동 표시: 서비스 간 연결됨(document 중계, Fruition-document#113). **프런트엔드 재생은 별도 확인 필요.**
 
 ### `WS /speech/transcriptions/live`
 

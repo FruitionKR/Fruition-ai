@@ -37,7 +37,7 @@ class ModelUsageCall(BaseModel):
     provider: str
     requested_model: str
     model: str
-    status: Literal['started', 'succeeded', 'failed', 'abandoned']
+    status: Literal['started', 'succeeded', 'failed', 'abandoned', 'cancelled']
     input_tokens: NonNegativeInt | None
     output_tokens: NonNegativeInt | None
     cached_input_tokens: NonNegativeInt | None
