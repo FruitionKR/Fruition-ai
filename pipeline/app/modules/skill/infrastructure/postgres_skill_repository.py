@@ -225,6 +225,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             raise ValueError("Updated Skill could not be loaded.")
         return saved
 
+    def can_manage_team(self, workspace_id: str | None, user_id: str) -> bool:
+        return _can_manage_team(workspace_id, user_id)
+
     def delete(self, workspace_id: str, user_id: str, skill_id: str) -> None:
         team_manager = _can_manage_team(workspace_id, user_id)
         with database.connect_ai() as conn:

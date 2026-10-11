@@ -156,6 +156,10 @@ class RecordingClient:
 class InMemoryManageSkillRepository:
     def __init__(self) -> None:
         self.skills: dict[str, Skill] = {}
+        self.team_manager = True
+
+    def can_manage_team(self, workspace_id: str | None, user_id: str) -> bool:
+        return self.team_manager
 
     def create_published(self, skill: Skill, version: SkillVersion) -> Skill:
         saved = Skill(
@@ -248,6 +252,22 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
             ),
             repository,
         )
+
+    def test_team_scope_without_management_permission_is_rejected_before_llm(self) -> None:
+        generator = FixedGenerator(draft_result())
+        use_case, repository = self.build_use_case(generator)
+        repository.team_manager = False
+
+        with self.assertRaisesRegex(ValueError, "Workspace Skill management is not allowed"):
+            use_case.execute(
+                workspace_id="workspace-1",
+                user_id="member-1",
+                scope_type="team",
+                instruction="회의록을 간결하게 만드는 스킬",
+                reference_document_ids=(),
+            )
+
+        self.assertEqual(generator.classification_count, 0)
 
     def test_returns_unpersisted_proposal_with_reviewed_permissions(self) -> None:
         generator = FixedGenerator(draft_result())

@@ -27,6 +27,10 @@ Skill 작성 분류는 완성된 동작에 필요한 capability를 모두 반환
 canonical Tool 집합을 합쳐 `allowed_tools`를 확정한다. 따라서 문서 편집 후 이동처럼 복합적인
 Skill은 `document-edit`와 `folder-organize`를 함께 가지며 어느 한쪽 권한만으로 축약되지 않는다.
 
+team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이스 OWNER와, OWNER에게 `skill.author` 권한을 받은 MEMBER만 한다
+(Fruition-access ADR 0019). 권한은 access 내부 인가 응답의 `permissions`로 확인하며, 작성은 LLM을 호출하기 전에 거절한다.
+개인 Skill은 소유자만 관리한다.
+
 ## 한눈에 보기
 
 <a id="summary-get-skills"></a>
@@ -1198,7 +1202,7 @@ Skill과 그 버전을 삭제하고 과거 실행 기록은 보존합니다.
 
 #### 8. 권한 규칙
 
-- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER만 삭제할 수 있다.
+- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER와 `skill.author` 권한을 받은 MEMBER만 삭제할 수 있다.
   기존 관리 권한으로 행을 잠근 뒤 같은 트랜잭션에서 삭제한다.
 - 스킬의 모든 버전과 버전 출처는 CASCADE로 삭제한다. 과거 `agent_runs`는 유지하고
   `skill_version_id`만 NULL로 바뀐다. 실행 중 작업을 취소하는 API는 아니다.

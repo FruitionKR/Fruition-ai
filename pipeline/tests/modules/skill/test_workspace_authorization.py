@@ -41,6 +41,9 @@ def test_team_skill_management_needs_owner_or_skill_author(monkeypatch) -> None:
         ({"role": "MEMBER", "permissions": ["wiki.ingest"]}, False),
         # permissions를 내리기 전 access 응답은 권한 없음으로 본다.
         ({"role": "MEMBER"}, False),
+        ({"role": "OWNER"}, True),
+        ({"role": "MEMBER", "permissions": "skill.author"}, False),
+        ({"role": "MEMBER", "permissions": [1, "skill.author"]}, True),
         ({"role": "NONE", "permissions": ["skill.author"]}, False),
     ]
     for body, expected in cases:
