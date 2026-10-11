@@ -13,6 +13,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from app.core.failure_codes import failure_code
 from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, task_run_id
 from app.core.ai_database import ai_database_url
 
@@ -270,10 +271,9 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
             if not cancelled:
                 with connect() as conn:
                     # 예외가 문자열 code를 가지면 재요청 때 같은 사유를 돌려줄 수 있게 남긴다.
-                    code = getattr(exc, "code", None)
                     conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = %s "
                                  "WHERE id = %s AND status = 'cancelled'",
-                                 (code if isinstance(code, str) else "task_failed", run_id))
+                                 (failure_code(exc), run_id))
             raise
         finally:
             if token is not None:
@@ -291,8 +291,9 @@ def _begin_attempt(row: dict[str, Any]) -> None:
         with connect() as conn:
             conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = 'interrupted_attempts_exhausted', "
                          "updated_at = now() WHERE id = %s AND status = 'cancelled'", (run_id,))
-        raise ValueError(f"Interrupted task exceeded {MAX_INTERRUPTED_ATTEMPTS} attempts (attempt {previous}); "
-                         "partial changes were rolled back and the task was closed as failed.")
+        logger.error("[중단 재시도 초과] run_id=%s attempt=%s max=%s; 부분 변경을 되돌리고 실패로 닫았다.",
+                     run_id, previous, MAX_INTERRUPTED_ATTEMPTS)
+        raise TaskFailedError("interrupted_attempts_exhausted")
     if previous > 0:
         with connect() as conn:
             partial = conn.execute("SELECT count(*) AS count FROM ai_task_changes WHERE run_id = %s AND NOT undone",

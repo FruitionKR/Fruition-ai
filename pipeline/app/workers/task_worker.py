@@ -16,6 +16,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 
+from app.core.failure_codes import failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
@@ -416,7 +417,8 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "maintenance run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
     else:
         database.create_pipeline_run(
             run_id, None, str(command["user_id"]), str(command["workspace_id"]),
@@ -445,7 +447,7 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         database.finish_pipeline_run(run_id, {"task_result": payload})
         return payload
     except Exception as exc:
-        database.fail_pipeline_run(run_id, str(exc))
+        database.fail_pipeline_run(run_id, failure_code(exc))
         raise
 
 
@@ -500,7 +502,8 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "restore run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
     else:
         database.create_pipeline_run(
             run_id, None, str(command["user_id"]), str(command["workspace_id"]),
@@ -520,7 +523,7 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
         database.finish_pipeline_run(run_id, {"task_result": result})
         return result
     except Exception as exc:
-        database.fail_pipeline_run(run_id, str(exc))
+        database.fail_pipeline_run(run_id, failure_code(exc))
         raise
 
 
@@ -708,7 +711,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "post_ingest run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
         state = dict(existing.get("manifest") or {})
     else:
         database.create_pipeline_run(
@@ -843,11 +847,11 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 "run_id": run_id,
                 "status": "needs_review" if final_attempt else "retrying",
                 "attempt": attempt,
-                "error": str(exc)[:1000],
+                "error": failure_code(exc),
             },
         )
         if final_attempt:
-            database.fail_pipeline_run(run_id, str(exc))
+            database.fail_pipeline_run(run_id, failure_code(exc))
         raise
 
 
@@ -1114,7 +1118,7 @@ async def consume() -> None:
                                 type(exc).__name__,
                             )
                         else:
-                            error = str(exc)[:1000]
+                            error = failure_code(exc)
                             logger.exception(
                                 "[AI command 실패] kind=%s run_id=%s",
                                 command.get("kind"),

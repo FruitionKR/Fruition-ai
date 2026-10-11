@@ -1,10 +1,14 @@
+import logging
 from dataclasses import replace
 from typing import TypedDict
 
+from app.core.failure_codes import failure_code
 from app.modules.query.application.ports import QueryEvaluatorPort, QueryEventPublisherPort
 from app.modules.query.application.query_answer_assembler import QueryAnswerAssembler
 from app.modules.query.application.query_event import publish_query_event
 from app.modules.query.domain.entities import EvidenceSnippet, GeneratedAnswer, QueryContext, QueryEvaluation
+
+logger = logging.getLogger(__name__)
 
 
 class QueryEvaluationGraphState(TypedDict):
@@ -127,8 +131,9 @@ def evaluate_answer_step(
             web_search_available=web_search_available,
         )
     except Exception as exc:
+        logger.warning("[query evaluator 실패]", exc_info=True)
         publish_query_event(
-            event_publisher, "query_evaluation_failed", "Query evaluator 실행에 실패했습니다.", {"error": str(exc)}
+            event_publisher, "query_evaluation_failed", "Query evaluator 실행에 실패했습니다.", {"error": failure_code(exc)}
         )
         return {**state, "evaluation": None}
     publish_query_event(
