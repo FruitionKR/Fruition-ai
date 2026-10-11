@@ -105,18 +105,37 @@ def test_schema_routes_return_504_when_deadline_expires(route) -> None:
     assert caught.value.status_code == 504 and caught.value.detail == "deadline_exceeded"
 
 
-def test_speech_transcription_gives_up_at_its_deadline(monkeypatch) -> None:
+def _slow_transcription(monkeypatch, timeouts):
     async def slow(request):
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.2)
         return httpx.Response(200, json={"text": "늦은 전사"})
 
     original = httpx.AsyncClient
-    monkeypatch.setattr(openai_speech.httpx, "AsyncClient",
-                        lambda **kwargs: original(transport=httpx.MockTransport(slow)))
-    monkeypatch.setattr(openai_speech, "TRANSCRIBE_DEADLINE_SECONDS", 0.05)
+
+    def client(**kwargs):
+        timeouts.append(kwargs["timeout"])
+        return original(transport=httpx.MockTransport(slow))
+
+    monkeypatch.setattr(openai_speech.httpx, "AsyncClient", client)
+
+
+def test_speech_transcription_gives_up_at_its_deadline(monkeypatch) -> None:
+    timeouts = []
+    _slow_transcription(monkeypatch, timeouts)
 
     async def run():
-        await openai_speech.OpenAISpeech("fake-key").transcribe(b"audio", "audio/webm")
+        # asyncio.timeout은 float도 받으므로 짧은 상한으로 상한 적용 여부만 본다.
+        await openai_speech.OpenAISpeech("fake-key").transcribe(b"audio", "audio/webm", 0.05)
 
     with pytest.raises(SpeechUnavailableError):
         asyncio.run(run())
+    assert timeouts == [0.05]
+
+
+def test_speech_transcription_without_deadline_is_not_capped(monkeypatch) -> None:
+    timeouts = []
+    _slow_transcription(monkeypatch, timeouts)
+
+    text = asyncio.run(openai_speech.OpenAISpeech("fake-key").transcribe(b"audio", "audio/webm"))
+    assert text == "늦은 전사"
+    assert timeouts == [openai_speech.TRANSCRIBE_DEFAULT_TIMEOUT_SECONDS]

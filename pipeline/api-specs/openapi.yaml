@@ -4600,6 +4600,16 @@ paths:
           minLength: 1
           title: User Id
           type: string
+      - in: query
+        name: deadline_seconds
+        required: false
+        schema:
+          anyOf:
+          - maximum: 600
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Deadline Seconds
       - in: header
         name: X-Request-Id
         required: false
