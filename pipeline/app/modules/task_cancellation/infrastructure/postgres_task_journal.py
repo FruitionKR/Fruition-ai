@@ -20,6 +20,11 @@ from app.core.ai_database import ai_database_url
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks", "source_block_snapshots",
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
                     "document_derived_state", "skills", "skill_versions", "skill_version_sources"})
+# 종료한 run에서 지울 kind별 command 필드. 전사·초안은 document가 소유하므로 AI는 끝난 작업의 본문을 보관하지 않는다.
+# command_hash와 status·error_code·run_id는 남겨 재전달 판정(재생·불일치)에 쓴다.
+SCRUBBED_COMMAND_KEYS = {"meeting_notes": "segments"}
+
+
 class TaskAlreadyExecutingError(RuntimeError):
     """다른 worker가 같은 run을 실행 중이다. 리밸런스로 재전달된 메시지는 끝날 때까지 seek해 기다린다."""
 
@@ -104,10 +109,20 @@ def execution_lock(run_id: str):
             conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", ("ai-task:" + run_id,))
 
 
+def _scrub_terminal(conn, run_id: str) -> None:
+    """종료한 run의 command 본문과 result를 지운다. 재생 결과는 빈 표식({"scrubbed": true})만 남는다."""
+    for kind, key in SCRUBBED_COMMAND_KEYS.items():
+        conn.execute("UPDATE ai_task_runs SET command = command - %s, "
+                     "result = CASE WHEN result IS NULL THEN NULL ELSE %s END "
+                     "WHERE id = %s AND kind = %s", (key, Jsonb({"scrubbed": True}), run_id, kind))
+
+
 def complete(run_id: str, result: dict[str, Any]) -> None:
     with connect() as conn:
         row = conn.execute("UPDATE ai_task_runs SET status = 'completed', result = %s, updated_at = now() "
                            "WHERE id = %s AND status = 'running' RETURNING id", (Jsonb(result), run_id)).fetchone()
+        if row is not None:
+            _scrub_terminal(conn, run_id)
     if row is None:
         raise PipelineRunCancelledError("Task no longer accepts a result.")
 
@@ -152,6 +167,7 @@ def rollback(run_id: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE ai_task_runs SET status = 'cancelled', error_code = NULL, updated_at = now() WHERE id = %s",
                      (run_id,))
+        _scrub_terminal(conn, run_id)
 
 
 def _undo_changes(run_id: str) -> bool:
