@@ -1,15 +1,14 @@
 import asyncio
 import base64
-import io
 import json
-import wave
 from collections import deque
 from collections.abc import AsyncIterator
 from time import perf_counter
 
+import anyio
 import httpx
 from websockets.asyncio.client import connect
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from app.modules.model_usage.infrastructure.usage_ledger import finish_call, start_call, track_call_async
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
@@ -31,6 +30,8 @@ TTS_INSTRUCTIONS = (
     "Read the user's message text aloud verbatim. Do not answer, add, or omit anything."
 )
 LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
+TTS_EVENT_TIMEOUT_SECONDS = 60
+TTS_CANCEL_WAIT_SECONDS = 5
 PCM_BYTES_PER_SECOND = 48000  # PCM16 mono 24 kHz
 
 
@@ -70,20 +71,26 @@ class OpenAISpeech:
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
 
-    async def synthesize(self, text: str) -> bytes:
+    async def synthesize(self, text: str) -> AsyncIterator[str]:
+        """원문 낭독 PCM16 24 kHz 오디오를 base64 delta 그대로 흘려보낸다.
+
+        소비자가 중단하면(CancelledError·aclose) 공급사에 response.cancel을 보내고
+        response.done의 usage를 원장에 남긴다. 취소된 응답도 생성된 만큼 과금된다.
+        """
         # gpt-4o-mini-tts는 종료 예정이라 Realtime 모델로 원문을 낭독시킨다.
+        call_id = await asyncio.to_thread(start_call, "openai", TTS_MODEL)
+        receipt = {"input_characters": len(text)}
+        started = perf_counter()
+        # 중단·타임아웃으로 취소한 응답은 cancelled로 남기고 생성된 만큼의 usage를 채운다.
+        status = "failed"
         try:
-            async with (
-                track_call_async("openai", TTS_MODEL) as receipt,
-                connect(
-                    f"wss://api.openai.com/v1/realtime?model={TTS_MODEL}",
-                    additional_headers=self._headers,
-                    max_size=4 * 1024 * 1024,
-                    open_timeout=10,
-                    close_timeout=5,
-                ) as upstream,
-            ):
-                receipt["input_characters"] = len(text)
+            async with connect(
+                f"wss://api.openai.com/v1/realtime?model={TTS_MODEL}",
+                additional_headers=self._headers,
+                max_size=4 * 1024 * 1024,
+                open_timeout=10,
+                close_timeout=5,
+            ) as upstream:
                 # Realtime에는 temperature 설정이 없어 지침으로 원문 낭독을 강제한다.
                 await upstream.send(
                     json.dumps(
@@ -107,7 +114,7 @@ class OpenAISpeech:
                     while True:
                         event = json.loads(await upstream.recv())
                         if event["type"] == "error":
-                            raise ValueError("session rejected")
+                            raise _provider_error(event)
                         if event["type"] == "session.updated":
                             break
                 await upstream.send(
@@ -122,7 +129,7 @@ class OpenAISpeech:
                         }
                     )
                 )
-                # 긴 답변(최대 4000자)이 중간에 잘리지 않도록 출력 토큰 상한을 두지 않는다.
+                # 긴 답변이 중간에 잘리지 않도록 출력 토큰 상한을 두지 않는다.
                 await upstream.send(
                     json.dumps(
                         {
@@ -131,31 +138,44 @@ class OpenAISpeech:
                         }
                     )
                 )
-                audio = bytearray()
-                async with asyncio.timeout(120):
+                produced = False
+                try:
                     while True:
-                        event = json.loads(await upstream.recv())
+                        # 전체 시간이 아니라 이벤트 간 간격만 제한한다. 긴 낭독도 오디오가 계속 오면 끊지 않는다.
+                        async with asyncio.timeout(TTS_EVENT_TIMEOUT_SECONDS):
+                            event = json.loads(await upstream.recv())
                         if event["type"] == "error":
-                            raise ValueError("synthesis failed")
+                            raise _provider_error(event)
                         if event["type"] == "response.output_audio.delta":
-                            audio.extend(base64.b64decode(event["delta"]))
+                            produced = True
+                            yield event["delta"]
                         elif event["type"] == "response.done":
                             receipt["usage"] = event["response"].get("usage")
                             # 중간에 끊긴 응답의 일부 오디오를 성공으로 돌려주지 않는다.
                             if event["response"].get("status") != "completed":
                                 raise ValueError("incomplete response")
                             break
-                if not audio:
+                except (asyncio.CancelledError, GeneratorExit, TimeoutError):
+                    status = "cancelled"
+                    await _cancel_response(upstream, receipt)
+                    raise
+                if not produced:
                     raise ValueError("empty audio")
-                buffer = io.BytesIO()
-                with wave.open(buffer, "wb") as wav:
-                    wav.setnchannels(1)
-                    wav.setsampwidth(2)
-                    wav.setframerate(24000)
-                    wav.writeframes(bytes(audio))
-                return buffer.getvalue()
-        except (OSError, WebSocketException, TimeoutError, ValueError, KeyError, TypeError) as exc:
+            status = "succeeded"
+        except InvalidStatus as exc:
+            code = "provider_rate_limited" if exc.response.status_code == 429 else "provider_unavailable"
+            raise SpeechUnavailableError("음성을 생성하지 못했습니다.", code) from exc
+        except TimeoutError as exc:
+            raise SpeechUnavailableError("음성을 생성하지 못했습니다.", "deadline_exceeded") from exc
+        except (OSError, WebSocketException, ValueError, KeyError, TypeError) as exc:
             raise SpeechUnavailableError("음성을 생성하지 못했습니다.") from exc
+        finally:
+            # 취소 중에도 원장 쓰기가 중단되지 않게 보호한다.
+            with anyio.CancelScope(shield=True):
+                await asyncio.to_thread(
+                    finish_call, call_id, status, receipt, TTS_MODEL,
+                    (perf_counter() - started) * 1000,
+                )
 
     async def transcribe_live(
         self, audio: AsyncIterator[bytes | str]
@@ -359,3 +379,27 @@ async def _finish_segment(
         LIVE_TRANSCRIBE_MODEL,
         (perf_counter() - started) * 1000,
     )
+
+
+def _provider_error(event: dict) -> SpeechUnavailableError:
+    code = (event.get("error") or {}).get("code")
+    return SpeechUnavailableError(
+        "음성을 생성하지 못했습니다.",
+        "provider_rate_limited" if code == "rate_limit_exceeded" else "provider_unavailable",
+    )
+
+
+async def _cancel_response(upstream, receipt: dict) -> None:
+    """클라이언트 중단 시 생성을 멈추고 response.done의 usage를 받는다. 최대 5초 기다린다."""
+    with anyio.CancelScope(shield=True), anyio.move_on_after(TTS_CANCEL_WAIT_SECONDS):
+        try:
+            await upstream.send(json.dumps({"type": "response.cancel"}))
+            while True:
+                event = json.loads(await upstream.recv())
+                if event["type"] == "response.done":
+                    receipt["usage"] = event["response"].get("usage")
+                    return
+                if event["type"] == "error":
+                    return
+        except (OSError, WebSocketException, ValueError, KeyError, TypeError):
+            return

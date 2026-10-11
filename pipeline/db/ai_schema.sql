@@ -580,7 +580,7 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
     requested_model text NOT NULL,
     model text NOT NULL,
     status text NOT NULL CONSTRAINT ai_model_usage_status_check
-        CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned')),
+        CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned', 'cancelled')),
     input_tokens bigint CHECK (input_tokens >= 0),
     output_tokens bigint CHECK (output_tokens >= 0),
     cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
@@ -598,11 +598,11 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
-        WHERE conname = 'ai_model_usage_status_check' AND pg_get_constraintdef(oid) LIKE '%abandoned%'
+        WHERE conname = 'ai_model_usage_status_check' AND pg_get_constraintdef(oid) LIKE '%cancelled%'
     ) THEN
         ALTER TABLE ai_model_usage DROP CONSTRAINT IF EXISTS ai_model_usage_status_check;
         ALTER TABLE ai_model_usage ADD CONSTRAINT ai_model_usage_status_check
-            CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned'));
+            CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned', 'cancelled'));
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_finished ON ai_model_usage (finished_at);

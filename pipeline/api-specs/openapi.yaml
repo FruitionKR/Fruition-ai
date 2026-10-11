@@ -1560,6 +1560,7 @@ components:
           - succeeded
           - failed
           - abandoned
+          - cancelled
           title: Status
           type: string
         user_id:
@@ -2784,7 +2785,6 @@ components:
           title: Action
           type: string
         answer:
-          maxLength: 4000
           minLength: 1
           title: Answer
           type: string
@@ -4588,8 +4588,10 @@ paths:
       responses:
         '200':
           content:
-            audio/wav: {}
+            application/x-ndjson: {}
           description: Successful Response
+        '400':
+          description: 답변이 기술 상한(MAX_SYNTHESIS_CHARS)을 넘는다.
         '422':
           content:
             application/json:

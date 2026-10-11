@@ -26,7 +26,7 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 - 응답: `workspace_id`, `user_id`, `from_at`, `to_at`, `models`.
 - `models[]`: `provider`, `requested_model`, `model`, `calls`, `failed_calls`, `unfinished_calls`, `unknown_usage_calls`, `known_input_tokens`, `known_output_tokens`, `known_cached_input_tokens`, `known_cache_creation_tokens`, `known_reasoning_tokens`, `unknown_cache_usage_calls`.
 - 캐시 입력은 전체 입력의 일부, reasoning은 전체 출력의 일부이므로 단순 합산하지 않는다. 알려진 토큰 합계와 사용량 미확인 호출 수를 함께 표시한다. 현재 API는 토큰 조회이며 가격표·크레딧·세금을 반영한 금액을 반환하지 않는다.
-- `unfinished_calls`는 `started`와 `abandoned` 호출을 함께 센다.
+- `unfinished_calls`는 `started`와 `abandoned` 호출을 함께 센다. 취소된 TTS 호출(`cancelled`)은 받은 사용량이 토큰 합계에 포함되며 `failed_calls`·`unfinished_calls`에는 세지 않는다.
 - AI DB `ai_model_usage`에 공통 ChatCompletions 클라이언트·Jev·OpenAI 음성 호출의 시작과 응답 사용량을 별도 트랜잭션으로 기록한다. 호출 전 원장 기록 실패 시 모델을 호출하지 않는다. 응답 기록 실패·프로세스 중단 시 시작 기록이 `started`로 남고, 1시간이 지나면 사용량 조회 직전에 `abandoned`로 닫힌다. 닫힌 뒤 늦게 끝난 호출은 상태와 `finished_at`을 유지하고 사용량만 채운다. 기간 조회는 같은 행을 두 번 돌려주지 않으므로, 늦게 채워진 사용량은 `run_id` 조회로 확인한다. 실패·취소로 사용량 원장을 롤백하지 않는다.
 - Kafka 작업(ingest/query/agent/maintenance), journal 기반 Skill 작업, Agent worker와 채팅 제목 생성의 사용자 컨텍스트를 전달한다. 의미 추출·회의록 묶음 스레드(회의록은 Kafka command `kind: meeting_notes`, run_id는 command의 `run_id`)에는 `copy_context`가 컨텍스트를 전달한다.
 - HTTP 동기 경로(`POST /agent/turn`, `/query`, `/wiki-schema/preview`, `/skills/draft-from-runs/preview`, `/speech/transcriptions`, `/speech/synthesis`, `WS /speech/transcriptions/live`)는 document가 보낸 `X-Request-Id` 헤더(최대 128자)를 `run_id`로, 요청의 `workspace_id`·`user_id`를 귀속 대상으로 기록한다.
@@ -43,7 +43,7 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 - `run_id`: 실행 종료 후 그 실행의 호출을 가져가는 주 경로다. `started` 행도 포함한다.
 - `finished_from`·`finished_to`: 일 단위 대사용이다. 시간대를 포함하는 ISO 8601이며 `finished_at` 기준 시작 포함·종료 제외다. 끝나지 않은 행은 빠지므로 1시간 이상 지난 구간만 조회해야 늦게 커밋된 행과 `abandoned` 전환을 놓치지 않는다.
 - 두 방식은 함께 쓸 수 없고 하나는 반드시 지정해야 한다. 위반하면 400이다.
-- 응답: `calls[]` — `id`, `run_id`, `workspace_id`, `user_id`, `kind`, `provider`, `requested_model`, `model`, `status`(`started`·`succeeded`·`failed`·`abandoned`), `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_tokens`, `reasoning_tokens`, `audio_seconds`, `input_characters`, `started_at`, `finished_at`. 알 수 없는 사용량은 `null`이다.
+- 응답: `calls[]` — `id`, `run_id`, `workspace_id`, `user_id`, `kind`, `provider`, `requested_model`, `model`, `status`(`started`·`succeeded`·`failed`·`abandoned`·`cancelled`), `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_tokens`, `reasoning_tokens`, `audio_seconds`, `input_characters`, `started_at`, `finished_at`. 알 수 없는 사용량은 `null`이다.
 
 ### 토큰 포함 관계
 

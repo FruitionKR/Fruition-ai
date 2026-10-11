@@ -2,7 +2,7 @@ import asyncio
 import base64
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -19,13 +19,30 @@ SCOPE = {"workspace_id": "workspace", "user_id": "user"}
 HEADERS = {"X-Internal-Token": "test-internal"}
 
 
+def _stream(deltas, error=None):
+    def synthesize(text):
+        async def gen():
+            for delta in deltas:
+                yield delta
+            if error:
+                raise error
+
+        return gen()
+
+    return synthesize
+
+
+def _events(response):
+    return [json.loads(line) for line in response.text.splitlines()]
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("INTERNAL_CALLBACK_TOKEN", "test-internal")
     monkeypatch.setattr(routes, "authorize_speech", lambda *args: None)
     speech = AsyncMock()
     speech.transcribe.return_value = "문서를 찾아줘"
-    speech.synthesize.return_value = b"wav-audio"
+    speech.synthesize = MagicMock(side_effect=_stream(["AAA=", "BBB="]))
     api.app.dependency_overrides[routes.get_speech] = lambda: speech
     yield TestClient(api.app), speech
     api.app.dependency_overrides.pop(routes.get_speech, None)
@@ -70,20 +87,80 @@ def test_only_query_answers_can_be_spoken(client, action):
         json={**SCOPE, "action": action, "answer": "편집했습니다."},
     )
     assert response.status_code == 422
-    speech.synthesize.assert_not_awaited()
+    speech.synthesize.assert_not_called()
 
 
-def test_query_speech_and_failure_keep_text_separate(client):
+def test_synthesis_streams_ndjson_then_done(client):
     http, speech = client
     payload = {**SCOPE, "action": "chat_answer", "answer": "검색 결과입니다."}
     response = http.post("/speech/synthesis", headers=HEADERS, json=payload)
-    assert response.content == b"wav-audio"
-    assert response.headers["content-type"] == "audio/wav"
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
     assert response.headers["cache-control"] == "no-store"
-    speech.synthesize.side_effect = SpeechUnavailableError("private-provider-detail")
-    response = http.post("/speech/synthesis", headers=HEADERS, json=payload)
-    assert response.status_code == 502
-    assert "private-provider-detail" not in response.text
+    assert _events(response) == [
+        {"type": "audio", "delta": "AAA="},
+        {"type": "audio", "delta": "BBB="},
+        {"type": "done"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (SpeechUnavailableError("private-provider-detail"), "provider_unavailable"),
+        (SpeechUnavailableError("x", "provider_rate_limited"), "provider_rate_limited"),
+        (SpeechUnavailableError("x", "deadline_exceeded"), "deadline_exceeded"),
+        (RuntimeError("private-bug"), "internal_error"),
+    ],
+)
+def test_synthesis_failure_after_start_ends_with_one_error_event(client, error, code):
+    http, speech = client
+    speech.synthesize.side_effect = _stream(["AAA="], error)
+    response = http.post(
+        "/speech/synthesis", headers=HEADERS,
+        json={**SCOPE, "action": "chat_answer", "answer": "검색 결과입니다."},
+    )
+    assert response.status_code == 200
+    assert _events(response) == [{"type": "audio", "delta": "AAA="}, {"type": "error", "code": code}]
+    assert "private" not in response.text
+
+
+def test_synthesis_technical_cap_is_rejected_before_provider_call(client):
+    http, speech = client
+    body = {**SCOPE, "action": "chat_answer"}
+    assert http.post("/speech/synthesis", headers=HEADERS,
+                     json={**body, "answer": "가" * (routes.MAX_SYNTHESIS_CHARS + 1)}).status_code == 400
+    speech.synthesize.assert_not_called()
+    # 예전 4,000자 제품 상한은 없다.
+    assert http.post("/speech/synthesis", headers=HEADERS,
+                     json={**body, "answer": "가" * 4001}).status_code == 200
+
+
+def test_route_closes_provider_stream_when_client_stops(client):
+    http, speech = client
+    closed = []
+
+    def synthesize(text):
+        async def gen():
+            try:
+                yield "AAA="
+                yield "BBB="
+            finally:
+                closed.append(True)
+
+        return gen()
+
+    speech.synthesize.side_effect = synthesize
+
+    async def run():
+        response = await routes.synthesize(
+            routes.SpeechSynthesisRequest(**SCOPE, action="chat_answer", answer="답변"), speech)
+        body = response.body_iterator
+        assert json.loads(await body.__anext__())["delta"] == "AAA="
+        await body.aclose()
+
+    asyncio.run(run())
+    assert closed == [True]
 
 
 def test_permission_denial_precedes_provider_call(client, monkeypatch):
@@ -105,7 +182,7 @@ def test_permission_denial_precedes_provider_call(client, monkeypatch):
         ).status_code
         == 403
     )
-    speech.synthesize.assert_not_awaited()
+    speech.synthesize.assert_not_called()
 
 
 def test_live_websocket_rejects_missing_internal_token(client):
@@ -336,25 +413,26 @@ def _delta(raw):
     return {"type": "response.output_audio.delta", "delta": base64.b64encode(raw).decode()}
 
 
-def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
-    import io
-    import wave
+async def _collect(text="답변입니다"):
+    return [d async for d in openai_speech.OpenAISpeech("fake").synthesize(text)]
 
+
+def test_tts_streams_pcm_deltas_in_order_with_usage(monkeypatch):
     scope, rows = _ledger_rows(monkeypatch)
-    pcm = b"\x01\x00" * 2400
     usage = {"input_tokens": 12, "output_tokens": 90,
              "input_token_details": {"cached_tokens": 4}}
     sent, urls = _fake_realtime_tts(
         monkeypatch,
-        [_delta(pcm[:3000]), _delta(pcm[3000:]),
+        [_delta(b"\x01\x00" * 10), _delta(b"\x02\x00" * 10),
          {"type": "response.done", "response": {"status": "completed", "usage": usage}}],
     )
 
     async def run():
         with scope:
-            return await openai_speech.OpenAISpeech("fake").synthesize("답변입니다")
+            return await _collect()
 
-    wav_bytes = asyncio.run(run())
+    deltas = asyncio.run(run())
+    assert [base64.b64decode(d) for d in deltas] == [b"\x01\x00" * 10, b"\x02\x00" * 10]
     assert urls == ["wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini"]
     assert [e["type"] for e in sent] == [
         "session.update", "conversation.item.create", "response.create"]
@@ -364,10 +442,6 @@ def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
         "format": {"type": "audio/pcm", "rate": 24000}, "voice": "marin"}
     assert sent[1]["item"]["content"] == [{"type": "input_text", "text": "답변입니다"}]
     assert sent[2]["response"]["max_output_tokens"] == "inf"
-    assert wav_bytes[:4] == b"RIFF"
-    with wave.open(io.BytesIO(wav_bytes)) as wav:
-        assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (24000, 1, 2)
-        assert wav.readframes(wav.getnframes()) == pcm
     (row,) = rows.values()
     assert row["model"] == "gpt-realtime-2.1-mini" and row["status"] == "succeeded"
     assert row["input_characters"] == 5
@@ -375,30 +449,110 @@ def test_tts_uses_realtime_and_returns_wav_with_usage(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "events",
+    "events,code",
     [
-        [{"type": "error", "error": {"message": "private"}}],
-        [{"type": "response.done", "response": {"status": "completed", "usage": {}}}],
-        [_delta(b"\x01\x00" * 100),
-         {"type": "response.done",
-          "response": {"status": "incomplete", "usage": {"input_tokens": 7, "output_tokens": 3}}}],
+        ([{"type": "error", "error": {"message": "private"}}], "provider_unavailable"),
+        ([{"type": "error", "error": {"code": "rate_limit_exceeded"}}], "provider_rate_limited"),
+        ([{"type": "response.done", "response": {"status": "completed", "usage": {}}}],
+         "provider_unavailable"),
+        ([_delta(b"\x01\x00" * 100),
+          {"type": "response.done",
+           "response": {"status": "incomplete", "usage": {"input_tokens": 7, "output_tokens": 3}}}],
+         "provider_unavailable"),
     ],
 )
-def test_tts_error_event_and_empty_audio_are_unavailable(monkeypatch, events):
+def test_tts_error_event_and_empty_audio_are_unavailable(monkeypatch, events, code):
     scope, rows = _ledger_rows(monkeypatch)
     _fake_realtime_tts(monkeypatch, events)
 
     async def run():
         with scope:
-            await openai_speech.OpenAISpeech("fake").synthesize("답변")
+            await _collect("답변")
 
-    with pytest.raises(SpeechUnavailableError, match="음성을 생성"):
+    with pytest.raises(SpeechUnavailableError, match="음성을 생성") as raised:
         asyncio.run(run())
+    assert raised.value.code == code
     (row,) = rows.values()
     assert row["status"] == "failed"
     # 미완료 응답도 공급사가 과금하므로 usage는 원장에 남는다.
     if events[-1].get("response", {}).get("status") == "incomplete":
         assert (row["input_tokens"], row["output_tokens"]) == (7, 3)
+
+
+def _answer_cancel_with_usage(monkeypatch, usage):
+    """response.cancel을 받으면 공급사가 cancelled 응답과 usage를 돌려주는 상황을 만든다."""
+    from contextlib import asynccontextmanager
+
+    original = openai_speech.connect
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        async with original(url, **kwargs) as upstream:
+            send = upstream.send
+
+            async def send_and_answer(raw):
+                await send(raw)
+                if json.loads(raw)["type"] == "response.cancel":
+                    await upstream.queue.put(_delta(b"\x03\x00"))
+                    await upstream.queue.put(
+                        {"type": "response.done", "response": {"status": "cancelled", "usage": usage}})
+
+            upstream.send = send_and_answer
+            yield upstream
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+
+
+def test_tts_stall_is_deadline_exceeded_and_cancelled_with_usage(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+    sent, _ = _fake_realtime_tts(monkeypatch, [_delta(b"\x01\x00")])
+    _answer_cancel_with_usage(monkeypatch, {"input_tokens": 12, "output_tokens": 33})
+    monkeypatch.setattr(openai_speech, "TTS_EVENT_TIMEOUT_SECONDS", 0.05)
+
+    async def run():
+        with scope:
+            await _collect()
+
+    with pytest.raises(SpeechUnavailableError) as raised:
+        asyncio.run(run())
+    assert raised.value.code == "deadline_exceeded"
+    assert [e["type"] for e in sent][-1] == "response.cancel"
+    (row,) = rows.values()
+    assert row["status"] == "cancelled"
+    assert (row["input_tokens"], row["output_tokens"]) == (12, 33)
+
+
+@pytest.mark.parametrize("how", ["aclose", "task_cancel"])
+def test_tts_client_stop_cancels_upstream_and_records_usage(monkeypatch, how):
+    scope, rows = _ledger_rows(monkeypatch)
+    usage = {"input_tokens": 12, "output_tokens": 33}
+    sent, _ = _fake_realtime_tts(monkeypatch, [_delta(b"\x01\x00" * 10)])
+    _answer_cancel_with_usage(monkeypatch, usage)
+
+    async def run():
+        with scope:
+            stream = openai_speech.OpenAISpeech("fake").synthesize("답변")
+            if how == "aclose":
+                await stream.__anext__()
+                await stream.aclose()
+                return
+
+            async def consume():
+                async for _ in stream:
+                    await asyncio.sleep(10)  # 소비자가 느려 재생 중 취소되는 상황
+
+            task = asyncio.create_task(consume())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+    assert [e["type"] for e in sent][-1] == "response.cancel"
+    (row,) = rows.values()
+    assert row["status"] == "cancelled"
+    assert (row["input_tokens"], row["output_tokens"]) == (12, 33)
+    assert row["input_characters"] == 2
 
 
 def test_live_transcription_records_each_committed_segment(monkeypatch):
@@ -485,9 +639,12 @@ def test_speech_routes_attribute_calls_to_request_id(client, monkeypatch):
         actors.append(usage_ledger._actor.get())
         return "전사"
 
-    async def synthesize(*args):
-        actors.append(usage_ledger._actor.get())
-        return b"wav"
+    def synthesize(*args):
+        async def gen():
+            actors.append(usage_ledger._actor.get())
+            yield "AAA="
+
+        return gen()
 
     class LiveSpeech:
         async def transcribe_live(self, packets):
