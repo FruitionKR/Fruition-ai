@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -333,13 +334,13 @@ def test_postgres_cancel_job_and_compensation_authorization(monkeypatch):
     schema = "test_agent_undo_" + uuid4().hex
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-        for table in ("agent_runs", "agent_plans", "agent_plan_operations", "agent_approvals", "agent_jobs",
-                      "agent_tool_executions", "skill_versions"):
-            conn.execute(sql.SQL("CREATE TABLE {}.{} (LIKE public.{} INCLUDING ALL)").format(
-                sql.Identifier(schema), sql.Identifier(table), sql.Identifier(table)))
 
     def connect():
         return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    # 빈 DB에서도 돌도록 public 테이블을 복사하지 않고 현행 ai_schema.sql을 격리 스키마에 적용한다.
+    with connect() as conn:
+        conn.execute(Path(__file__).resolve().parents[3].joinpath("db/ai_schema.sql").read_text())
 
     try:
         monkeypatch.setattr(database, "connect_ai", connect)

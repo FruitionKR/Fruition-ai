@@ -230,7 +230,7 @@ def test_purge_routes_require_internal_token(monkeypatch):
     assert calls == ["ws", "ws2"]
 
 
-def test_edit_event_in_purged_workspace_does_not_revive_derived_state(database, monkeypatch, caplog):
+def test_edit_event_in_purged_workspace_does_not_revive_derived_state(database, storage, monkeypatch, caplog):
     from app.workers import edit_event_consumer as consumer
 
     monkeypatch.setattr(consumer.database, "connect_ai", database)
@@ -249,7 +249,7 @@ def test_edit_event_in_purged_workspace_does_not_revive_derived_state(database, 
         assert ids(conn, "document_derived_state", "document_id") == {"doc-x"}
 
 
-def test_document_deleted_in_purged_workspace_is_discarded_without_tombstone(database):
+def test_document_deleted_in_purged_workspace_is_discarded_without_tombstone(database, storage):
     from app.workers import ingest_worker
 
     command = {"kind": "document_deleted", "workspace_id": "ws", "document_id": "doc-x", "user_id": "alice"}

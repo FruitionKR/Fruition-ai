@@ -23,6 +23,8 @@ jobs:
           --health-retries 10
     env:
       CONCEPT_LOCK_TEST_DSN: postgresql://postgres:isolated_ci_test_password@localhost:5432/postgres
+      # DB 테스트(task journal·agent rollback·purge 등)는 테스트마다 격리 스키마를 만들어 같은 서비스 DB를 쓴다.
+      TEST_AGENT_DATABASE_URL: postgresql://postgres:isolated_ci_test_password@localhost:5432/postgres
     defaults:
       run:
         working-directory: pipeline

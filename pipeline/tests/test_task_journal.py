@@ -109,11 +109,11 @@ def test_cancel_before_delivery_never_calls_handler(journal_database):
 
 
 def test_failed_run_keeps_reason_code_for_replay(journal_database):
-    class Rejected(ValueError):
-        code = "intent_ambiguous"
+    # failure_code는 app.* 예외의 code만 그대로 쓴다. 실제 Skill 거절 예외로 검증한다.
+    from app.modules.skill.domain.exceptions import SkillRequestRejectedError
     def reject():
-        raise Rejected("rejected")
-    with pytest.raises(Rejected):
+        raise SkillRequestRejectedError("intent_ambiguous", "rejected")
+    with pytest.raises(SkillRequestRejectedError):
         journal.execute(command(), reject)
     assert journal.status("run", "ws", "user") == dict(id="run", status="failed", error_code="intent_ambiguous")
     def unexpected():
@@ -128,8 +128,9 @@ def test_failed_run_without_code_is_task_failed(journal_database):
         raise RuntimeError("boom")
     with pytest.raises(RuntimeError):
         journal.execute(command(), fail)
-    assert journal.status("run", "ws", "user")["error_code"] == "task_failed"
-    with pytest.raises(journal.TaskFailedError, match="task_failed"):
+    # 사유 코드가 없는 예외는 공통 실패 코드 internal_error로 저장되고 재전달도 같은 코드를 돌려준다.
+    assert journal.status("run", "ws", "user")["error_code"] == "internal_error"
+    with pytest.raises(journal.TaskFailedError, match="internal_error"):
         journal.execute(command(), fail)
 
 
@@ -405,7 +406,7 @@ def test_interrupted_run_beyond_attempt_cap_fails_durably(journal_database):
         insert_page(conn)
     def unexpected():
         pytest.fail("한도를 넘은 작업의 handler를 호출했습니다.")
-    with pytest.raises(ValueError, match=f"exceeded {journal.MAX_INTERRUPTED_ATTEMPTS} attempts"):
+    with pytest.raises(ValueError, match="interrupted_attempts_exhausted"):
         journal.execute(command(), unexpected)
     assert journal.status("run", "ws", "user") == dict(id="run", status="failed", error_code="interrupted_attempts_exhausted")
     with connect() as conn:
@@ -461,11 +462,10 @@ def test_meeting_notes_completion_scrubs_transcript_and_draft_but_replays(journa
 
 
 def test_meeting_notes_failure_scrubs_transcript_and_replays_code(journal_database):
-    class Rejected(ValueError):
-        code = "MEETING_NOTES_FAILED"
+    # task_worker가 실제로 올리는 예외(TaskFailedError)로 검증한다.
     def reject():
-        raise Rejected("x")
-    with pytest.raises(Rejected):
+        raise journal.TaskFailedError("MEETING_NOTES_FAILED")
+    with pytest.raises(journal.TaskFailedError):
         journal.execute(meeting_command(), reject)
     row = stored(journal_database)
     assert row["status"] == "failed" and "segments" not in row["command"]
