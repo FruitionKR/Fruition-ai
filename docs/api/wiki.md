@@ -297,7 +297,7 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 ingest 작업의 Wiki 변경을 복원합니다.
 
-- `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0029](../adr/0029-manual-wiki-contributions.md)).
+- `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0031](../adr/0031-manual-wiki-contributions.md)).
 - source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
 
 #### 3. Auth 필요 여부
@@ -1092,8 +1092,8 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 | 목적 | 사람이 고친 Wiki 본문을 수동 기여로 저장합니다. |
 | 입력 | **Path** — `page_id`: `string`<br>**Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`<br>**Body** — `WikiPageManualEditIn` |
 | 출력 | `200` 성공 — `object` (document-svc가 기록할 `changed_pages` 항목) |
-| 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>`user_id`·`workspace_id`가 소유한 활성 페이지만 고칠 수 있다.<br>revision·`base_revision` 충돌 검사는 호출자(document-svc)가 맡는다. |
-| 주요 오류 | `404` 페이지 없음·소유자 불일치·비활성<br>`422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
+| 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>`workspace_id`의 활성 페이지를 고친다. 작성자(`user_id`)는 확인하지 않으며, 누가 고칠 수 있는지는 document가 정한다(ADR 0033).<br>revision·`base_revision` 충돌 검사는 호출자(document-svc)가 맡는다. |
+| 주요 오류 | `404` 페이지 없음·다른 워크스페이스·비활성<br>`422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -1107,11 +1107,11 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 
 #### 2. 목적
 
-사람이 고친 source·concept 페이지 본문을 수동 기여(`artifact_type: "manual"`)로 저장하고 현재 상태에 반영한다. 정책은 [ADR 0029](../adr/0029-manual-wiki-contributions.md)를 따른다.
+사람이 고친 source·concept 페이지 본문을 수동 기여(`artifact_type: "manual"`)로 저장하고 현재 상태에 반영한다. 정책은 [ADR 0031](../adr/0031-manual-wiki-contributions.md)를 따른다.
 
 - `wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md`(본문)와 `.json`(수동 기여)을 쓴다.
 - `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
-- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 소유 범위의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
+- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
 - 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
 - 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다.
 
@@ -1156,7 +1156,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 #### 6. Error response
 
 - HTTP `401`: 내부 인증 토큰 누락 또는 불일치
-- HTTP `404`: 페이지 없음·소유자 불일치·비활성
+- HTTP `404`: 페이지 없음·다른 워크스페이스·비활성
 - HTTP `503`: 내부 인증 미설정
 
 | HTTP 상태 | 설명 | 응답 스키마 |
@@ -1171,7 +1171,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 #### 8. 권한 규칙
 
 - 올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.
-- 페이지 소유자(`user_id`·`workspace_id`)가 일치해야 한다.
+- 페이지는 `workspace_id`로만 찾고 작성자(`user_id`)를 확인하지 않는다. 누가 고칠 수 있는지는 document가 정한다(ADR 0033). `user_id`는 수동 기여 JSON에 귀속 정보로 남는다.
 
 #### 9. 예시 요청/응답
 

@@ -200,7 +200,8 @@ def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> N
     generated = restore.restore_source_page("R2", "A", "ws", source)
 
     assert (manual["title"], manual["summary"]) == (None, None)
-    assert (generated["title"], generated["summary"]) == ("AI 제목", "AI 요약")
+    # 소스 페이지 제목은 문서 파일명이라 스냅샷에서 되돌리지 않는다(ADR 0033).
+    assert (generated["title"], generated["summary"]) == (None, "AI 요약")
 
 
 def _source_page_connection(page: dict | None) -> MagicMock:
@@ -244,6 +245,22 @@ def test_active_manual_source_markdown_fails_when_manual_body_is_missing(monkeyp
     # 빈 본문으로 source 페이지를 덮어쓰지 않도록 재편입을 실패시킨다.
     with pytest.raises(KeyError):
         repository._active_manual_source_markdown("doc-1", {"user_id": "user", "workspace_id": "ws"})
+
+
+def test_active_manual_source_markdown_finds_page_ingested_by_other_member(monkeypatch) -> None:
+    conn = _source_page_connection({"id": "S1"})
+    objects = {"ops/M1.json": json.dumps(_manual("M1")), "ops/M1.md": "첫 수동 본문"}
+    monkeypatch.setattr(repository, "connect", lambda: conn)
+    monkeypatch.setattr(repository, "read_contributions", lambda *_args: MANUAL_ROWS)
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "read_text_object", objects.__getitem__)
+
+    # 위키는 워크스페이스 공유 자산이다(ADR 0033). 다른 멤버가 재편입해도 사람 본문을 찾는다.
+    manifest = {"user_id": "other-member", "workspace_id": "ws"}
+    assert repository._active_manual_source_markdown("doc-1", manifest) == "첫 수동 본문"
+    query, params = conn.execute.call_args.args
+    assert "user_id" not in query
+    assert params == ("ws", "doc-1")
 
 
 def test_active_manual_source_markdown_skips_lookup_for_new_document(monkeypatch) -> None:
@@ -406,8 +423,18 @@ def test_save_manual_edit_updates_body_links_and_keeps_title(ai_database) -> Non
     assert objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"] == "재요청이 덮어쓰면 안 된다"
 
 
-def test_save_manual_edit_rejects_other_users_page(ai_database) -> None:
-    assert repository.save_manual_wiki_edit("C1", "other", "ws", "op-m", "본문") is None
+def test_save_manual_edit_allows_member_other_than_last_ingester(ai_database) -> None:
+    connect, objects = ai_database
+
+    # wiki_pages.user_id는 마지막 편입자일 뿐이다(ADR 0033). 누가 고칠 수 있는지는 document가 정한다.
+    result = repository.save_manual_wiki_edit("C1", "other", "ws", "op-m", "# 캐시\n\n- [[memcached]]\n")
+
+    assert result is not None
+    assert json.loads(objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"])["user_id"] == "other"
+    with connect() as conn:
+        links = conn.execute("SELECT to_page_id FROM wiki_page_links WHERE from_page_id = 'C1'").fetchall()
+    # 다른 멤버가 편입한 페이지도 [[링크]] 대상으로 찾는다.
+    assert {"to_page_id": "C3"} in links
 
 
 def test_manual_edit_route_starts_embedding_and_returns_404_for_missing_page(monkeypatch) -> None:

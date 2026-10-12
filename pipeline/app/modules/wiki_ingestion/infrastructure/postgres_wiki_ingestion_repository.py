@@ -885,10 +885,10 @@ def save_manual_wiki_edit(
                 """
                 SELECT id, page_type, slug, markdown_uri
                 FROM wiki_pages
-                WHERE id = %s AND user_id = %s AND workspace_id = %s
+                WHERE id = %s AND workspace_id = %s
                   AND status = 'active'
                 """,
-                (page_id, user_id, workspace_id),
+                (page_id, workspace_id),
             ).fetchone()
             if page is None:
                 return None
@@ -923,11 +923,11 @@ def save_manual_wiki_edit(
                 """
                 SELECT page_type, slug
                 FROM wiki_pages
-                WHERE user_id = %s AND workspace_id = %s
+                WHERE workspace_id = %s
                   AND status = 'active' AND slug = ANY(%s)
                 ORDER BY page_type = 'concept' DESC
                 """,
-                (user_id, workspace_id, wikilink_slugs(markdown)),
+                (workspace_id, wikilink_slugs(markdown)),
             ).fetchall():
                 target_refs.setdefault(str(row["slug"]), f'{row["page_type"]}:{row["slug"]}')
             source_document_ids = None
@@ -992,18 +992,17 @@ def save_manual_wiki_edit(
 
 def _active_manual_source_markdown(document_id: str, manifest: dict[str, Any]) -> str | None:
     """활성 수동 기여 중 가장 최근 source 본문을 돌려준다. 재편입은 사람이 고친 본문을 덮어쓰지 않는다."""
-    user_id = str(manifest.get("user_id") or "local-user")
     workspace_id = str(manifest.get("workspace_id") or "local-workspace")
     with connect() as conn:
         page = conn.execute(
             """
             SELECT id
             FROM wiki_pages
-            WHERE user_id = %s AND workspace_id = %s
+            WHERE workspace_id = %s
               AND page_type = 'source' AND slug = %s
               AND markdown_uri IS NOT NULL
             """,
-            (user_id, workspace_id, slugify(document_id)),
+            (workspace_id, slugify(document_id)),
         ).fetchone()
     if page is None:
         # 처음 편입하는 문서에는 기여가 없다.

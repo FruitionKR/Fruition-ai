@@ -1,4 +1,4 @@
-# 0029. 사람이 고친 Wiki 본문을 수동 기여로 보존한다
+# 0031. 사람이 고친 Wiki 본문을 수동 기여로 보존한다
 
 ## Status
 Accepted
@@ -15,12 +15,13 @@ Accepted
 ## Decision
 - 사람의 수정은 별도 작업 하나의 **수동 기여**로 저장한다. 경로는 `ops/{operation_id}.md`(본문)와 `.json`(`artifact_type: "manual"`, `added_links`, `removed_links`)이다.
   - document-svc가 `base_revision`을 검사한 뒤 `PUT /wiki/pages/{page_id}/manual-edit`을 동기 호출한다.
+  - 위키는 워크스페이스 공유 자산이다([0033](0033-workspace-shared-wiki.md)). 페이지와 `[[slug]]` 대상은 `workspace_id`로만 찾고, 마지막 편입자(`wiki_pages.user_id`)를 확인하지 않는다. 누가 고칠 수 있는지는 document-svc가 정한다. 요청의 `user_id`는 수동 기여 JSON에 귀속 정보로만 남는다.
   - 응답 항목으로 기여와 버전을 기록한다. 기여로 남으므로 작업 로그 되돌리기의 대상이 된다.
   - `wiki_page_contributions.object_key`에는 응답의 `contribution_key`(`.json`)를 기록한다. 재편입과 복구가 이 JSON의 `artifact_type`으로 수동 기여를 알아본다.
   - 읽기, 링크 차이 계산, 반영을 모두 워크스페이스 `concept_write_lock` 안에서 한다. 동시에 도는 ingest·restore·lint가 그 사이에 링크나 본문을 바꾸지 못한다.
 - **링크**: 저장할 때 이전 본문과 새 본문의 `[[slug]]` 차이만 edge에 반영한다.
   - 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지운다.
-  - 새 slug는 같은 소유 범위의 활성 페이지가 있을 때만 edge를 만든다. 종류는 source 페이지면 `source_mentions_concept`, concept 페이지면 `related_to`다.
+  - 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다. 종류는 source 페이지면 `source_mentions_concept`, concept 페이지면 `related_to`다.
   - 손대지 않은 링크와, 본문에 없던 기존 edge는 그대로 둔다.
   - 없는 slug는 본문에만 남긴다. slug는 정확히 일치해야 한다(제목으로 찾지 않는다).
 - **인용·임베딩**: 저장된 본문의 블록 참조로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다. 근거 문서 연결(`document_wiki_links`)은 바꾸지 않는다.
