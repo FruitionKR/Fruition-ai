@@ -1720,7 +1720,8 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
         stop_callbacks = []
         events = []
         commands = [{"kind": "query", "run_id": f"run-{i}"} for i in (1, 2)]
-        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock())
+        offsets = iter(range(10))
+        consumer = _consumer_stub()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
 
         async def getmany(**kwargs):
@@ -1728,7 +1729,7 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
                 command = commands.pop(0)
                 if command["run_id"] == "run-2":
                     await title_started.wait()
-                return {"partition": [SimpleNamespace(value=command)]}
+                return {"partition": [SimpleNamespace(topic="t", partition=0, offset=next(offsets), value=command)]}
             stop_callbacks[0]()
             return {}
 
@@ -1758,6 +1759,7 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
                 patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
             await asyncio.wait_for(task_worker.consume(), timeout=1)
@@ -1770,20 +1772,33 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
     asyncio.run(run_test())
 
 
+def _consumer_stub():
+    """consume()가 부르는 aiokafka consumer 표면의 최소 가짜. 일시 정지는 무시하고 getmany만 테스트가 정한다."""
+    return SimpleNamespace(
+        start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), subscribe=MagicMock(),
+        assignment=lambda: set(), paused=lambda: set(), pause=MagicMock(), resume=MagicMock(),
+    )
+
+
 def _run_consume(handled: list, kind: str = "query"):
-    """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓰며 같은 offset 메시지를 되풀이해 받는다."""
+    """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
         events = []
         titles = []
-        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), seek=MagicMock())
+        consumer = _consumer_stub()
+        consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=3, offset=42, value={"kind": kind, "run_id": "run-1"})
+        delivered = []
 
         async def getmany(**kwargs):
-            if handled:
+            if not delivered:
+                delivered.append(True)
                 return {"partition": [message]}
-            stop_callbacks[0]()
+            if not handled:
+                stop_callbacks[0]()
+            await asyncio.sleep(0)
             return {}
 
         async def send(topic, event, **kwargs):
@@ -1807,6 +1822,7 @@ def _run_consume(handled: list, kind: str = "query"):
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
                 patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
@@ -1816,16 +1832,16 @@ def _run_consume(handled: list, kind: str = "query"):
     return asyncio.run(run_test())
 
 
-def test_redelivered_running_task_seeks_back_and_waits_instead_of_crashing() -> None:
+def test_redelivered_running_task_waits_in_place_without_seek() -> None:
     from aiokafka import TopicPartition
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 
     consumer, events, titles = _run_consume([journal.TaskAlreadyExecutingError("busy"), {"answer": "답변"}])
 
-    consumer.seek.assert_called_once_with(TopicPartition("t", 3), 42)
-    # 대기 중에는 커밋하지 않고, 원래 worker가 끝난 뒤의 재처리에서만 커밋한다.
+    # 같은 partition의 다른 offset이 실행 중일 수 있어 seek하지 않고, 끝난 뒤에만 그 offset까지 커밋한다.
+    consumer.seek.assert_not_called()
     assert events == ["succeeded", "session_title"]
-    assert consumer.commit.await_count == 1
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
     assert titles == ["run-1"]
 
 
