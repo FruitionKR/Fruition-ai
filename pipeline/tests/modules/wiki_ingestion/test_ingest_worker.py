@@ -310,6 +310,36 @@ def test_post_ingest_command_is_stable_for_redelivery() -> None:
     assert "page_ids" not in first
 
 
+def test_dispatch_reports_whether_post_ingest_was_published() -> None:
+    producer = MagicMock()
+    producer.send_and_wait = AsyncMock()
+    post_command = {"run_id": "post-run-1", "workspace_id": "workspace-1"}
+
+    def dispatch(command):
+        with (
+            patch.object(ingest_worker, "_post_ingest_command", return_value=command),
+            patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.register"),
+        ):
+            return asyncio.run(ingest_worker._dispatch_post_ingest(producer, {"run_id": "r"}))
+
+    assert dispatch(post_command) is True
+    assert dispatch(post_command) is True  # 재전달도 같은 값
+    assert dispatch(None) is False
+    assert producer.send_and_wait.await_count == 2
+
+
+def test_event_carries_post_ingest_dispatched_flag() -> None:
+    command = {"run_id": "run-1", "kind": "document"}
+    ok = {"status": "succeeded"}
+
+    assert ingest_worker._result_event(command, ok, True)["post_ingest_dispatched"] is True
+    assert ingest_worker._result_event(command, ok, False)["post_ingest_dispatched"] is False
+    # 실패 이벤트는 항상 false
+    failed = ingest_worker._result_event(command, {"status": "failed"}, True)
+    assert failed["post_ingest_dispatched"] is False
+    assert ingest_worker._event(command, "failed")["post_ingest_dispatched"] is False
+
+
 def test_post_ingest_dispatch_failure_is_not_treated_as_finished_ingest() -> None:
     producer = MagicMock()
     producer.send_and_wait = AsyncMock(side_effect=RuntimeError("kafka unavailable"))
