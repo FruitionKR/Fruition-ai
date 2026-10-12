@@ -479,6 +479,24 @@ CREATE INDEX IF NOT EXISTS checkpoints_thread_id_idx ON checkpoints (thread_id);
 CREATE INDEX IF NOT EXISTS checkpoint_blobs_thread_id_idx ON checkpoint_blobs (thread_id);
 CREATE INDEX IF NOT EXISTS checkpoint_writes_thread_id_idx ON checkpoint_writes (thread_id);
 
+-- 파기가 agent_runs를 지운 뒤에도 실행 중이던 worker가 checkpoint를 쓰면 개인정보가 남는다.
+-- thread_id(= agent run id)의 run 행이 없으면 쓰기를 거부한다. KEY SHARE는 run 행 삭제와 충돌하므로
+-- 파기가 agent_runs를 먼저 지우면 진행 중인 쓰기는 끝나고 이후 쓰기는 거부된다.
+CREATE OR REPLACE FUNCTION reject_orphan_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM 1 FROM agent_runs WHERE id = NEW.thread_id FOR KEY SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'agent run % does not exist (purged)', NEW.thread_id USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoints;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoints FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoint_blobs;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoint_blobs FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoint_writes;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoint_writes FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+
 -- 실행 중인 AI 작업의 변경과 복구 기록은 같은 트랜잭션에서 남긴다.
 CREATE TABLE IF NOT EXISTS ai_task_runs (
     id text PRIMARY KEY,

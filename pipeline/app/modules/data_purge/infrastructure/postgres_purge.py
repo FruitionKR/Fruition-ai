@@ -5,6 +5,8 @@ AI 실행 로그(pipeline-runs/)는 지우지 않고 S3 lifecycle 만료에 맡�
 S3를 DB보다 먼저 지운다. DB를 먼저 지우면 S3 삭제가 실패한 뒤 재호출할 때 지울 키를 다시 찾을 수 없다.
 """
 
+import hashlib
+
 import psycopg
 from psycopg.rows import dict_row
 
@@ -18,6 +20,28 @@ def connect():
 
 
 _CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+
+
+def _delete_agent_runs(conn, condition: str, params) -> tuple[dict[str, int], list[str]]:
+    """agent_runs를 먼저 지운 뒤 checkpoint를 지운다.
+
+    checkpoint 쓰기는 run 행에 KEY SHARE를 잡는 트리거(db/ai_schema.sql)로 보호된다. run 행 삭제가 진행 중이던
+    쓰기를 기다려 끝낸 뒤, 별도 문장으로 checkpoint를 지우므로 그 쓰기까지 지워진다. 이후 쓰기는 거부된다.
+    """
+    ids = [row["id"] for row in conn.execute(f"DELETE FROM agent_runs WHERE {condition} RETURNING id", params).fetchall()]
+    deleted = {"agent_runs": len(ids)}
+    deleted.update((table, conn.execute(f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (ids,)).rowcount)
+                   for table in _CHECKPOINT_TABLES)
+    return deleted, ids
+
+
+def _sweep_artifacts(run_ids: list[str]) -> int:
+    # DB 삭제 커밋 뒤에 한 번 더 지운다. S3 삭제와 DB 삭제 사이에 등록된 산출물 객체를 정리한다.
+    # 객체 키 규칙은 postgres_agent_run_repository._artifact_object_key와 같다. 이후 등록은 run 행이 없어 DB에서 실패하고 객체를 스스로 지운다.
+    if not run_ids:
+        return 0
+    prefixes = [f"agent-runs/{hashlib.sha256(run_id.encode('utf-8')).hexdigest()}/" for run_id in run_ids]
+    return _delete_objects(prefixes, [])
 
 
 def _mark_purged(scope_type: str, scope_id: str) -> None:
@@ -53,10 +77,6 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
         statements = [
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE workspace_id = %(ws)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE workspace_id = %(ws)s"),
-            *((table, f"DELETE FROM {table} WHERE thread_id IN (SELECT id FROM agent_runs WHERE workspace_id = %(ws)s)")
-              for table in _CHECKPOINT_TABLES),
-            # 계획·승인·작업·산출물 행은 ON DELETE CASCADE로 함께 지워진다.
-            ("agent_runs", "DELETE FROM agent_runs WHERE workspace_id = %(ws)s"),
             # 개인 스킬은 workspace_id가 NULL이라 팀 스킬만 지워진다. 버전·출처는 CASCADE.
             ("skills", "DELETE FROM skills WHERE workspace_id = %(ws)s"),
             # 링크·임베딩·임베딩 단위는 CASCADE.
@@ -70,7 +90,11 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
             ("wiki_source_tombstones", "DELETE FROM wiki_source_tombstones WHERE workspace_id = %(ws)s"),
             ("pipeline_runs", "DELETE FROM pipeline_runs WHERE workspace_id = %(ws)s"),
         ]
+        # 계획·승인·작업·산출물 행은 ON DELETE CASCADE로 함께 지워진다.
+        agent_deleted, run_ids = _delete_agent_runs(conn, "workspace_id = %(ws)s", params)
+        deleted.update(agent_deleted)
         deleted.update((table, conn.execute(statement, params).rowcount) for table, statement in statements)
+    deleted["s3_objects"] += _sweep_artifacts(run_ids)
     return deleted
 
 
@@ -87,13 +111,13 @@ def purge_user(user_id: str) -> dict[str, int]:
             # 작업 기록을 지우면 실행 중이던 작업은 이후 변경이 거부되고, 재전달은 ai_purged_scopes로 거절된다.
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE user_id = %(user)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE user_id = %(user)s"),
-            *((table, f"DELETE FROM {table} WHERE thread_id IN (SELECT id FROM agent_runs WHERE user_id = %(user)s)")
-              for table in _CHECKPOINT_TABLES),
-            ("agent_runs", "DELETE FROM agent_runs WHERE user_id = %(user)s"),
             ("skills", "DELETE FROM skills WHERE scope_type = 'personal' AND owner_user_id = %(user)s"),
             ("wiki_schemas", "DELETE FROM wiki_schemas WHERE user_id = %(user)s"),
         ]
+        agent_deleted, run_ids = _delete_agent_runs(conn, "user_id = %(user)s", {"user": user_id})
+        deleted.update(agent_deleted)
         deleted.update((table, conn.execute(statement, {"user": user_id}).rowcount) for table, statement in statements)
+    deleted["s3_objects"] += _sweep_artifacts(run_ids)
     return deleted
 
 

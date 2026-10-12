@@ -484,6 +484,80 @@ def test_pipeline_endpoint_waits_for_synchronous_result() -> None:
     assert [item[0] for item in use_case.mock_calls] == ["register", "execute"]
 
 
+@pytest.mark.parametrize("wait", [True, False])
+@pytest.mark.parametrize("fails", [False, True])
+def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, wait: bool, fails: bool) -> None:
+    # 호출자가 out을 주지 않으면 runs/api_{run_id}는 실행이 끝나면(성공·실패·백그라운드 모두) 지워진다.
+    monkeypatch.chdir(tmp_path)
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "user_1",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "extracted_text_uri": None,
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+    created: list[Path] = []
+
+    def execute(run_id, command):
+        out = Path(command.out)
+        (out / "raw_llm_outputs").mkdir(parents=True)
+        (out / "document.json").write_text("원문", encoding="utf-8")
+        created.append(out)
+        if fails:
+            raise RuntimeError("boom")
+        return {}
+
+    use_case.execute.side_effect = execute
+
+    with _pipeline_client(
+        use_case=use_case,
+        repository=repository,
+        source_reader=_source_reader("# Stored Document"),
+    ) as client:
+        response = client.post(
+            "/pipeline/runs",
+            json={"document_id": "document_1", "wait": wait, "provider": "openai", "model": "gpt-5-nano"},
+        )
+
+    assert response.status_code == (500 if wait and fails else 200)
+    assert len(created) == 1 and created[0].parts[0] == "runs"
+    assert not created[0].exists()
+
+
+def test_pipeline_run_keeps_caller_specified_output_dir(tmp_path) -> None:
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "user_1",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "extracted_text_uri": None,
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+    use_case.execute.side_effect = lambda run_id, command: Path(command.out).mkdir() or {}
+    out = tmp_path / "chosen"
+
+    with _pipeline_client(
+        use_case=use_case,
+        repository=repository,
+        source_reader=_source_reader("# Stored Document"),
+    ) as client:
+        client.post(
+            "/pipeline/runs",
+            json={"document_id": "document_1", "wait": True, "out": str(out), "provider": "openai", "model": "gpt-5-nano"},
+        )
+
+    assert out.exists()
+
+
 def test_pipeline_run_status_uses_repository_dependency() -> None:
     repository = _repository()
     repository.get_run.return_value = {

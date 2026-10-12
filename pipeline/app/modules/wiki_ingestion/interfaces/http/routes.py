@@ -1,5 +1,6 @@
 import logging
 import re
+import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -261,7 +262,9 @@ def _run_pipeline_request(
 ) -> PipelineRunOut:
     # Kafka worker는 backend가 command에 실어 보낸 run_id를 그대로 쓴다(문서의 runId 대조 유지).
     run_id = run_id or str(uuid.uuid4())
-    out = Path(payload.out) if payload.out else Path("runs") / f"api_{run_id}"
+    # 호출자가 out을 지정하지 않으면 run 전용 임시 폴더이므로 실행이 끝나면 지운다(원문이 담긴 디버그 JSON 포함).
+    scratch_out = Path("runs") / f"api_{run_id}" if not payload.out else None
+    out = Path(payload.out) if payload.out else scratch_out
     log_path = pipeline_log_uri(run_id)
     try:
         document = _load_document(payload.document_id, repository)
@@ -328,6 +331,7 @@ def _run_pipeline_request(
             run_id,
             command,
             use_case,
+            scratch_out,
         )
         return PipelineRunOut(
             run_id=run_id,
@@ -341,6 +345,8 @@ def _run_pipeline_request(
         manifest = use_case.execute(run_id, command)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        _remove_scratch_out(scratch_out)
 
     run_status = "succeeded"
     stored_run = repository.get_run(run_id)
@@ -581,12 +587,20 @@ def _resolve_chat_wiki_input(payload: ChatWikiRunIn) -> tuple[str, str, str]:
     return payload.input_markdown, f"inline:{input_name}", input_name
 
 
+def _remove_scratch_out(path: Path | None) -> None:
+    if path is not None:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _execute_pipeline_run(
     run_id: str,
     command: PipelineRunCommand,
     use_case: RunPipelineUseCase,
+    scratch_out: Path | None = None,
 ) -> None:
     try:
         use_case.execute(run_id, command)
     except Exception as exc:
         logger.error("ERROR: pipeline run failed run_id=%s error=%s", run_id, exc)
+    finally:
+        _remove_scratch_out(scratch_out)
