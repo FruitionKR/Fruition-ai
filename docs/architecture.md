@@ -23,7 +23,11 @@ Agent 업무 실행은 기존 Kafka 경로를 유지한다. 사용자 인증·�
 
 호출자가 기다리는 시간보다 AI의 최악 처리 시간이 길면 호출자가 포기한 뒤에도 모델 호출이 과금되고 결과가 저장된다. 그래서 짧은 동기 경로는 호출자 timeout보다 짧은 AI 마감을 둔다: Skill 게시·수정과 위키 스키마 preview·drafts 55초(document 60초), 음성 전사는 호출자가 보낸 `deadline_seconds`(채팅은 document가 100초를 보내며 ALB idle은 120초, 회의 녹음 파일은 보내지 않아 공급사 단계마다 최대 900초), converter 요청 전체 840초(document 900초, `/convert-source-batch`의 대기열 대기 포함). 마감이 지나면 모델 호출을 시작하지 않고 결과를 저장하지 않으며 실패한다. 길이를 예측할 수 없는 작업은 비동기 작업으로 옮긴다. 근거는 [ADR 0032](adr/0032-time-budget-and-redelivery.md)를 따른다.
 
-Kafka 리밸런스로 실행 중인 작업이 다른 worker에 재전달되면 새 worker는 종료하지 않고 해당 offset으로 되돌아가(seek) 5초 간격으로 기다린다. 원래 worker가 끝나면 같은 메시지가 저장된 결과로 재생돼 커밋되며, 재생한 결과로는 세션 제목 생성 같은 부수 효과를 다시 실행하지 않는다. 문서 삭제 정리는 동기 취소 API 없이 `document_deleted` command로 워크스페이스 전체에 비동기 처리한다.
+Kafka 리밸런스로 실행 중인 작업이 다른 worker에 재전달되면 새 worker는 종료하지 않고 5초 간격으로 기다린다(동시 처리 이후에는 seek하지 않고 제자리 대기, 아래 Worker 동시 처리). 원래 worker가 끝나면 같은 메시지가 저장된 결과로 재생돼 커밋되며, 재생한 결과로는 세션 제목 생성 같은 부수 효과를 다시 실행하지 않는다. 문서 삭제 정리는 동기 취소 API 없이 `document_deleted` command로 워크스페이스 전체에 비동기 처리한다.
+
+## Worker 동시 처리
+
+Query·Agent·maintenance worker는 `AI_TASK_CONCURRENCY`(기본 1)건을 한 프로세스에서 동시에 처리한다. 같은 Kafka key(query·agent는 `session_id`, maintenance는 `workspace_id`)는 offset 순서로 하나씩 실행하고 다른 key는 병렬이다. offset은 앞선 fetch 분이 모두 끝난 지점까지만 partition별로 커밋하며, 용량이 차면 partition을 pause한 채 poll을 계속한다. 재전달된 실행 중 작업은 seek하지 않고 제자리에서 5초 간격으로 기다리고, 리밸런스 때는 끝난 연속 offset만 커밋한다. 재시도할 수 없는 실패는 다른 in-flight 작업이 끝난 뒤 프로세스를 종료해 재전달에 맡긴다. 근거는 [ADR 0036](adr/0036-task-worker-concurrency.md)을 따른다.
 
 ## 선택적 Jev 판단
 
