@@ -8,7 +8,6 @@ from app.modules.agent.infrastructure.chat_completions_turn_router import (
     build_agent_turn_router,
 )
 from app.modules.agent.infrastructure.jev_turn_router import with_jev_routing
-from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.agent_run.application.start_agent_run import StartAgentRunUseCase
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import (
     PostgresAgentRunRepository,
@@ -78,7 +77,3 @@ def build_handle_agent_turn_use_case(
             provider=provider, model=model
         ),
     )
-
-
-def get_handle_agent_turn_use_case(payload: AgentTurnRequestBody) -> HandleAgentTurnUseCase:
-    return build_handle_agent_turn_use_case(provider=payload.provider, model=payload.model)
