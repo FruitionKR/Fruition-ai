@@ -28,7 +28,6 @@ class _PipelineRunBase(BaseModel):
         default=None,
         description="소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.",
     )
-    out: str | None = None
     mode: Literal["api", "generic-chat"] = "api"
     provider: Literal["openai", "gemini", "claude"]
     source_page_mode: Literal["auto", "skeleton"] = "auto"

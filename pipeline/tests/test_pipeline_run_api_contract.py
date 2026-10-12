@@ -529,33 +529,10 @@ def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, wait: bo
     assert not created[0].exists()
 
 
-def test_pipeline_run_keeps_caller_specified_output_dir(tmp_path) -> None:
-    repository = _repository(
-        document={
-            "id": "document_1",
-            "user_id": "user_1",
-            "workspace_id": "workspace_1",
-            "source_uri": "documents/document_1.md",
-            "extracted_text_uri": None,
-            "mime_type": "text/markdown",
-            "filename": "document.md",
-        },
-    )
-    use_case = _use_case()
-    use_case.execute.side_effect = lambda run_id, command: Path(command.out).mkdir() or {}
-    out = tmp_path / "chosen"
-
-    with _pipeline_client(
-        use_case=use_case,
-        repository=repository,
-        source_reader=_source_reader("# Stored Document"),
-    ) as client:
-        client.post(
-            "/pipeline/runs",
-            json={"document_id": "document_1", "wait": True, "out": str(out), "provider": "openai", "model": "gpt-5-nano"},
-        )
-
-    assert out.exists()
+def test_pipeline_run_rejects_caller_specified_output_dir() -> None:
+    # out으로 임의 경로를 지우게 할 수 없다. 요청 스키마는 알 수 없는 필드를 거부한다.
+    with pytest.raises(ValidationError):
+        _pipeline_run_in(document_id="document_1", out="/tmp/chosen")
 
 
 def test_pipeline_run_status_uses_repository_dependency() -> None:
