@@ -353,6 +353,39 @@ def _ledger_rows(monkeypatch):
     return usage_ledger.usage_scope({"run_id": "req", **SCOPE}), rows
 
 
+def test_wav_chunk_records_exact_duration_even_with_token_usage(monkeypatch):
+    import io
+    import wave
+
+    scope, rows = _ledger_rows(monkeypatch)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 40000)  # 2.5초
+
+    def handler(request):
+        return httpx.Response(
+            200, json={"text": "전사", "usage": {"type": "tokens", "input_tokens": 9, "output_tokens": 3}}
+        )
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        openai_speech.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        with scope:
+            await openai_speech.OpenAISpeech("fake-key").transcribe(buffer.getvalue(), "audio/wav")
+
+    asyncio.run(run())
+    (transcribe,) = rows.values()
+    assert transcribe["audio_seconds"] == 2.5 and transcribe["input_tokens"] == 9
+
+
 def test_file_transcription_is_recorded(monkeypatch):
     scope, rows = _ledger_rows(monkeypatch)
 

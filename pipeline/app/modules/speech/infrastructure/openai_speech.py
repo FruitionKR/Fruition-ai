@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import io
 import json
 from collections import deque
 from collections.abc import AsyncIterator
+import wave
 from time import perf_counter
 
 import anyio
@@ -65,6 +67,8 @@ class OpenAISpeech:
                 body = response.json()
                 text = body["text"]
                 receipt["usage"] = body.get("usage")
+                # 공급사가 토큰 usage를 줘도 분당 과금을 계산하도록 WAV 구간은 길이를 직접 남긴다.
+                receipt["audio_seconds"] = _wav_seconds(audio)
                 if not isinstance(text, str):
                     raise TypeError("invalid transcript")
                 return text.strip()
@@ -370,6 +374,14 @@ class OpenAISpeech:
                 # 전사를 받지 못한 구간도 오디오는 공급사에 보냈으므로 failed로 남긴다.
                 for call in segment_calls.values():
                     await _finish_segment(call, "failed", None)
+
+
+def _wav_seconds(audio: bytes) -> float | None:
+    try:
+        with wave.open(io.BytesIO(audio)) as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, EOFError):
+        return None
 
 
 async def _finish_segment(
