@@ -60,7 +60,7 @@ Wiki와 선택적 웹 검색을 바탕으로 질의에 답합니다.
   "workspace_id": "workspace_123",
   "question": "Wiki ingest는 어떤 단계로 동작해?",
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "allow_web_search": false,
   "recent_messages": [
     {
@@ -200,7 +200,7 @@ Wiki와 선택적 웹 검색을 바탕으로 질의에 답합니다.
 curl -X POST "$PIPELINE/query" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"workspace_id":"workspace_123","question":"Wiki ingest는 어떤 단계로 동작해?","provider":"openai","model":"gpt-5-nano","allow_web_search":false,"recent_messages":[{"role":"user","content":"Wiki 구조를 설명해줘"}]}'
+  --data '{"workspace_id":"workspace_123","question":"Wiki ingest는 어떤 단계로 동작해?","provider":"openai","model":"gpt-6-luna","allow_web_search":false,"recent_messages":[{"role":"user","content":"Wiki 구조를 설명해줘"}]}'
 ```
 
 ```json

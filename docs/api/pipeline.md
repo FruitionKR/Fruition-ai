@@ -83,7 +83,7 @@ Kafka command를 발행하면 ingest worker가 같은 실행 로직을 호출한
 {
   "document_id": "chatdoc_123",
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "selection_mode": "partial",
   "input_markdown": "# Chat Export\n\nQ : 검색 인덱싱은 어떻게 동작하나요?\nA : 역색인을 사용합니다.",
   "input_blocks": [
@@ -159,7 +159,7 @@ Kafka command를 발행하면 ingest worker가 같은 실행 로직을 호출한
 curl -X POST "$PIPELINE/chat-wiki/runs" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"document_id":"chatdoc_123","provider":"openai","model":"gpt-5-nano","selection_mode":"partial","input_markdown":"# Chat Export\n\nQ : 질문\nA : 답변","input_blocks":[{"block_id":"session_1:pair_1","text":"Q : 질문\nA : 답변"}]}'
+  --data '{"document_id":"chatdoc_123","provider":"openai","model":"gpt-6-luna","selection_mode":"partial","input_markdown":"# Chat Export\n\nQ : 질문\nA : 답변","input_blocks":[{"block_id":"session_1:pair_1","text":"Q : 질문\nA : 답변"}]}'
 ```
 
 ```json
@@ -232,7 +232,7 @@ curl -X POST "$PIPELINE/chat-wiki/runs" \
 {
   "document_id": "doc_123",
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "input_markdown": "# 갱신된 문서"
 }
 ```
@@ -296,7 +296,7 @@ curl -X POST "$PIPELINE/chat-wiki/runs" \
 curl -X POST "$PIPELINE/pipeline/reingest-runs" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"document_id":"doc_123","provider":"openai","model":"gpt-5-nano","input_markdown":"# 갱신된 문서"}'
+  --data '{"document_id":"doc_123","provider":"openai","model":"gpt-6-luna","input_markdown":"# 갱신된 문서"}'
 ```
 
 ```json
@@ -369,7 +369,7 @@ curl -X POST "$PIPELINE/pipeline/reingest-runs" \
 {
   "document_id": "doc_123",
   "provider": "openai",
-  "model": "gpt-5-nano"
+  "model": "gpt-6-luna"
 }
 ```
 
@@ -432,7 +432,7 @@ curl -X POST "$PIPELINE/pipeline/reingest-runs" \
 curl -X POST "$PIPELINE/pipeline/runs" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"document_id":"doc_123","provider":"openai","model":"gpt-5-nano"}'
+  --data '{"document_id":"doc_123","provider":"openai","model":"gpt-6-luna"}'
 ```
 
 ```json

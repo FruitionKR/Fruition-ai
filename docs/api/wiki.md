@@ -672,7 +672,7 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 curl -X POST "$PIPELINE/wiki/maintenance/lint" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"dry_run":true,"materialize_promotions":true,"model":"gpt-5-nano","operation_id":"<value>","provider":"openai","user_id":"local-user","workspace_id":"local-workspace"}'
+  --data '{"dry_run":true,"materialize_promotions":true,"model":"gpt-6-luna","operation_id":"<value>","provider":"openai","user_id":"local-user","workspace_id":"local-workspace"}'
 ```
 
 ```json

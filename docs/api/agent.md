@@ -87,7 +87,7 @@ Agent 요청을 분류하고 Query·문서 생성·편집 작업을 실행합니
 {
   "message": "이대로 저장해줘",
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "workspace_id": "workspace_123",
   "user_id": "user_123",
   "document_id": "doc_123",
@@ -299,7 +299,7 @@ curl -X POST "$PIPELINE/agent/turn" \
   -H 'X-Internal-Token: <value>' \
   -H 'X-Agent-Service-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"message":"이대로 저장해줘","provider":"openai","model":"gpt-5-nano","workspace_id":"workspace_123","user_id":"user_123","document_id":"doc_123","base_version":3,"active_markdown_context":{"markdown":"# 회의록\n\n기존 내용","target":{"type":"whole_document","start_line":1,"end_line":3}},"conversation_context":{"recent_messages":[{"role":"assistant","content":"편집 미리보기를 만들었습니다.","action":"markdown_edit","run_id":"agent_preview_123","agent_route":{"action":"markdown_edit","retrieval_source":"workspace","document_operation":"edit","persist":false,"edit_goal":"other","edit_operation":"replace","edit_destination":"target","selected_skill_id":null}}]}}'
+  --data '{"message":"이대로 저장해줘","provider":"openai","model":"gpt-6-luna","workspace_id":"workspace_123","user_id":"user_123","document_id":"doc_123","base_version":3,"active_markdown_context":{"markdown":"# 회의록\n\n기존 내용","target":{"type":"whole_document","start_line":1,"end_line":3}},"conversation_context":{"recent_messages":[{"role":"assistant","content":"편집 미리보기를 만들었습니다.","action":"markdown_edit","run_id":"agent_preview_123","agent_route":{"action":"markdown_edit","retrieval_source":"workspace","document_operation":"edit","persist":false,"edit_goal":"other","edit_operation":"replace","edit_destination":"target","selected_skill_id":null}}]}}'
 ```
 
 ```json

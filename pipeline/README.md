@@ -176,7 +176,7 @@ python run_lab.py \
   --out runs/llm_wiki_demo \
   --mode api \
   --provider openai \
-  --model gpt-5-nano \
+  --model gpt-6-luna \
   --source-page-mode skeleton \
   --concept-page-mode skeleton \
   --max-eval-attempts 2
@@ -225,7 +225,7 @@ python -m app.modules.document_restoration.interfaces.cli \
   --document-slug paper \
   --mode selective-repair \
   --selective-provider gemini \
-  --selective-model gemini-3.1-flash-lite
+  --selective-model gemini-3.5-flash-lite
 ```
 
 키는 선택 provider에 따라 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 하나만 읽습니다. `--selective-model`을 생략하면 선택 provider의 catalog 모델을 사용하고, 병렬도는 `--selective-max-workers`로 변경할 수 있습니다.
@@ -541,7 +541,7 @@ python run_lab.py \
   --out runs/llm_wiki_latest \
   --mode api \
   --provider openai \
-  --model gpt-5-nano \
+  --model gpt-6-luna \
   --source-page-mode skeleton \
   --concept-page-mode skeleton
 ```
@@ -566,7 +566,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
     "document_id": "doc_inline",
     "input_markdown": "# LLM Wiki\n\nLLM이 지속 관리하는 위키...",
     "provider": "openai",
-    "model": "gpt-5-nano",
+    "model": "gpt-6-luna",
     "out": "runs/api_inline_llm_wiki",
     "mode": "api",
     "source_page_mode": "skeleton",
@@ -584,7 +584,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
   -d '{
     "document_id": "doc_123",
     "provider": "openai",
-    "model": "gpt-5-nano",
+    "model": "gpt-6-luna",
     "mode": "api",
     "source_page_mode": "skeleton",
     "concept_page_mode": "skeleton",
