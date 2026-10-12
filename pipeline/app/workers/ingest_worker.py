@@ -130,7 +130,13 @@ def _result_payload(command: dict, manifest: dict | None, status: str, error: st
     }
 
 
-def _event(command: dict, status: str, payload: dict | None = None, error: str | None = None) -> dict:
+def _event(
+    command: dict,
+    status: str,
+    payload: dict | None = None,
+    error: str | None = None,
+    post_ingest_dispatched: bool = False,
+) -> dict:
     run_id = str(command.get("run_id") or "")
     return {
         "event_id": f"ingest:{run_id}:{status}",
@@ -140,17 +146,19 @@ def _event(command: dict, status: str, payload: dict | None = None, error: str |
         "workspace_id": command.get("workspace_id"),
         "user_id": command.get("user_id"),
         "operation_id": command.get("operation_id"),
+        # Document가 post_ingest 결과를 기다릴지 판단하도록, 이 편입에서 post_ingest command를 실제로 발행했는지 알린다.
+        "post_ingest_dispatched": post_ingest_dispatched,
         "request": without_top_level_secrets(command),
         "payload": payload,
         "error": error,
     }
 
 
-def _result_event(command: dict, result: dict) -> dict:
+def _result_event(command: dict, result: dict, post_ingest_dispatched: bool = False) -> dict:
     if result.get("status") == "failed":
         error = str(result.get("summary") or INTERNAL_ERROR)
         return _event(command, "failed", payload=result, error=error)
-    return _event(command, "succeeded", payload=result)
+    return _event(command, "succeeded", payload=result, post_ingest_dispatched=post_ingest_dispatched)
 
 
 def _post_ingest_command(command: dict) -> dict | None:
@@ -177,7 +185,8 @@ def _post_ingest_command(command: dict) -> dict | None:
 async def _dispatch_post_ingest(
     producer: AIOKafkaProducer,
     command: dict,
-) -> None:
+) -> bool:
+    """post_ingest command를 발행했으면 True. 재전달도 run 상태에서 같은 판단을 다시 내리므로 같은 값이다."""
     try:
         post_ingest_command = await asyncio.to_thread(
             _post_ingest_command,
@@ -191,8 +200,10 @@ async def _dispatch_post_ingest(
                 post_ingest_command,
                 key=str(post_ingest_command["workspace_id"]).encode("utf-8"),
             )
+            return True
+        return False
     except PipelineRunCancelledError:
-        return
+        return False
     except Exception as exc:
         raise PostIngestDispatchError(str(exc)) from exc
 
@@ -313,8 +324,8 @@ async def consume() -> None:
                     try:
                         # 실행은 스레드로 넘겨 이벤트 루프(heartbeat)를 비워 둔다.
                         result = await asyncio.to_thread(_handle_controlled, message.value)
-                        await _dispatch_post_ingest(producer, message.value)
-                        event = _result_event(message.value, result)
+                        dispatched = await _dispatch_post_ingest(producer, message.value)
+                        event = _result_event(message.value, result, dispatched)
                     except PostIngestDispatchError:
                         logger.exception(
                             "[post-ingest command 발행 실패] run_id=%s offset_commit=false",

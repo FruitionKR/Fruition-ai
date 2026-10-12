@@ -16,6 +16,8 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 
 ## 실패 코드 계약
 
+ingest 결과 이벤트(`kind=document`·`chat_wiki` 등 ingest worker 발행)는 최상위 불리언 `post_ingest_dispatched`를 항상 담습니다. 이 편입에서 post_ingest command를 실제로 발행했을 때만 `true`이고, 발행하지 않은 경우(실패 이벤트, 문서 이름 변경·삭제 같은 bookkeeping, manifest에 `post_ingest`가 없는 편입)는 `false`입니다. 재전달은 저장된 run 상태에서 같은 판단을 다시 내리므로 원래 이벤트와 같은 값입니다. Document는 `false`면 post_ingest 결과를 기다리지 않아야 합니다.
+
 `kind=post_ingest` 결과 이벤트는 원본 command(`request`)를 싣지 않는 대신, 어느 편입의 후속인지 알 수 있게 부모 편입 run id를 최상위 `ingest_run_id`에 담습니다.
 
 `ai.task.event`의 실패 이벤트 `error`, `agent_runs.error_code`, `pipeline_runs.error`, ingest·post_ingest 실패 payload의 `summary`는 예외 원문이 아니라 코드만 담습니다. 사용자에게 보이는 문구는 Document가 코드별로 정하며, 예외 원문은 AI 로그에만 남습니다.
