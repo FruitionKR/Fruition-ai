@@ -270,19 +270,22 @@ def test_checkpoints_roundtrip_under_ai_prefix_and_clear(monkeypatch):
     assert checkpoint_prefix("ws", "run") != checkpoint_prefix("ws", "other-run")
 
 
-@pytest.mark.parametrize("outcome", ["ok", "fail", "executing"])
-def test_checkpoints_are_deleted_on_terminal_state_but_not_while_another_worker_runs(outcome):
+@pytest.mark.parametrize("outcome", ["ok", "fail", "fail_unrecorded", "executing"])
+def test_checkpoints_are_deleted_on_terminal_state_but_kept_for_redelivery(outcome):
     from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
 
     effects = {"ok": {"return_value": {}}, "fail": {"side_effect": RuntimeError("x")},
+               "fail_unrecorded": {"side_effect": RuntimeError("db down")},
                "executing": {"side_effect": TaskAlreadyExecutingError("x")}}
     with (
         patch.object(task_worker, "_execute_controlled", **effects[outcome]),
+        # DB가 내려가 실패를 journal에 남기지 못하면 재전달되므로 체크포인트를 남겨야 한다.
+        patch.object(task_worker, "_failure_is_durable", return_value=outcome != "fail_unrecorded"),
         patch.object(task_worker.S3MeetingStorage, "clear_checkpoints") as clear,
     ):
         with pytest.raises(Exception) if outcome != "ok" else contextmanager(lambda: (yield))():
             task_worker._handle_controlled(COMMAND)
-    assert clear.call_count == (0 if outcome == "executing" else 1)
+    assert clear.call_count == (1 if outcome in {"ok", "fail"} else 0)
 
 
 @pytest.mark.parametrize("overrides", [

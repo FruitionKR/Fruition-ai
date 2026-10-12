@@ -910,16 +910,20 @@ def _handle(
 def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
     from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
-    executing_elsewhere = False
+    terminal = True
     try:
         with usage_scope(command):
             return _execute_controlled(command, event_publisher)
     except TaskAlreadyExecutingError:
-        executing_elsewhere = True  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
+        terminal = False  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
+        raise
+    except Exception as exc:
+        # 실패를 journal에 남기지 못해 재전달될 run은 체크포인트를 남겨야 구간을 다시 과금하지 않는다.
+        terminal = isinstance(exc, ScopePurgedError) or _failure_is_durable(command)
         raise
     finally:
         # 전사 체크포인트는 개인정보다. 성공·실패·취소 어느 쪽이든 run이 끝나면(재생 포함) 지운다.
-        if command.get("kind") == "meeting_transcription" and not executing_elsewhere:
+        if command.get("kind") == "meeting_transcription" and terminal:
             S3MeetingStorage().clear_checkpoints(str(command.get("workspace_id")), str(command.get("run_id")))
 
 

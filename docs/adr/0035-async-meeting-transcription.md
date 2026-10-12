@@ -13,7 +13,7 @@ Accepted
 - **M3. S3 직접 업로드.** 브라우저가 녹음을 S3에 직접 올리고(document의 기존 multipart 업로드), AI가 `recording_key`로 읽는다. Kafka에는 객체 키만 싣는다.
 - **M4. 길이 상한 3시간.** 24 MiB 한도는 없앤다. AI가 디코딩한 길이로 판정하고 넘으면 공급사 호출 전에 `MEETING_RECORDING_TOO_LONG`으로 실패한다(파일 크기 500 MiB는 document가 지킨다).
 - **구간 경계 규칙.** 구간은 목표 길이(10분)를 넘지 않는다. 목표 직전 20초 안에서 에너지(제곱합)가 가장 낮은 100 ms 창을 찾아 그 가운데에서 자른다(같으면 목표에 가까운 쪽). 겹침이 없어 단어가 중복되지 않고, 무음에서 자르므로 말이 잘릴 가능성이 낮다. 0.1초보다 짧은 꼬리는 버린다.
-- **체크포인트.** `pipeline-runs/meeting-transcription/<workspace_id>/<sha256(run_id) 앞 32자>/<index>.txt`. 전사는 개인정보라 run이 끝나면(성공·실패·취소, 재생 포함) 지우고, 다른 worker가 실행 중인 재전달에서는 지우지 않는다. 워크스페이스 파기는 접두사 전체를, 사용자 파기는 그 사용자의 `meeting_transcription` run 접두사를 지운다. 스토리지 lifecycle은 최후 보루다. 객체 작업 변경 기록(롤백)에는 얹지 않는다. 롤백하면 재전달이 건너뛸 체크포인트가 사라지기 때문이다.
+- **체크포인트.** `pipeline-runs/meeting-transcription/<workspace_id>/<sha256(run_id) 앞 32자>/<index>.txt`. 전사는 개인정보라 run이 끝나면(성공·실패·취소, 재생 포함) 지우고, 다른 worker가 실행 중인 재전달이나 실패를 journal에 남기지 못해 재전달될 때는 지우지 않는다. 워크스페이스 파기는 접두사 전체를, 사용자 파기는 그 사용자의 `meeting_transcription` run 접두사를 지운다. 스토리지 lifecycle은 최후 보루다. 객체 작업 변경 기록(롤백)에는 얹지 않는다. 롤백하면 재전달이 건너뛸 체크포인트가 사라지기 때문이다.
 - **journal.** 전사는 document가 소유한다. 회의록(ADR 0033 결정 6, ai#97)과 같이 종료한 run의 result 본문과 command의 `recording_key`를 지우고 hash·상태·`error_code`만 남긴다. 완료된 run의 재전달은 공급사를 부르지 않고 `{"scrubbed": true}`를 재생한다.
 - **마감과 취소.** 전체 마감 `MEETING_TRANSCRIPTION_DEADLINE_SECONDS`(1500초)는 worker `max_poll_interval`(1800초)보다 짧다. 취소와 마감은 구간 사이와 공급사 호출 직전에 확인하고, 한 구간이 실패하면 남은 구간을 호출하지 않는다.
 - **오류.** 코드만 낸다: `MEETING_RECORDING_TOO_LONG`, `MEETING_RECORDING_UNREADABLE`, `MEETING_TRANSCRIPT_EMPTY`, `MEETING_TRANSCRIPT_TOO_LONG`(100,000자), 공통 코드. 예외 원문은 싣지 않는다.
