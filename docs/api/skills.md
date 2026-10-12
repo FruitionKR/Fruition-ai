@@ -291,7 +291,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 #### 9. 예시 요청/응답
 
 ```json
-{"run_id":"skill_example","kind":"skill_author","workspace_id":"ws_example","user_id":"user_example","payload":{"workspace_id":"ws_example","user_id":"user_example","scope_type":"personal","instruction":"문서를 주제별로 정리하는 Skill을 만들어 줘","provider":"openai","model":"gpt-5-nano"}}
+{"run_id":"skill_example","kind":"skill_author","workspace_id":"ws_example","user_id":"user_example","payload":{"workspace_id":"ws_example","user_id":"user_example","scope_type":"personal","instruction":"문서를 주제별로 정리하는 Skill을 만들어 줘","provider":"openai","model":"gpt-6-luna"}}
 ```
 
 각 payload의 필수 필드와 응답 스키마는 생성 OpenAPI 및 공개 Skill 계약을 따릅니다.
@@ -352,7 +352,7 @@ ai-svc Agent handler가 같은 application use case를 직접 호출합니다.
 ```json
 {
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "workspace_id": "workspace_123",
   "user_id": "user_123",
   "scope_type": "personal",
