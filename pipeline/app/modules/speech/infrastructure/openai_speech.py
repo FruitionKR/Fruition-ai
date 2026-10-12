@@ -69,7 +69,14 @@ class OpenAISpeech:
                     raise TypeError("invalid transcript")
                 return text.strip()
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-            raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
+            # 코드는 회의 녹음 전사 이벤트가 쓴다. HTTP 라우트는 어떤 코드든 502로 응답한다.
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                code = "provider_rate_limited"
+            elif isinstance(exc, TimeoutError):
+                code = "deadline_exceeded"
+            else:
+                code = "provider_unavailable"
+            raise SpeechUnavailableError("음성을 전사하지 못했습니다.", code) from exc
 
     async def synthesize(self, text: str) -> AsyncIterator[str]:
         """원문 낭독 PCM16 24 kHz 오디오를 base64 delta 그대로 흘려보낸다.

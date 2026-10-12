@@ -19,7 +19,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
-from app.core.failure_codes import failure_code, stored_code
+from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
@@ -45,6 +45,10 @@ from app.modules.meeting_notes.interfaces.command.dependencies import (
     build_meeting_notes,
 )
 from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCommand, MeetingNotesResponse
+from app.modules.speech.domain.errors import MeetingTranscriptionError
+from app.modules.speech.infrastructure.meeting_storage import S3MeetingStorage
+from app.modules.speech.interfaces.command.dependencies import build_meeting_transcription
+from app.modules.speech.interfaces.command.schemas import MeetingTranscriptionCommand
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.domain.entities import ConversationContext, ConversationMessage
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
@@ -480,6 +484,16 @@ def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
     return MeetingNotesResponse(**result).model_dump(mode="json")
 
 
+def _handle_meeting_transcription(command: dict[str, Any]) -> dict[str, Any]:
+    try:
+        request = MeetingTranscriptionCommand.model_validate(command)
+    except ValidationError as exc:
+        raise MeetingTranscriptionError(INPUT_REJECTED) from exc
+    use_case = build_meeting_transcription()
+    # 이 스레드에는 이벤트 루프가 없어 asyncio.run으로 돌린다(컨텍스트 변수는 복사돼 취소 확인·원장 귀속이 이어진다).
+    return asyncio.run(use_case.execute(request.workspace_id, request.run_id, request.meeting_id, request.recording_key))
+
+
 def _validate_restore_contributions(command: dict[str, Any]) -> None:
     expected = command.get("expected_contributions") or {}
     if not expected:
@@ -874,6 +888,8 @@ def _handle(
         return _handle_lint(command)
     if kind == "meeting_notes":
         return _handle_meeting_notes(command)
+    if kind == "meeting_transcription":
+        return _handle_meeting_transcription(command)
     if kind == "post_ingest":
         for attempt in range(POST_INGEST_MAX_ATTEMPTS):
             try:
@@ -893,8 +909,18 @@ def _handle(
 
 def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
-    with usage_scope(command):
-        return _execute_controlled(command, event_publisher)
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
+    executing_elsewhere = False
+    try:
+        with usage_scope(command):
+            return _execute_controlled(command, event_publisher)
+    except TaskAlreadyExecutingError:
+        executing_elsewhere = True  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
+        raise
+    finally:
+        # 전사 체크포인트는 개인정보다. 성공·실패·취소 어느 쪽이든 run이 끝나면(재생 포함) 지운다.
+        if command.get("kind") == "meeting_transcription" and not executing_elsewhere:
+            S3MeetingStorage().clear_checkpoints(str(command.get("workspace_id")), str(command.get("run_id")))
 
 
 def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
@@ -1020,6 +1046,7 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         "agent",
         "lint",
         "meeting_notes",
+        "meeting_transcription",
         "post_ingest",
         "restore_ingest",
         "restore_lint",

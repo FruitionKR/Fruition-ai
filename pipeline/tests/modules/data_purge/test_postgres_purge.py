@@ -322,3 +322,21 @@ def test_document_deleted_in_purged_workspace_is_discarded_without_tombstone(dat
         ingest_worker._handle_controlled(command)
     with database() as conn:
         assert ids(conn, "wiki_source_tombstones", "document_id") == set()
+
+
+def test_purge_removes_meeting_transcription_checkpoints_of_scope_only(database, storage):
+    from app.modules.speech.infrastructure.meeting_storage import checkpoint_prefix
+
+    keys = {run: f"{checkpoint_prefix(ws, run)}00000.txt" for run, ws in
+            (("tx-ws", "ws"), ("tx-alice", "other"), ("tx-bob", "other"))}
+    storage.objects |= set(keys.values())
+    with database() as conn:
+        seed(conn)
+        for run, ws, user in (("tx-ws", "ws", "carol"), ("tx-alice", "other", "alice"), ("tx-bob", "other", "bob")):
+            conn.execute("INSERT INTO ai_task_runs(id, workspace_id, user_id, kind, status) "
+                         "VALUES (%s, %s, %s, 'meeting_transcription', 'running')", (run, ws, user))
+
+    purge.purge_user("alice")
+    assert not storage.objects & {keys["tx-alice"]} and {keys["tx-ws"], keys["tx-bob"]} <= storage.objects
+    purge.purge_workspace("ws")
+    assert keys["tx-ws"] not in storage.objects and keys["tx-bob"] in storage.objects
