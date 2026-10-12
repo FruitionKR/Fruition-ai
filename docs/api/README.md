@@ -7,9 +7,8 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 
 | 도메인 | API 수 | 현재 Gateway 연결 |
 |---|---:|---|
-| [Agent](agent.md) | 12 | turn은 Kafka, run·artifact 조회·Tool 인가는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
+| [Agent](agent.md) | 11 | turn은 Kafka, run·artifact 조회·Tool 인가는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
 | [Wiki Ingest](pipeline.md) | 7 | ingest는 Kafka, run 상태는 내부 HTTP, 나머지는 운영용 |
-| [Query](query.md) | 1 | 공개 동기·비동기 모두 Kafka, 이 HTTP는 호출자 없음 |
 | [음성·회의록](speech.md) | HTTP 2 + WS 1 + Kafka | 전사·실시간은 내부 HTTP/WS, 합성은 호출자 없음, 회의록은 Kafka `ai.maintenance.command`, 화면은 전부 미연동 |
 | [Skills](skills.md) | 8 | 작업 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
 | [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
@@ -50,8 +49,6 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 
 | ai-svc API | 호출자 | 비고 |
 |---|---|---|
-| `POST /query` | **호출자 없음** | `app.query.endpoint`는 선언만 있고 읽는 코드가 없다 |
-| `POST /agent/turn` | **HTTP 호출자 없음** | Kafka `ai.agent.command`(`core/agent/service/AgentTurnService.java`:131) |
 | `GET /agent/runs/{run_id}`, `/approve`, `/reject`, `/cancel`, `/revise` | `core/agent/repository/PipelineAgentRunStatusRequester.java` | `app.agent.run-endpoint` |
 | `GET /internal/agent/runs/{run_id}` | 같은 파일 118-120 | `app.agent.status-endpoint` |
 | `POST /internal/agent/runs/tool-authorizations/{read,execute}` | `core/agent/repository/PipelineAgentToolAuthorizationClient.java`:34,39 | |

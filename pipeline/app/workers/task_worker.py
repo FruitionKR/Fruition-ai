@@ -29,7 +29,7 @@ from app.modules.agent.domain.exceptions import (
     AgentTurnRouteContractError,
 )
 from app.modules.agent.interfaces.http.dependencies import build_handle_agent_turn_use_case
-from app.modules.agent.interfaces.http.routes import _to_response as agent_to_response
+from app.modules.agent.interfaces.http.responses import _to_response as agent_to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownCreateOutputContractError,
@@ -45,7 +45,7 @@ from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCom
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.domain.entities import ConversationContext, ConversationMessage
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
-from app.modules.query.interfaces.http.routes import _to_response as query_to_response
+from app.modules.query.interfaces.http.responses import _to_response as query_to_response
 from app.modules.query.infrastructure.postgres_wiki_repository import PostgresWikiRepository
 from app.modules.skill.domain.exceptions import SkillDisabledError, SkillNotFoundError
 from app.modules.wiki_embedding.application.build_wiki_page_embeddings import (

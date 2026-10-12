@@ -24,7 +24,6 @@ from app.modules.query.infrastructure.query_event_publisher import NoOpQueryEven
 from app.modules.query.infrastructure.rule_based_query_rewriter import RuleBasedQueryRewriter
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.query.infrastructure.web_search import build_web_search
-from app.modules.query.interfaces.http.schemas import QueryRequest
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 
 
@@ -80,14 +79,6 @@ def build_answer_query_use_case(
         query_evaluator_max_attempts=query_evaluator_max_attempts,
         max_evidence_snippets=max_evidence_snippets,
         conversation_summarizer=conversation_summarizer,
-    )
-
-
-def get_query_answer_use_case(payload: QueryRequest) -> AnswerQueryUseCase:
-    return build_answer_query_use_case(
-        provider=payload.provider,
-        model=payload.model,
-        allow_web_search=payload.allow_web_search,
     )
 
 
