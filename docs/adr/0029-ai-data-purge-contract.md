@@ -5,6 +5,8 @@ Accepted
 
 개정 2026-10-11: 실행 로그 보관 기간을 최대 30일에서 약 60일로, S3 이전 버전 정리의 적용 상태를 정정했다.
 
+개정 2026-10-12: 파기와 겹친 에이전트 checkpoint 쓰기와 로컬 임시 폴더 잔존을 닫았다(Consequences).
+
 개정 2026-10-11(ADR 0033): 위키 객체 키가 `wiki/{workspace_id}/` 하나로 통일돼, S3 목록으로 사용자 prefix를 찾던 결정과 그 비용 결과를 대체했다.
 
 ## Context
@@ -31,3 +33,5 @@ Accepted
 - 파기 요청이 와도 실행 로그는 약 60일(만료 30일 + 이전 버전 30일) 남는다. 개인정보 처리 안내에 이 보관 예외를 반영해야 한다.
 - 파기가 지운 S3 객체(위키·산출물)도 flatform PR #77의 이전 버전 만료가 적용돼야 약 30일 뒤 실제로 사라진다. 적용 전 파기는 DB와 현재 버전만 지운 상태다.
 - 배포 순서는 flatform(lifecycle·권한) → AI(이 변경) → Document#88 → Access#29다.
+- 파기와 겹치는 에이전트 실행이 checkpoint를 남기던 경합을 닫았다. 이전에는 파기가 checkpoint를 지운 뒤 실행 중이던 worker가 `durability="sync"`로 다시 쓰면 `agent_runs`가 없는 checkpoint(대화 상태, 개인정보)가 남았다. 이제 파기는 `agent_runs`를 먼저 지운 뒤 checkpoint를 지우고, checkpoint 테이블 3종은 run 행이 없으면 삽입을 거부한다(`FOR KEY SHARE`). 겹친 쓰기는 파기가 기다렸다 지우거나 거부된다. 거부된 에이전트 작업은 일반 DB 오류로 실패 처리되고, 해당 run이 이미 지워졌으므로 남는 기록이 없다. 산출물 S3 객체는 DB 삭제 뒤 한 번 더 지운다.
+- 위키 편입의 `runs/api_{run_id}` 로컬 폴더는 실행 종료 시 지운다. HTTP 요청의 `out` 필드는 임의 경로를 `rmtree`하게 만들 수 있어 제거했다(CLI `run_lab --out`은 유지). 이전에는 요청마다 폴더가 pod 디스크에 쌓였고 `save_debug_json` 요청이면 원문 JSON이 함께 남았다. 프로세스가 강제 종료되면 폴더가 남을 수 있으나 pod 재기동 때 디스크와 함께 사라진다.

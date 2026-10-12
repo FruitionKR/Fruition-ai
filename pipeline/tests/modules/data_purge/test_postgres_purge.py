@@ -202,6 +202,69 @@ def test_user_purge_keeps_shared_wiki_and_removes_personal_data(database, storag
     assert set(second.values()) == {0}
 
 
+def test_checkpoint_write_after_agent_run_purge_is_rejected(database, storage):
+    """파기가 run 행을 지운 뒤에는 늦게 도착한 checkpoint 쓰기가 거부돼 개인정보가 남지 않는다."""
+    with database() as conn:
+        seed(conn)
+    purge.purge_workspace("ws")
+
+    for table, columns, values in (
+        ("checkpoints", "(thread_id, checkpoint_id, checkpoint)", "(%s, 'c2', '{}')"),
+        ("checkpoint_blobs", "(thread_id, channel, version, type)", "(%s, 'ch', '2', 't')"),
+        ("checkpoint_writes", "(thread_id, checkpoint_id, task_id, idx, channel, blob)", "(%s, 'c2', 't', 0, 'ch', ''::bytea)"),
+    ):
+        with database() as conn, pytest.raises(psycopg.errors.ForeignKeyViolation):
+            conn.execute(f"INSERT INTO {table}{columns} VALUES {values}", ("agent-ws",))
+    with database() as conn:
+        conn.execute("INSERT INTO checkpoints(thread_id, checkpoint_id, checkpoint) VALUES ('agent-bob', 'c2', '{}')")
+        assert ids(conn, "checkpoints", "thread_id") == {"agent-alice", "agent-bob"}
+
+
+def test_in_flight_checkpoint_write_is_removed_by_purge(database, storage):
+    """파기 시작 때 아직 커밋되지 않은 checkpoint 쓰기도 파기가 기다렸다가 함께 지운다."""
+    import threading
+
+    with database() as conn:
+        seed(conn)
+    writer = database()
+    writer.execute("INSERT INTO checkpoints(thread_id, checkpoint_id, checkpoint) VALUES ('agent-ws', 'c2', '{}')")
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(purge.purge_workspace("ws")))
+    thread.start()
+    thread.join(timeout=1)
+    assert thread.is_alive()  # 쓰기가 run 행에 잡은 KEY SHARE 때문에 run 삭제가 기다린다.
+    writer.commit()
+    thread.join(timeout=10)
+    writer.close()
+
+    assert result["checkpoints"] == 2
+    with database() as conn:
+        assert ids(conn, "checkpoints", "thread_id") == {"agent-alice", "agent-bob"}
+
+
+def test_artifact_registered_during_purge_is_swept(database, storage, monkeypatch):
+    """S3 삭제와 DB 삭제 사이에 쓰인 산출물 객체는 DB 삭제 뒤 한 번 더 지운다."""
+    import hashlib
+
+    with database() as conn:
+        seed(conn)
+    late = f"agent-runs/{hashlib.sha256(b'agent-ws').hexdigest()}/artifacts/late.md"
+    real = purge._delete_objects
+    calls = []
+
+    def delete_objects(prefixes, keys):
+        removed = real(prefixes, keys)
+        if not calls:
+            storage.objects.add(late)  # 첫 삭제(S3 단계)가 끝난 직후 등록된 객체
+        calls.append(prefixes)
+        return removed
+
+    monkeypatch.setattr(purge, "_delete_objects", delete_objects)
+    purge.purge_workspace("ws")
+
+    assert late not in storage.objects
+
+
 def test_redelivered_task_in_purged_scope_is_rejected(database, storage):
     """파기 뒤 Kafka 재전달로 같은 작업이 다시 와도 작업 기록을 되살리지 않는다."""
     purge.purge_workspace("ws")

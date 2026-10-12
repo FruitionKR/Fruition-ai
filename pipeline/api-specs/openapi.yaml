@@ -936,11 +936,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
@@ -1763,11 +1758,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
@@ -2108,11 +2098,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
