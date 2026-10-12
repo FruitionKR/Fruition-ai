@@ -8,9 +8,9 @@ Accepted
 - 회의록(#87)은 이미 `ai.maintenance.command`의 비동기 작업이다.
 
 ## Decision
-- **M1. Kafka 비동기.** `kind: meeting_transcription` command를 `ai.maintenance.command`로 받고 결과를 `ai.task.event`로 낸다. 회의록과 같은 journal 등록·취소·재전달 경로를 쓴다.
-- **M2. AI가 구간을 나눈다.** PyAV로 디코딩해 16 kHz mono PCM16으로 바꾸고 목표 10분 구간 WAV(약 19 MB, 공급사 한도 25 MB 미만)로 자른다. 구간은 최대 4개씩(`MEETING_TRANSCRIPTION_CONCURRENCY`) 전사해 순서대로 잇는다. 구간 전사는 체크포인트로 남겨 같은 run이 재전달돼도 끝난 구간을 다시 과금하지 않는다.
-- **M3. S3 직접 업로드.** 브라우저가 녹음을 S3에 직접 올리고(document의 기존 multipart 업로드), AI가 `recording_key`로 읽는다. Kafka에는 객체 키만 싣는다.
+- **M1. S3 직접 업로드.** 브라우저가 녹음을 S3에 직접 올리고(document의 기존 multipart 업로드), AI가 `recording_key`로 읽는다. Kafka에는 객체 키만 싣는다.
+- **M2. Kafka 비동기.** `kind: meeting_transcription` command를 `ai.maintenance.command`로 받고 결과를 `ai.task.event`로 낸다. 회의록과 같은 journal 등록·취소·재전달 경로를 쓴다.
+- **M3. AI가 구간을 나눈다.** PyAV로 디코딩해 16 kHz mono PCM16으로 바꾸고 목표 10분 구간 WAV(약 19 MB, 공급사 한도 25 MB 미만)로 자른다. 구간은 최대 4개씩(`MEETING_TRANSCRIPTION_CONCURRENCY`) 전사해 순서대로 잇는다. 구간 전사는 체크포인트로 남겨 같은 run이 재전달돼도 끝난 구간을 다시 과금하지 않는다.
 - **M4. 길이 상한 3시간.** 24 MiB 한도는 없앤다. AI가 디코딩한 길이로 판정하고 넘으면 공급사 호출 전에 `MEETING_RECORDING_TOO_LONG`으로 실패한다(파일 크기 500 MiB는 document가 지킨다).
 - **구간 경계 규칙.** 구간은 목표 길이(10분)를 넘지 않는다. 목표 직전 20초 안에서 에너지(제곱합)가 가장 낮은 100 ms 창을 찾아 그 가운데에서 자른다(같으면 목표에 가까운 쪽). 겹침이 없어 단어가 중복되지 않고, 무음에서 자르므로 말이 잘릴 가능성이 낮다. 0.1초보다 짧은 꼬리는 버린다.
 - **체크포인트.** `pipeline-runs/meeting-transcription/<workspace_id>/<sha256(run_id) 앞 32자>/<index>.txt`. 전사는 개인정보라 run이 끝나면(성공·실패·취소, 재생 포함) 지우고, 다른 worker가 실행 중인 재전달이나 실패를 journal에 남기지 못해 재전달될 때는 지우지 않는다. 워크스페이스 파기는 접두사 전체를, 사용자 파기는 그 사용자의 `meeting_transcription` run 접두사를 지운다. 스토리지 lifecycle은 최후 보루다. 객체 작업 변경 기록(롤백)에는 얹지 않는다. 롤백하면 재전달이 건너뛸 체크포인트가 사라지기 때문이다.

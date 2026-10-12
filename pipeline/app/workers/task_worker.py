@@ -922,7 +922,8 @@ def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPubli
         terminal = isinstance(exc, ScopePurgedError) or _failure_is_durable(command)
         raise
     finally:
-        # 전사 체크포인트는 개인정보다. 성공·실패·취소 어느 쪽이든 run이 끝나면(재생 포함) 지운다.
+        # 전사 체크포인트는 개인정보다. 성공(재생 포함), 파기된 범위, journal에 남긴 실패·취소처럼
+        # 종료가 확정되면 지운다. 다른 worker가 실행 중이거나 실패를 남기지 못해 재전달될 run은 남긴다.
         if command.get("kind") == "meeting_transcription" and terminal:
             S3MeetingStorage().clear_checkpoints(str(command.get("workspace_id")), str(command.get("run_id")))
 
