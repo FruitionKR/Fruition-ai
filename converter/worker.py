@@ -184,7 +184,8 @@ async def consume() -> None:
             batch = await consumer.getmany(timeout_ms=1000, max_records=1)
             for _tp, messages in batch.items():
                 for message in messages:
-                    command = message.value
+                    # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
+                    command = message.value if isinstance(message.value, dict) else {}
                     try:
                         result = await asyncio.to_thread(run_command, command)
                         event = _event(command, "succeeded", payload=result)
@@ -196,9 +197,10 @@ async def consume() -> None:
                         break
                     except Exception as exc:
                         logger.error("[convert command 실패] run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
-                        # journal에 등록하지 못한 잘못된 command(필수 필드 없음)는 재전달해도 같으므로 실패로 확정한다.
-                        malformed = not all(isinstance(command.get(key), str) and command[key]
-                                            for key in ("run_id", "workspace_id", "user_id"))
+                        # journal에 등록하지 못한 잘못된 command(필수 필드 없음, kind 불일치)는 재전달해도 같으므로
+                        # 실패로 확정한다. 그러지 않으면 journal 행이 없어 커밋하지 못하고 같은 offset에서 계속 죽는다.
+                        malformed = command.get("kind") != "convert_batch" or not all(
+                            isinstance(command.get(key), str) and command[key] for key in ("run_id", "workspace_id", "user_id"))
                         if not malformed and not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
                             raise
                         event = _event(command, "failed", error=failure_code(exc) if not malformed else "input_rejected")

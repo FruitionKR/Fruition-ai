@@ -220,5 +220,58 @@ class RunCommandTest(unittest.TestCase):
         self.assertGreater(worker.MAX_POLL_INTERVAL_MS, worker.BATCH_DEADLINE_SECONDS * 1000)
 
 
+class QueueDrained(Exception):
+    """가짜 consumer가 메시지를 다 주면 consume()을 끝내려고 올린다."""
+
+
+class ConsumeTest(unittest.TestCase):
+    """consume()이 journal에 등록할 수 없는 command를 받아도 죽지 않고 실패 이벤트를 발행한 뒤 커밋하는지 본다."""
+
+    def consume(self, value):
+        import asyncio
+        sent, commits = [], []
+
+        class FakeConsumer:
+            def __init__(self, *args, **kwargs):
+                self.messages = [mock.Mock(value=value, topic="t", partition=0, offset=7)]
+
+            async def start(self): pass
+            async def stop(self): pass
+            async def commit(self): commits.append(True)
+
+            async def getmany(self, timeout_ms=0, max_records=1):
+                if not self.messages:
+                    raise QueueDrained()
+                return {("t", 0): [self.messages.pop()]}
+
+        class FakeProducer:
+            def __init__(self, *args, **kwargs): pass
+            async def start(self): pass
+            async def stop(self): pass
+            async def send_and_wait(self, topic, value, key=None): sent.append((topic, value, key))
+
+        async def main():
+            with mock.patch.object(asyncio.get_running_loop(), "add_signal_handler"):
+                await worker.consume()
+
+        with mock.patch.object(worker, "AIOKafkaConsumer", FakeConsumer), \
+             mock.patch.object(worker, "AIOKafkaProducer", FakeProducer), \
+             mock.patch.object(journal, "execution_lock", lambda run_id: mock.MagicMock()), \
+             mock.patch.object(journal, "connect", side_effect=RuntimeError("no database in test")), \
+             self.assertRaises(QueueDrained):
+            asyncio.run(main())
+        return sent, commits
+
+    def test_command_the_journal_cannot_register_is_failed_and_committed(self):
+        for value in ({k: v for k, v in command().items() if k != "kind"}, command(kind="convert"), ["not", "a", "command"]):
+            with self.subTest(value=value):
+                sent, commits = self.consume(value)
+                self.assertEqual(len(sent), 1)
+                topic, event, key = sent[0]
+                self.assertEqual((topic, event["status"], event["error"]), (worker.RESULT_TOPIC, "failed", "input_rejected"))
+                self.assertEqual(key, event["run_id"].encode())
+                self.assertEqual(commits, [True])
+
+
 if __name__ == "__main__":
     unittest.main()
