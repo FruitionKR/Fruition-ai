@@ -7,7 +7,7 @@
 이 폴더 전체가 독립 GitHub 저장소 루트가 됩니다.
 
 - `pipeline/`: FastAPI API, Kafka worker, ai_db 스키마·마이그레이션, API 명세
-- `converter/`: PDF 변환 HTTP 서비스. pipeline의 문서 복원 코드와 Rust 도구를 함께 사용합니다.
+- `converter/`: PDF 변환 Kafka worker(HTTP 서버 없음). pipeline의 문서 복원 코드와 Rust 도구를 함께 사용합니다.
 
 Python 3.12 환경에서 실행합니다.
 
@@ -35,7 +35,7 @@ GitHub CI는 기본 pipeline 테스트를 실행합니다. 무거운 문서 복�
 This directory is the independent GitHub repository root.
 
 - `pipeline/`: FastAPI API, Kafka workers, the ai_db schema and migrations, and API specifications.
-- `converter/`: PDF conversion HTTP service that also uses pipeline document restoration code and Rust tools.
+- `converter/`: PDF conversion Kafka worker (no HTTP server) that also uses pipeline document restoration code and Rust tools.
 
 Use Python 3.12.
 

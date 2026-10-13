@@ -62,15 +62,23 @@ def test_schema_bootstrap_grants_only_ledger_privileges(converter_db, monkeypatc
 
     with psycopg.connect(scoped) as conn:
         granted = conn.execute(
-            """SELECT privilege_type FROM information_schema.role_table_grants
-               WHERE grantee = %s ORDER BY privilege_type""", (role,)).fetchall()
+            """SELECT table_name, privilege_type FROM information_schema.role_table_grants
+               WHERE grantee = %s ORDER BY table_name, privilege_type""", (role,)).fetchall()
         columns = conn.execute(
             """SELECT column_name FROM information_schema.column_privileges
-               WHERE grantee = %s AND privilege_type = 'SELECT' ORDER BY column_name""", (role,)).fetchall()
+               WHERE grantee = %s AND table_name = 'ai_model_usage' AND privilege_type = 'SELECT' ORDER BY column_name""", (role,)).fetchall()
         updatable = conn.execute(
             """SELECT column_name FROM information_schema.column_privileges
-               WHERE grantee = %s AND privilege_type = 'UPDATE'""", (role,)).fetchall()
-    assert [row[0] for row in granted] == ["INSERT"]
+               WHERE grantee = %s AND table_name = 'ai_model_usage' AND privilege_type = 'UPDATE'""", (role,)).fetchall()
+    # 원장은 INSERT뿐이고, 변환 작업 journal은 등록·완료·취소 확인에 필요한 만큼만 준다.
+    assert [tuple(row) for row in granted] == [
+        ("ai_model_usage", "INSERT"),
+        ("ai_purged_scopes", "SELECT"),
+        ("ai_task_changes", "SELECT"),
+        ("ai_task_runs", "INSERT"),
+        ("ai_task_runs", "SELECT"),
+        ("ai_task_runs", "UPDATE"),
+    ]
     assert [row[0] for row in columns] == ["finished_at", "id", "status"]
     assert {row[0] for row in updatable} == set(migrate_ai_schema._CONVERTER_UPDATE_COLUMNS)
 
@@ -83,7 +91,7 @@ def test_schema_bootstrap_grants_only_ledger_privileges(converter_db, monkeypatc
                            (call_id,)).fetchone()
     assert row["status"] == "succeeded" and row["input_tokens"] == 3 and row["finished_at"] is not None
 
-    for statement in ("SELECT * FROM ai_model_usage", "DELETE FROM ai_model_usage", "SELECT id FROM ai_task_runs",
+    for statement in ("SELECT * FROM ai_model_usage", "DELETE FROM ai_model_usage", "DELETE FROM ai_task_runs", "INSERT INTO ai_task_changes(run_id, table_name, row_key) VALUES ('r', 't', '{}')",
                       *(f"UPDATE ai_model_usage SET {column} = 'x' WHERE id = '{call_id}'"
                         for column in ("user_id", "run_id", "workspace_id"))):
         with connect_as_converter() as conn, pytest.raises(errors.InsufficientPrivilege):

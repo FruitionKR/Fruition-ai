@@ -15,12 +15,15 @@ _CONVERTER_UPDATE_COLUMNS = (
 
 
 def grant_converter_access(connection) -> None:
-    """converter 전용 role에 사용량 원장 기록 권한만 준다. 스키마 소유자 연결에서 호출한다.
+    """converter 전용 role에 사용량 원장 기록과 변환 작업 journal 권한만 준다. 스키마 소유자 연결에서 호출한다.
 
     usage_ledger.start_call은 INSERT만, finish_call의 UPDATE는 WHERE id와
     status·finished_at CASE 식에서 세 컬럼을 읽으므로 이 세 컬럼만 SELECT를 준다.
     UPDATE는 finish_call이 SET하는 컬럼으로 제한해 귀속 컬럼(run_id·workspace_id·user_id)을 바꾸지 못하게 한다.
     finish_call의 SET 목록이 바뀌면 _CONVERTER_UPDATE_COLUMNS도 함께 바꾼다.
+    변환 worker는 작업 journal(`ai_task_runs`)에 convert_batch run을 등록·완료·취소 확인하므로 그 테이블의
+    SELECT·INSERT·UPDATE와, journal이 읽는 `ai_task_changes`·`ai_purged_scopes`의 SELECT를 준다(ADR 0034).
+    convert_batch는 업무 테이블을 바꾸지 않아 변경 기록(`ai_task_changes`)에 쓰지 않는다.
     """
     role = os.environ.get("AI_DB_CONVERTER_ROLE", "").strip()
     if not role:
@@ -37,6 +40,8 @@ def grant_converter_access(connection) -> None:
     connection.execute(
         sql.SQL("GRANT SELECT (id, status, finished_at) ON ai_model_usage TO {}").format(identifier)
     )
+    connection.execute(sql.SQL("GRANT SELECT, INSERT, UPDATE ON ai_task_runs TO {}").format(identifier))
+    connection.execute(sql.SQL("GRANT SELECT ON ai_task_changes, ai_purged_scopes TO {}").format(identifier))
 
 
 def main() -> None:
