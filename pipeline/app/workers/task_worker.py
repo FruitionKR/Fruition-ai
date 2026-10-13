@@ -1235,7 +1235,8 @@ async def consume() -> None:
 
     async def process(message) -> bool:
         """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
-        command = message.value
+        # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
+        command = message.value if isinstance(message.value, dict) else {}
         try:
             while True:
                 try:
@@ -1280,12 +1281,16 @@ async def consume() -> None:
                     command.get("kind"),
                     command.get("run_id"),
                 )
-            if not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
+            # journal에 등록하지 못한 잘못된 command(필수 필드 없음)는 재전달해도 같으므로 실패로 확정한다.
+            # 그러지 않으면 journal 행이 없어 커밋하지 못하고 같은 offset에서 계속 죽는다(converter #101과 같다).
+            malformed = not all(isinstance(command.get(key), str) and command[key]
+                                for key in ("run_id", "workspace_id", "user_id"))
+            if not malformed and not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
                 raise
             event = _event(
                 command,
                 "failed",
-                error=error,
+                error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )
         # 발행이 끝난 뒤에만 완료로 표시해 커밋 대상이 되게 한다.
