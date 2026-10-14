@@ -94,10 +94,12 @@ def list_wiki_schema_drafts(
 @router.post("/{schema_id}/activate", response_model=WikiSchemaResponse)
 def activate_wiki_schema(
     schema_id: str,
+    workspace_id: str,
+    user_id: str,
     use_case: ActivateSchemaUseCase = Depends(get_activate_schema_use_case),
 ) -> WikiSchemaResponse:
     try:
-        record = use_case.execute(schema_id)
+        record = use_case.execute(schema_id, workspace_id, user_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

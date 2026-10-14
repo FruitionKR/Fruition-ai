@@ -27,8 +27,10 @@ class FakeWikiSchemaRepository:
     def get(self, schema_id: str) -> WikiSchemaRecord | None:
         return self.records.get(schema_id)
 
-    def activate(self, schema_id: str) -> WikiSchemaRecord:
-        record = self.records[schema_id]
+    def activate(self, schema_id: str, workspace_id: str, user_id: str) -> WikiSchemaRecord:
+        record = self.records.get(schema_id)
+        if record is None or record.workspace_id != workspace_id or record.user_id != user_id:
+            raise ValueError("Schema not found.")
         activated = WikiSchemaRecord(
             id=record.id,
             workspace_id=record.workspace_id,
@@ -81,11 +83,30 @@ class SchemaStorageUseCasesTest(unittest.TestCase):
             name="기본 schema",
         )
 
-        activated = ActivateSchemaUseCase(repository).execute(draft.id)
+        activated = ActivateSchemaUseCase(repository).execute(draft.id, "ws-1", "user-1")
         active = GetActiveSchemaUseCase(repository).execute("ws-1", "user-1")
 
         self.assertEqual(activated.status, "active")
         self.assertEqual(active, activated)
+
+    def test_activate_rejects_schema_outside_requested_scope(self) -> None:
+        repository = FakeWikiSchemaRepository()
+        draft = CreateSchemaDraftUseCase(FakeSchemaOrganizer(), repository).execute(
+            raw_markdown="답변은 한국어로 해줘.",
+            workspace_id="ws-1",
+            user_id="user-1",
+            name="기본 schema",
+        )
+
+        with self.assertRaises(ValueError):
+            ActivateSchemaUseCase(repository).execute(draft.id, "ws-other", "user-1")
+        with self.assertRaises(ValueError):
+            ActivateSchemaUseCase(repository).execute(draft.id, "ws-1", "user-other")
+        with self.assertRaises(ValueError):
+            ActivateSchemaUseCase(repository).execute(draft.id, "  ", "user-1")
+
+        self.assertEqual(repository.records[draft.id].status, "draft")
+        self.assertIsNone(GetActiveSchemaUseCase(repository).execute("ws-1", "user-1"))
 
 
 if __name__ == "__main__":
