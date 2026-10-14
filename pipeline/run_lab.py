@@ -45,6 +45,7 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ApiConceptPageGenerator,
     ChatClientConfig,
     ChatCompletionsJsonClient,
+    RetryOnceJsonCompletion,
 )
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import with_jev_concept_merge
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
@@ -265,7 +266,9 @@ def _run_wiki_generation_loop(
             wiki_patch_system_prompt,
         ),
         normalizer=normalizer,
-        evaluator=GenerationEvaluatorAdapter(api_client, wiki_evaluator_system_prompt, document, blocks),
+        evaluator=GenerationEvaluatorAdapter(
+            RetryOnceJsonCompletion(api_client), wiki_evaluator_system_prompt, document, blocks
+        ),
         repairer=EvaluationGuardRepairer(),
         events=log,
         evaluation_artifacts=EvaluationArtifactAdapter(out, save_debug_json),
@@ -490,7 +493,7 @@ def _resolve_pipeline_concepts(
     def judge_updates() -> tuple[list[dict[str, Any]], float]:
         started = monotonic()
         result = judge_concept_update_candidates(
-            completion=api_client,
+            completion=RetryOnceJsonCompletion(api_client),
             concepts=concepts,
             candidates=concept_update_candidates,
         )
@@ -1046,6 +1049,7 @@ def run_pipeline(
             "concept_page_mode": page_outputs.concept_page_mode,
             "document_id": document.document_id,
             "source_document_id": getattr(args, "source_document_id", None),
+            "display_name": getattr(args, "display_name", None),
             "source_page": page_outputs.source_page,
             "source_extraction_artifact": source_extraction_artifact,
             "source_blocks": source_block_records,

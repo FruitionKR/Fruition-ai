@@ -20,6 +20,9 @@ httpx>=0.27
 tiktoken>=0.7
 # 실시간 음성 전사에서 직접 사용하는 WebSocket 클라이언트.
 websockets>=15,<16
+# 회의 녹음 전사: 긴 녹음을 PyAV(FFmpeg 번들 wheel)로 디코딩해 구간으로 나눈다. numpy는 PyAV의 to_ndarray와 경계 에너지 계산에 쓴다.
+av>=14
+numpy>=1.26
 
 # /metrics 노출과 HTTP 요청 지표 수집 (Prometheus).
 # 8.1 미만은 FastAPI 0.141의 _IncludedRouter를 처리하지 못해 include된 라우터 요청이

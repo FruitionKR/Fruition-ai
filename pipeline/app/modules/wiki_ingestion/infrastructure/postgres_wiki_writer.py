@@ -143,7 +143,6 @@ def read_optional_text_object(object_name: str) -> str:
 
 def delete_source_related_links(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
 ) -> None:
     conn.execute(
@@ -155,18 +154,15 @@ def delete_source_related_links(
           AND to_page.id = l.to_page_id
           AND from_page.page_type = 'source'
           AND to_page.page_type = 'source'
-          AND from_page.user_id = %s
           AND from_page.workspace_id = %s
-          AND to_page.user_id = %s
           AND to_page.workspace_id = %s
         """,
-        (user_id, workspace_id, user_id, workspace_id),
+        (workspace_id, workspace_id),
     )
 
 
 def load_existing_concept_ids_by_slug(
     conn: psycopg.Connection,
-    user_id: str,
     workspace_id: str,
 ) -> dict[str, str]:
     rows = conn.execute(
@@ -175,10 +171,9 @@ def load_existing_concept_ids_by_slug(
         FROM wiki_pages
         WHERE page_type = 'concept'
           AND status = 'active'
-          AND user_id = %s
           AND workspace_id = %s
         """,
-        (user_id, workspace_id),
+        (workspace_id,),
     ).fetchall()
     return {row["slug"]: row["id"] for row in rows}
 
@@ -198,7 +193,7 @@ def resolve_or_create_wiki_page_id(
             id, page_type, title, slug, summary, markdown_uri,
             user_id, workspace_id, status, created_at, updated_at
         ) VALUES (%s, %s, %s, %s, NULL, NULL, %s, %s, 'draft', now(), now())
-        ON CONFLICT (user_id, workspace_id, page_type, slug) DO UPDATE
+        ON CONFLICT (workspace_id, page_type, slug) DO UPDATE
             SET updated_at = wiki_pages.updated_at
         RETURNING id
         """,
@@ -223,7 +218,7 @@ def upsert_wiki_page(
         """
         INSERT INTO wiki_pages (id, page_type, title, slug, summary, markdown_uri, user_id, workspace_id, status, created_at, updated_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active', now(), now())
-        ON CONFLICT (user_id, workspace_id, page_type, slug) DO UPDATE SET
+        ON CONFLICT (workspace_id, page_type, slug) DO UPDATE SET
             page_type = EXCLUDED.page_type,
             title = EXCLUDED.title,
             slug = EXCLUDED.slug,

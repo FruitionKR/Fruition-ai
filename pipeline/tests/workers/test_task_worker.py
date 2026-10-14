@@ -12,6 +12,8 @@ from app.modules.query.domain.entities import (
     ConversationMessage,
 )
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
+from app.core.pipeline_control import ReplayedResult
+from app.modules.meeting_notes.domain.entities import InvalidMeetingNotesError
 from app.workers import task_worker
 from tests.modules.query.test_answer_query import (
     EmptyTextSearch,
@@ -378,6 +380,104 @@ def test_lint_command_passes_runtime_model_without_command_overrides() -> None:
     assert result == {"ok": True}
 
 
+def _meeting_command(**overrides) -> dict:
+    return {
+        "run_id": "meeting-run-1",
+        "kind": "meeting_notes",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "meeting_id": "meeting-1",
+        "display_name": "출시 회의",
+        "segments": [{"id": "s1", "text": "기록"}],
+        **overrides,
+    }
+
+
+def _meeting_generator(result: dict | Exception) -> MagicMock:
+    from app.modules.meeting_notes.application.generate_meeting_notes import GenerateMeetingNotes
+
+    generator = MagicMock()
+    if isinstance(result, Exception):
+        generator.generate.side_effect = result
+    else:
+        generator.generate.return_value = result
+    return GenerateMeetingNotes(generator)
+
+
+def test_meeting_notes_command_returns_draft_payload() -> None:
+    notes = {
+        "summary": [{"text": "출시 일정을 논의했다.", "source_segment_ids": ["s1"]}],
+        "decisions": [], "action_items": [], "open_questions": [],
+    }
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
+        payload = task_worker._handle(_meeting_command())
+
+    assert set(payload) == {"display_name", "markdown", "summary", "decisions", "action_items", "open_questions"}
+    assert payload["display_name"] == "출시 회의"
+    assert payload["markdown"].startswith("# 출시 회의\n")
+    event = task_worker._event(_meeting_command(), "succeeded", payload=payload, with_request=False)
+    assert "request" not in event and event["payload"] == payload
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"segments": [{"id": "s1", "text": "a"}, {"id": "s1", "text": "b"}]}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"model": "unknown-model"}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"title": "이전 필드"}, "MEETING_NOTES_INPUT_REJECTED"),
+    ],
+)
+def test_meeting_notes_command_rejects_invalid_input_with_code(overrides, code) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    with pytest.raises(TaskFailedError) as error:
+        task_worker._handle(_meeting_command(**overrides))
+    assert error.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (InvalidMeetingNotesError("근거 없음"), "MEETING_NOTES_FAILED"),
+        (RuntimeError("공급사 오류"), "MEETING_NOTES_FAILED"),
+    ],
+)
+def test_meeting_notes_command_maps_generation_failure_to_code(failure, code) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(failure)):
+        with pytest.raises(TaskFailedError) as error:
+            task_worker._handle(_meeting_command())
+    assert error.value.code == code
+
+
+def test_meeting_notes_command_without_provider_key_is_unavailable(monkeypatch) -> None:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(TaskFailedError) as error:
+        task_worker._handle(_meeting_command())
+    assert error.value.code == "MEETING_NOTES_UNAVAILABLE"
+
+
+def test_completed_meeting_notes_run_replays_draft_without_model_call() -> None:
+    from contextlib import nullcontext
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    draft = {"display_name": "출시 회의", "markdown": "# 출시 회의"}
+    with (
+        patch.object(journal, "execution_lock", return_value=nullcontext()),
+        patch.object(journal, "register", return_value={"status": "completed", "result": draft}),
+        patch.object(task_worker, "build_meeting_notes") as build,
+    ):
+        result = task_worker._execute_controlled(_meeting_command())
+
+    assert isinstance(result, ReplayedResult) and result == draft
+    build.assert_not_called()
+
+
 def test_restore_rejects_changed_contribution_manifest() -> None:
     command = {
         "workspace_id": "workspace-1",
@@ -481,6 +581,7 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(
             task_worker.database,
             "checkpoint_pipeline_run",
@@ -494,12 +595,12 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             side_effect=lambda **_kwargs: calls.append("cluster") or artifact,
         ),
         patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
-        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(task_worker, "read_optional_text_object", return_value="") as read_active,
         patch.object(
             task_worker.database,
             "persist_post_ingest_clusters",
             side_effect=lambda *_args: calls.append("persist") or [],
-        ),
+        ) as persist,
         patch.object(
             task_worker,
             "build_wiki_embeddings",
@@ -525,6 +626,8 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
         result = task_worker._handle_post_ingest(command)
 
     assert result["quality_status"] == "ready"
+    read_active.assert_called_once_with("wiki/workspace-1/clusters/active.md")
+    assert persist.call_args.args == ("document-1", "workspace-1", artifact, "ingest-run-1")
     assert calls.index("cluster") < calls.index("persist")
     assert calls.index("persist") < calls.index("quality")
     if runs_embedding:
@@ -585,6 +688,7 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
             "get_pipeline_run",
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else existing,
         ),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(
@@ -597,7 +701,8 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
     ):
         task_worker._handle_post_ingest(command)
 
-    fail.assert_called_once_with("post-run-1", "embedding unavailable")
+    fail.assert_called_once_with("post-run-1", "internal_error")
+    assert update_parent.call_args.args[1]["error"] == "internal_error"
     assert update_parent.call_args.args[1]["status"] == "needs_review"
 
 
@@ -851,6 +956,7 @@ def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -917,6 +1023,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
             side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
         ),
         patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
         patch.object(task_worker.database, "update_pipeline_run_post_ingest") as update_parent,
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
@@ -953,7 +1060,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
     fail.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "restore_ingest", "restore_lint"])
+@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint"])
 @pytest.mark.parametrize("status", [None, "running", "failed", "cancel_requested", "rolling_back", "rollback_failed", "cancelled"])
 def test_failure_is_durable_only_with_registered_terminal_or_rollback_state(kind, status):
     connection = MagicMock()
@@ -1596,6 +1703,15 @@ def test_repeated_identical_agent_command_reuses_completed_result() -> None:
     assert connection.execute.call_count == 2
 
 
+def test_agent_handler_marks_completed_run_as_replay() -> None:
+    command = {"run_id": "agent-1", "workspace_id": "ws", "user_id": "user", "message": "안녕"}
+    with patch.object(task_worker, "_register_agent_command", return_value=("completed", {"outcome": "chat"})):
+        result = task_worker._handle_agent(command)
+
+    assert result == {"outcome": "chat"}
+    assert isinstance(result, ReplayedResult)
+
+
 @pytest.mark.parametrize("title_fails", [False, True])
 def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(title_fails) -> None:
     async def run_test() -> None:
@@ -1604,7 +1720,8 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
         stop_callbacks = []
         events = []
         commands = [{"kind": "query", "run_id": f"run-{i}"} for i in (1, 2)]
-        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock())
+        offsets = iter(range(10))
+        consumer = _consumer_stub()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
 
         async def getmany(**kwargs):
@@ -1612,7 +1729,7 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
                 command = commands.pop(0)
                 if command["run_id"] == "run-2":
                     await title_started.wait()
-                return {"partition": [SimpleNamespace(value=command)]}
+                return {"partition": [SimpleNamespace(topic="t", partition=0, offset=next(offsets), value=command)]}
             stop_callbacks[0]()
             return {}
 
@@ -1642,6 +1759,7 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
                 patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
             await asyncio.wait_for(task_worker.consume(), timeout=1)
@@ -1652,3 +1770,124 @@ def test_slow_title_does_not_block_next_command_and_drains_before_producer_stop(
         consumer.stop.assert_awaited_once()
 
     asyncio.run(run_test())
+
+
+def _consumer_stub():
+    """consume()가 부르는 aiokafka consumer 표면의 최소 가짜. 일시 정지는 무시하고 getmany만 테스트가 정한다."""
+    return SimpleNamespace(
+        start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), subscribe=MagicMock(),
+        assignment=lambda: set(), paused=lambda: set(), pause=MagicMock(), resume=MagicMock(),
+    )
+
+
+def _run_consume(handled: list, kind: str = "query"):
+    """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
+    async def run_test():
+        stop_callbacks = []
+        events = []
+        titles = []
+        consumer = _consumer_stub()
+        consumer.seek = MagicMock()
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        message = SimpleNamespace(topic="t", partition=3, offset=42, value={"kind": kind, "run_id": "run-1"})
+        delivered = []
+
+        async def getmany(**kwargs):
+            if not delivered:
+                delivered.append(True)
+                return {"partition": [message]}
+            if not handled:
+                stop_callbacks[0]()
+            await asyncio.sleep(0)
+            return {}
+
+        async def send(topic, event, **kwargs):
+            events.append(event["status"])
+
+        async def to_thread(function, *args):
+            if function is task_worker._handle_controlled:
+                outcome = handled.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            if function is task_worker.generate_chat_session_title:
+                titles.append(args[0]["run_id"])
+                return "제목"
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(task_worker.database, "ensure_ai_schema"), \
+                patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
+                patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
+                patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            await asyncio.wait_for(task_worker.consume(), timeout=1)
+        return consumer, events, titles
+
+    return asyncio.run(run_test())
+
+
+def test_redelivered_running_task_waits_in_place_without_seek() -> None:
+    from aiokafka import TopicPartition
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    consumer, events, titles = _run_consume([journal.TaskAlreadyExecutingError("busy"), {"answer": "답변"}])
+
+    # 같은 partition의 다른 offset이 실행 중일 수 있어 seek하지 않고, 끝난 뒤에만 그 offset까지 커밋한다.
+    consumer.seek.assert_not_called()
+    assert events == ["succeeded", "session_title"]
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
+    assert titles == ["run-1"]
+
+
+@pytest.mark.parametrize("kind", ["query", "agent"])
+def test_replayed_result_does_not_regenerate_session_title(kind) -> None:
+    consumer, events, titles = _run_consume([ReplayedResult({"answer": "답변"})], kind)
+
+    assert events == ["succeeded"]
+    assert consumer.commit.await_count == 1
+    assert titles == []
+
+
+def test_post_ingest_for_deleted_source_stops_before_run_registration_and_model_calls() -> None:
+    command = {"run_id": "post-run-1", "ingest_run_id": "ingest-run-1", "kind": "post_ingest",
+               "document_id": "document-1", "workspace_id": "workspace-1", "user_id": "user-1",
+               "provider": "openai", "model": "gpt-5-nano", "cluster_normalized": {}, "page_ids": []}
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {"cluster_normalized": {}, "page_ids": []}}}
+    with (
+        patch.object(task_worker.database, "get_pipeline_run", return_value=parent),
+        patch.object(task_worker.database, "reject_deleted_source",
+                     side_effect=task_worker.PipelineRunCancelledError("deleted")),
+        patch.object(task_worker.database, "create_pipeline_run") as create,
+        patch.object(task_worker, "build_post_ingest_cluster_artifact") as build,
+        pytest.raises(task_worker.PipelineRunCancelledError),
+    ):
+        task_worker._handle_post_ingest(command)
+    create.assert_not_called()
+    build.assert_not_called()
+
+
+def test_post_ingest_event_carries_parent_ingest_run_id_without_request() -> None:
+    from app.workers import task_worker
+
+    command = {"run_id": "pi-1", "kind": "post_ingest", "ingest_run_id": "ingest-1",
+               "workspace_id": "ws", "user_id": "u", "document_id": "d"}
+    event = task_worker._event(command, "succeeded", payload={}, with_request=False)
+
+    assert event["ingest_run_id"] == "ingest-1"
+    assert "request" not in event
+    assert "ingest_run_id" not in task_worker._event({"run_id": "q-1", "kind": "query"}, "failed")
+
+
+def test_post_ingest_client_retries_invalid_json_once(monkeypatch):
+    from app.modules.wiki_generation.infrastructure.chat_completions_llm import RetryOnceJsonCompletion
+
+    monkeypatch.setattr(task_worker, "api_key_from_env", lambda provider: "key")
+    client = task_worker._post_ingest_client({"provider": "gemini", "model": "gemini-3.5-flash-lite"})
+
+    assert isinstance(client, RetryOnceJsonCompletion)

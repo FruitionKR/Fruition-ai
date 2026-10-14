@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from contextlib import aclosing
 from hmac import compare_digest
@@ -14,9 +15,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.speech.application.ports import SpeechPort
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
 from app.modules.speech.interfaces.http.dependencies import authorize_speech, get_speech
@@ -24,6 +27,13 @@ from app.modules.speech.interfaces.http.schemas import (
     SpeechSynthesisRequest,
     TranscriptionResponse,
 )
+
+logger = logging.getLogger(__name__)
+# 모델 입력 한도 기반 기술 상한이며 제품 상한이 아니다.
+# gpt-realtime-2.1-mini는 응답 하나에 출력 32,000 토큰까지 낸다(공식 모델 문서). 음성은 분당 약 1,200 토큰이라
+# 한 번에 약 26분, 한국어로 대략 8,000~9,000자를 읽는다. 그보다 긴 답변은 끝까지 읽지 못하므로 시작 전에 거절한다.
+# ponytail: 분당 토큰 수는 외부 자료의 추정치다. 실제 사용량 원장 값으로 다시 맞춘다.
+MAX_SYNTHESIS_CHARS = 8000
 
 router = APIRouter(prefix="/speech", tags=["speech"])
 
@@ -44,8 +54,11 @@ router = APIRouter(prefix="/speech", tags=["speech"])
 async def transcribe(
     request: Request,
     speech: Annotated[SpeechPort, Depends(get_speech)],
+    request_id: RequestId = None,
     workspace_id: str = Query(min_length=1, max_length=128),
     user_id: str = Query(min_length=1, max_length=128),
+    # 채팅처럼 ALB idle timeout 안에 끝나야 하는 호출자만 보낸다. 없으면 전체 시간 상한이 없다.
+    deadline_seconds: int | None = Query(default=None, ge=1, le=600),
 ) -> TranscriptionResponse:
     await run_in_threadpool(authorize_speech, workspace_id, user_id)
     media_type = request.headers.get("content-type", "").split(";")[0].strip()
@@ -58,10 +71,12 @@ async def transcribe(
         audio.extend(chunk)
     if not audio:
         raise HTTPException(422, "음성 파일이 비어 있습니다.")
+    scope = {"run_id": request_id, "workspace_id": workspace_id, "user_id": user_id,
+             "kind": "speech_transcription"}
     try:
-        return TranscriptionResponse(
-            text=await speech.transcribe(bytes(audio), media_type)
-        )
+        with usage_scope(scope):
+            text = await speech.transcribe(bytes(audio), media_type, deadline_seconds)
+        return TranscriptionResponse(text=text)
     except InvalidAudioError as exc:
         raise HTTPException(422, str(exc)) from exc
     except SpeechUnavailableError as exc:
@@ -70,20 +85,46 @@ async def transcribe(
 
 @router.post(
     "/synthesis",
-    response_class=Response,
-    responses={200: {"content": {"audio/mpeg": {}}}},
+    response_class=StreamingResponse,
+    responses={
+        200: {"content": {"application/x-ndjson": {}}},
+        400: {"description": "답변이 기술 상한(MAX_SYNTHESIS_CHARS)을 넘는다."},
+    },
 )
 async def synthesize(
-    payload: SpeechSynthesisRequest, speech: Annotated[SpeechPort, Depends(get_speech)]
-) -> Response:
+    payload: SpeechSynthesisRequest,
+    speech: Annotated[SpeechPort, Depends(get_speech)],
+    request_id: RequestId = None,
+) -> StreamingResponse:
     await run_in_threadpool(authorize_speech, payload.workspace_id, payload.user_id)
-    try:
-        audio = await speech.synthesize(payload.answer)
-    except SpeechUnavailableError as exc:
-        raise HTTPException(502, "음성을 생성하지 못했습니다.") from exc
-    return Response(
-        audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"}
+    if len(payload.answer) > MAX_SYNTHESIS_CHARS:
+        raise HTTPException(400, f"답변은 {MAX_SYNTHESIS_CHARS:,}자 이하로 보내주세요.")
+    scope = {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "speech_synthesis"}
+
+    async def events():
+        # 클라이언트가 끊으면 Starlette가 이 제너레이터를 취소·종료하고, aclosing이 공급사 쪽 취소까지 전파한다.
+        with usage_scope(scope):
+            try:
+                async with aclosing(speech.synthesize(payload.answer)) as deltas:
+                    async for delta in deltas:
+                        yield _line({"type": "audio", "delta": delta})
+                yield _line({"type": "done"})
+            except SpeechUnavailableError as exc:
+                yield _line({"type": "error", "code": exc.code})
+            except Exception:  # noqa: BLE001 - 시작된 스트림은 상태 코드를 바꿀 수 없어 error 이벤트로 닫는다.
+                logger.exception("음성 합성 스트림 실패")
+                yield _line({"type": "error", "code": "internal_error"})
+
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store"},
     )
+
+
+def _line(event: dict) -> bytes:
+    return json.dumps(event, separators=(",", ":")).encode() + b"\n"
 
 
 @router.websocket("/transcriptions/live")
@@ -131,13 +172,16 @@ async def transcribe_live(websocket: WebSocket) -> None:
                 if command["type"] == "finish":
                     return
 
+    scope = {"run_id": websocket.headers.get("X-Request-Id", "")[:128], "workspace_id": workspace_id,
+             "user_id": user_id, "kind": "speech_live_transcription"}
     try:
-        async with (
-            asyncio.timeout(3600),
-            aclosing(speech.transcribe_live(packets())) as events,
-        ):
-            async for event in events:
-                await websocket.send_json(event)
+        with usage_scope(scope):
+            async with (
+                asyncio.timeout(3600),
+                aclosing(speech.transcribe_live(packets())) as events,
+            ):
+                async for event in events:
+                    await websocket.send_json(event)
         await websocket.close(code=1000)
     except WebSocketDisconnect:
         return

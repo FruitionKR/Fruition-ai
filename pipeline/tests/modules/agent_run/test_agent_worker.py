@@ -65,7 +65,7 @@ class AgentWorkerTest(unittest.TestCase):
                         with self.assertLogs("app.modules.agent_run.infrastructure.agent_worker", level="ERROR"):
                             worker.process(job)
                         repository.request_clarification.assert_not_called()
-                        repository.fail.assert_called_once_with(job, "RuntimeError")
+                        repository.fail.assert_called_once_with(job, "internal_error")
                 plans.save_plan.assert_not_called()
                 gateway.execute.assert_not_called()
 
@@ -84,11 +84,7 @@ class AgentWorkerTest(unittest.TestCase):
         with self.assertLogs("app.modules.agent_run.infrastructure.agent_worker", level="ERROR") as captured:
             worker.process(internal_job)
 
-        repository.fail.assert_called_once_with(
-            internal_job,
-            f"ValueError: {' '.join(internal_detail.split())}"[:256],
-        )
-        self.assertEqual(len(repository.fail.call_args.args[1]), 256)
+        repository.fail.assert_called_once_with(internal_job, "input_rejected")
         self.assertIn("job_id=job-1 job_type=planning type=ValueError", captured.output[0])
         self.assertIn("detail=ValueError: internal detail", captured.output[0])
 
@@ -107,7 +103,7 @@ class AgentWorkerTest(unittest.TestCase):
                 with self.assertLogs("app.modules.agent_run.infrastructure.agent_worker", level="ERROR") as captured:
                     worker.process(external_job)
 
-                repository.fail.assert_called_once_with(external_job, exception_type.__name__)
+                repository.fail.assert_called_once_with(external_job, "input_rejected")
                 detail = repository.fail.call_args.args[1]
                 self.assertNotIn("https://example.test", detail)
                 self.assertNotIn("token=secret", detail)

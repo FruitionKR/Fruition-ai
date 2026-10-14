@@ -82,7 +82,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         max_evidence_snippets: int = 8,
         max_batch_candidates: int = 80,
         max_batch_tokens: int = MAX_BATCH_TOKENS,
-        max_workers: int = 4,
+        max_workers: int = 8,
     ) -> None:
         self._client = client
         self._fallback = fallback

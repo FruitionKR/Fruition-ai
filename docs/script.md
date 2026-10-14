@@ -59,4 +59,27 @@ Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행�
 
 ## 모델 사용량 원장 적용
 
-분리 AI 저장소의 `pipeline/`에서 migration 권한의 `AI_DB_MIGRATION_URL`을 주입하고 `python -m app.modules.wiki_ingestion.infrastructure.migrate_ai_schema`를 실행한다. 멱등 DDL이 `ai_model_usage`와 인덱스를 생성한다. 기존 runtime의 ai_runtime 권한에 INSERT/UPDATE/SELECT가 포함되어야 한다. 그 뒤 새 pipeline API·worker 이미지를 적용한다. 사용량 원장은 작업 취소 복구 대상이 아니며 이전 호출은 소급 기록하지 않는다.
+분리 AI 저장소의 `pipeline/`에서 migration 권한의 `AI_DB_MIGRATION_URL`을 주입하고 `python -m app.modules.wiki_ingestion.infrastructure.migrate_ai_schema`를 실행한다. 멱등 DDL이 `ai_model_usage`와 인덱스를 생성한다. 기존 runtime의 ai_runtime 권한에 INSERT/UPDATE/SELECT가 포함되어야 한다. `AI_DB_CONVERTER_ROLE`(예: `ai_converter`)을 함께 주입하면 같은 트랜잭션에서 converter 전용 role의 테이블 단위 UPDATE를 회수한 뒤 `ai_model_usage` INSERT, `finish_call`이 SET하는 컬럼의 UPDATE, `id`·`status`·`finished_at` 컬럼 SELECT를 부여한다. 비우면 부여를 건너뛰고 경고를 남기며, role이 없으면 적용이 실패한다. role은 platform `init-db-isolation.sh`로 먼저 만든다. 그 뒤 새 pipeline API·worker 이미지를 적용한다. 사용량 원장은 작업 취소 복구 대상이 아니며 이전 호출은 소급 기록하지 않는다.
+
+## 과거 파기 누락분 정리
+
+access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이터를 파기한 워크스페이스·사용자는 AI 데이터(위키, 스킬, 에이전트 기록, S3 객체)가 남아 있다. 일회성 스크립트 `pipeline/reconcile_purged_scopes.py`가 access에 없는 ID를 찾아 기존 파기 함수(`purge_workspace`·`purge_user`)로 지운다. 파기 함수는 멱등이라 재실행해도 같다. `ai_model_usage`는 정산용이라 지우지 않는다.
+
+1. access DB에서 **현재 존재하는** ID를 내보내고, 내보낸 시각을 기록한다. 삭제 유예 중인 워크스페이스(`deleted_at`이 있는 행)는 아직 파기 대상이 아니므로 포함한다.
+
+   ```sql
+   SELECT now();  -- 내보낸 시각. --exported-at에 시간대 포함 ISO-8601로 쓴다.
+   \copy (SELECT id FROM workspaces) TO 'workspace_ids.txt'
+   \copy (SELECT id FROM users) TO 'user_ids.txt'
+   ```
+
+2. `pipeline/`에서 AI DB(`AI_DATABASE_URL`)와 S3 환경변수를 주입하고 dry-run으로 파기 대상을 확인한다. 파일이 비어 있으면 전체 파기를 막기 위해 실행을 거부한다.
+
+   ```bash
+   python reconcile_purged_scopes.py --workspace-ids-file workspace_ids.txt --user-ids-file user_ids.txt \
+     --exported-at 2026-10-11T12:00:00+09:00
+   ```
+
+   AI 테이블에서 가장 이르게 나타난 시각이 `--exported-at`보다 1시간 넘게 앞선 ID만 `to_purge_*`에 오른다. export 뒤에 생긴 ID와 시각 근거가 없는 ID는 `skipped_*`에 사유와 함께 남고 파기하지 않는다.
+
+3. `to_purge_workspaces`·`to_purge_users`(ID별 최초 확인 시각)가 의도한 목록인지 확인한 뒤 `--apply`를 붙여 실행한다.

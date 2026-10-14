@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -219,9 +220,10 @@ def test_rollback_replays_same_request_after_response_loss():
             raise ToolGatewayError(None, True)
 
     workspace.after_write = fail_after_delete
-    worker._rollback.execute("run")
-    assert journal.run.status == "rollback_failed"
-    journal.run = replace(journal.run, status="cancel_requested")
+    # 재시도할 수 있는 오류는 job backoff에 맡기려고 예외로 올라오고, 실행 기록은 rolling_back으로 남는다.
+    with pytest.raises(ToolGatewayError):
+        worker._rollback.execute("run")
+    assert journal.run.status == "rolling_back"
     # 메모리 worker를 버려도 저장된 요청으로 복구를 재개한다.
     AgentWorker(journal, MagicMock(), workspace, MagicMock())._rollback.execute("run")
     assert journal.run.status == "cancelled"
@@ -332,13 +334,13 @@ def test_postgres_cancel_job_and_compensation_authorization(monkeypatch):
     schema = "test_agent_undo_" + uuid4().hex
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-        for table in ("agent_runs", "agent_plans", "agent_plan_operations", "agent_approvals", "agent_jobs",
-                      "agent_tool_executions", "skill_versions"):
-            conn.execute(sql.SQL("CREATE TABLE {}.{} (LIKE public.{} INCLUDING ALL)").format(
-                sql.Identifier(schema), sql.Identifier(table), sql.Identifier(table)))
 
     def connect():
         return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    # 빈 DB에서도 돌도록 public 테이블을 복사하지 않고 현행 ai_schema.sql을 격리 스키마에 적용한다.
+    with connect() as conn:
+        conn.execute(Path(__file__).resolve().parents[3].joinpath("db/ai_schema.sql").read_text())
 
     try:
         monkeypatch.setattr(database, "connect_ai", connect)
@@ -662,3 +664,77 @@ task_worker._handle_controlled(json.loads(os.environ["TEST_TURN_COMMAND"]))
         executor.shutdown(wait=True)
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+class JobJournal(Journal):
+    """worker.process가 job 결과를 기록하는 경로만 덧붙인다."""
+
+    def __init__(self, plan):
+        super().__init__(plan)
+        self.job_outcomes = []
+
+    def heartbeat(self, job):
+        return True
+
+    def complete(self, job):
+        self.job_outcomes.append(("completed", None))
+
+    def fail(self, job, error_code):
+        self.job_outcomes.append(("failed", error_code))
+
+
+def _cancelled_folder_run(journal, workspace):
+    worker = AgentWorker(journal, MagicMock(), workspace, MagicMock())
+    worker._execute_operation(journal.load_context("run"), journal.plan, journal.plan.operations[0], {})
+    journal.run = replace(journal.run, status="cancel_requested")
+    return worker
+
+
+def test_retryable_rollback_error_goes_to_job_backoff_and_recovers_on_retry():
+    workspace, journal = Workspace(), JobJournal(organization())
+    worker = _cancelled_folder_run(journal, workspace)
+    execute = workspace.execute
+    outages = [ToolGatewayError(503, True)]
+
+    def flaky(tool, **kwargs):
+        if tool == "delete_folder" and outages:
+            raise outages.pop()
+        return execute(tool, **kwargs)
+
+    workspace.execute = flaky
+    job = SimpleNamespace(id="job", run_id="run", job_type="rollback")
+    worker.process(job)
+    # 일시 오류는 rollback_failed로 확정하지 않고 job 실패(재시도 대기)로 돌려보낸다.
+    assert [outcome[0] for outcome in journal.job_outcomes] == ["failed"]
+    assert journal.run.status == "rolling_back"
+    worker.process(job)
+    assert journal.job_outcomes[-1] == ("completed", None)
+    assert journal.run.status == "cancelled"
+
+
+def test_exhausted_rollback_job_attempts_end_as_rollback_failed():
+    from unittest.mock import patch
+
+    from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
+    from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = {"id": "job"}
+    context = MagicMock()
+    context.__enter__.return_value = connection
+    job = MagicMock(id="job", run_id="run", job_type="rollback", attempt_count=3, lease_token="lease")
+    with patch.object(database, "connect_ai", return_value=context):
+        PostgresAgentJobRepository().fail(job, "ToolGatewayError")
+
+    queries = [call.args[0] for call in connection.execute.call_args_list]
+    assert any("status = 'rollback_failed'" in query for query in queries)
+
+
+def test_non_retryable_rollback_error_finishes_as_rollback_failed_immediately():
+    workspace, journal = Workspace(), JobJournal(organization())
+    worker = _cancelled_folder_run(journal, workspace)
+    workspace.execute = MagicMock(side_effect=ToolGatewayError(409, False))
+    worker.process(SimpleNamespace(id="job", run_id="run", job_type="rollback"))
+    assert journal.run.status == "rollback_failed"
+    assert journal.run.error_code == "rollback_tool_http_409"
+    assert journal.job_outcomes == [("completed", None)]

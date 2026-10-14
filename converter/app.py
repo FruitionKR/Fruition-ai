@@ -1,6 +1,4 @@
-import asyncio
 import base64
-import http.client
 import json
 import logging
 import mimetypes
@@ -13,28 +11,36 @@ import time
 import subprocess
 import tempfile
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from threading import Event
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
+from app.core.pipeline_control import (
+    DeadlineExceededError,
+    PipelineRunCancelledError,
+    remaining_seconds,
+    request_deadline,
+)
+from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV
 
-from app.core.llm_env import resolve_llm_selection
 
-
-app = FastAPI(title="Fruition PDF Converter")
 logger = logging.getLogger("converter")
 
-RESTORATION_TIMEOUT_SECONDS = int(os.getenv("RESTORATION_TIMEOUT_SECONDS", "900"))
 PDF_DIAGNOSTIC_TIMEOUT_SECONDS = int(os.getenv("PDF_DIAGNOSTIC_TIMEOUT_SECONDS", "60"))
+# 한 번의 변환 시도(쪽 범위 하나)의 제한 시간이다. 넘기면 범위를 절반으로 나눠 다시 시도한다(ADR 0034).
+ATTEMPT_TIMEOUT_SECONDS = int(os.getenv("CONVERT_ATTEMPT_TIMEOUT_SECONDS", "1500"))
 RESTORATION_COMMAND = os.getenv("RESTORATION_COMMAND", "document-restoration")
-RANGE_RETRY_DELAY_SECONDS = 0.5
 
 
-def max_upload_bytes() -> int:
-    return int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024
+class InputRejectedError(ValueError):
+    """암호가 걸렸거나 손상된 PDF처럼 입력 때문에 실패한 변환이다. 범위를 나눠도 같으므로 재시도하지 않는다."""
+
+
+class ConversionFailedError(RuntimeError):
+    """변환 하위 프로세스가 비정상 종료했다. 범위를 나눠 다시 시도할 수 있다."""
 
 
 def required_commands() -> list[str]:
@@ -71,29 +77,20 @@ def embed_local_image_links(markdown: str, markdown_file: Path, output_dir: Path
     return pattern.sub(replace, markdown)
 
 
-@app.get("/health")
-def health() -> dict[str, Any]:
-    missing = missing_commands()
-    return {
-        "status": "ok" if not missing else "degraded",
-        "missing_commands": missing,
-    }
-
-
 def _run_command(command: list[str], working_dir: Path, timeout_seconds: int,
-                 stdout: Any, cancelled: Event | None) -> int:
+                 stdout: Any, cancelled: Event | None, env: dict[str, str] | None = None) -> int:
     if cancelled is not None and cancelled.is_set():
-        raise HTTPException(status_code=499, detail="Conversion cancelled")
+        raise PipelineRunCancelledError("Conversion cancelled")
     # 프로세스 그룹 전체를 종료해야 변환기가 만든 자식 프로세스도 임시 파일 쓰기를 멈춘다.
     with subprocess.Popen(command, cwd=working_dir, stdout=stdout, stderr=subprocess.STDOUT,
-                          text=True, start_new_session=True) as process:
+                          text=True, start_new_session=True, env=env) as process:
         deadline = time.monotonic() + timeout_seconds
         try:
             while True:
                 if cancelled is not None and cancelled.is_set():
-                    raise HTTPException(status_code=499, detail="Conversion cancelled")
+                    raise PipelineRunCancelledError("Conversion cancelled")
                 if time.monotonic() >= deadline:
-                    raise HTTPException(status_code=504, detail=f"Command timeout: {command[0]}")
+                    raise DeadlineExceededError(f"Command timeout: {command[0]}")
                 try:
                     return process.wait(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
@@ -106,6 +103,16 @@ def _run_command(command: list[str], working_dir: Path, timeout_seconds: int,
             process.wait()
 
 
+def _within_deadline(timeout_seconds: float) -> float:
+    """요청 마감이 있으면 단계별 timeout을 남은 시간으로 줄이고, 이미 지났으면 단계를 시작하지 않는다."""
+    remaining = remaining_seconds()
+    if remaining is None:
+        return timeout_seconds
+    if remaining <= 0:
+        raise DeadlineExceededError("Conversion deadline exceeded")
+    return min(timeout_seconds, remaining)
+
+
 def run_to_file(command: list[str], output_file: Path, working_dir: Path,
                 timeout_seconds: int, log_file: Path, cancelled: Event | None = None) -> None:
     with output_file.open("w", encoding="utf-8") as stdout, log_file.open("a", encoding="utf-8") as log:
@@ -113,36 +120,37 @@ def run_to_file(command: list[str], output_file: Path, working_dir: Path,
         code = _run_command(command, working_dir, timeout_seconds, stdout, cancelled)
         log.write(f"exit={code}\n\n")
         if code != 0:
-            raise HTTPException(status_code=422, detail=f"Command failed: {command[0]}")
+            raise ConversionFailedError(f"Command failed: {command[0]}")
 
 
 def run(command: list[str], working_dir: Path, timeout_seconds: int,
-        log_file: Path, cancelled: Event | None = None) -> None:
+        log_file: Path, cancelled: Event | None = None, env: dict[str, str] | None = None) -> None:
     with log_file.open("a", encoding="utf-8") as log:
         log.write(f"$ {' '.join(command)}\n")
         log.flush()
-        code = _run_command(command, working_dir, timeout_seconds, log, cancelled)
+        code = _run_command(command, working_dir, timeout_seconds, log, cancelled, env)
         log.write(f"\nexit={code}\n\n")
         if code != 0:
-            raise HTTPException(status_code=422, detail=f"Command failed: {command[0]}")
+            raise ConversionFailedError(f"Command failed: {command[0]}")
 
 
 def process_pdf(
     content: bytes | Path,
     provider: str = "gemini",
-    model: str = "gemini-3.1-flash-lite",
+    model: str = DEFAULT_LLM_MODELS["gemini"],
     cancelled: Event | None = None,
+    usage_actor: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     try:
         provider, model = resolve_llm_selection(provider, model)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise InputRejectedError(str(exc)) from exc
     if missing := missing_commands():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Missing converter commands: {', '.join(missing)}",
-        )
+        raise RuntimeError(f"Missing converter commands: {', '.join(missing)}")
 
+    # 하위 프로세스의 귀속 경고는 요청별 process.log에만 남으므로 운영 로그에도 남긴다.
+    if not all((usage_actor or {}).get(key) for key in ("run_id", "workspace_id", "user_id")):
+        logger.warning("사용자 귀속 없는 변환 요청: usage_actor=%s", usage_actor)
     with tempfile.TemporaryDirectory(prefix="fruition-pdf-") as temp_dir:
         job_dir = Path(temp_dir) / str(uuid.uuid4())
         job_dir.mkdir(mode=0o700)
@@ -164,7 +172,7 @@ def process_pdf(
             ["pdfinfo", input_pdf.name],
             info_txt,
             job_dir,
-            PDF_DIAGNOSTIC_TIMEOUT_SECONDS,
+            _within_deadline(PDF_DIAGNOSTIC_TIMEOUT_SECONDS),
             process_log,
             cancelled,
         )
@@ -172,7 +180,7 @@ def process_pdf(
             ["pdffonts", input_pdf.name],
             fonts_txt,
             job_dir,
-            PDF_DIAGNOSTIC_TIMEOUT_SECONDS,
+            _within_deadline(PDF_DIAGNOSTIC_TIMEOUT_SECONDS),
             process_log,
             cancelled,
         )
@@ -193,13 +201,15 @@ def process_pdf(
                 model,
             ],
             job_dir,
-            RESTORATION_TIMEOUT_SECONDS,
+            _within_deadline(ATTEMPT_TIMEOUT_SECONDS),
             process_log,
             cancelled,
+            # selective repair 손자 프로세스까지 상속돼 공급사 호출이 이 actor로 기록된다.
+            {**os.environ, SCOPE_ENV: json.dumps({**(usage_actor or {}), "kind": "document_conversion"})},
         )
 
         if cancelled is not None and cancelled.is_set():
-            raise HTTPException(status_code=499, detail="Conversion cancelled")
+            raise PipelineRunCancelledError("Conversion cancelled")
         return {
             "markdown": embed_local_image_links(
                 output_md.read_text(encoding="utf-8"), output_md, output_dir
@@ -211,78 +221,15 @@ def process_pdf(
         }
 
 
-@app.post("/convert")
-async def convert(
-    request: Request,
-    file: UploadFile = File(...),
-    provider: str = Form("gemini"),
-    model: str = Form("gemini-3.1-flash-lite"),
-) -> dict[str, Any]:
-    content = await file.read()
-    if len(content) > max_upload_bytes():
-        raise HTTPException(status_code=413, detail="File is too large")
-
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix != ".pdf" and file.content_type != "application/pdf":
-        raise HTTPException(status_code=415, detail="Only PDF files are supported in the MVP")
-
-    cancelled = Event()
-    worker = asyncio.create_task(asyncio.to_thread(process_pdf, content, provider, model, cancelled))
-    try:
-        while not worker.done():
-            if await request.is_disconnected():
-                cancelled.set()
-            await asyncio.wait({worker}, timeout=0.1)
-        result = worker.result()
-    finally:
-        cancelled.set()
-        # 취소 응답 전에 프로세스 종료와 TemporaryDirectory 정리를 기다린다.
-        if not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except HTTPException:
-                pass
-
-    return {
-        "filename": file.filename or "document.pdf",
-        "content_type": file.content_type or "application/pdf",
-        **result,
-    }
 
 
-def describe_fetch_error(error: Exception) -> tuple[str, bool]:
-    """Range GET 실패 원인을 (credentials 없는 요약, 재시도 가능 여부)로 바꾼다. URL은 절대 포함하지 않는다."""
-    if isinstance(error, HTTPError):
-        code = None
-        try:
-            match = re.search(rb"<Code>([A-Za-z0-9._-]{1,64})</Code>", error.read(4096))
-            code = match.group(1).decode("ascii") if match else None
-        except Exception:
-            pass
-        return f"HTTP {error.code}" + (f" {code}" if code else ""), error.code >= 500 or error.code == 429
-    if isinstance(error, URLError):
-        return f"{type(error).__name__}: {error.reason}", True
-    if isinstance(error, OSError):
-        return f"{type(error).__name__}: errno={error.errno}", True
-    return type(error).__name__, isinstance(error, http.client.HTTPException)
+class StorageRangeReader:
+    """PDF의 seek/read를 object storage 범위 읽기로 바꾼다. 캐시는 파일 크기와 무관하게 16MiB이다."""
 
-
-class S3RangeReader:
-    """PDF의 seek/read를 S3 Range GET으로 변환한다. 캐시는 파일 크기와 무관하게 16MiB이다."""
-    def __init__(self, url: str, size: int, cancelled: Event):
-        from collections import OrderedDict
-        from urllib.request import build_opener, HTTPRedirectHandler
-        parsed = urlsplit(url)
-        allowed = set(filter(None, os.getenv("CONVERTER_SOURCE_HOSTS", "").split(",")))
-        if parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username or parsed.password:
-            raise ValueError("PDF source must use an approved HTTPS storage host")
-        class NoRedirect(HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None
-        self.opener = build_opener(NoRedirect())
-        self.url, self.size, self.cancelled = url, size, cancelled
+    def __init__(self, client: Any, bucket: str, key: str, size: int, cancelled: Event):
+        self.client, self.bucket, self.key, self.size, self.cancelled = client, bucket, key, size, cancelled
         self.position = 0
-        self.cache = OrderedDict()
+        self.cache: OrderedDict[int, bytes] = OrderedDict()
         self.block_size = 1024 * 1024
 
     def seek(self, offset, whence=0):
@@ -296,45 +243,27 @@ class S3RangeReader:
         return self.position
 
     def fetch_range(self, first: int, last: int) -> bytes:
-        from urllib.request import Request as HttpRequest
-        expected = f"bytes {first}-{last}/{self.size}"
-        for attempt in (1, 2):
-            try:
-                with self.opener.open(HttpRequest(self.url, headers={"Range": f"bytes={first}-{last}"}), timeout=30) as response:
-                    received = response.headers.get("Content-Range")
-                    if response.status != 206 or received != expected:
-                        logger.warning("PDF storage range mismatch: requested=%s status=%s content_range=%s",
-                                       expected, response.status, received)
-                        raise ValueError("Storage must return the exact requested PDF byte range "
-                                         f"(status {response.status}, Content-Range {received!r})")
-                    block = response.read(self.block_size + 1)
-            except ValueError:
-                raise
-            except Exception as error:
-                # 서명 URL에는 임시 credentials가 들어 있으므로 로그·응답에 원문을 노출하지 않는다.
-                reason, retryable = describe_fetch_error(error)
-                logger.warning("PDF storage range fetch failed: requested=%s attempt=%d reason=%s", expected, attempt, reason)
-                if retryable and attempt == 1:
-                    if self.cancelled.wait(RANGE_RETRY_DELAY_SECONDS):
-                        raise HTTPException(status_code=499, detail="Conversion cancelled") from None
-                    continue
-                raise ValueError(f"Could not read the PDF storage range ({reason})") from None
-            if len(block) != last - first + 1:
-                logger.warning("PDF storage range incomplete: requested=%s expected=%d received=%d",
-                               expected, last - first + 1, len(block))
-                raise ValueError(f"Incomplete PDF storage range (expected {last - first + 1} bytes, received {len(block)})")
-            return block
-        raise AssertionError("unreachable")
+        response = self.client.get_object(self.bucket, self.key, offset=first, length=last - first + 1)
+        try:
+            block = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+        if len(block) != last - first + 1:
+            logger.warning("PDF storage range incomplete: first=%d last=%d received=%d", first, last, len(block))
+            raise ConversionFailedError(
+                f"Incomplete PDF storage range (expected {last - first + 1} bytes, received {len(block)})")
+        return block
 
     def read(self, size=-1):
         size = max(0, min(self.size - self.position, self.size if size < 0 else size))
         # 파일 전체가 아닌 PDF 단일 object의 파서 메모리 한도. 손상된 xref의 전체 파일 재탐색을 막는다.
         if size > 64 * 1024 * 1024:
-            raise ValueError("A PDF object exceeds the parser working-memory limit")
+            raise InputRejectedError("A PDF object exceeds the parser working-memory limit")
         output = bytearray()
         while size:
             if self.cancelled.is_set():
-                raise HTTPException(status_code=499, detail="Conversion cancelled")
+                raise PipelineRunCancelledError("Conversion cancelled")
             index = self.position // self.block_size
             if index not in self.cache:
                 first = index * self.block_size
@@ -357,70 +286,53 @@ class S3RangeReader:
     def seekable(self): return True
 
 
-def process_source_batch(source_url: str, byte_size: int, start_page: int,
-                         provider: str, model: str, cancelled: Event):
-    from pypdf import PdfReader, PdfWriter
-    stream = S3RangeReader(source_url, byte_size, cancelled)
+def open_pdf(stream: StorageRangeReader):
+    """PDF를 열어 (reader, 전체 쪽수)를 돌려준다. 열 수 없거나 암호가 걸렸으면 InputRejectedError이다."""
+    from pypdf import PdfReader
+    from pypdf.errors import PyPdfError
     try:
         reader = PdfReader(stream, strict=True)
         if reader.is_encrypted:
-            raise ValueError("Password-protected PDFs must be unlocked before conversion")
+            raise InputRejectedError("Password-protected PDFs must be unlocked before conversion")
         total = len(reader.pages)
-        if total == 0:
-            raise ValueError("PDF contains no pages")
-        if start_page < 0 or start_page > total:
-            raise ValueError("Invalid conversion checkpoint")
-        if start_page == total:
-            return {"page_start": start_page + 1, "page_end": total, "total_pages": total, "markdown": "", "done": True}
-        count = max(1, min(50, int(os.getenv("PDF_PAGES_PER_BATCH", "10"))))
-        end = min(start_page + count, total)
-        with tempfile.TemporaryDirectory(prefix="fruition-pdf-range-") as directory:
+    except PyPdfError as error:
+        raise InputRejectedError(f"Invalid PDF: {type(error).__name__}") from error
+    if total == 0:
+        raise InputRejectedError("PDF contains no pages")
+    return reader, total
+
+
+def convert_pages(reader: Any, start: int, end: int, provider: str, model: str, cancelled: Event,
+                  usage_actor: dict[str, str | None] | None = None) -> str:
+    """[start, end) 쪽(0부터)을 Markdown으로 변환한다.
+
+    시도가 실패하거나 ATTEMPT_TIMEOUT_SECONDS를 넘기면 범위를 절반으로 나눠 각각 다시 시도하고, 1쪽까지
+    실패하면 그 예외를 올린다. 입력 거절·취소·전체 마감은 나눠도 같으므로 나누지 않는다.
+    """
+    from pypdf import PdfWriter
+    if cancelled.is_set():
+        raise PipelineRunCancelledError("Conversion cancelled")
+    try:
+        with request_deadline(ATTEMPT_TIMEOUT_SECONDS), \
+                tempfile.TemporaryDirectory(prefix="fruition-pdf-range-") as directory:
             pdf = Path(directory) / "batch.pdf"
             writer = PdfWriter()
-            for index in range(start_page, end):
+            for index in range(start, end):
                 writer.add_page(reader.pages[index])
             with pdf.open("wb") as output:
                 writer.write(output)
             writer.close()
-            result = process_pdf(pdf, provider, model, cancelled)
-        return {"page_start": start_page + 1, "page_end": end, "total_pages": total,
-                "markdown": result["markdown"], "done": end == total}
-    finally:
-        stream.close()
-
-
-from pydantic import BaseModel, Field
-
-class SourceBatchRequest(BaseModel):
-    source_url: str
-    byte_size: int = Field(gt=0)
-    start_page: int = Field(ge=0, default=0)
-    provider: str = "gemini"
-    model: str = "gemini-3.1-flash-lite"
-
-
-_source_conversion_slots = asyncio.Semaphore(max(1, int(os.getenv("PDF_BATCH_CONCURRENCY", "1"))))
-
-@app.post("/convert-source-batch")
-async def convert_source_batch(body: SourceBatchRequest, request: Request):
-    async with _source_conversion_slots:
-        return await _convert_source_batch(body, request)
-
-async def _convert_source_batch(body: SourceBatchRequest, request: Request):
-    cancelled = Event()
-    worker = asyncio.create_task(asyncio.to_thread(process_source_batch, body.source_url,
-        body.byte_size, body.start_page, body.provider, body.model, cancelled))
-    try:
-        while not worker.done():
-            if await request.is_disconnected(): cancelled.set()
-            await asyncio.wait({worker}, timeout=0.1)
-        return worker.result()
-    except ValueError as error:
-        logger.warning("convert-source-batch rejected: byte_size=%d start_page=%d detail=%s",
-                       body.byte_size, body.start_page, error)
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    finally:
-        cancelled.set()
-        if not worker.done():
-            try: await asyncio.shield(worker)
-            except Exception: pass
+            return process_pdf(pdf, provider, model, cancelled, usage_actor)["markdown"]
+    except Exception as error:
+        # 시도 마감은 위 with를 벗어났으므로 여기서 보이는 마감은 호출자(batch 전체) 것이다.
+        remaining = remaining_seconds()
+        if remaining is not None and remaining <= 0:
+            raise DeadlineExceededError("Conversion deadline exceeded") from error
+        if (isinstance(error, InputRejectedError) or cancelled.is_set() or end - start == 1
+                or (isinstance(error, PipelineRunCancelledError) and not isinstance(error, DeadlineExceededError))):
+            raise
+        middle = start + (end - start) // 2
+        logger.warning("변환 시도 실패, 범위를 나눠 재시도: pages=%d-%d error_type=%s", start, end, type(error).__name__)
+    first = convert_pages(reader, start, middle, provider, model, cancelled, usage_actor)
+    second = convert_pages(reader, middle, end, provider, model, cancelled, usage_actor)
+    return "\n\n".join(part for part in (first.rstrip(), second) if part)

@@ -27,6 +27,10 @@ Skill 작성 분류는 완성된 동작에 필요한 capability를 모두 반환
 canonical Tool 집합을 합쳐 `allowed_tools`를 확정한다. 따라서 문서 편집 후 이동처럼 복합적인
 Skill은 `document-edit`와 `folder-organize`를 함께 가지며 어느 한쪽 권한만으로 축약되지 않는다.
 
+team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이스 OWNER와, OWNER에게 `skill.author` 권한을 받은 MEMBER만 한다
+(Fruition-access ADR 0019). 권한은 access 내부 인가 응답의 `permissions`로 확인하며, 작성은 LLM을 호출하기 전에 거절한다.
+개인 Skill은 소유자만 관리한다.
+
 ## 한눈에 보기
 
 <a id="summary-get-skills"></a>
@@ -254,6 +258,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 
 입력 검증은 `422`, 참조 길이 초과는 `413`, 권한·게시 검증 실패는 해당 Skill 오류를 반환합니다.
 취소·충돌 상태는 [작업 상태 API](tasks.md)에서 확인합니다.
+처리가 55초(document 대기 60초보다 짧게)를 넘으면 `504` `deadline_exceeded`로 실패합니다. 게시·수정은 반영하지 않고 변경을 되돌리며, 같은 `run_id`로 다시 보내면 `409`입니다.
 
 작성(`skill_author`) 요청이 거절되면 `400 {"detail": {"code", "message"}}`로 사유를 구분합니다.
 위험 표현은 오류가 아니라 `200` `status: "blocked"`와 `issues[]`로 반환합니다.
@@ -286,7 +291,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 #### 9. 예시 요청/응답
 
 ```json
-{"run_id":"skill_example","kind":"skill_author","workspace_id":"ws_example","user_id":"user_example","payload":{"workspace_id":"ws_example","user_id":"user_example","scope_type":"personal","instruction":"문서를 주제별로 정리하는 Skill을 만들어 줘","provider":"openai","model":"gpt-5-nano"}}
+{"run_id":"skill_example","kind":"skill_author","workspace_id":"ws_example","user_id":"user_example","payload":{"workspace_id":"ws_example","user_id":"user_example","scope_type":"personal","instruction":"문서를 주제별로 정리하는 Skill을 만들어 줘","provider":"openai","model":"gpt-6-luna"}}
 ```
 
 각 payload의 필수 필드와 응답 스키마는 생성 OpenAPI 및 공개 Skill 계약을 따릅니다.
@@ -308,7 +313,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | 항목 | 내용 |
 |---|---|
 | 목적 | 완료된 Agent 실행의 성공 작업을 일반화해 게시 전 Skill 초안을 만듭니다. |
-| 입력 | **Header** — `X-Agent-Service-Token`: 필수<br>**Body** — `SkillDraftProposalRequest` |
+| 입력 | **Header** — `X-Agent-Service-Token`: 필수, `X-Request-Id`(선택, 사용량 원장 run_id): `string` / `null`<br>**Body** — `SkillDraftProposalRequest` |
 | 출력 | `200` — `SkillAuthoringResponse` |
 | 조건 | `AGENT_SKILLS_ENABLED=true`일 때만 노출됩니다. source run은 completed 상태이며 성공 operation이 하나 이상이어야 합니다. |
 | 주요 오류 | `400` source·지침·보안 검증 실패<br>`422` 요청 검증 실패 |
@@ -339,10 +344,15 @@ ai-svc Agent handler가 같은 application use case를 직접 호출합니다.
 
 #### 4. Request body
 
+| 위치 | 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|---|
+| header | `X-Agent-Service-Token` | `X-Agent-Service-Token` | 예 (인증 계층 검증) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
+
 ```json
 {
   "provider": "openai",
-  "model": "gpt-5-nano",
+  "model": "gpt-6-luna",
   "workspace_id": "workspace_123",
   "user_id": "user_123",
   "scope_type": "personal",
@@ -1192,7 +1202,7 @@ Skill과 그 버전을 삭제하고 과거 실행 기록은 보존합니다.
 
 #### 8. 권한 규칙
 
-- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER만 삭제할 수 있다.
+- 개인 스킬은 소유자, team 스킬은 해당 워크스페이스 OWNER와 `skill.author` 권한을 받은 MEMBER만 삭제할 수 있다.
   기존 관리 권한으로 행을 잠근 뒤 같은 트랜잭션에서 삭제한다.
 - 스킬의 모든 버전과 버전 출처는 CASCADE로 삭제한다. 과거 `agent_runs`는 유지하고
   `skill_version_id`만 NULL로 바뀐다. 실행 중 작업을 취소하는 API는 아니다.

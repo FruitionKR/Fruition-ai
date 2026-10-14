@@ -135,7 +135,7 @@ class WikiPersistencePayloadTest(unittest.TestCase):
             repository.latest_source_extraction_artifact = lambda _document_id: {"document_id": "chat-doc-1"}  # type: ignore[assignment]
             repository.connect = lambda: FakeConn()  # type: ignore[assignment]
 
-            context = repository.latest_source_page_context("chat-doc-1", "user-1", "workspace-1")
+            context = repository.latest_source_page_context("chat-doc-1", "workspace-1")
         finally:
             repository.latest_source_extraction_artifact = original_artifact  # type: ignore[assignment]
             repository.connect = original_connect  # type: ignore[assignment]
@@ -169,13 +169,13 @@ class WikiPersistencePayloadTest(unittest.TestCase):
             repository.connect = lambda: FakeConn()  # type: ignore[assignment]
             repository._read_optional_text_object = lambda _uri: "# Source"  # type: ignore[assignment]
 
-            context = repository.latest_source_page_context(document_id, "user-1", "workspace-1")
+            context = repository.latest_source_page_context(document_id, "workspace-1")
         finally:
             repository.latest_source_extraction_artifact = original_artifact  # type: ignore[assignment]
             repository.connect = original_connect  # type: ignore[assignment]
             repository._read_optional_text_object = original_read  # type: ignore[assignment]
 
-        self.assertEqual(params, ("chatdoc-1ce10f8ddc0a4c778c2637b32d13061b", "user-1", "workspace-1"))
+        self.assertEqual(params, ("chatdoc-1ce10f8ddc0a4c778c2637b32d13061b", "workspace-1"))
         self.assertEqual(context, {"artifact": {"document_id": document_id}, "source_markdown": "# Source"})
 
     def setUp(self) -> None:

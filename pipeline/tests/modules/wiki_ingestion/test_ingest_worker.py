@@ -106,9 +106,7 @@ def test_handle_rejects_command_that_reuses_another_run_context() -> None:
                 }
             )
 
-    repository.fail.assert_called_once_with(
-        "run-1", "ingest command does not match the registered run context"
-    )
+    repository.fail.assert_called_once_with("run-1", "input_rejected")
 
 
 def test_handle_records_failure_after_run_registration() -> None:
@@ -134,7 +132,7 @@ def test_handle_records_failure_after_run_registration() -> None:
         with pytest.raises(RuntimeError, match="document lookup failed"):
             ingest_worker._handle(command)
 
-    repository.fail.assert_called_once_with("run-1", "document lookup failed")
+    repository.fail.assert_called_once_with("run-1", "internal_error")
 
 
 def test_build_payload_requires_actor_context() -> None:
@@ -159,6 +157,24 @@ def test_build_payload_uses_workspace_command_snapshot() -> None:
 
     assert payload.provider == "openai"
     assert payload.model == "gpt-5-nano"
+    assert payload.display_name is None
+
+
+def test_build_payload_carries_document_display_name() -> None:
+    payload = ingest_worker._build_payload(
+        {
+            "run_id": "run-1",
+            "kind": "document",
+            "document_id": "document-1",
+            "workspace_id": "workspace-1",
+            "user_id": "user-1",
+            "provider": "openai",
+            "model": "gpt-5-nano",
+            "display_name": "분기 보고서",
+        }
+    )
+
+    assert payload.display_name == "분기 보고서"
 
 
 def test_build_chat_payload_defaults_to_partial_selection_mode() -> None:
@@ -248,13 +264,13 @@ def test_build_payload_accepts_chat_command_with_source_blocks() -> None:
 
 def test_terminal_failed_result_keeps_failed_event_status() -> None:
     command = {"run_id": "run-1", "kind": "document"}
-    result = {"status": "failed", "summary": "pipeline failed"}
+    result = {"status": "failed", "summary": "internal_error"}
 
     event = ingest_worker._result_event(command, result)
 
     assert event["event_id"] == "ingest:run-1:failed"
     assert event["status"] == "failed"
-    assert event["error"] == "pipeline failed"
+    assert event["error"] == "internal_error"
 
 
 def test_post_ingest_command_is_stable_for_redelivery() -> None:
@@ -292,6 +308,36 @@ def test_post_ingest_command_is_stable_for_redelivery() -> None:
     assert first["ingest_run_id"] == command["run_id"]
     assert "cluster_normalized" not in first
     assert "page_ids" not in first
+
+
+def test_dispatch_reports_whether_post_ingest_was_published() -> None:
+    producer = MagicMock()
+    producer.send_and_wait = AsyncMock()
+    post_command = {"run_id": "post-run-1", "workspace_id": "workspace-1"}
+
+    def dispatch(command):
+        with (
+            patch.object(ingest_worker, "_post_ingest_command", return_value=command),
+            patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.register"),
+        ):
+            return asyncio.run(ingest_worker._dispatch_post_ingest(producer, {"run_id": "r"}))
+
+    assert dispatch(post_command) is True
+    assert dispatch(post_command) is True  # 재전달도 같은 값
+    assert dispatch(None) is False
+    assert producer.send_and_wait.await_count == 2
+
+
+def test_event_carries_post_ingest_dispatched_flag() -> None:
+    command = {"run_id": "run-1", "kind": "document"}
+    ok = {"status": "succeeded"}
+
+    assert ingest_worker._result_event(command, ok, True)["post_ingest_dispatched"] is True
+    assert ingest_worker._result_event(command, ok, False)["post_ingest_dispatched"] is False
+    # 실패 이벤트는 항상 false
+    failed = ingest_worker._result_event(command, {"status": "failed"}, True)
+    assert failed["post_ingest_dispatched"] is False
+    assert ingest_worker._event(command, "failed")["post_ingest_dispatched"] is False
 
 
 def test_post_ingest_dispatch_failure_is_not_treated_as_finished_ingest() -> None:
@@ -415,3 +461,120 @@ def test_handle_delete_gives_up_after_bounded_lock_attempts() -> None:
         ingest_worker._handle(command)
 
     assert delete.call_count == ingest_worker.DELETE_LOCK_ATTEMPTS
+
+
+RENAME_COMMAND = {
+    "run_id": "run-1",
+    "kind": "document_renamed",
+    "document_id": "Document-1",
+    "workspace_id": "workspace-1",
+    "title": "새 이름",
+}
+
+
+def test_handle_rename_updates_source_page_title() -> None:
+    with patch.object(database, "rename_source_page") as rename:
+        assert ingest_worker._handle(RENAME_COMMAND) == {}
+
+    rename.assert_called_once_with("workspace-1", "Document-1", "새 이름")
+
+
+def test_handle_rename_rejects_blank_title() -> None:
+    with (
+        patch.object(database, "rename_source_page") as rename,
+        pytest.raises(ingest_worker.UnprocessableIngestCommand),
+    ):
+        ingest_worker._handle({**RENAME_COMMAND, "title": "  "})
+
+    rename.assert_not_called()
+
+
+def test_rename_skips_journal_and_rejects_purged_workspace() -> None:
+    from app.core.pipeline_control import ScopePurgedError
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    with (
+        patch.object(journal, "connect"),
+        patch.object(journal, "workspace_purged", return_value=True),
+        patch.object(journal, "execute") as execute,
+        patch.object(database, "rename_source_page") as rename,
+        pytest.raises(ScopePurgedError),
+    ):
+        ingest_worker._handle_controlled(RENAME_COMMAND)
+
+    execute.assert_not_called()
+    rename.assert_not_called()
+
+
+def test_rename_event_has_own_kind_and_no_post_ingest() -> None:
+    assert ingest_worker._event(RENAME_COMMAND, "succeeded")["kind"] == "document_rename"
+    assert ingest_worker._post_ingest_command(RENAME_COMMAND) is None
+
+
+def test_rename_source_page_matches_slugified_source_page_in_workspace() -> None:
+    connection = MagicMock()
+    execute = connection.__enter__.return_value.execute
+    execute.return_value.rowcount = 0
+
+    with patch.object(database, "connect", return_value=connection):
+        # 편입 전 문서는 0행이어도 오류가 아니고, 같은 command를 다시 받아도 같은 UPDATE일 뿐이다.
+        assert database.rename_source_page("workspace-1", "Doc_1", "새 이름") == 0
+        database.rename_source_page("workspace-1", "Doc_1", "새 이름")
+
+    query, params = execute.call_args.args
+    assert "UPDATE wiki_pages" in query and "page_type = 'source'" in query
+    assert params == ("새 이름", "workspace-1", "doc-1")
+    assert execute.call_count == 2
+
+
+def test_redelivered_running_ingest_seeks_back_and_waits_instead_of_crashing() -> None:
+    from types import SimpleNamespace
+
+    from aiokafka import TopicPartition
+
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+    handled = [journal.TaskAlreadyExecutingError("busy"), {"status": "succeeded"}]
+    message = SimpleNamespace(topic="t", partition=5, offset=7, value={"run_id": "run-1", "kind": "document"})
+
+    async def run_test():
+        stop_callbacks = []
+        events = []
+        consumer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), commit=AsyncMock(), seek=MagicMock())
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+
+        async def getmany(**kwargs):
+            if handled:
+                return {"partition": [message]}
+            stop_callbacks[0]()
+            return {}
+
+        async def send(topic, event, **kwargs):
+            events.append(event["status"])
+
+        async def to_thread(function, *args):
+            if function is ingest_worker._handle_controlled:
+                outcome = handled.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(database, "ensure_ai_schema"), \
+                patch.object(ingest_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(ingest_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(ingest_worker, "_dispatch_post_ingest", AsyncMock()), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(journal, "REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            await asyncio.wait_for(ingest_worker.consume(), timeout=1)
+        return consumer, events
+
+    consumer, events = asyncio.run(run_test())
+
+    consumer.seek.assert_called_once_with(TopicPartition("t", 5), 7)
+    assert events == ["succeeded"]
+    assert consumer.commit.await_count == 1

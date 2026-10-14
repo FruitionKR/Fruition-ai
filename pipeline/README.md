@@ -24,6 +24,8 @@ AI_DATABASE_URL=postgresql://...@postgresql:5432/ai_db
 S3_ENDPOINT=http://minio:9000
 ```
 
+스키마 적용 계정(`AI_DB_MIGRATION_URL`)으로 기동하는 경로와 `migrate_ai_schema`는 `AI_DB_CONVERTER_ROLE`이 있으면 converter 전용 role에 사용량 원장 기록과 변환 작업 journal 권한만 부여합니다.
+
 Web 검색을 허용한 Query의 근거와 Web 전환은 기본적으로 LLM evaluator가 검사합니다. 모든
 Query를 검사하려면 `QUERY_EVALUATOR_MODE=llm`, evaluator를 끄려면 `disabled`를 사용합니다.
 내부 검색은 기본적으로 `QUERY_EMBEDDING_MODE=bge-m3`의 keyword+vector hybrid를 사용하고,
@@ -33,6 +35,8 @@ Query를 검사하려면 `QUERY_EVALUATOR_MODE=llm`, evaluator를 끄려면 `dis
 (`uvicorn app.modules.wiki_embedding.interfaces.http.embedding_server:app`, `X-Internal-Token`)에
 짧은 텍스트 임베딩을 요청합니다. 서버는 요청당 64개, 텍스트당 4,000자까지만 받으므로 저장 벡터가 없는
 문서 중 4,000자 이하는 질문 시점에 서버로 임베딩하고, 더 긴 문서는 임베딩 점수를 0으로 두어 hybrid의 BM25 점수에만 맡깁니다. 설정하지 않으면 기존처럼 프로세스에 모델을 올립니다.
+서버 요청 타임아웃은 `EMBEDDING_TIMEOUT_SECONDS`(기본 10초, 양수)이고, 질문 시점 즉석 임베딩이 타임아웃·연결 실패나 재시도 뒤 5xx로 끝나면
+질의를 실패시키지 않고 저장 벡터가 있는 문서만 임베딩 점수를 받습니다(WARNING 로그).
 LangGraph evaluator loop를 LangSmith에서 확인하려면 아래 tracing 값도 platform의 `infra/.env`에 설정합니다.
 
 ```env
@@ -55,7 +59,7 @@ JEV_TIMEOUT_SECONDS=30
 JEV_BLOCK_SECONDS=600
 ```
 
-LLM 호출은 `openai`, `gemini`, `claude` provider의 텍스트 생성 모델을 받습니다. 선택 가능한 모델 목록은 백엔드 카탈로그가 관리하고, AI는 provider 접두사(`gpt-`·`o1/o3/o4`, `gemini-`, `claude-`)와 비텍스트 계열(image·tts·audio·realtime·transcribe·embedding·search·live 등, OpenAI의 pro·codex) 차단만 검증합니다(`app/core/llm_env.py`). reasoning 수준은 지원하는 계열에만 보냅니다: OpenAI gpt-5 이상·o 시리즈는 `medium`(`*-chat-latest` 제외), Gemini 3 이상은 `low`, Claude는 extended thinking 없음. 기본 모델은 `openai/gpt-5-nano`, `gemini/gemini-3.1-flash-lite`, `claude/claude-sonnet-5`입니다. provider/model은 API·DB·Kafka payload에서 선택하며 env override는 없습니다. base URL은 provider별로 고정하고 key는 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 선택 provider의 값만 사용합니다. live provider 호출에는 key가 필요하지만 mock 통합 테스트에는 필요하지 않습니다. 실제 비밀값은 platform의 `infra/.env`에만 두고 커밋하지 않습니다.
+LLM 호출은 `openai`, `gemini`, `claude` provider의 텍스트 생성 모델을 받습니다. 선택 가능한 모델 목록은 백엔드 카탈로그가 관리하고, AI는 provider 접두사(`gpt-`·`o1/o3/o4`, `gemini-`, `claude-`)와 비텍스트 계열(image·tts·audio·realtime·transcribe·embedding·search·live 등, OpenAI의 pro·codex) 차단만 검증합니다(`app/core/llm_env.py`). reasoning 수준은 지원하는 계열에만 보냅니다: OpenAI gpt-5 이상·o 시리즈는 `medium`(`*-chat-latest` 제외), Gemini 3 이상은 `low`, Claude는 extended thinking 없음. 기본 모델은 `openai/gpt-6-luna`, `gemini/gemini-3.5-flash-lite`, `claude/claude-sonnet-5`입니다. provider/model은 API·DB·Kafka payload에서 선택하며 env override는 없습니다. base URL은 provider별로 고정하고 key는 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 선택 provider의 값만 사용합니다. live provider 호출에는 key가 필요하지만 mock 통합 테스트에는 필요하지 않습니다. 실제 비밀값은 platform의 `infra/.env`에만 두고 커밋하지 않습니다.
 
 Wiki ingest의 독립 semantic packet은 기본 4개까지 병렬 처리합니다. 직렬 비교나 provider rate limit 조정은 `WIKI_SEMANTIC_MAX_WORKERS`로 설정합니다.
 
@@ -174,7 +178,7 @@ python run_lab.py \
   --out runs/llm_wiki_demo \
   --mode api \
   --provider openai \
-  --model gpt-5-nano \
+  --model gpt-6-luna \
   --source-page-mode skeleton \
   --concept-page-mode skeleton \
   --max-eval-attempts 2
@@ -223,7 +227,7 @@ python -m app.modules.document_restoration.interfaces.cli \
   --document-slug paper \
   --mode selective-repair \
   --selective-provider gemini \
-  --selective-model gemini-3.1-flash-lite
+  --selective-model gemini-3.5-flash-lite
 ```
 
 키는 선택 provider에 따라 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` 중 하나만 읽습니다. `--selective-model`을 생략하면 선택 provider의 catalog 모델을 사용하고, 병렬도는 `--selective-max-workers`로 변경할 수 있습니다.
@@ -539,7 +543,7 @@ python run_lab.py \
   --out runs/llm_wiki_latest \
   --mode api \
   --provider openai \
-  --model gpt-5-nano \
+  --model gpt-6-luna \
   --source-page-mode skeleton \
   --concept-page-mode skeleton
 ```
@@ -564,7 +568,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
     "document_id": "doc_inline",
     "input_markdown": "# LLM Wiki\n\nLLM이 지속 관리하는 위키...",
     "provider": "openai",
-    "model": "gpt-5-nano",
+    "model": "gpt-6-luna",
     "out": "runs/api_inline_llm_wiki",
     "mode": "api",
     "source_page_mode": "skeleton",
@@ -582,7 +586,7 @@ curl -X POST http://localhost:8000/pipeline/runs \
   -d '{
     "document_id": "doc_123",
     "provider": "openai",
-    "model": "gpt-5-nano",
+    "model": "gpt-6-luna",
     "mode": "api",
     "source_page_mode": "skeleton",
     "concept_page_mode": "skeleton",

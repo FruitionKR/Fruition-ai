@@ -8,9 +8,9 @@
 |---|---|---|---|
 | wiki_schemas | ai-svc | 워크스페이스·사용자별 Wiki 생성 규칙 | active 스키마는 소유 범위당 최대 1개(부분 unique index) |
 | document_derived_state | ai-svc | 문서 파생물 stale 추적 | `document.edit.event` consumer가 갱신 |
-| wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | workspace 범위 unique, DB 밖 document ID는 논리 참조 |
+| wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | 페이지는 워크스페이스 공유 자산으로 `(workspace_id, page_type, slug)` unique(ADR 0033). `user_id`는 마지막 편입 요청자 귀속 정보다. 사용자별 중복 행이 남은 DB는 스키마 적용이 실패하므로 위키 데이터를 초기화한 뒤 배포한다. DB 밖 document ID는 논리 참조. 사람이 고친 본문은 `ops/{operation_id}.md`·`.json`(`artifact_type: "manual"`)으로 남고 `markdown_uri`가 그 본문을 가리킨다. 수동 기여의 `added_links`·`removed_links`가 본문 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 기여 원장·revision은 document-svc가 소유한다([adr/0031](adr/0031-manual-wiki-contributions.md)) |
 | source_blocks·source_block_snapshots | ai-svc | 문서 block 텍스트·문서 내 순서·줄 범위, block 집합을 만든 편입 입력 Markdown의 SHA-256 | 복합 PK `(block_id, document_id)`. 영구 `block_id`는 문서 순서가 아니므로 `position`(1부터) 순으로 조회한다. `line_start`·`line_end`는 입력 Markdown을 `\n`으로 나눈 1-based 양끝 포함 값이며 채팅 문서·기존 행은 null. 스냅샷 해시는 블록과 같은 트랜잭션에서 갱신해 편입 실패 시 직전 성공 값을 유지한다 |
-| wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다 |
+| wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록(`deleted_at`은 삭제마다 갱신)하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다. post_ingest는 `deleted_at`이 부모 ingest run 생성 시각보다 늦으면 개념 페이지·근거를 쓰지 않는다(복구 뒤 다시 만든 run은 통과) |
 | pipeline_runs | ai-svc | pipeline 실행 상태 | Spring이 만든 `run_id`, `user_id`·`workspace_id` 보존. ingest manifest의 `post_ingest.status`는 `running/retrying/ready/needs_review` 품질 진단 상태를 보존 |
 | wiki_page_embeddings·wiki_embedding_vectors·wiki_embedding_units | ai-svc | 검색용 embedding과 페이지 embedding 재처리 예약 | `wiki_page_embeddings.status`의 `pending`·`failed`는 maintenance worker가 재처리, page FK는 ai_db 내부, document ID는 논리 참조 |
 | ai_task_runs·ai_task_changes | ai-svc | 비 Agent 작업·부모/자식·AI DB/객체 저장소 변경 기록 | command hash, 취소 상태, 역순 복구 기록. `attempt`는 handler 시작 횟수이며 worker가 죽어 중단된 run은 재전달 시 부분 변경을 되돌리고 같은 전달 안에서 다시 실행한다(`AI_TASK_MAX_INTERRUPTED_ATTEMPTS`, 기본 3회 초과 시 `failed`/`interrupted_attempts_exhausted`) |
@@ -19,7 +19,7 @@
 | agent_approvals·agent_jobs·agent_tool_executions·agent_run_artifacts | ai-svc | 승인·lease/retry·Tool 멱등 실행·비동기 artifact | run/plan/operation FK, Tool 호출 수 40회 제한 |
 | checkpoint_migrations·checkpoints·checkpoint_blobs·checkpoint_writes | ai-svc | LangGraph Agent 중단·재개 상태 | `PostgresSaver`가 `AI_DATABASE_URL`로 사용 |
 
-Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 `(user_id, workspace_id)` PostgreSQL transaction advisory lock을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다.
+Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다.
 
 LLM provider/model은 workspace 설정 또는 chat/request에서 snapshot되어 command와 실행에 전달된다. API key는 DB·Kafka payload·log에 저장하지 않고 ai-svc secret env에서만 읽으며, 기존 AI 작업 로그 조회/결과 경로에는 LLM 설정 컬럼이 없다.
 
@@ -31,4 +31,4 @@ LLM provider/model은 workspace 설정 또는 chat/request에서 snapshot되어 
 
 ## AI 모델 사용량 원장 (`ai_model_usage`, AI DB 소유)
 
-호출 UUID를 키로 실행·workspace·사용자·작업 종류, provider, 요청 모델과 응답 모델, 호출 상태, 입력·출력·캐시·reasoning 토큰, 시작·종료 시각과 호출 시간을 저장한다. 프롬프트·응답 본문·API 키는 저장하지 않는다. 미수신 사용량은 NULL이며 알려진 토큰 합계와 미확인 호출 수를 분리한다. 작업 취소 보상에 포함하지 않아 이미 사용한 토큰을 보존한다. 백엔드는 AI DB에 직접 접속하지 않고 내부 사용량 API를 조회한다.
+호출 UUID를 키로 실행·workspace·사용자·작업 종류, provider, 요청 모델과 응답 모델, 호출 상태(`started`·`succeeded`·`failed`·`abandoned`·`cancelled`), 입력·출력·캐시·reasoning 토큰, 음성의 오디오 길이(`audio_seconds`)와 TTS 입력 문자 수(`input_characters`), 시작·종료 시각과 호출 시간을 저장한다. 귀속 값이 빠진 호출은 `unattributed`로 남고, 1시간 넘게 `started`인 행은 조회 직전에 `abandoned`로 닫힌다. 프롬프트·응답 본문·API 키는 저장하지 않는다. 미수신 사용량은 NULL이며 알려진 토큰 합계와 미확인 호출 수를 분리한다. 작업 취소 보상에 포함하지 않아 이미 사용한 토큰을 보존한다. 사용자·워크스페이스 [AI 데이터 파기](api/purge.md) 때도 정산용으로 남기며 보관 기간은 법률 검토 뒤 정한다. 파기한 범위의 식별자는 `ai_purged_scopes`에 남겨 재전달된 작업을 거절한다. 백엔드는 AI DB에 직접 접속하지 않고 내부 사용량 API를 조회한다.

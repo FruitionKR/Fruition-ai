@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.agent.domain.entities import ActiveMarkdownContext, AgentTurnRequest
 from app.modules.agent.infrastructure.chat_completions_turn_router import ChatCompletionsTurnRouter
 from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
@@ -455,7 +456,7 @@ def _missing_facts(markdown: str, facts: tuple[str, ...]) -> list[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenAI Markdown/GFM 편집 계약 평가")
     parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
-    parser.add_argument("--model", default="gpt-5-nano")
+    parser.add_argument("--model", default=DEFAULT_LLM_MODELS["openai"])
     parser.add_argument("--prompt", default=str(DEFAULT_PROMPT))
     parser.add_argument("--source-edit-prompt", default=str(DEFAULT_SOURCE_EDIT_PROMPT))
     parser.add_argument("--router-prompt", default=str(DEFAULT_ROUTER_PROMPT))

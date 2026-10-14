@@ -19,7 +19,7 @@ class FakeWikiMaintenance:
         return {
             "user_id": command.user_id,
             "workspace_id": command.workspace_id,
-            "active_path": "wiki/user-1/workspace-1/clusters/active.md",
+            "active_path": "wiki/workspace-1/clusters/active.md",
             "cluster_count": 2,
             "source_ref_count": 3,
             "orphan_refs": ["doc-1:B9999"],

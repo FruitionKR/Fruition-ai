@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.document_restoration.domain.entities import (
     RestorationMode,
     RestorationStage,
@@ -25,7 +26,7 @@ class RestoreDocumentCommand:
     max_vision_attempts: int = 3
     docling_command: str = "docling"
     selective_provider: str = "gemini"
-    selective_model: str = "gemini-3.1-flash-lite"
+    selective_model: str = DEFAULT_LLM_MODELS["gemini"]
     selective_max_workers: int = 16
     anydoc_command: str = "anydoc"
     heron_command: str = "raw-special-regions"

@@ -1,5 +1,7 @@
 import uuid
 
+from app.core.pipeline_control import ensure_task_active
+
 from app.modules.wiki_schema.application.build_schema_preview import build_schema_preview
 from app.modules.wiki_schema.application.organize_schema import OrganizeSchemaUseCase
 from app.modules.wiki_schema.application.ports import SchemaOrganizerPort, WikiSchemaRepositoryPort
@@ -31,4 +33,6 @@ class CreateSchemaDraftUseCase:
             issues=result.issues,
             status="draft",
         )
+        # 호출자가 포기한 뒤에는 초안을 저장하지 않는다.
+        ensure_task_active()
         return self._repository.save(record)

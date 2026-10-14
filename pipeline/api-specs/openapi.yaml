@@ -1,18 +1,5 @@
 components:
   schemas:
-    ActiveMarkdownContextRequest:
-      properties:
-        markdown:
-          title: Markdown
-          type: string
-        target:
-          anyOf:
-          - $ref: '#/components/schemas/MarkdownEditTargetRequest'
-          - type: 'null'
-      required:
-      - markdown
-      title: ActiveMarkdownContextRequest
-      type: object
     AgentArtifactListRequest:
       properties:
         run_id:
@@ -214,65 +201,6 @@ components:
       - content_hash
       - purpose
       title: AgentArtifactResponse
-      type: object
-    AgentConversationContextRequest:
-      properties:
-        pending_skill_proposal:
-          anyOf:
-          - $ref: '#/components/schemas/PendingSkillProposalRequest'
-          - type: 'null'
-        recent_conversation_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Recent Conversation Summary
-        recent_messages:
-          items:
-            $ref: '#/components/schemas/AgentConversationMessageRequest'
-          maxItems: 6
-          title: Recent Messages
-          type: array
-        reference_context:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Reference Context
-      title: AgentConversationContextRequest
-      type: object
-    AgentConversationMessageRequest:
-      properties:
-        action:
-          anyOf:
-          - maxLength: 64
-            type: string
-          - type: 'null'
-          title: Action
-        agent_route:
-          anyOf:
-          - $ref: '#/components/schemas/ConversationAgentRouteRequest'
-          - type: 'null'
-        content:
-          maxLength: 4000
-          minLength: 1
-          title: Content
-          type: string
-        role:
-          enum:
-          - user
-          - assistant
-          title: Role
-          type: string
-        run_id:
-          anyOf:
-          - maxLength: 128
-            type: string
-          - type: 'null'
-          title: Run Id
-      required:
-      - role
-      - content
-      title: AgentConversationMessageRequest
       type: object
     AgentPlanOperationResponse:
       properties:
@@ -502,289 +430,6 @@ components:
       - run_id
       title: AgentToolReadAuthorizationRequest
       type: object
-    AgentTurnRequestBody:
-      properties:
-        active_markdown_context:
-          anyOf:
-          - $ref: '#/components/schemas/ActiveMarkdownContextRequest'
-          - type: 'null'
-        allow_web_search:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Allow Web Search
-        base_version:
-          anyOf:
-          - minimum: 0.0
-            type: integer
-          - type: 'null'
-          title: Base Version
-        conversation_context:
-          anyOf:
-          - $ref: '#/components/schemas/AgentConversationContextRequest'
-          - type: 'null'
-        document_id:
-          anyOf:
-          - minLength: 1
-            type: string
-          - type: 'null'
-          title: Document Id
-        message:
-          minLength: 1
-          title: Message
-          type: string
-        model:
-          minLength: 1
-          title: Model
-          type: string
-        output_language:
-          anyOf:
-          - enum:
-            - ko
-            - en
-            - document
-            type: string
-          - type: 'null'
-          title: Output Language
-        provider:
-          minLength: 1
-          title: Provider
-          type: string
-        response_length:
-          anyOf:
-          - enum:
-            - concise
-            - balanced
-            - detailed
-            type: string
-          - type: 'null'
-          title: Response Length
-        skill_authoring_mode:
-          default: enhance
-          enum:
-          - preserve
-          - enhance
-          title: Skill Authoring Mode
-          type: string
-        skill_draft_excluded_literals:
-          items:
-            type: string
-          title: Skill Draft Excluded Literals
-          type: array
-        skill_draft_sources:
-          items:
-            $ref: '#/components/schemas/SkillDraftSourceRunRequest'
-          title: Skill Draft Sources
-          type: array
-        skill_draft_user_directives:
-          items:
-            type: string
-          title: Skill Draft User Directives
-          type: array
-        skill_id:
-          anyOf:
-          - minLength: 1
-            type: string
-          - type: 'null'
-          title: Skill Id
-        skill_mode:
-          default: auto
-          enum:
-          - auto
-          - explicit
-          - 'off'
-          title: Skill Mode
-          type: string
-        skill_reference_document_ids:
-          items:
-            type: string
-          maxItems: 3
-          title: Skill Reference Document Ids
-          type: array
-        skill_scope_type:
-          anyOf:
-          - enum:
-            - personal
-            - team
-            type: string
-          - type: 'null'
-          title: Skill Scope Type
-        user_id:
-          anyOf:
-          - minLength: 1
-            type: string
-          - type: 'null'
-          title: User Id
-        workspace_id:
-          anyOf:
-          - minLength: 1
-            type: string
-          - type: 'null'
-          title: Workspace Id
-      required:
-      - message
-      - provider
-      - model
-      title: AgentTurnRequestBody
-      type: object
-    AgentTurnResponse:
-      properties:
-        action:
-          enum:
-          - chat_answer
-          - conversation_reply
-          - markdown_edit
-          - markdown_create
-          - folder_organize
-          - workspace_workflow
-          - skill_authoring
-          - skill_draft_proposal
-          - clarify
-          - reject
-          title: Action
-          type: string
-        chat:
-          anyOf:
-          - $ref: '#/components/schemas/QueryResponse'
-          - type: 'null'
-        edit:
-          anyOf:
-          - $ref: '#/components/schemas/MarkdownEditOperationResponse'
-          - type: 'null'
-        generated_markdown:
-          anyOf:
-          - $ref: '#/components/schemas/GeneratedMarkdownResponse'
-          - type: 'null'
-        message:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Message
-        route:
-          $ref: '#/components/schemas/AgentTurnRouteResponse'
-        run_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Run Id
-        run_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Run Status
-        skill_authoring:
-          anyOf:
-          - $ref: '#/components/schemas/SkillAuthoringResponse'
-          - type: 'null'
-        skill_candidates:
-          items:
-            $ref: '#/components/schemas/SkillCandidateResponse'
-          title: Skill Candidates
-          type: array
-        source_markdown_sha256:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Source Markdown Sha256
-        updated_conversation_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Updated Conversation Summary
-      required:
-      - action
-      - route
-      title: AgentTurnResponse
-      type: object
-    AgentTurnRouteResponse:
-      properties:
-        action:
-          enum:
-          - chat_answer
-          - conversation_reply
-          - markdown_edit
-          - markdown_create
-          - folder_organize
-          - workspace_workflow
-          - skill_authoring
-          - skill_draft_proposal
-          - clarify
-          - reject
-          title: Action
-          type: string
-        confidence:
-          title: Confidence
-          type: number
-        document_operation:
-          enum:
-          - none
-          - create
-          - edit
-          title: Document Operation
-          type: string
-        edit_destination:
-          anyOf:
-          - enum:
-            - target
-            - document_end
-            type: string
-          - type: 'null'
-          title: Edit Destination
-        edit_goal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Edit Goal
-        edit_operation:
-          anyOf:
-          - enum:
-            - replace
-            - insert_after
-            type: string
-          - type: 'null'
-          title: Edit Operation
-        persist:
-          title: Persist
-          type: boolean
-        reason:
-          title: Reason
-          type: string
-        required_capabilities:
-          items:
-            enum:
-            - document-create
-            - document-edit
-            - folder-organize
-            - template
-            type: string
-          title: Required Capabilities
-          type: array
-        retrieval_source:
-          enum:
-          - none
-          - workspace
-          - web
-          title: Retrieval Source
-          type: string
-        selected_skill_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Selected Skill Id
-        skill_candidates:
-          items:
-            type: string
-          title: Skill Candidates
-          type: array
-      required:
-      - action
-      - confidence
-      - reason
-      - retrieval_source
-      - document_operation
-      - persist
-      title: AgentTurnRouteResponse
-      type: object
     ApproveAgentPlanRequest:
       properties:
         operation_hash:
@@ -876,6 +521,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -930,11 +581,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
@@ -977,7 +623,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -1007,101 +653,20 @@ components:
       - input_blocks
       title: ChatWikiRunIn
       type: object
-    ConversationAgentRouteRequest:
-      properties:
-        action:
-          maxLength: 64
-          minLength: 1
-          title: Action
-          type: string
-        document_operation:
-          enum:
-          - none
-          - create
-          - edit
-          title: Document Operation
-          type: string
-        edit_destination:
-          anyOf:
-          - enum:
-            - target
-            - document_end
-            type: string
-          - type: 'null'
-          title: Edit Destination
-        edit_goal:
-          anyOf:
-          - maxLength: 64
-            type: string
-          - type: 'null'
-          title: Edit Goal
-        edit_operation:
-          anyOf:
-          - enum:
-            - replace
-            - insert_after
-            type: string
-          - type: 'null'
-          title: Edit Operation
-        persist:
-          title: Persist
-          type: boolean
-        retrieval_source:
-          enum:
-          - none
-          - workspace
-          - web
-          title: Retrieval Source
-          type: string
-        selected_skill_id:
-          anyOf:
-          - maxLength: 128
-            type: string
-          - type: 'null'
-          title: Selected Skill Id
-      required:
-      - action
-      - retrieval_source
-      - document_operation
-      - persist
-      title: ConversationAgentRouteRequest
-      type: object
-    ConversationMessageRequest:
-      properties:
-        action:
-          anyOf:
-          - maxLength: 64
-            type: string
-          - type: 'null'
-          title: Action
-        content:
-          maxLength: 4000
-          minLength: 1
-          title: Content
-          type: string
-        role:
-          enum:
-          - user
-          - assistant
-          title: Role
-          type: string
-        run_id:
-          anyOf:
-          - maxLength: 128
-            type: string
-          - type: 'null'
-          title: Run Id
-      required:
-      - role
-      - content
-      title: ConversationMessageRequest
-      type: object
     CreateWikiSchemaDraftRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
         name:
           default: default
           minLength: 1
           title: Name
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
           type: string
         raw_markdown:
           minLength: 1
@@ -1117,6 +682,8 @@ components:
           type: string
       required:
       - raw_markdown
+      - provider
+      - model
       - workspace_id
       - user_id
       title: CreateWikiSchemaDraftRequest
@@ -1128,78 +695,6 @@ components:
       required:
       - wiki_schema
       title: CreateWikiSchemaDraftResponse
-      type: object
-    DocumentCleanupResponse:
-      properties:
-        cleanup_complete:
-          title: Cleanup Complete
-          type: boolean
-      required:
-      - cleanup_complete
-      title: DocumentCleanupResponse
-      type: object
-    EvidenceSnippetResponse:
-      properties:
-        rank:
-          title: Rank
-          type: integer
-        source_block_ids:
-          items:
-            type: string
-          title: Source Block Ids
-          type: array
-        source_document_id:
-          title: Source Document Id
-          type: string
-        source_refs:
-          items:
-            $ref: '#/components/schemas/SourceReferenceResponse'
-          title: Source Refs
-          type: array
-        text:
-          title: Text
-          type: string
-      required:
-      - rank
-      - source_document_id
-      - source_block_ids
-      - source_refs
-      - text
-      title: EvidenceSnippetResponse
-      type: object
-    GeneratedMarkdownResponse:
-      properties:
-        markdown:
-          title: Markdown
-          type: string
-        summary:
-          title: Summary
-          type: string
-        title:
-          title: Title
-          type: string
-      required:
-      - title
-      - summary
-      - markdown
-      title: GeneratedMarkdownResponse
-      type: object
-    GraphContextResponse:
-      properties:
-        edges:
-          items:
-            $ref: '#/components/schemas/TraversalEdgeResponse'
-          title: Edges
-          type: array
-        nodes:
-          items:
-            $ref: '#/components/schemas/RelatedPageResponse'
-          title: Nodes
-          type: array
-      required:
-      - nodes
-      - edges
-      title: GraphContextResponse
       type: object
     HTTPValidationError:
       properties:
@@ -1329,187 +824,6 @@ components:
       - error_code
       title: MarkdownAgentRunStatusResponse
       type: object
-    MarkdownEditOperationResponse:
-      properties:
-        actual_target:
-          $ref: '#/components/schemas/MarkdownEditTargetResponse'
-        changed:
-          title: Changed
-          type: boolean
-        operation:
-          enum:
-          - replace
-          - insert_after
-          title: Operation
-          type: string
-        replacement_markdown:
-          title: Replacement Markdown
-          type: string
-        requested_target:
-          $ref: '#/components/schemas/MarkdownEditTargetResponse'
-        scope_expanded:
-          title: Scope Expanded
-          type: boolean
-        summary:
-          title: Summary
-          type: string
-      required:
-      - operation
-      - requested_target
-      - actual_target
-      - scope_expanded
-      - changed
-      - summary
-      - replacement_markdown
-      title: MarkdownEditOperationResponse
-      type: object
-    MarkdownEditTargetRequest:
-      properties:
-        end_line:
-          minimum: 1.0
-          title: End Line
-          type: integer
-        start_line:
-          minimum: 1.0
-          title: Start Line
-          type: integer
-        type:
-          enum:
-          - selection
-          - current_section
-          - whole_document
-          title: Type
-          type: string
-      required:
-      - type
-      - start_line
-      - end_line
-      title: MarkdownEditTargetRequest
-      type: object
-    MarkdownEditTargetResponse:
-      properties:
-        end_line:
-          title: End Line
-          type: integer
-        start_line:
-          title: Start Line
-          type: integer
-        type:
-          enum:
-          - selection
-          - current_section
-          - whole_document
-          title: Type
-          type: string
-      required:
-      - type
-      - start_line
-      - end_line
-      title: MarkdownEditTargetResponse
-      type: object
-    MeetingNoteItem:
-      properties:
-        source_segment_ids:
-          items:
-            type: string
-          title: Source Segment Ids
-          type: array
-        text:
-          title: Text
-          type: string
-      required:
-      - text
-      - source_segment_ids
-      title: MeetingNoteItem
-      type: object
-    MeetingNotesRequest:
-      additionalProperties: false
-      properties:
-        display_name:
-          default: 회의록
-          maxLength: 200
-          minLength: 1
-          title: Display Name
-          type: string
-        segments:
-          items:
-            $ref: '#/components/schemas/MeetingSegment'
-          maxItems: 1000
-          minItems: 1
-          title: Segments
-          type: array
-        user_id:
-          maxLength: 128
-          minLength: 1
-          title: User Id
-          type: string
-        workspace_id:
-          maxLength: 128
-          minLength: 1
-          title: Workspace Id
-          type: string
-      required:
-      - workspace_id
-      - user_id
-      - segments
-      title: MeetingNotesRequest
-      type: object
-    MeetingNotesResponse:
-      properties:
-        action_items:
-          items:
-            $ref: '#/components/schemas/MeetingNoteItem'
-          title: Action Items
-          type: array
-        decisions:
-          items:
-            $ref: '#/components/schemas/MeetingNoteItem'
-          title: Decisions
-          type: array
-        display_name:
-          title: Display Name
-          type: string
-        markdown:
-          title: Markdown
-          type: string
-        open_questions:
-          items:
-            $ref: '#/components/schemas/MeetingNoteItem'
-          title: Open Questions
-          type: array
-        summary:
-          items:
-            $ref: '#/components/schemas/MeetingNoteItem'
-          title: Summary
-          type: array
-      required:
-      - display_name
-      - markdown
-      - summary
-      - decisions
-      - action_items
-      - open_questions
-      title: MeetingNotesResponse
-      type: object
-    MeetingSegment:
-      additionalProperties: false
-      properties:
-        id:
-          maxLength: 128
-          minLength: 1
-          pattern: ^[A-Za-z0-9_-]+$
-          title: Id
-          type: string
-        text:
-          maxLength: 10000
-          minLength: 1
-          title: Text
-          type: string
-      required:
-      - id
-      - text
-      title: MeetingSegment
-      type: object
     ModelUsage:
       properties:
         calls:
@@ -1577,6 +891,126 @@ components:
       - unknown_cache_usage_calls
       title: ModelUsage
       type: object
+    ModelUsageCall:
+      properties:
+        audio_seconds:
+          anyOf:
+          - minimum: 0.0
+            type: number
+          - type: 'null'
+          title: Audio Seconds
+        cache_creation_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Cache Creation Tokens
+        cached_input_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Cached Input Tokens
+        finished_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished At
+        id:
+          format: uuid
+          title: Id
+          type: string
+        input_characters:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Input Characters
+        input_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Input Tokens
+        kind:
+          title: Kind
+          type: string
+        model:
+          title: Model
+          type: string
+        output_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Output Tokens
+        provider:
+          title: Provider
+          type: string
+        reasoning_tokens:
+          anyOf:
+          - minimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Reasoning Tokens
+        requested_model:
+          title: Requested Model
+          type: string
+        run_id:
+          title: Run Id
+          type: string
+        started_at:
+          format: date-time
+          title: Started At
+          type: string
+        status:
+          enum:
+          - started
+          - succeeded
+          - failed
+          - abandoned
+          - cancelled
+          title: Status
+          type: string
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - id
+      - run_id
+      - workspace_id
+      - user_id
+      - kind
+      - provider
+      - requested_model
+      - model
+      - status
+      - input_tokens
+      - output_tokens
+      - cached_input_tokens
+      - cache_creation_tokens
+      - reasoning_tokens
+      - audio_seconds
+      - input_characters
+      - started_at
+      - finished_at
+      title: ModelUsageCall
+      type: object
+    ModelUsageCallsResponse:
+      properties:
+        calls:
+          items:
+            $ref: '#/components/schemas/ModelUsageCall'
+          title: Calls
+          type: array
+      required:
+      - calls
+      title: ModelUsageCallsResponse
+      type: object
     ModelUsageResponse:
       properties:
         from_at:
@@ -1606,70 +1040,6 @@ components:
       - models
       title: ModelUsageResponse
       type: object
-    PendingSkillProposalRequest:
-      properties:
-        allowed_tools:
-          items:
-            enum:
-            - list_root_items
-            - list_folder_children
-            - search_hierarchy
-            - get_breadcrumb
-            - get_document_metadata
-            - get_document_content
-            - create_folder
-            - rename_folder
-            - move_folder
-            - move_document
-            - rename_document
-            - create_document
-            - apply_document_edit
-            type: string
-          minItems: 1
-          title: Allowed Tools
-          type: array
-        capabilities:
-          items:
-            enum:
-            - document-create
-            - document-edit
-            - folder-organize
-            - template
-            type: string
-          minItems: 1
-          title: Capabilities
-          type: array
-        description:
-          maxLength: 500
-          minLength: 1
-          title: Description
-          type: string
-        instructions_markdown:
-          maxLength: 30000
-          minLength: 1
-          title: Instructions Markdown
-          type: string
-        name:
-          maxLength: 63
-          minLength: 1
-          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
-          title: Name
-          type: string
-        scope_type:
-          enum:
-          - personal
-          - team
-          title: Scope Type
-          type: string
-      required:
-      - scope_type
-      - name
-      - description
-      - instructions_markdown
-      - capabilities
-      - allowed_tools
-      title: PendingSkillProposalRequest
-      type: object
     PipelineRunIn:
       additionalProperties: false
       properties:
@@ -1691,6 +1061,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -1733,11 +1109,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
@@ -1779,7 +1150,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -1833,127 +1204,41 @@ components:
       - log_path
       title: PipelineRunOut
       type: object
-    QueryRequest:
+    PurgeResponse:
       properties:
-        allow_web_search:
-          title: Allow Web Search
-          type: boolean
-        model:
-          minLength: 1
-          title: Model
-          type: string
-        output_language:
-          anyOf:
-          - enum:
-            - ko
-            - en
-            - document
-            type: string
-          - type: 'null'
-          title: Output Language
-        provider:
-          minLength: 1
-          title: Provider
-          type: string
-        question:
-          minLength: 1
-          title: Question
-          type: string
-        recent_conversation_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Recent Conversation Summary
-        recent_messages:
-          items:
-            $ref: '#/components/schemas/ConversationMessageRequest'
-          maxItems: 6
-          title: Recent Messages
-          type: array
-        reference_context:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Reference Context
-        response_length:
-          anyOf:
-          - enum:
-            - concise
-            - balanced
-            - detailed
-            type: string
-          - type: 'null'
-          title: Response Length
-        user_id:
-          anyOf:
-          - minLength: 1
-            type: string
-          - type: 'null'
-          title: User Id
-        workspace_id:
-          minLength: 1
-          title: Workspace Id
-          type: string
+        deleted:
+          additionalProperties:
+            type: integer
+          title: Deleted
+          type: object
       required:
-      - workspace_id
-      - question
-      - provider
-      - model
-      - allow_web_search
-      title: QueryRequest
+      - deleted
+      title: PurgeResponse
       type: object
-    QueryResponse:
+    PurgeUserRequest:
+      additionalProperties: false
       properties:
-        answer:
-          title: Answer
+        user_id:
+          minLength: 1
+          title: User Id
           type: string
-        error_code:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Error Code
-        evidence_snippets:
-          items:
-            $ref: '#/components/schemas/EvidenceSnippetResponse'
-          title: Evidence Snippets
-          type: array
-        graph_context:
-          $ref: '#/components/schemas/GraphContextResponse'
-        related_pages:
-          items:
-            $ref: '#/components/schemas/RelatedPageResponse'
-          title: Related Pages
-          type: array
-        result_count:
-          title: Result Count
-          type: integer
-        traversal_paths:
-          items:
-            $ref: '#/components/schemas/TraversalPathResponse'
-          title: Traversal Paths
-          type: array
-        updated_conversation_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Updated Conversation Summary
-        web_search_executed:
-          title: Web Search Executed
-          type: boolean
-        web_search_requested:
-          title: Web Search Requested
-          type: boolean
       required:
-      - answer
-      - related_pages
-      - evidence_snippets
-      - graph_context
-      - traversal_paths
-      - web_search_requested
-      - web_search_executed
-      - result_count
-      title: QueryResponse
+      - user_id
+      title: PurgeUserRequest
+      type: object
+    PurgeWorkspacesRequest:
+      additionalProperties: false
+      properties:
+        workspace_ids:
+          items:
+            minLength: 1
+            type: string
+          minItems: 1
+          title: Workspace Ids
+          type: array
+      required:
+      - workspace_ids
+      title: PurgeWorkspacesRequest
       type: object
     RebuildPageIn:
       properties:
@@ -1991,6 +1276,12 @@ components:
           default: prompts/concept_page_generation.system.md
           title: Concept System Prompt
           type: string
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 소스 페이지 제목으로 저장할 문서 이름입니다. 없으면 문서 파일명에서 확장자를 뗀 이름을 씁니다. 채팅 Wiki export에는 쓰지 않습니다.
+          title: Display Name
         document_id:
           title: Document Id
           type: string
@@ -2036,11 +1327,6 @@ components:
           - type: string
           - type: 'null'
           title: Operation Id
-        out:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Out
         overlap_blocks:
           default: 1
           title: Overlap Blocks
@@ -2082,7 +1368,7 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: 기존 backend 요청 호환 필드이며 Wiki 저장 범위에는 사용하지 않습니다.
+          description: 편입을 요청한 사용자입니다. 귀속 정보로만 저장하며 Wiki 저장 범위에는 사용하지 않습니다. 없으면 문서 소유자로 기록합니다.
           title: User Id
         wait:
           default: false
@@ -2110,50 +1396,19 @@ components:
       - input_markdown
       title: ReingestRunIn
       type: object
-    RelatedPageResponse:
-      properties:
-        depth:
-          title: Depth
-          type: integer
-        id:
-          title: Id
-          type: string
-        page_type:
-          title: Page Type
-          type: string
-        relevance_score:
-          title: Relevance Score
-          type: number
-        role:
-          title: Role
-          type: string
-        slug:
-          title: Slug
-          type: string
-        title:
-          title: Title
-          type: string
-      required:
-      - id
-      - page_type
-      - title
-      - slug
-      - relevance_score
-      - role
-      - depth
-      title: RelatedPageResponse
-      type: object
     RestoreContributionIn:
       properties:
         document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기여를 만든 원문 문서입니다. 사람이 고친 수동 기여(ADR 0031)는 원문 문서가 없어 null입니다. 재조립은 operation_id로만 기여를 읽습니다.
           title: Document Id
-          type: string
         operation_id:
           title: Operation Id
           type: string
       required:
       - operation_id
-      - document_id
       title: RestoreContributionIn
       type: object
     ReviseAgentPlanRequest:
@@ -2341,33 +1596,6 @@ components:
       required:
       - status
       title: SkillAuthoringResponse
-      type: object
-    SkillCandidateResponse:
-      properties:
-        capabilities:
-          items:
-            type: string
-          title: Capabilities
-          type: array
-        description:
-          title: Description
-          type: string
-        id:
-          title: Id
-          type: string
-        name:
-          title: Name
-          type: string
-        version_id:
-          title: Version Id
-          type: string
-      required:
-      - id
-      - version_id
-      - name
-      - description
-      - capabilities
-      title: SkillCandidateResponse
       type: object
     SkillDefinitionRequest:
       properties:
@@ -2678,19 +1906,6 @@ components:
       - status
       title: SkillVersionResponse
       type: object
-    SourceReferenceResponse:
-      properties:
-        source_block_id:
-          title: Source Block Id
-          type: string
-        source_document_id:
-          title: Source Document Id
-          type: string
-      required:
-      - source_document_id
-      - source_block_id
-      title: SourceReferenceResponse
-      type: object
     SourceSnapshotRestoreIn:
       properties:
         document_id:
@@ -2713,7 +1928,6 @@ components:
           title: Action
           type: string
         answer:
-          maxLength: 4000
           minLength: 1
           title: Answer
           type: string
@@ -2760,68 +1974,6 @@ components:
       required:
       - text
       title: TranscriptionResponse
-      type: object
-    TraversalEdgeResponse:
-      properties:
-        from_page_id:
-          title: From Page Id
-          type: string
-        link_type:
-          title: Link Type
-          type: string
-        role:
-          title: Role
-          type: string
-        score:
-          title: Score
-          type: number
-        to_page_id:
-          title: To Page Id
-          type: string
-      required:
-      - from_page_id
-      - to_page_id
-      - link_type
-      - role
-      - score
-      title: TraversalEdgeResponse
-      type: object
-    TraversalPathResponse:
-      properties:
-        edges:
-          items:
-            $ref: '#/components/schemas/TraversalEdgeResponse'
-          title: Edges
-          type: array
-        nodes:
-          items:
-            type: string
-          title: Nodes
-          type: array
-        path_id:
-          title: Path Id
-          type: string
-        role:
-          title: Role
-          type: string
-        score:
-          title: Score
-          type: number
-        stop_reason:
-          title: Stop Reason
-          type: string
-        used_for_answer:
-          title: Used For Answer
-          type: boolean
-      required:
-      - path_id
-      - role
-      - used_for_answer
-      - score
-      - stop_reason
-      - nodes
-      - edges
-      title: TraversalPathResponse
       type: object
     ValidationError:
       properties:
@@ -3041,6 +2193,31 @@ components:
       - page_ids
       title: WikiPageLookupIn
       type: object
+    WikiPageManualEditIn:
+      additionalProperties: false
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        operation_id:
+          minLength: 1
+          title: Operation Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - user_id
+      - workspace_id
+      - operation_id
+      - markdown
+      title: WikiPageManualEditIn
+      type: object
     WikiPageRenameIn:
       additionalProperties: false
       properties:
@@ -3053,6 +2230,7 @@ components:
           title: Update Slug
           type: boolean
         user_id:
+          description: 이름을 바꾸는 사용자입니다. 권한은 document가 확인하며 ai는 작성자를 확인하지 않습니다.
           minLength: 1
           title: User Id
           type: string
@@ -3068,12 +2246,34 @@ components:
       type: object
     WikiSchemaPreviewRequest:
       properties:
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
         raw_markdown:
           minLength: 1
           title: Raw Markdown
           type: string
+        user_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: User Id
+        workspace_id:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Workspace Id
       required:
       - raw_markdown
+      - provider
+      - model
       title: WikiSchemaPreviewRequest
       type: object
     WikiSchemaPreviewResponse:
@@ -3374,48 +2574,6 @@ paths:
       summary: Revise Agent Run
       tags:
       - agent-runs
-  /agent/turn:
-    post:
-      operationId: handle_agent_turn_agent_turn_post
-      parameters:
-      - in: header
-        name: X-Internal-Token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Internal-Token
-      - in: header
-        name: X-Agent-Service-Token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Agent-Service-Token
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AgentTurnRequestBody'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTurnResponse'
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Handle Agent Turn
-      tags:
-      - agent
   /chat-wiki/runs:
     post:
       operationId: run_chat_wiki_endpoint_chat_wiki_runs_post
@@ -3709,16 +2867,10 @@ paths:
       summary: Get Markdown Agent Run
       tags:
       - internal-agent-runs
-  /internal/ai/tasks/documents/{document_id}/cancel:
+  /internal/ai/purge/users:
     post:
-      operationId: cancel_document_tasks_internal_ai_tasks_documents__document_id__cancel_post
+      operationId: purge_user_internal_ai_purge_users_post
       parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
       - in: header
         name: X-Internal-Token
         required: false
@@ -3731,14 +2883,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CancelTaskRequest'
+              $ref: '#/components/schemas/PurgeUserRequest'
         required: true
       responses:
         '200':
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DocumentCleanupResponse'
+                $ref: '#/components/schemas/PurgeResponse'
           description: Successful Response
         '422':
           content:
@@ -3746,9 +2898,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Cancel Document Tasks
+      summary: Purge User
       tags:
-      - ai-task-cancellation
+      - ai-data-purge
+  /internal/ai/purge/workspaces:
+    post:
+      operationId: purge_workspaces_internal_ai_purge_workspaces_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeWorkspacesRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge Workspaces
+      tags:
+      - ai-data-purge
   /internal/ai/tasks/{run_id}:
     get:
       operationId: task_status_internal_ai_tasks__run_id__get
@@ -3871,10 +3057,37 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
-  /meeting-notes/preview:
-    post:
-      operationId: preview_meeting_notes_meeting_notes_preview_post
+  /internal/model-usage/calls:
+    get:
+      operationId: list_usage_calls_internal_model_usage_calls_get
       parameters:
+      - in: query
+        name: run_id
+        required: false
+        schema:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          title: Run Id
+      - in: query
+        name: finished_from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished From
+      - in: query
+        name: finished_to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Finished To
       - in: header
         name: X-Internal-Token
         required: false
@@ -3883,18 +3096,12 @@ paths:
           - type: string
           - type: 'null'
           title: X-Internal-Token
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MeetingNotesRequest'
-        required: true
       responses:
         '200':
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MeetingNotesResponse'
+                $ref: '#/components/schemas/ModelUsageCallsResponse'
           description: Successful Response
         '422':
           content:
@@ -3902,9 +3109,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Preview Meeting Notes
+      summary: List Usage Calls
       tags:
-      - meeting-notes
+      - model-usage
   /pipeline/reingest-runs:
     post:
       operationId: run_reingest_pipeline_endpoint_pipeline_reingest_runs_post
@@ -4043,40 +3250,6 @@ paths:
       summary: Get Pipeline Logs
       tags:
       - wiki-ingest
-  /query:
-    post:
-      operationId: answer_query_query_post
-      parameters:
-      - in: header
-        name: X-Internal-Token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Internal-Token
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/QueryRequest'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueryResponse'
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Answer Query
-      tags:
-      - query
   /skills:
     get:
       operationId: list_skills_skills_get
@@ -4124,6 +3297,15 @@ paths:
     post:
       operationId: propose_skill_draft_skills_draft_from_runs_preview_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Agent-Service-Token
         required: false
@@ -4393,6 +3575,15 @@ paths:
       operationId: synthesize_speech_synthesis_post
       parameters:
       - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
         name: X-Internal-Token
         required: false
         schema:
@@ -4409,8 +3600,10 @@ paths:
       responses:
         '200':
           content:
-            audio/mpeg: {}
+            application/x-ndjson: {}
           description: Successful Response
+        '400':
+          description: 답변이 기술 상한(MAX_SYNTHESIS_CHARS)을 넘는다.
         '422':
           content:
             application/json:
@@ -4440,6 +3633,25 @@ paths:
           minLength: 1
           title: User Id
           type: string
+      - in: query
+        name: deadline_seconds
+        required: false
+        schema:
+          anyOf:
+          - maximum: 600
+            minimum: 1
+            type: integer
+          - type: 'null'
+          title: Deadline Seconds
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false
@@ -4630,6 +3842,15 @@ paths:
       operationId: create_wiki_schema_draft_wiki_schema_drafts_post
       parameters:
       - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
         name: X-Internal-Token
         required: false
         schema:
@@ -4663,6 +3884,15 @@ paths:
     post:
       operationId: preview_wiki_schema_wiki_schema_preview_post
       parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
       - in: header
         name: X-Internal-Token
         required: false
@@ -4702,6 +3932,18 @@ paths:
         required: true
         schema:
           title: Schema Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
           type: string
       - in: header
         name: X-Internal-Token
@@ -4989,6 +4231,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Wiki Page
+      tags:
+      - wiki
+  /wiki/pages/{page_id}/manual-edit:
+    put:
+      operationId: save_manual_wiki_edit_wiki_pages__page_id__manual_edit_put
+      parameters:
+      - in: path
+        name: page_id
+        required: true
+        schema:
+          title: Page Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiPageManualEditIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Save Manual Wiki Edit Wiki Pages  Page Id  Manual Edit Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Save Manual Wiki Edit
       tags:
       - wiki
   /wiki/pages/{page_id}/rename:

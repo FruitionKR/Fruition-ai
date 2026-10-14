@@ -11,33 +11,48 @@ import json
 import logging
 import os
 import signal
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from itertools import count
 from typing import Any
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
+from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
+from pydantic import ValidationError
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection
 from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
-from app.core.pipeline_control import PipelineRunCancelledError, ensure_task_active, task_cancellation_scope
+from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
     AgentTurnRouteContractError,
 )
 from app.modules.agent.interfaces.http.dependencies import build_handle_agent_turn_use_case
-from app.modules.agent.interfaces.http.routes import _to_response as agent_to_response
+from app.modules.agent.interfaces.http.responses import _to_response as agent_to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
 )
 from app.modules.markdown_edit.domain.markdown_target_scope import MarkdownTargetBoundaryError
+from app.modules.meeting_notes.domain.entities import TranscriptSegment
+from app.modules.meeting_notes.interfaces.command.dependencies import (
+    MeetingNotesUnavailableError,
+    build_meeting_notes,
+)
+from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCommand, MeetingNotesResponse
+from app.modules.speech.domain.errors import MeetingTranscriptionError
+from app.modules.speech.infrastructure.meeting_storage import S3MeetingStorage
+from app.modules.speech.interfaces.command.dependencies import build_meeting_transcription
+from app.modules.speech.interfaces.command.schemas import MeetingTranscriptionCommand
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.domain.entities import ConversationContext, ConversationMessage
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
-from app.modules.query.interfaces.http.routes import _to_response as query_to_response
+from app.modules.query.interfaces.http.responses import _to_response as query_to_response
 from app.modules.query.infrastructure.postgres_wiki_repository import PostgresWikiRepository
 from app.modules.skill.domain.exceptions import SkillDisabledError, SkillNotFoundError
 from app.modules.wiki_embedding.application.build_wiki_page_embeddings import (
@@ -49,6 +64,7 @@ from app.modules.wiki_embedding.infrastructure.threaded_wiki_embedding_job impor
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
+    RetryOnceJsonCompletion,
 )
 from app.modules.wiki_generation.infrastructure.post_ingest_cluster import (
     build_post_ingest_cluster_artifact,
@@ -83,6 +99,8 @@ COMMAND_TOPIC = os.environ.get("AI_COMMAND_TOPIC", "ai.query.command")
 RESULT_TOPIC = os.environ.get("AI_TASK_EVENT_TOPIC", "ai.task.event")
 GROUP_ID = os.environ.get("AI_COMMAND_CONSUMER_GROUP", f"{COMMAND_TOPIC}-worker")
 MAX_POLL_INTERVAL_MS = int(os.environ.get("AI_TASK_MAX_POLL_INTERVAL_MS", "1800000"))
+# 한 worker가 동시에 처리하는 메시지 수. 1이면 한 번에 하나씩 처리한다.
+CONCURRENCY = max(1, int(os.environ.get("AI_TASK_CONCURRENCY", "1")))
 POST_INGEST_MAX_ATTEMPTS = 3
 POST_INGEST_AUDIT_LIMIT = 3
 
@@ -168,7 +186,7 @@ def _handle_agent(
     run_id = str(command["run_id"])
     state, replay = _register_agent_command(command)
     if state == "completed":
-        return replay or {}
+        return ReplayedResult(replay or {})
 
     try:
         payload = AgentTurnRequestBody.model_validate({
@@ -409,7 +427,8 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "maintenance run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
     else:
         database.create_pipeline_run(
             run_id, None, str(command["user_id"]), str(command["workspace_id"]),
@@ -438,8 +457,42 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         database.finish_pipeline_run(run_id, {"task_result": payload})
         return payload
     except Exception as exc:
-        database.fail_pipeline_run(run_id, str(exc))
+        database.fail_pipeline_run(run_id, failure_code(exc))
         raise
+
+
+def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+    # 실패는 journal이 failed로 닫고 error_code로 남기므로 문자열 code를 가진 TaskFailedError로 올린다.
+    try:
+        request = MeetingNotesCommand.model_validate(command)
+    except ValidationError as exc:
+        raise TaskFailedError("MEETING_NOTES_INPUT_REJECTED") from exc
+    try:
+        use_case = build_meeting_notes(request.provider, request.model)
+    except MeetingNotesUnavailableError as exc:
+        raise TaskFailedError("MEETING_NOTES_UNAVAILABLE") from exc
+    try:
+        result = use_case.execute(
+            request.display_name,
+            [TranscriptSegment(s.id, s.text) for s in request.segments],
+        )
+    except PipelineRunCancelledError:
+        raise
+    except Exception as exc:
+        # 근거 검증 실패(InvalidMeetingNotesError)와 공급사 오류는 사용자에게 같은 실패로 보인다.
+        raise TaskFailedError("MEETING_NOTES_FAILED") from exc
+    return MeetingNotesResponse(**result).model_dump(mode="json")
+
+
+def _handle_meeting_transcription(command: dict[str, Any]) -> dict[str, Any]:
+    try:
+        request = MeetingTranscriptionCommand.model_validate(command)
+    except ValidationError as exc:
+        raise MeetingTranscriptionError(INPUT_REJECTED) from exc
+    use_case = build_meeting_transcription()
+    # 이 스레드에는 이벤트 루프가 없어 asyncio.run으로 돌린다(컨텍스트 변수는 복사돼 취소 확인·원장 귀속이 이어진다).
+    return asyncio.run(use_case.execute(request.workspace_id, request.run_id, request.meeting_id, request.recording_key))
 
 
 def _validate_restore_contributions(command: dict[str, Any]) -> None:
@@ -469,7 +522,8 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "restore run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
     else:
         database.create_pipeline_run(
             run_id, None, str(command["user_id"]), str(command["workspace_id"]),
@@ -489,11 +543,11 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
         database.finish_pipeline_run(run_id, {"task_result": result})
         return result
     except Exception as exc:
-        database.fail_pipeline_run(run_id, str(exc))
+        database.fail_pipeline_run(run_id, failure_code(exc))
         raise
 
 
-def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
+def _post_ingest_client(command: dict[str, Any]) -> RetryOnceJsonCompletion:
     provider, model = resolve_llm_selection(
         str(command["provider"]).strip(),
         str(command["model"]).strip(),
@@ -501,7 +555,7 @@ def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
     api_key = api_key_from_env(provider=provider)
     if not api_key:
         raise RuntimeError(f"{provider} API key가 없습니다.")
-    return ChatCompletionsJsonClient(
+    return RetryOnceJsonCompletion(ChatCompletionsJsonClient(
         ChatClientConfig(
             api_key=api_key,
             model=model,
@@ -510,7 +564,7 @@ def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
             json_mode=True,
             provider=provider,
         )
-    )
+    ))
 
 
 def _run_post_ingest_wiki_quality_evaluation(
@@ -666,6 +720,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(command.get("page_ids", []), list):
         raise ValueError("post_ingest page_ids must be a list")
 
+    # 삭제 정리 뒤 늦게 도착한 후속 작업이 모델 호출 비용을 쓰기 전에 거절한다. 쓰기 직전에 한 번 더 확인한다.
+    database.reject_deleted_source(str(command["ingest_run_id"]))
     run_id = str(command["run_id"])
     existing = database.get_pipeline_run(run_id)
     if existing:
@@ -675,7 +731,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if existing.get("status") == "succeeded":
             return dict((existing.get("manifest") or {}).get("task_result") or {})
         if existing.get("status") == "failed":
-            raise ValueError(str(existing.get("error") or "post_ingest run failed"))
+            from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
+            raise TaskFailedError(stored_code(existing.get("error")))
         state = dict(existing.get("manifest") or {})
     else:
         database.create_pipeline_run(
@@ -703,10 +760,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         if "cluster_artifact" not in state:
-            object_name = (
-                f"wiki/{command['user_id']}/{command['workspace_id']}"
-                "/clusters/active.md"
-            )
+            object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
             existing_active = read_optional_text_object(object_name)
             state["cluster_artifact"] = build_post_ingest_cluster_artifact(
                 completion=_post_ingest_client(command),
@@ -726,9 +780,9 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if not state.get("cluster_applied"):
             changed_page_ids = database.persist_post_ingest_clusters(
                 str(command["document_id"]),
-                str(command["user_id"]),
                 str(command["workspace_id"]),
                 dict(state["cluster_artifact"]),
+                str(command["ingest_run_id"]),
             )
             database.update_pipeline_run_cluster_contribution(
                 str(command["ingest_run_id"]),
@@ -813,11 +867,11 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 "run_id": run_id,
                 "status": "needs_review" if final_attempt else "retrying",
                 "attempt": attempt,
-                "error": str(exc)[:1000],
+                "error": failure_code(exc),
             },
         )
         if final_attempt:
-            database.fail_pipeline_run(run_id, str(exc))
+            database.fail_pipeline_run(run_id, failure_code(exc))
         raise
 
 
@@ -833,6 +887,10 @@ def _handle(
         return _handle_agent(command, event_publisher)
     if kind == "lint":
         return _handle_lint(command)
+    if kind == "meeting_notes":
+        return _handle_meeting_notes(command)
+    if kind == "meeting_transcription":
+        return _handle_meeting_transcription(command)
     if kind == "post_ingest":
         for attempt in range(POST_INGEST_MAX_ATTEMPTS):
             try:
@@ -852,14 +910,32 @@ def _handle(
 
 def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
-    with usage_scope(command):
-        return _execute_controlled(command, event_publisher)
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
+    terminal = True
+    try:
+        with usage_scope(command):
+            return _execute_controlled(command, event_publisher)
+    except TaskAlreadyExecutingError:
+        terminal = False  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
+        raise
+    except Exception as exc:
+        # 실패를 journal에 남기지 못해 재전달될 run은 체크포인트를 남겨야 구간을 다시 과금하지 않는다.
+        terminal = isinstance(exc, ScopePurgedError) or _failure_is_durable(command)
+        raise
+    finally:
+        # 전사 체크포인트는 개인정보다. 성공(재생 포함), 파기된 범위, journal에 남긴 실패·취소처럼
+        # 종료가 확정되면 지운다. 다른 worker가 실행 중이거나 실패를 남기지 못해 재전달될 run은 남긴다.
+        if command.get("kind") == "meeting_transcription" and terminal:
+            S3MeetingStorage().clear_checkpoints(str(command.get("workspace_id")), str(command.get("run_id")))
 
 
 def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command["kind"] != "agent":
         return journal.execute(command, lambda: _handle(command, event_publisher))
+    # agent는 journal register를 거치지 않으므로 여기서 파기 범위를 거절한다.
+    with database.connect_ai() as conn:
+        journal.reject_purged(conn, command)
 
     def active() -> bool:
         with database.connect_ai() as conn:
@@ -894,6 +970,9 @@ def _event(
     }
     if with_request:
         event["request"] = without_top_level_secrets(command)
+    if command.get("ingest_run_id"):
+        # post_ingest는 원본 command를 싣지 않으므로, document가 어느 편입의 후속인지 알도록 부모 편입 run만 싣는다.
+        event["ingest_run_id"] = str(command["ingest_run_id"])
     event["payload"] = payload
     event["error"] = error
     return event
@@ -972,6 +1051,8 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         "query",
         "agent",
         "lint",
+        "meeting_notes",
+        "meeting_transcription",
         "post_ingest",
         "restore_ingest",
         "restore_lint",
@@ -1009,19 +1090,119 @@ async def _publish_session_title(producer, command: dict[str, Any], result: dict
         logger.warning("채팅 제목 생성 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
 
 
+class OrderedDispatcher:
+    """key별 FIFO 실행과 partition별 연속 offset 커밋을 관리한다. Kafka 연결과 asyncio를 모른다.
+
+    같은 key의 메시지는 한 번에 하나만 실행하고 offset 순서를 지킨다. offset은 앞선 fetch 분이 모두
+    끝난 지점까지만 커밋 대상이 된다(끝나지 않은 메시지를 건너뛰어 커밋하지 않는다).
+    """
+
+    def __init__(self) -> None:
+        # key가 있으면 실행 중이다. 값은 그 key 뒤에서 기다리는 메시지다.
+        self._queues: dict[Any, deque[Any]] = {}
+        # partition별 fetch 순서의 offset -> [message, 완료 여부]
+        self._offsets: dict[TopicPartition, dict[int, list[Any]]] = {}
+        self._commits: dict[TopicPartition, int] = {}
+
+    @staticmethod
+    def partition(message: Any) -> TopicPartition:
+        return TopicPartition(message.topic, message.partition)
+
+    @staticmethod
+    def _key(message: Any) -> Any:
+        # key가 없는 메시지는 순서 제약이 없으므로 서로 다른 key로 취급한다.
+        key = getattr(message, "key", None)
+        return key if key is not None else (message.topic, message.partition, message.offset)
+
+    @property
+    def outstanding(self) -> int:
+        """실행 중이거나 순서를 기다리는 메시지 수. fetch 용량 판단에 쓴다."""
+        return sum(1 + len(queue) for queue in self._queues.values())
+
+    def add(self, message: Any) -> bool:
+        """메시지를 등록한다. 바로 실행해도 되면 True, 같은 key 뒤에서 기다리면 False."""
+        self._offsets.setdefault(self.partition(message), {})[message.offset] = [message, False]
+        queue = self._queues.get(self._key(message))
+        if queue is None:
+            self._queues[self._key(message)] = deque()
+            return True
+        queue.append(message)
+        return False
+
+    def finish(self, message: Any) -> Any | None:
+        """메시지 완료를 기록하고, 같은 key에서 이어서 실행할 다음 메시지를 돌려준다."""
+        key = self._key(message)
+        queue = self._queues[key]
+        following = queue.popleft() if queue else None
+        if following is None:
+            del self._queues[key]
+        tp = self.partition(message)
+        offsets = self._offsets.get(tp, {})
+        entry = offsets.get(message.offset)
+        # 리밸런스로 버려진 소유 구간의 메시지가 늦게 끝나도 새 소유 구간의 기록을 건드리지 않는다.
+        if entry is not None and entry[0] is message:
+            entry[1] = True
+            while offsets:
+                first = next(iter(offsets))
+                if not offsets[first][1]:
+                    break
+                del offsets[first]
+                self._commits[tp] = first + 1
+        return following
+
+    def take_commits(self) -> dict[TopicPartition, int]:
+        commits, self._commits = self._commits, {}
+        return commits
+
+    def revoke(self, partitions: set[TopicPartition]) -> dict[TopicPartition, int]:
+        """회수된 partition의 시작 전 메시지를 버리고, 마지막으로 커밋할 수 있는 offset을 돌려준다."""
+        commits = {tp: self._commits.pop(tp) for tp in partitions if tp in self._commits}
+        for tp in partitions:
+            self._offsets.pop(tp, None)
+        for key, queue in self._queues.items():
+            self._queues[key] = deque(m for m in queue if self.partition(m) not in partitions)
+        return commits
+
+
+class _RebalanceListener(ConsumerRebalanceListener):
+    def __init__(self, dispatcher: OrderedDispatcher, commit_lock: asyncio.Lock, consumer: Any) -> None:
+        self._dispatcher = dispatcher
+        self._commit_lock = commit_lock
+        self._consumer = consumer
+
+    async def on_partitions_revoked(self, revoked) -> None:
+        # 끝난 연속 offset만 커밋한다. 실행 중인 메시지는 끝까지 처리해 결과를 발행하되 커밋은 건너뛰고,
+        # 새 소유자가 받는 재전달은 journal이 같은 결과로 재생한다.
+        try:
+            async with self._commit_lock:
+                commits = self._dispatcher.revoke(set(revoked))
+                if commits:
+                    await self._consumer.commit(commits)
+        except Exception:
+            logger.warning("리밸런스 전 offset 커밋 실패. journal 재생에 맡긴다.", exc_info=True)
+
+    async def on_partitions_assigned(self, assigned) -> None:
+        return None
+
+
+def _run_blocking(executor: ThreadPoolExecutor, function, *args):
+    """전용 executor에서 실행한다. asyncio.to_thread와 같게 호출 시점의 contextvars를 넘긴다."""
+    return asyncio.get_running_loop().run_in_executor(executor, copy_context().run, function, *args)
+
+
 async def consume() -> None:
     database.ensure_ai_schema()
     if COMMAND_TOPIC.endswith("agent.command"):
         database.verify_agent_schema()
     if COMMAND_TOPIC.endswith("maintenance.command"):
         get_wiki_embedding_job().start("pending-recovery", [])
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     consumer = AIOKafkaConsumer(
-        COMMAND_TOPIC,
         bootstrap_servers=BOOTSTRAP_SERVERS,
         **kafka_security_options(),
         group_id=GROUP_ID,
         enable_auto_commit=False,
-        max_poll_records=1,
+        max_poll_records=CONCURRENCY,
         max_poll_interval_ms=MAX_POLL_INTERVAL_MS,
         auto_offset_reset="earliest",
         value_deserializer=lambda raw: json.loads(raw.decode("utf-8")),
@@ -1032,70 +1213,140 @@ async def consume() -> None:
         enable_idempotence=True,
         value_serializer=lambda value: json.dumps(value, ensure_ascii=False).encode("utf-8"),
     )
+    dispatcher = OrderedDispatcher()
+    commit_lock = asyncio.Lock()
+    consumer.subscribe([COMMAND_TOPIC], listener=_RebalanceListener(dispatcher, commit_lock, consumer))
     await consumer.start()
     await producer.start()
+    executor = ThreadPoolExecutor(max_workers=CONCURRENCY, thread_name_prefix="ai-task")
     title_tasks: set[asyncio.Task[None]] = set()
+    running: set[asyncio.Task[None]] = set()
     stop = asyncio.Event()
+    failure: Exception | None = None
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    logger.info("[worker 기동] topic=%s group=%s", COMMAND_TOPIC, GROUP_ID)
+
+    async def commit_ready() -> None:
+        # 락 안에서 offset을 꺼내야 오래된 offset이 나중에 커밋돼 뒤로 가는 일이 없다.
+        async with commit_lock:
+            commits = dispatcher.take_commits()
+            if commits:
+                await consumer.commit(commits)
+
+    async def process(message) -> bool:
+        """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
+        # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
+        command = message.value if isinstance(message.value, dict) else {}
+        try:
+            while True:
+                try:
+                    # agent도 질의 갈래(chat_answer)로 갈리면 같은 진행 이벤트를 낸다.
+                    if command.get("kind") in {"query", "agent"}:
+                        event_publisher = KafkaQueryEventPublisher(producer, loop, command)
+                        result = await _run_blocking(executor, _handle_controlled, command, event_publisher)
+                    else:
+                        result = await _run_blocking(executor, _handle_controlled, command)
+                    break
+                except journal.TaskAlreadyExecutingError:
+                    # 리밸런스로 재전달된 실행 중 run이다. 같은 partition의 다른 offset이 실행 중일 수 있어
+                    # seek하지 않고 이 메시지를 미완료로 둔 채 원래 worker가 끝나기를 기다린다.
+                    # 끝나면 같은 메시지가 저장된 결과로 재생돼 정상 커밋된다. 그동안 이 offset 뒤의
+                    # 커밋만 막힌다.
+                    logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", command.get("run_id"), message.offset)
+                    try:
+                        await asyncio.wait_for(stop.wait(), journal.REDELIVERY_BACKOFF_SECONDS)
+                    except asyncio.TimeoutError:
+                        pass
+                    if stop.is_set():
+                        return False
+            event = _event(
+                command,
+                "succeeded",
+                payload=result,
+                with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
+            )
+        except Exception as exc:
+            if command.get("kind") == "agent":
+                error = _agent_failure_code(exc)
+                logger.error(
+                    "[AI command 실패] kind=agent run_id=%s error_code=%s error_type=%s",
+                    command.get("run_id"),
+                    error,
+                    type(exc).__name__,
+                )
+            else:
+                error = failure_code(exc)
+                logger.exception(
+                    "[AI command 실패] kind=%s run_id=%s",
+                    command.get("kind"),
+                    command.get("run_id"),
+                )
+            # journal에 등록하지 못한 잘못된 command(필수 필드 없음)는 재전달해도 같으므로 실패로 확정한다.
+            # 그러지 않으면 journal 행이 없어 커밋하지 못하고 같은 offset에서 계속 죽는다(converter #101과 같다).
+            malformed = not all(isinstance(command.get(key), str) and command[key]
+                                for key in ("run_id", "workspace_id", "user_id"))
+            if not malformed and not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
+                raise
+            event = _event(
+                command,
+                "failed",
+                error=INPUT_REJECTED if malformed else error,
+                with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
+            )
+        # 발행이 끝난 뒤에만 완료로 표시해 커밋 대상이 되게 한다.
+        await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
+        if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
+                and not isinstance(result, ReplayedResult):
+            # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
+            # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
+            task = asyncio.create_task(_publish_session_title(producer, command, result))
+            title_tasks.add(task)
+            task.add_done_callback(title_tasks.discard)
+        return True
+
+    async def run(message) -> None:
+        nonlocal failure
+        try:
+            while message is not None:
+                if not await process(message):
+                    return
+                message = dispatcher.finish(message)
+                await commit_ready()
+                if stop.is_set():
+                    return  # 같은 key에서 기다리던 메시지는 시작하지 않는다. 재전달된다.
+        except Exception as exc:
+            # 재시도할 수 없는 실패는 그 offset을 커밋하지 않고 소비를 멈춘다.
+            # 다른 in-flight 작업은 끝까지 처리한 뒤 프로세스가 종료돼 Kafka가 재전달한다.
+            failure = failure or exc
+            stop.set()
+
+    logger.info("[worker 기동] topic=%s group=%s concurrency=%s", COMMAND_TOPIC, GROUP_ID, CONCURRENCY)
     try:
         while not stop.is_set():
-            from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
             await asyncio.to_thread(journal.rollback_pending)
-            batch = await consumer.getmany(timeout_ms=1000, max_records=1)
-            for _tp, messages in batch.items():
+            free = CONCURRENCY - dispatcher.outstanding
+            # 용량이 차면 partition을 멈춘 채 getmany만 계속 불러 max_poll_interval을 넘기지 않는다.
+            if free <= 0:
+                consumer.pause(*consumer.assignment())
+            elif consumer.paused():
+                consumer.resume(*consumer.paused())
+            batch = await consumer.getmany(timeout_ms=1000, max_records=max(free, 1))
+            for messages in batch.values():
                 for message in messages:
-                    command = message.value
-                    try:
-                        # agent도 질의 갈래(chat_answer)로 갈리면 같은 진행 이벤트를 낸다.
-                        if command.get("kind") in {"query", "agent"}:
-                            event_publisher = KafkaQueryEventPublisher(producer, loop, command)
-                            result = await asyncio.to_thread(_handle_controlled, command, event_publisher)
-                        else:
-                            result = await asyncio.to_thread(_handle_controlled, command)
-                        event = _event(
-                            command,
-                            "succeeded",
-                            payload=result,
-                            with_request=command.get("kind") != "post_ingest",
-                        )
-                    except Exception as exc:
-                        if command.get("kind") == "agent":
-                            error = _agent_failure_code(exc)
-                            logger.error(
-                                "[AI command 실패] kind=agent run_id=%s error_code=%s error_type=%s",
-                                command.get("run_id"),
-                                error,
-                                type(exc).__name__,
-                            )
-                        else:
-                            error = str(exc)[:1000]
-                            logger.exception(
-                                "[AI command 실패] kind=%s run_id=%s",
-                                command.get("kind"),
-                                command.get("run_id"),
-                            )
-                        if not _failure_is_durable(command):
-                            raise
-                        event = _event(
-                            command,
-                            "failed",
-                            error=error,
-                            with_request=command.get("kind") != "post_ingest",
-                        )
-                    await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
-                    if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"}:
-                        # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
-                        task = asyncio.create_task(_publish_session_title(producer, command, result))
-                        title_tasks.add(task)
-                        task.add_done_callback(title_tasks.discard)
-                    await consumer.commit()
+                    if dispatcher.add(message):
+                        task = asyncio.create_task(run(message))
+                        running.add(task)
+                        task.add_done_callback(running.discard)
     finally:
+        stop.set()
+        await asyncio.gather(*running, return_exceptions=True)
         await asyncio.gather(*title_tasks, return_exceptions=True)
+        executor.shutdown(wait=True)
         await producer.stop()
         await consumer.stop()
+    if failure is not None:
+        raise failure
 
 
 def main() -> None:

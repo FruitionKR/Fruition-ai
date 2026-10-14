@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
 from app.modules.markdown_edit.domain.entities import (
     MarkdownEditRequest,
     MarkdownEditTarget,
@@ -206,7 +207,7 @@ def summarize(rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref", required=True)
-    parser.add_argument("--model", default="gpt-5-nano")
+    parser.add_argument("--model", default=DEFAULT_LLM_MODELS["openai"])
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--case", action="append", dest="case_ids")

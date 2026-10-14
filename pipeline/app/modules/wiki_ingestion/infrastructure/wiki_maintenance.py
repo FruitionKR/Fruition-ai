@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import Callable
 from contextlib import nullcontext
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,15 @@ from app.modules.wiki_ingestion.application.ports import (
     WikiMaintenancePort,
 )
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
-from app.modules.wiki_ingestion.infrastructure.object_storage import delete_object
+from app.modules.task_cancellation.infrastructure.object_change_journal import (
+    snapshot as snapshot_object,
+)
+from app.modules.wiki_ingestion.infrastructure.object_storage import (
+    client as storage_client,
+    delete_object,
+    split_storage_uri,
+    write_text_object,
+)
 from app.modules.wiki_ingestion.infrastructure.promotion_concept_page import (
     build_promotion_concept_page,
     promotion_representative,
@@ -76,7 +85,6 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
             )
             result.update(
                 database.lint_orphan_wiki_links(
-                    command.user_id,
                     command.workspace_id,
                     apply=not command.dry_run,
                     connection=connection,
@@ -84,10 +92,17 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
             )
             if not command.dry_run:
                 result["operation_id"] = command.operation_id
+                lint_date = date.today().isoformat()
+                # 클러스터·로그는 편입도 덧붙이는 워크스페이스 공유 객체다. 실패하면 지우지 않고
+                # 쓰기 전 내용으로 되돌린다. 편입·post-ingest도 같은 concept_write_lock 아래서 쓰므로
+                # 보관한 내용과 되돌리는 사이에 다른 쓰기가 끼지 않는다.
+                shared_before = {
+                    key: _snapshot_object(key)
+                    for key in database.lint_shared_object_keys(command.workspace_id, lint_date)
+                }
                 written_object_keys: list[str] = []
                 try:
                     operation_artifacts = database.persist_lint_operation_result(
-                        command.user_id,
                         command.workspace_id,
                         str(command.operation_id),
                         result,
@@ -104,12 +119,8 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     )
                     result["operation_artifacts"] = operation_artifacts
                     result["changed_pages"] = operation_artifacts
-                    log_path = database.write_wiki_lint_log(result)
-                    if log_path:
-                        written_object_keys.append(log_path)
-                    written_object_keys.extend(
-                        database.apply_lint_object_changes(result) or []
-                    )
+                    database.write_wiki_lint_log(result, lint_date)
+                    database.apply_lint_object_changes(result)
                     page_ids = _embedding_page_ids(result)
                     if self._embedding_job is not None and page_ids:
                         reserve_page_embeddings(
@@ -118,10 +129,12 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                             BgeM3EmbeddingModel().model_name,
                         )
                 except Exception:
-                    # 이후 단계 실패로 DB 트랜잭션이 롤백될 때, 이미 object storage에
-                    # 써버린 lint 산출물이 orphan으로 남지 않도록 함께 지운다.
+                    # 이후 단계 실패로 DB 트랜잭션이 롤백될 때, 이 작업만의 산출물은 orphan으로
+                    # 남지 않도록 지우고, 공유 객체는 쓰기 전 내용으로 되돌린다.
                     for key in written_object_keys:
                         delete_object(key)
+                    for key, before in shared_before.items():
+                        _restore_object(key, before)
                     raise
         page_ids = _embedding_page_ids(result)
         if not command.dry_run and self._embedding_job is not None and page_ids:
@@ -178,6 +191,18 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
             )
 
         return generate
+
+
+def _snapshot_object(key: str) -> dict[str, str] | None:
+    bucket, object_name = split_storage_uri(key)
+    return snapshot_object(storage_client(), bucket, object_name)
+
+
+def _restore_object(key: str, before: dict[str, str] | None) -> None:
+    if before is None:
+        delete_object(key)
+    else:
+        write_text_object(key, before["text"], before["content_type"])
 
 
 def _lint_api_client(command: WikiMaintenanceCommand) -> ChatCompletionsJsonClient:

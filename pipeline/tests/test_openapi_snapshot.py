@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
 
 PIPELINE_ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_PATH = PIPELINE_ROOT / "api-specs/openapi.yaml"
@@ -41,13 +40,6 @@ def render_openapi_yaml() -> str:
 
 def test_openapi_matches_committed_snapshot() -> None:
     actual = render_openapi_yaml()
-    spec = yaml.safe_load(actual)
-    agent_turn_headers = {
-        parameter["name"]
-        for parameter in spec["paths"]["/agent/turn"]["post"]["parameters"]
-        if parameter["in"] == "header"
-    }
-    assert agent_turn_headers >= {"X-Internal-Token", "X-Agent-Service-Token"}
 
     # UPDATE_OPENAPI_SNAPSHOT=1 로 실행하면 비교 대신 커밋 대상 파일을 갱신한다.
     if os.environ.get("UPDATE_OPENAPI_SNAPSHOT"):

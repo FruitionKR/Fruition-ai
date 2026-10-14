@@ -1,60 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
-
-from app.modules.query.application.answer_query import AnswerQueryUseCase
-from app.modules.query.domain.exceptions import QueryError
-from app.modules.query.domain.entities import ConversationContext, QueryAnswer
-from app.modules.query.interfaces.http.dependencies import get_query_answer_use_case
+from app.modules.query.domain.entities import QueryAnswer
 from app.modules.query.interfaces.http.schemas import (
     GraphContextResponse,
     EvidenceSnippetResponse,
-    QueryRequest,
     QueryResponse,
     RelatedPageResponse,
     SourceReferenceResponse,
     TraversalEdgeResponse,
     TraversalPathResponse,
 )
-
-
-router = APIRouter(prefix="/query", tags=["query"])
-
-
-@router.post("", response_model=QueryResponse)
-def answer_query(
-    payload: QueryRequest,
-    use_case: AnswerQueryUseCase = Depends(get_query_answer_use_case),
-) -> QueryResponse:
-    try:
-        execute_kwargs: dict[str, object] = {
-            "workspace_id": payload.workspace_id,
-            "user_id": payload.user_id,
-            "conversation_context": _conversation_context(payload),
-            "allow_web_search": payload.allow_web_search,
-        }
-        if payload.output_language is not None:
-            execute_kwargs["output_language"] = payload.output_language
-        if payload.response_length is not None:
-            execute_kwargs["response_length"] = payload.response_length
-        result = use_case.execute(payload.question, **execute_kwargs)
-    except QueryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return _to_response(result)
-
-
-def _conversation_context(payload: QueryRequest) -> ConversationContext | None:
-    if (
-        payload.recent_conversation_summary is None
-        and not payload.recent_messages
-        and payload.reference_context is None
-    ):
-        return None
-    return ConversationContext(
-        recent_conversation_summary=payload.recent_conversation_summary,
-        recent_messages=tuple(message.to_domain() for message in payload.recent_messages),
-        reference_context=payload.reference_context or {},
-    )
 
 
 def _to_response(result: QueryAnswer) -> QueryResponse:

@@ -39,9 +39,31 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     status varchar(255) NOT NULL CHECK (status IN ('draft', 'active', 'failed', 'deleted')),
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT uq_wiki_pages_workspace_type_slug
-        UNIQUE (user_id, workspace_id, page_type, slug)
+    CONSTRAINT uq_wiki_pages_workspace_page_type_slug
+        UNIQUE (workspace_id, page_type, slug)
 );
+
+-- 위키는 워크스페이스 공유 자산이다(ADR 0033). user_id는 마지막 편입 요청자 귀속 정보로만 남는다.
+-- 기존 DB의 사용자별 고유 키를 바꾼다. 사용자별 중복 행은 옮기지 않으므로 남아 있으면 기동을 멈춘다.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'wiki_pages'::regclass
+          AND conname = 'uq_wiki_pages_workspace_page_type_slug'
+    ) THEN
+        IF EXISTS (
+            SELECT 1 FROM wiki_pages
+            GROUP BY workspace_id, page_type, slug
+            HAVING count(*) > 1
+        ) THEN
+            RAISE EXCEPTION 'wiki_pages에 같은 (workspace_id, page_type, slug)를 가진 사용자별 페이지가 있습니다. 위키 데이터를 초기화한 뒤 배포하세요(ADR 0033).';
+        END IF;
+        ALTER TABLE wiki_pages DROP CONSTRAINT IF EXISTS uq_wiki_pages_workspace_type_slug;
+        ALTER TABLE wiki_pages ADD CONSTRAINT uq_wiki_pages_workspace_page_type_slug
+            UNIQUE (workspace_id, page_type, slug);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_workspace
     ON wiki_pages (workspace_id, status, updated_at DESC);
@@ -457,6 +479,24 @@ CREATE INDEX IF NOT EXISTS checkpoints_thread_id_idx ON checkpoints (thread_id);
 CREATE INDEX IF NOT EXISTS checkpoint_blobs_thread_id_idx ON checkpoint_blobs (thread_id);
 CREATE INDEX IF NOT EXISTS checkpoint_writes_thread_id_idx ON checkpoint_writes (thread_id);
 
+-- 파기가 agent_runs를 지운 뒤에도 실행 중이던 worker가 checkpoint를 쓰면 개인정보가 남는다.
+-- thread_id(= agent run id)의 run 행이 없으면 쓰기를 거부한다. KEY SHARE는 run 행 삭제와 충돌하므로
+-- 파기가 agent_runs를 먼저 지우면 진행 중인 쓰기는 끝나고 이후 쓰기는 거부된다.
+CREATE OR REPLACE FUNCTION reject_orphan_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM 1 FROM agent_runs WHERE id = NEW.thread_id FOR KEY SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'agent run % does not exist (purged)', NEW.thread_id USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoints;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoints FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoint_blobs;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoint_blobs FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+DROP TRIGGER IF EXISTS reject_orphan_checkpoint ON checkpoint_writes;
+CREATE TRIGGER reject_orphan_checkpoint BEFORE INSERT ON checkpoint_writes FOR EACH ROW EXECUTE FUNCTION reject_orphan_checkpoint();
+
 -- 실행 중인 AI 작업의 변경과 복구 기록은 같은 트랜잭션에서 남긴다.
 CREATE TABLE IF NOT EXISTS ai_task_runs (
     id text PRIMARY KEY,
@@ -540,6 +580,14 @@ CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_versions
 DROP TRIGGER IF EXISTS ai_task_change ON skill_version_sources;
 CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON skill_version_sources FOR EACH ROW EXECUTE FUNCTION record_ai_task_change('id');
 
+-- 파기한 워크스페이스·사용자. Kafka 재전달로 다시 들어온 작업이 파기한 범위에 데이터를 되살리지 않게 막는다.
+CREATE TABLE IF NOT EXISTS ai_purged_scopes (
+    scope_type text NOT NULL CHECK (scope_type IN ('workspace', 'user')),
+    scope_id text NOT NULL,
+    purged_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (scope_type, scope_id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_model_usage (
     id uuid PRIMARY KEY,
     run_id text NOT NULL,
@@ -549,7 +597,8 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
     provider text NOT NULL,
     requested_model text NOT NULL,
     model text NOT NULL,
-    status text NOT NULL CHECK (status IN ('started', 'succeeded', 'failed')),
+    status text NOT NULL CONSTRAINT ai_model_usage_status_check
+        CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned', 'cancelled')),
     input_tokens bigint CHECK (input_tokens >= 0),
     output_tokens bigint CHECK (output_tokens >= 0),
     cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
@@ -561,3 +610,18 @@ CREATE TABLE IF NOT EXISTS ai_model_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_actor_time ON ai_model_usage (workspace_id, user_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_run ON ai_model_usage (run_id);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS audio_seconds double precision CHECK (audio_seconds >= 0);
+ALTER TABLE ai_model_usage ADD COLUMN IF NOT EXISTS input_characters bigint CHECK (input_characters >= 0);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ai_model_usage_status_check' AND pg_get_constraintdef(oid) LIKE '%cancelled%'
+    ) THEN
+        ALTER TABLE ai_model_usage DROP CONSTRAINT IF EXISTS ai_model_usage_status_check;
+        ALTER TABLE ai_model_usage ADD CONSTRAINT ai_model_usage_status_check
+            CHECK (status IN ('started', 'succeeded', 'failed', 'abandoned', 'cancelled'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_finished ON ai_model_usage (finished_at);
+CREATE INDEX IF NOT EXISTS idx_ai_model_usage_started ON ai_model_usage (started_at) WHERE status = 'started';

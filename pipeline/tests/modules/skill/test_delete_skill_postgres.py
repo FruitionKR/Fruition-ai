@@ -35,7 +35,7 @@ def test_delete_preserves_runs_and_enforces_personal_and_team_scope(monkeypatch)
                 conn.execute("INSERT INTO skill_version_sources VALUES (%s, %s)", (skill_id + "-source", skill_id + "-v1"))
             conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
             monkeypatch.setattr(storage.database, "connect_ai", lambda: nullcontext(conn))
-            monkeypatch.setattr(storage, "_is_team_owner", lambda workspace, user: workspace == "ws-1" and user == "owner")
+            monkeypatch.setattr(storage, "_can_manage_team", lambda workspace, user: workspace == "ws-1" and user == "owner")
             repository = storage.PostgresSkillRepository()
             for user, skill_id in [("user-1", "other-personal"), ("user-1", "team"), ("owner", "other-team"), ("user-1", "missing")]:
                 with pytest.raises(ValueError, match="not manageable"):

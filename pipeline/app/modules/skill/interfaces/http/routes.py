@@ -3,7 +3,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.pipeline_control import (
+    DOCUMENT_SYNC_DEADLINE_SECONDS,
+    DeadlineExceededError,
+    PipelineRunCancelledError,
+    request_deadline,
+)
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
@@ -64,7 +71,9 @@ def execute_skill_task(task: SkillTaskRequest):
             raise HTTPException(result.status_code, json.loads(result.body))
         return {**result.model_dump(mode="json"), "run_id": task.run_id}
     try:
-        return journal.execute(task.model_dump(mode="json", exclude_none=True), execute)
+        # document가 60초에 포기하므로 그 전에 끝내고, 넘기면 journal이 변경을 되돌린다(게시하지 않는다).
+        with request_deadline(DOCUMENT_SYNC_DEADLINE_SECONDS):
+            return journal.execute(task.model_dump(mode="json", exclude_none=True), execute)
     except SkillRequestRejectedError as exc:
         # journal 밖에서 HTTP로 바꿔야 journal이 거절 code를 error_code로 남긴다.
         raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
@@ -74,6 +83,8 @@ def execute_skill_task(task: SkillTaskRequest):
         raise HTTPException(409, {"code": exc.code, "message": "Skill task already failed."}) from exc
     except journal.TaskCommandMismatchError as exc:
         raise HTTPException(409, {"code": "task_command_mismatch", "message": str(exc)}) from exc
+    except DeadlineExceededError as exc:
+        raise HTTPException(504, {"code": exc.code, "message": str(exc)}) from exc
     except PipelineRunCancelledError as exc:
         raise HTTPException(409, {"code": "task_cancelled", "message": str(exc)}) from exc
     except journal.TaskAlreadyExecutingError as exc:
@@ -135,21 +146,25 @@ def publish_authored_skill(
 @agent_router.post("/draft-from-runs/preview", response_model=SkillAuthoringResponse)
 def propose_skill_draft(
     payload: SkillDraftProposalRequest,
+    request_id: RequestId = None,
 ) -> SkillAuthoringResponse:
     use_case = get_propose_skill_draft_use_case(provider=payload.provider, model=payload.model)
     authorer = get_author_skill_use_case(provider=payload.provider, model=payload.model)
+    scope = {"run_id": request_id, "workspace_id": payload.workspace_id,
+             "user_id": payload.user_id, "kind": "skill_draft_preview"}
     try:
-        proposal = use_case.execute(
-            source_runs=tuple(source.to_domain() for source in payload.source_runs),
-            user_directives=tuple(payload.user_directives),
-            excluded_literals=tuple(payload.excluded_literals),
-        )
-        reviewed = authorer.review_draft(
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            scope_type=payload.scope_type,
-            draft=proposal,
-        )
+        with usage_scope(scope):
+            proposal = use_case.execute(
+                source_runs=tuple(source.to_domain() for source in payload.source_runs),
+                user_directives=tuple(payload.user_directives),
+                excluded_literals=tuple(payload.excluded_literals),
+            )
+            reviewed = authorer.review_draft(
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                scope_type=payload.scope_type,
+                draft=proposal,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillAuthoringResponse.from_domain(reviewed)

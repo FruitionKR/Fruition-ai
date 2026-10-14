@@ -1,7 +1,10 @@
 from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliation import (
     _reconciliation_candidate,
     _remove_stale_document_concepts,
+    _remove_stale_relations,
+    active_relation_keys,
     apply_structural_reconciliation,
+    list_reconciliation_candidates,
     source_contribution_payload,
 )
 
@@ -97,7 +100,6 @@ def test_reconciliation_candidate_compares_previous_and_current_contribution() -
         {
             "pipeline_run_id": "run-2",
             "document_id": "doc-1",
-            "user_id": "user-1",
             "workspace_id": "workspace-1",
             "manifest": {
                 "source_contribution": {
@@ -162,7 +164,6 @@ def test_reconciliation_candidate_reads_legacy_manifest_links() -> None:
         {
             "pipeline_run_id": "run-2",
             "document_id": "doc-1",
-            "user_id": "user-1",
             "workspace_id": "workspace-1",
             "manifest": {
                 "source_contribution": {
@@ -223,7 +224,6 @@ def test_structural_reconciliation_keeps_relation_supported_by_another_document(
     candidate = {
         "pipeline_run_id": "run-2",
         "document_id": "doc-1",
-        "user_id": "user-1",
         "workspace_id": "workspace-1",
         "stale_concept_slugs": [],
         "stale_relations": [relation],
@@ -272,3 +272,36 @@ def test_remove_stale_document_concepts_removes_its_embedding_units() -> None:
     assert removed_slugs == ["stale-concept"]
     assert removed_units == 3
     assert conn.calls[1][1] == ("doc-1", ["page-1"])
+
+
+def test_reconciliation_scope_is_whole_workspace() -> None:
+    class Result:
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return {"from_page_id": "page-1"}
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def execute(self, query: str, params):
+            self.calls.append((" ".join(query.split()), params))
+            return Result()
+
+    conn = FakeConnection()
+    relation = {"source": "concept:a", "target": "concept:b", "relation": "related_to"}
+
+    list_reconciliation_candidates(conn, "workspace-1")  # type: ignore[arg-type]
+    active_relation_keys(conn, "workspace-1")  # type: ignore[arg-type]
+    removed = _remove_stale_relations(conn, [relation], set(), "workspace-1")  # type: ignore[arg-type]
+
+    # 다른 멤버가 편입한 문서의 실행 기록과 페이지 링크도 같은 공유 위키로 정리한다.
+    assert [params for _query, params in conn.calls] == [
+        ("workspace-1",),
+        ("workspace-1",),
+        ("concept:a", "concept:a", "concept:b", "concept:b", "related_to", "workspace-1", "workspace-1"),
+    ]
+    assert all("user_id" not in query for query, _params in conn.calls)
+    assert removed == [relation]

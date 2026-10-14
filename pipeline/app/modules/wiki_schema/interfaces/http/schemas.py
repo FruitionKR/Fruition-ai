@@ -1,12 +1,24 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.core.llm_env import resolve_llm_selection
 
 from app.modules.wiki_schema.domain.entities import SchemaFilterResult, SchemaFragments, SchemaIssue, WikiSchemaRecord
 
 
 class WikiSchemaPreviewRequest(BaseModel):
     raw_markdown: str = Field(..., min_length=1)
+    provider: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    # 사용량 원장 귀속용. 비어 있으면 unattributed로 기록된다.
+    workspace_id: str | None = Field(default=None, min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_model_selection(self) -> "WikiSchemaPreviewRequest":
+        resolve_llm_selection(self.provider, self.model)
+        return self
 
 
 class SchemaFragmentsResponse(BaseModel):
@@ -65,9 +77,16 @@ class WikiSchemaPreviewResponse(BaseModel):
 
 class CreateWikiSchemaDraftRequest(BaseModel):
     raw_markdown: str = Field(..., min_length=1)
+    provider: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
     workspace_id: str = Field(..., min_length=1)
     user_id: str = Field(..., min_length=1)
     name: str = Field(default="default", min_length=1)
+
+    @model_validator(mode="after")
+    def validate_model_selection(self) -> "CreateWikiSchemaDraftRequest":
+        resolve_llm_selection(self.provider, self.model)
+        return self
 
 
 class WikiSchemaResponse(BaseModel):

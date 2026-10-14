@@ -59,13 +59,15 @@ class PostgresWikiSchemaRepository(WikiSchemaRepositoryPort):
             row = conn.execute("SELECT * FROM wiki_schemas WHERE id = %s", (schema_id,)).fetchone()
         return _row_to_record(row) if row else None
 
-    def activate(self, schema_id: str) -> WikiSchemaRecord:
+    def activate(self, schema_id: str, workspace_id: str, user_id: str) -> WikiSchemaRecord:
+        # 요청한 workspace·user 범위 안의 스키마만 활성화한다. 다른 범위의 id는 없는 것으로 본다.
         with database.connect_ai() as conn:
-            row = conn.execute("SELECT workspace_id, user_id FROM wiki_schemas WHERE id = %s", (schema_id,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM wiki_schemas WHERE id = %s AND workspace_id = %s AND user_id = %s",
+                (schema_id, workspace_id, user_id),
+            ).fetchone()
             if not row:
                 raise ValueError("Schema not found.")
-            workspace_id = row["workspace_id"]
-            user_id = row["user_id"]
             conn.execute(
                 """
                 UPDATE wiki_schemas
@@ -78,10 +80,10 @@ class PostgresWikiSchemaRepository(WikiSchemaRepositoryPort):
                 """
                 UPDATE wiki_schemas
                 SET status = 'active', updated_at = now(), activated_at = now()
-                WHERE id = %s
+                WHERE id = %s AND workspace_id = %s AND user_id = %s
                 RETURNING *
                 """,
-                (schema_id,),
+                (schema_id, workspace_id, user_id),
             ).fetchone()
         return _row_to_record(activated)
 

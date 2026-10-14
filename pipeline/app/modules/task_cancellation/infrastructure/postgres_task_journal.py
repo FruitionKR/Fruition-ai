@@ -13,15 +13,22 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from app.core.pipeline_control import PipelineRunCancelledError, task_run_id
-from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import ai_database_url
+from app.core.failure_codes import failure_code
+from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, task_run_id
+from app.core.ai_database import ai_database_url
 
 
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "source_blocks", "source_block_snapshots",
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
                     "document_derived_state", "skills", "skill_versions", "skill_version_sources"})
+# 종료한 run에서 지울 kind별 command 필드. 전사·초안은 document가 소유하므로 AI는 끝난 작업의 본문을 보관하지 않는다.
+# command_hash와 status·error_code·run_id는 남겨 재전달 판정(재생·불일치)에 쓴다.
+# meeting_transcription은 command에 전사가 없어 녹음 객체 키만 지우고, result의 전사 본문은 같은 방식으로 지운다.
+SCRUBBED_COMMAND_KEYS = {"meeting_notes": "segments", "meeting_transcription": "recording_key"}
+
+
 class TaskAlreadyExecutingError(RuntimeError):
-    pass
+    """다른 worker가 같은 run을 실행 중이다. 리밸런스로 재전달된 메시지는 끝날 때까지 seek해 기다린다."""
 
 
 class TaskFailedError(ValueError):
@@ -39,6 +46,8 @@ class TaskCommandMismatchError(ValueError):
 STOPPING = frozenset({"cancel_requested", "rolling_back", "rollback_failed", "cancelled"})
 # worker가 죽어 중단된 run을 같은 재전달 안에서 다시 실행하는 최대 횟수. 넘어서면 실패로 닫아 crash loop가 LLM 호출을 반복하지 않게 한다.
 MAX_INTERRUPTED_ATTEMPTS = int(os.environ.get("AI_TASK_MAX_INTERRUPTED_ATTEMPTS", "3"))
+# 재전달된 실행 중 run을 다시 poll하기 전에 기다리는 고정 간격(초). max_poll_interval보다 훨씬 짧다.
+REDELIVERY_BACKOFF_SECONDS = 5
 logger = logging.getLogger("task_journal")
 
 
@@ -48,10 +57,11 @@ def connect():
 
 
 def register(command: dict[str, Any]) -> dict[str, Any]:
-    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "ingest", "skill_author", "skill_publish", "skill_update"}:
+    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "convert_batch"}:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:
+        reject_purged(conn, command)
         parent_id = command.get("ingest_run_id")
         if parent_id:
             parent = conn.execute("SELECT status, workspace_id, user_id FROM ai_task_runs WHERE id = %s FOR SHARE", (parent_id,)).fetchone()
@@ -67,6 +77,19 @@ def register(command: dict[str, Any]) -> dict[str, Any]:
     if row["command_hash"] != digest:
         raise TaskCommandMismatchError("Task command identity mismatch.")
     return row
+
+
+def reject_purged(conn, command: dict[str, Any]) -> None:
+    if conn.execute("SELECT 1 FROM ai_purged_scopes WHERE (scope_type = 'workspace' AND scope_id = %s) "
+                    "OR (scope_type = 'user' AND scope_id = %s)",
+                    (str(command.get("workspace_id")), str(command.get("user_id")))).fetchone():
+        raise ScopePurgedError("Task scope was purged.")
+
+
+def workspace_purged(conn, workspace_id: str) -> bool:
+    """사용자 정보가 없는 이벤트(편집 이벤트·문서 삭제 command)용으로 워크스페이스 파기만 확인한다."""
+    return conn.execute("SELECT 1 FROM ai_purged_scopes WHERE scope_type = 'workspace' AND scope_id = %s",
+                        (str(workspace_id),)).fetchone() is not None
 
 
 def active(run_id: str) -> bool:
@@ -88,10 +111,20 @@ def execution_lock(run_id: str):
             conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", ("ai-task:" + run_id,))
 
 
+def _scrub_terminal(conn, run_id: str) -> None:
+    """종료한 run의 command 본문과 result를 지운다. 재생 결과는 빈 표식({"scrubbed": true})만 남는다."""
+    for kind, key in SCRUBBED_COMMAND_KEYS.items():
+        conn.execute("UPDATE ai_task_runs SET command = command - %s, "
+                     "result = CASE WHEN result IS NULL THEN NULL ELSE %s END "
+                     "WHERE id = %s AND kind = %s", (key, Jsonb({"scrubbed": True}), run_id, kind))
+
+
 def complete(run_id: str, result: dict[str, Any]) -> None:
     with connect() as conn:
         row = conn.execute("UPDATE ai_task_runs SET status = 'completed', result = %s, updated_at = now() "
                            "WHERE id = %s AND status = 'running' RETURNING id", (Jsonb(result), run_id)).fetchone()
+        if row is not None:
+            _scrub_terminal(conn, run_id)
     if row is None:
         raise PipelineRunCancelledError("Task no longer accepts a result.")
 
@@ -136,6 +169,7 @@ def rollback(run_id: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE ai_task_runs SET status = 'cancelled', error_code = NULL, updated_at = now() WHERE id = %s",
                      (run_id,))
+        _scrub_terminal(conn, run_id)
 
 
 def _undo_changes(run_id: str) -> bool:
@@ -215,7 +249,7 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
     with execution_lock(run_id):
         row = register(command)
         if row["status"] == "completed":
-            return row["result"] or {}
+            return ReplayedResult(row["result"] or {})
         if row["status"] == "failed":
             raise TaskFailedError(row["error_code"] or "task_failed")
         if row["status"] in STOPPING:
@@ -238,10 +272,9 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
             if not cancelled:
                 with connect() as conn:
                     # 예외가 문자열 code를 가지면 재요청 때 같은 사유를 돌려줄 수 있게 남긴다.
-                    code = getattr(exc, "code", None)
                     conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = %s "
                                  "WHERE id = %s AND status = 'cancelled'",
-                                 (code if isinstance(code, str) else "task_failed", run_id))
+                                 (failure_code(exc), run_id))
             raise
         finally:
             if token is not None:
@@ -259,8 +292,9 @@ def _begin_attempt(row: dict[str, Any]) -> None:
         with connect() as conn:
             conn.execute("UPDATE ai_task_runs SET status = 'failed', error_code = 'interrupted_attempts_exhausted', "
                          "updated_at = now() WHERE id = %s AND status = 'cancelled'", (run_id,))
-        raise ValueError(f"Interrupted task exceeded {MAX_INTERRUPTED_ATTEMPTS} attempts (attempt {previous}); "
-                         "partial changes were rolled back and the task was closed as failed.")
+        logger.error("[중단 재시도 초과] run_id=%s attempt=%s max=%s; 부분 변경을 되돌리고 실패로 닫았다.",
+                     run_id, previous, MAX_INTERRUPTED_ATTEMPTS)
+        raise TaskFailedError("interrupted_attempts_exhausted")
     if previous > 0:
         with connect() as conn:
             partial = conn.execute("SELECT count(*) AS count FROM ai_task_changes WHERE run_id = %s AND NOT undone",
@@ -291,20 +325,3 @@ def rollback_pending() -> None:
         except TaskAlreadyExecutingError:
             continue
 
-
-def cancel_document_tasks(document_id: str, workspace_id: str, user_id: str) -> bool:
-    with connect() as conn:
-        rows = conn.execute("SELECT id FROM ai_task_runs WHERE workspace_id = %s AND user_id = %s "
-                            "AND command->>'document_id' = %s", (workspace_id, user_id, document_id)).fetchall()
-    for row in rows:
-        request_cancel(row["id"], workspace_id, user_id)
-    rollback_pending()
-    # 자식 복구가 끝난 뒤 부모가 같은 호출에서 진행할 수 있다.
-    rollback_pending()
-    with connect() as conn:
-        pending = conn.execute("SELECT 1 FROM ai_task_runs WHERE workspace_id = %s AND command->>'document_id' = %s "
-                               "AND status <> 'cancelled' LIMIT 1", (workspace_id, document_id)).fetchone()
-        links = conn.execute("SELECT 1 FROM document_wiki_links WHERE workspace_id = %s AND document_id = %s LIMIT 1",
-                             (workspace_id, document_id)).fetchone()
-        blocks = conn.execute("SELECT 1 FROM source_blocks WHERE document_id = %s LIMIT 1", (document_id,)).fetchone()
-    return not (pending or links or blocks)

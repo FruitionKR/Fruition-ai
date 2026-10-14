@@ -35,6 +35,9 @@ class ManageSkillRepositoryPort(Protocol):
     def set_enabled(self, workspace_id: str, user_id: str, skill_id: str, enabled: bool) -> Skill:
         ...
 
+    def can_manage_team(self, workspace_id: str | None, user_id: str) -> bool:
+        ...
+
 
 class SkillDraftGeneratorPort(Protocol):
     def generate(

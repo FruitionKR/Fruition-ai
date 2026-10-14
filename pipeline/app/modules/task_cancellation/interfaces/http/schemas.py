@@ -15,8 +15,3 @@ class TaskStatusResponse(BaseModel):
     status: str
     error_code: str | None = None
 
-
-
-
-class DocumentCleanupResponse(BaseModel):
-    cleanup_complete: bool

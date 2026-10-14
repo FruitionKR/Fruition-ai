@@ -64,6 +64,23 @@ class EmbeddingServerTest(unittest.TestCase):
         embedding_server._ready.set()
         self.assertEqual(self.client.get("/health").json(), {"status": "ok", "model": "BAAI/bge-m3"})
 
+    def test_startup_warms_up_with_one_inference_before_reporting_healthy(self) -> None:
+        embedding_server._ready.clear()
+        calls: list[list[str]] = []
+
+        class RecordingModel(FakeModel):
+            def embed(self, texts: list[str]) -> list[list[float]]:
+                # 예열 추론 중에는 아직 health가 정상이 아니어야 한다.
+                calls.append(texts)
+                assert not embedding_server._ready.is_set()
+                return super().embed(texts)
+
+        with patch.object(embedding_server, "_model", RecordingModel()), TestClient(embedding_server.app) as client:
+            self.assertTrue(embedding_server._ready.wait(timeout=5))
+            self.assertEqual(client.get("/health").status_code, 200)
+
+        self.assertEqual(calls, [["warmup"]])
+
 
 if __name__ == "__main__":
     unittest.main()

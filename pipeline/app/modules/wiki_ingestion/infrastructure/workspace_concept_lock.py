@@ -84,21 +84,20 @@ def concept_write_lock(workspace_id: str, run_id: str) -> Iterator[None]:
                 scopes.remove(scope)
 
 
-def get_concept_index(user_id: str, workspace_id: str) -> list[dict[str, Any]] | None:
-    value = _client().get(f"wiki:concept-index:{user_id}:{workspace_id}")
+def get_concept_index(workspace_id: str) -> list[dict[str, Any]] | None:
+    value = _client().get(f"wiki:concept-index:{workspace_id}")
     return json.loads(value) if value else None
 
 
 def put_concept_index(
-    user_id: str,
     workspace_id: str,
     concepts: list[dict[str, Any]],
 ) -> None:
     _client().setex(
-        f"wiki:concept-index:{user_id}:{workspace_id}", INDEX_TTL_SECONDS,
+        f"wiki:concept-index:{workspace_id}", INDEX_TTL_SECONDS,
         json.dumps(concepts, ensure_ascii=False),
     )
 
 
-def invalidate_concept_index(user_id: str, workspace_id: str) -> None:
-    _client().delete(f"wiki:concept-index:{user_id}:{workspace_id}")
+def invalidate_concept_index(workspace_id: str) -> None:
+    _client().delete(f"wiki:concept-index:{workspace_id}")

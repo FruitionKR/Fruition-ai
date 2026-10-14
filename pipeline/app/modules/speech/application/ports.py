@@ -3,9 +3,11 @@ from typing import Protocol
 
 
 class SpeechPort(Protocol):
-    async def transcribe(self, audio: bytes, media_type: str) -> str: ...
+    async def transcribe(
+        self, audio: bytes, media_type: str, deadline_seconds: int | None = None
+    ) -> str: ...
 
-    async def synthesize(self, text: str) -> bytes: ...
+    def synthesize(self, text: str) -> AsyncIterator[str]: ...
 
     def transcribe_live(
         self, audio: AsyncIterator[bytes | str]

@@ -79,7 +79,7 @@ ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && chmod -R a+rX /opt/tiktoken
 
-COPY agent_worker.py api.py run_lab.py wiki_db_cutover.py ./
+COPY agent_worker.py api.py run_lab.py ./
 COPY app ./app
 COPY db ./db
 COPY prompts ./prompts

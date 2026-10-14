@@ -369,6 +369,7 @@ def test_pipeline_endpoint_runs_stored_document_in_background() -> None:
     assert registration.input_source == "document:document_1"
     assert command.input_markdown == "# Stored Document"
     assert command.source_document_id == "document_1"
+    assert command.display_name == "document"
 
 
 def test_reingest_endpoint_uses_inline_markdown_and_previous_source() -> None:
@@ -413,6 +414,7 @@ def test_reingest_endpoint_uses_inline_markdown_and_previous_source() -> None:
     assert command.input_markdown == "# 수정 문서"
     assert command.existing_source_artifact == {"document_id": "document_1"}
     assert command.existing_source_blocks == repository.list_source_blocks.return_value
+    assert command.display_name == "document"
     source_reader.read_text.assert_not_called()
 
 
@@ -480,6 +482,57 @@ def test_pipeline_endpoint_waits_for_synchronous_result() -> None:
     assert response.json()["status"] == "succeeded"
     assert response.json()["manifest"] == {"manifest": "value"}
     assert [item[0] for item in use_case.mock_calls] == ["register", "execute"]
+
+
+@pytest.mark.parametrize("wait", [True, False])
+@pytest.mark.parametrize("fails", [False, True])
+def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, wait: bool, fails: bool) -> None:
+    # 호출자가 out을 주지 않으면 runs/api_{run_id}는 실행이 끝나면(성공·실패·백그라운드 모두) 지워진다.
+    monkeypatch.chdir(tmp_path)
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "user_1",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "extracted_text_uri": None,
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+    created: list[Path] = []
+
+    def execute(run_id, command):
+        out = Path(command.out)
+        (out / "raw_llm_outputs").mkdir(parents=True)
+        (out / "document.json").write_text("원문", encoding="utf-8")
+        created.append(out)
+        if fails:
+            raise RuntimeError("boom")
+        return {}
+
+    use_case.execute.side_effect = execute
+
+    with _pipeline_client(
+        use_case=use_case,
+        repository=repository,
+        source_reader=_source_reader("# Stored Document"),
+    ) as client:
+        response = client.post(
+            "/pipeline/runs",
+            json={"document_id": "document_1", "wait": wait, "provider": "openai", "model": "gpt-5-nano"},
+        )
+
+    assert response.status_code == (500 if wait and fails else 200)
+    assert len(created) == 1 and created[0].parts[0] == "runs"
+    assert not created[0].exists()
+
+
+def test_pipeline_run_rejects_caller_specified_output_dir() -> None:
+    # out으로 임의 경로를 지우게 할 수 없다. 요청 스키마는 알 수 없는 필드를 거부한다.
+    with pytest.raises(ValidationError):
+        _pipeline_run_in(document_id="document_1", out="/tmp/chosen")
 
 
 def test_pipeline_run_status_uses_repository_dependency() -> None:
@@ -556,7 +609,107 @@ def test_chat_wiki_inline_markdown_uses_document_id_as_source_key() -> None:
     source_reader.read_text.assert_not_called()
 
 
-def test_pipeline_command_rejects_actor_mismatch_after_registering_run() -> None:
+def test_chat_wiki_run_keeps_generated_source_title() -> None:
+    # document는 채팅 export 파일 이름을 생성 제목으로 정하므로 파일명 제목을 넘기지 않는다.
+    payload = _chat_wiki_run_in(document_id="chat_document_1", display_name="무시")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": "chat-export.md"},
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("보고서.final.pdf", "보고서.final"),
+        (".env", ".env"),
+        ("README", "README"),
+        (None, None),
+    ],
+)
+def test_source_display_name_strips_last_extension_like_document(
+    filename: str | None,
+    expected: str | None,
+) -> None:
+    payload = _pipeline_run_in(document_id="document_1")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": filename},
+    ) == expected
+
+
+def test_source_display_name_prefers_command_value() -> None:
+    payload = _pipeline_run_in(document_id="document_1", display_name="회의록")
+
+    assert pipeline_routes._source_display_name(
+        payload,
+        {"filename": "meeting.md"},
+    ) == "회의록"
+
+
+def test_pipeline_command_records_requester_who_is_not_document_owner() -> None:
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "owner",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+    payload = _pipeline_run_in(
+        document_id="document_1",
+        user_id="co-editor",
+        workspace_id="workspace_1",
+    )
+
+    background_tasks = BackgroundTasks()
+    pipeline_routes._run_pipeline_request(
+        payload,
+        background_tasks,
+        use_case,
+        repository,
+        _source_reader(),
+        run_id="run-1",
+    )
+
+    assert use_case.register.call_args.args[0].user_id == "co-editor"
+    assert background_tasks.tasks[0].args[1].user_id == "co-editor"
+
+
+def test_pipeline_command_falls_back_to_document_owner_without_requester() -> None:
+    repository = _repository(
+        document={
+            "id": "document_1",
+            "user_id": "owner",
+            "workspace_id": "workspace_1",
+            "source_uri": "documents/document_1.md",
+            "mime_type": "text/markdown",
+            "filename": "document.md",
+        },
+    )
+    use_case = _use_case()
+
+    background_tasks = BackgroundTasks()
+    pipeline_routes._run_pipeline_request(
+        _pipeline_run_in(document_id="document_1"),
+        background_tasks,
+        use_case,
+        repository,
+        _source_reader(),
+        run_id="run-1",
+    )
+
+    # run 기록과 위키 행이 같은 귀속 값을 쓴다.
+    assert use_case.register.call_args.args[0].user_id == "owner"
+    assert background_tasks.tasks[0].args[1].user_id == "owner"
+
+
+def test_pipeline_command_rejects_workspace_mismatch_after_registering_run() -> None:
     repository = _repository(
         document={
             "id": "document_1",
@@ -567,8 +720,8 @@ def test_pipeline_command_rejects_actor_mismatch_after_registering_run() -> None
     use_case = _use_case()
     payload = _pipeline_run_in(
         document_id="document_1",
-        user_id="other-user",
-        workspace_id="workspace_1",
+        user_id="user_1",
+        workspace_id="other-workspace",
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -598,11 +751,12 @@ def test_chat_wiki_inline_markdown_requires_existing_document() -> None:
         input_markdown="# Chat Export\n\n[session_1:pair_2]Q : 새 질문\nA : 새 답변",
     )
 
+    use_case = _use_case()
     try:
         pipeline_routes._run_pipeline_request(
             payload,
             BackgroundTasks(),
-            _use_case(),
+            use_case,
             repository,
             _source_reader(),
         )
@@ -611,6 +765,8 @@ def test_chat_wiki_inline_markdown_requires_existing_document() -> None:
         assert exc.detail == "Document not found"
     else:
         raise AssertionError("chat wiki inline input should require an existing backend document")
+    # 문서를 찾지 못해도 실패를 기록할 run은 남긴다.
+    use_case.register.assert_called_once()
 
 
 def test_agent_service_token_is_required_when_not_configured(monkeypatch) -> None:

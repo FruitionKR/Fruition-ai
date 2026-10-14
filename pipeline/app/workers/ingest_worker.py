@@ -17,7 +17,8 @@ backend가 `ai.ingest.command` topic에 발행한 문서/채팅 Wiki ingest 명�
 
 from __future__ import annotations
 
-from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
+from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedError
 
 import asyncio
 import json
@@ -26,7 +27,7 @@ import os
 import signal
 from uuid import NAMESPACE_URL, uuid5
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 
 from app.core.kafka_security import kafka_security_options
 from pydantic import ValidationError
@@ -65,6 +66,11 @@ MAX_POLL_INTERVAL_MS = int(os.environ.get("INGEST_MAX_POLL_INTERVAL_MS", "180000
 DELETE_LOCK_ATTEMPTS = 10
 
 
+# journal을 거치지 않는 문서 단위 bookkeeping command와 그 결과 event kind. document 결과 consumer는 이 kind들을 처리하지 않고 건너뛴다.
+_EVENT_KINDS = {"document_deleted": "document_cleanup", "document_renamed": "document_rename"}
+_BOOKKEEPING_KINDS = frozenset(_EVENT_KINDS)
+
+
 class UnprocessableIngestCommand(ValueError):
     """다시 읽어도 성공할 수 없는 command.
 
@@ -91,6 +97,7 @@ def _build_payload(command: dict) -> PipelineRunIn | ChatWikiRunIn:
             "operation_id": command.get("operation_id"),
             "source_revision": command.get("source_revision"),
             "source_content_hash": command.get("source_content_hash"),
+            "display_name": command.get("display_name"),
             "model": str(command["model"]).strip(),
             "provider": str(command.get("provider") or "").strip(),
             "wait": True,
@@ -123,31 +130,39 @@ def _result_payload(command: dict, manifest: dict | None, status: str, error: st
     }
 
 
-def _event(command: dict, status: str, payload: dict | None = None, error: str | None = None) -> dict:
+def _event(
+    command: dict,
+    status: str,
+    payload: dict | None = None,
+    error: str | None = None,
+    post_ingest_dispatched: bool = False,
+) -> dict:
     run_id = str(command.get("run_id") or "")
     return {
         "event_id": f"ingest:{run_id}:{status}",
         "run_id": run_id,
-        "kind": "ingest" if command.get("kind") != "document_deleted" else "document_cleanup",
+        "kind": _EVENT_KINDS.get(command.get("kind"), "ingest"),
         "status": status,
         "workspace_id": command.get("workspace_id"),
         "user_id": command.get("user_id"),
         "operation_id": command.get("operation_id"),
+        # Document가 post_ingest 결과를 기다릴지 판단하도록, 이 편입에서 post_ingest command를 실제로 발행했는지 알린다.
+        "post_ingest_dispatched": post_ingest_dispatched,
         "request": without_top_level_secrets(command),
         "payload": payload,
         "error": error,
     }
 
 
-def _result_event(command: dict, result: dict) -> dict:
+def _result_event(command: dict, result: dict, post_ingest_dispatched: bool = False) -> dict:
     if result.get("status") == "failed":
-        error = str(result.get("summary") or "Wiki ingest에 실패했습니다.")
+        error = str(result.get("summary") or INTERNAL_ERROR)
         return _event(command, "failed", payload=result, error=error)
-    return _event(command, "succeeded", payload=result)
+    return _event(command, "succeeded", payload=result, post_ingest_dispatched=post_ingest_dispatched)
 
 
 def _post_ingest_command(command: dict) -> dict | None:
-    if command.get("kind") == "document_deleted":
+    if command.get("kind") in _BOOKKEEPING_KINDS:
         return None
     run_id = str(command.get("run_id") or "")
     run = get_pipeline_run_repository().get_run(run_id)
@@ -170,7 +185,8 @@ def _post_ingest_command(command: dict) -> dict | None:
 async def _dispatch_post_ingest(
     producer: AIOKafkaProducer,
     command: dict,
-) -> None:
+) -> bool:
+    """post_ingest command를 발행했으면 True. 재전달도 run 상태에서 같은 판단을 다시 내리므로 같은 값이다."""
     try:
         post_ingest_command = await asyncio.to_thread(
             _post_ingest_command,
@@ -184,8 +200,10 @@ async def _dispatch_post_ingest(
                 post_ingest_command,
                 key=str(post_ingest_command["workspace_id"]).encode("utf-8"),
             )
+            return True
+        return False
     except PipelineRunCancelledError:
-        return
+        return False
     except Exception as exc:
         raise PostIngestDispatchError(str(exc)) from exc
 
@@ -193,7 +211,11 @@ async def _dispatch_post_ingest(
 
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
-    if command.get("kind") == "document_deleted":
+    if command.get("kind") in _BOOKKEEPING_KINDS:
+        # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 행을 되살리거나 고치지 않도록 직접 확인한다.
+        with journal.connect() as conn:
+            if journal.workspace_purged(conn, command["workspace_id"]):
+                raise ScopePurgedError("Task scope was purged.")
         return _handle(command)
     _build_payload(command)
     return journal.execute(command, lambda: _handle(command))
@@ -217,6 +239,12 @@ def _handle(command: dict) -> dict:
     if command.get("kind") == "document_deleted":
         _delete_document_wiki_data(command["workspace_id"], command["document_id"])
         return {}
+    if command.get("kind") == "document_renamed":
+        title = str(command.get("title") or "").strip()
+        if not title:
+            raise UnprocessableIngestCommand("document_renamed command requires title")
+        database.rename_source_page(command["workspace_id"], command["document_id"], title)
+        return {}
 
     run_id = command["run_id"]
     repository = get_pipeline_run_repository()
@@ -228,7 +256,7 @@ def _handle(command: dict) -> dict:
     ):
         error = "ingest command does not match the registered run context"
         if existing.get("status") not in TERMINAL_STATUSES:
-            repository.fail(run_id, error)
+            repository.fail(run_id, INPUT_REJECTED)
         raise ValueError(error)
     if existing and existing.get("status") in TERMINAL_STATUSES:
         logger.info(
@@ -237,7 +265,7 @@ def _handle(command: dict) -> dict:
             existing.get("status"),
         )
         manifest = existing.get("manifest") or {}
-        return _result_payload(command, manifest, str(existing.get("status")), existing.get("error"))
+        return _result_payload(command, manifest, str(existing.get("status")), stored_code(existing.get("error")) if existing.get("error") else None)
     payload = _build_payload(command)
     logger.info(
         "[ingest 실행 시작] run_id=%s kind=%s document_id=%s workspace_id=%s",
@@ -253,7 +281,7 @@ def _handle(command: dict) -> dict:
             run_id=run_id,
         )
     except Exception as exc:
-        repository.fail(run_id, str(exc))
+        repository.fail(run_id, failure_code(exc))
         raise
     logger.info("[ingest 실행 완료] run_id=%s", run_id)
     return _result_payload(command, response.manifest, "succeeded")
@@ -296,8 +324,8 @@ async def consume() -> None:
                     try:
                         # 실행은 스레드로 넘겨 이벤트 루프(heartbeat)를 비워 둔다.
                         result = await asyncio.to_thread(_handle_controlled, message.value)
-                        await _dispatch_post_ingest(producer, message.value)
-                        event = _result_event(message.value, result)
+                        dispatched = await _dispatch_post_ingest(producer, message.value)
+                        event = _result_event(message.value, result, dispatched)
                     except PostIngestDispatchError:
                         logger.exception(
                             "[post-ingest command 발행 실패] run_id=%s offset_commit=false",
@@ -306,7 +334,13 @@ async def consume() -> None:
                             else "?",
                         )
                         raise
-                    except UnprocessableIngestCommand as exc:
+                    except journal.TaskAlreadyExecutingError:
+                        # 리밸런스로 재전달된 실행 중 run이다. 죽이지 않고 해당 offset으로 되돌아가 원래 worker가 끝나기를 기다린다.
+                        logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", message.value.get("run_id"), message.offset)
+                        consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
+                        await asyncio.sleep(journal.REDELIVERY_BACKOFF_SECONDS)
+                        break
+                    except (UnprocessableIngestCommand, ScopePurgedError) as exc:
                         # 재시도해도 같은 지점에서 실패한다. 실패로 확정하고 offset을 전진시켜
                         # 이 command 하나가 파티션 전체를 막지 않게 한다.
                         run_id = message.value.get("run_id") if isinstance(message.value, dict) else None
@@ -314,14 +348,14 @@ async def consume() -> None:
                         if run_id:
                             try:
                                 # 이미 등록된 run이면 실패로 남긴다(미등록이면 아무 일도 하지 않는다).
-                                get_pipeline_run_repository().fail(run_id, str(exc))
+                                get_pipeline_run_repository().fail(run_id, failure_code(exc))
                             except Exception:
                                 logger.exception("[ingest command 폐기] run 실패 기록 실패 run_id=%s", run_id)
                         event = _event(
                             message.value,
                             "failed",
-                            payload=_result_payload(message.value, None, "failed", str(exc)),
-                            error=str(exc)[:1000],
+                            payload=_result_payload(message.value, None, "failed", failure_code(exc)),
+                            error=failure_code(exc),
                         )
                     except Exception as exc:
                         logger.exception(
@@ -344,8 +378,8 @@ async def consume() -> None:
                         event = _event(
                             message.value,
                             "failed",
-                            payload=_result_payload(message.value, durable.get("manifest"), "failed", str(exc)),
-                            error=str(exc)[:1000],
+                            payload=_result_payload(message.value, durable.get("manifest"), "failed", failure_code(exc)),
+                            error=failure_code(exc),
                         )
                     await producer.send_and_wait(
                         RESULT_TOPIC, event, key=event["run_id"].encode("utf-8")

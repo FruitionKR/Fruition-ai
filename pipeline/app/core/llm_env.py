@@ -9,8 +9,8 @@ from dataclasses import dataclass
 SUPPORTED_LLM_PROVIDERS = ("openai", "gemini", "claude")
 # 모델 목록은 백엔드 카탈로그가 관리한다. 여기 값은 호출자가 모델을 고르지 않을 때의 기본값이다.
 DEFAULT_LLM_MODELS = {
-    "openai": "gpt-5-nano",
-    "gemini": "gemini-3.1-flash-lite",
+    "openai": "gpt-6-luna",
+    "gemini": "gemini-3.5-flash-lite",
     "claude": "claude-sonnet-5",
 }
 _MODEL_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._:-]{0,127}")

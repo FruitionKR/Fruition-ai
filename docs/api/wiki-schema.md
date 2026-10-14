@@ -194,7 +194,7 @@ curl -X GET "$PIPELINE/wiki-schema/active?workspace_id=<value>&user_id=<value>" 
 | 항목 | 내용 |
 |---|---|
 | 목적 | Wiki 스키마 초안을 생성합니다. |
-| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`<br>**Body** — `CreateWikiSchemaDraftRequest` |
+| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`, `X-Request-Id`(선택, 사용량 원장 run_id): `string` / `null`<br>**Body** — `CreateWikiSchemaDraftRequest` |
 | 출력 | `200` 성공 — `CreateWikiSchemaDraftResponse` |
 | 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다. |
 | 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
@@ -223,12 +223,17 @@ Wiki 스키마 초안을 생성합니다.
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
 
 - Content-Type: `application/json` (`CreateWikiSchemaDraftRequest`)
+- `provider`·`model`(필수): 정리에 쓸 모델. 지원하지 않거나 빠지면 `422`, 해당 provider의 API 키가 없으면 `503`.
+- 사용량 원장에 `kind=wiki_schema_draft`로 `workspace_id`·`user_id`·`X-Request-Id`가 귀속된다.
 
 ```json
 {
+  "model": "string",
   "name": "default",
+  "provider": "string",
   "raw_markdown": "string",
   "user_id": "string",
   "workspace_id": "string"
@@ -279,6 +284,7 @@ Wiki 스키마 초안을 생성합니다.
 
 - HTTP `401`: 내부 인증 토큰 누락 또는 불일치
 - HTTP `503`: 내부 인증 미설정
+- HTTP `504`: 처리가 55초(document 대기 60초보다 짧게)를 넘음 — `detail: "deadline_exceeded"`. 초안은 저장하지 않는다.
 
 | HTTP 상태 | 설명 | 응답 스키마 |
 |---|---|---|
@@ -318,7 +324,7 @@ Wiki 스키마 초안을 생성합니다.
 curl -X POST "$PIPELINE/wiki-schema/drafts" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"name":"default","raw_markdown":"<value>","user_id":"<value>","workspace_id":"<value>"}'
+  --data '{"model":"<value>","name":"default","provider":"<value>","raw_markdown":"<value>","user_id":"<value>","workspace_id":"<value>"}'
 ```
 
 ```json
@@ -377,7 +383,7 @@ curl -X POST "$PIPELINE/wiki-schema/drafts" \
 | 항목 | 내용 |
 |---|---|
 | 목적 | Wiki 스키마 적용 결과를 미리 확인합니다. |
-| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`<br>**Body** — `WikiSchemaPreviewRequest` |
+| 입력 | **Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null`, `X-Request-Id`(선택, 사용량 원장 run_id): `string` / `null`<br>**Body** — `WikiSchemaPreviewRequest` |
 | 출력 | `200` 성공 — `WikiSchemaPreviewResponse` |
 | 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다. |
 | 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
@@ -406,12 +412,19 @@ Wiki 스키마 적용 결과를 미리 확인합니다.
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
+| header | `X-Request-Id` | `string` | 아니오 | 사용량 원장 `run_id`. 없으면 `unattributed`로 기록한다. |
 
 - Content-Type: `application/json` (`WikiSchemaPreviewRequest`)
+- `provider`·`model`(필수): 정리에 쓸 모델. 지원하지 않거나 빠지면 `422`, 해당 provider의 API 키가 없으면 `503`.
+- `workspace_id`·`user_id`(선택): 사용량 원장 귀속용. 없으면 `unattributed`로 기록한다.
 
 ```json
 {
-  "raw_markdown": "string"
+  "model": "string",
+  "provider": "string",
+  "raw_markdown": "string",
+  "user_id": "string",
+  "workspace_id": "string"
 }
 ```
 
@@ -448,6 +461,7 @@ Wiki 스키마 적용 결과를 미리 확인합니다.
 
 - HTTP `401`: 내부 인증 토큰 누락 또는 불일치
 - HTTP `503`: 내부 인증 미설정
+- HTTP `504`: 처리가 55초(document 대기 60초보다 짧게)를 넘음 — `detail: "deadline_exceeded"`.
 
 | HTTP 상태 | 설명 | 응답 스키마 |
 |---|---|---|
@@ -487,7 +501,7 @@ Wiki 스키마 적용 결과를 미리 확인합니다.
 curl -X POST "$PIPELINE/wiki-schema/preview" \
   -H 'X-Internal-Token: <value>' \
   -H 'Content-Type: application/json' \
-  --data '{"raw_markdown":"<value>"}'
+  --data '{"model":"<value>","provider":"<value>","raw_markdown":"<value>"}'
 ```
 
 ```json
@@ -535,10 +549,10 @@ curl -X POST "$PIPELINE/wiki-schema/preview" \
 | 항목 | 내용 |
 |---|---|
 | 목적 | Wiki 스키마 초안을 활성화합니다. |
-| 입력 | **Path** — `schema_id`: `string`<br>**Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null` |
+| 입력 | **Path** — `schema_id`: `string`<br>**Query** — `workspace_id`: `string`, `user_id`: `string`<br>**Header** — `X-Internal-Token`(필수, 인증 계층 검증): `string` / `null` |
 | 출력 | `200` 성공 — `WikiSchemaResponse` |
-| 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다. |
-| 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
+| 조건 | 인증 필요<br>서비스 간 내부 인증 토큰을 검증한다.<br>필터링: `workspace_id`, `user_id`<br>올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.<br>`schema_id`가 요청한 `workspace_id`·`user_id`의 스키마일 때만 활성화하고, 같은 범위의 기존 활성 스키마만 초안으로 내린다. |
+| 주요 오류 | `422` 요청 검증 실패 — `HTTPValidationError`<br>`404` 요청한 `workspace_id`·`user_id` 범위에 해당 `schema_id`가 없음<br>`401` 내부 인증 토큰 누락 또는 불일치<br>`503` 내부 인증 미설정 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -564,6 +578,8 @@ Wiki 스키마 초안을 활성화합니다.
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | path | `schema_id` | `string` | 예 | - |
+| query | `workspace_id` | `string` | 예 | 활성화를 요청한 워크스페이스 |
+| query | `user_id` | `string` | 예 | 활성화를 요청한 사용자 |
 | header | `X-Internal-Token` | `X-Internal-Token` | 예 (인증 계층 검증) | - |
 
 - Body: 없음
@@ -609,6 +625,7 @@ Wiki 스키마 초안을 활성화합니다.
 #### 6. Error response
 
 - HTTP `401`: 내부 인증 토큰 누락 또는 불일치
+- HTTP `404`: 요청한 `workspace_id`·`user_id` 범위에 해당 `schema_id`가 없음 — `detail: "Schema not found."`. 다른 워크스페이스·사용자의 스키마 id를 넣어도 같은 응답이며 아무 상태도 바뀌지 않는다.
 - HTTP `503`: 내부 인증 미설정
 
 | HTTP 상태 | 설명 | 응답 스키마 |
@@ -636,17 +653,17 @@ Wiki 스키마 초안을 활성화합니다.
 #### 7. Pagination / filtering
 
 - 페이지네이션: 지원하지 않음
-- 필터링: 지원하지 않음
+- 필터링: `workspace_id`, `user_id`
 
 #### 8. 권한 규칙
 
 - 올바른 내부 서비스 토큰을 가진 서비스만 호출할 수 있다.
-- 요청에 포함된 workspace/user scope는 해당 route의 서비스 계층에서 추가 검증한다.
+- `schema_id`가 요청한 `workspace_id`·`user_id`의 스키마일 때만 활성화한다. 기존 활성 스키마를 초안으로 내리는 범위도 같은 `workspace_id`·`user_id`로 한정한다.
 
 #### 9. 예시 요청/응답
 
 ```bash
-curl -X POST "$PIPELINE/wiki-schema/<value>/activate" \
+curl -X POST "$PIPELINE/wiki-schema/<value>/activate?workspace_id=<value>&user_id=<value>" \
   -H 'X-Internal-Token: <value>'
 ```
 
@@ -690,7 +707,7 @@ curl -X POST "$PIPELINE/wiki-schema/<value>/activate" \
 
 #### 연동
 
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/wikischema/repository/PipelineWikiSchemaRequester.java`:39 (`app.wiki-schema.endpoint` + `/{schemaId}/activate`).
+- 인바운드 호출자: 없음. Fruition-document의 `PipelineWikiSchemaRequester`는 FruitionKR/Fruition-document#108에서 삭제됐다.
 - 아웃바운드 호출: 없음.
 - 미연동 표시: 없음.
 

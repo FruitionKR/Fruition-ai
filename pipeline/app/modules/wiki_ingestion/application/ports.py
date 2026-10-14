@@ -60,14 +60,12 @@ class PipelineRunRepositoryPort(Protocol):
 
     def list_active_concept_index(
         self,
-        user_id: str,
         workspace_id: str,
     ) -> list[dict[str, Any]]: ...
 
     def latest_source_page_context(
         self,
         document_id: str,
-        user_id: str,
         workspace_id: str,
     ) -> dict[str, Any] | None: ...
 

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
 from app.modules.wiki_ingestion.domain.contribution_identity import (
     globalize_contribution_identity,
@@ -15,6 +16,10 @@ from app.modules.wiki_ingestion.domain.operation_recovery import (
 )
 from app.modules.wiki_ingestion.domain.orphan_link_lint import (
     replay_supported_links,
+)
+from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
+    append_concept_evidence,
+    concept_evidence_updates,
 )
 
 
@@ -28,8 +33,9 @@ class RebuiltConceptPage:
     markdown: str
     operation_ids: tuple[str, ...]
     supported_links: tuple[dict[str, Any], ...]
-    title: str
-    summary: str
+    # 수동 기여가 있으면 None이다. 이름은 rename으로만 바꾸므로 복구가 덮어쓰지 않는다.
+    title: str | None
+    summary: str | None
     source_document_ids: tuple[str, ...]
 
 
@@ -60,16 +66,21 @@ def load_concept_contributions(
             raise ConceptContributionError(
                 f"concept contribution identity does not match: {key}"
             )
+        markdown_key = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
+        if contribution.get("artifact_type") == "manual":
+            try:
+                contribution["markdown"] = read_text(markdown_key)
+            except (KeyError, OSError) as exc:
+                raise ConceptContributionError(
+                    f"failed to read manual contribution markdown: {markdown_key}"
+                ) from exc
         loaded.append(
             PageContribution(
                 page_id=page_id,
                 page_type="concept",
                 operation_id=operation_id,
                 sequence=int(item["sequence"]),
-                markdown_key=(
-                    f"wiki/{workspace_id}/pages/{page_id}/ops/"
-                    f"{operation_id}.md"
-                ),
+                markdown_key=markdown_key,
                 contribution=contribution,
             )
         )
@@ -89,21 +100,58 @@ def rebuild_concept_page(
         )
 
     page_id = ordered[0].page_id
+    manual = [item for item in ordered if _is_manual(item)]
+    generated = [item for item in ordered if not _is_manual(item)]
     slugs = {
         str(item.contribution["concept"].get("slug") or "")
-        for item in ordered
+        for item in generated
         if item.contribution is not None
     }
-    if any(item.page_id != page_id for item in ordered) or len(slugs) != 1:
+    if (
+        any(item.page_id != page_id for item in ordered)
+        or len(slugs) > 1
+        or (not manual and len(slugs) != 1)
+    ):
         raise ConceptContributionError(
             "all contributions must belong to the same concept page"
         )
 
-    contribution_json = [
-        globalize_contribution_identity(item.contribution)
+    artifacts = [
+        item.contribution if _is_manual(item) else globalize_contribution_identity(item.contribution)
         for item in ordered
         if item.contribution is not None
     ]
+    contribution_json = [item for item in artifacts if item.get("artifact_type") != "manual"]
+    # 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생해야 사람이 지운 edge가 되살아나지 않는다.
+    supported_links = tuple(replay_supported_links(artifacts))
+    source_document_ids = tuple(_authoritative_document_ids(contribution_json))
+    if manual:
+        # 사람이 마지막으로 고친 본문을 기준으로 삼는다. 그 전 AI 기여는 사람이 본 본문에 이미
+        # 들어 있으므로, 그 뒤 AI 기여의 근거만 재편입과 같은 방식으로 덧붙인다.
+        base = manual[-1]
+        updates = [
+            update
+            for item in generated
+            if item.sequence > base.sequence and item.contribution is not None
+            for update in concept_evidence_updates(item.contribution)
+        ]
+        markdown = str(base.contribution["markdown"])
+        if updates:
+            # 사람이 쓴 외부 링크는 남기고 AI가 덧붙인 근거의 외부 링크만 무력화한다.
+            markdown = sanitize_ai_markdown(
+                append_concept_evidence(markdown, updates),
+                keep_urls=external_urls(markdown),
+            )
+        return RebuiltConceptPage(
+            page_id=page_id,
+            markdown=markdown,
+            operation_ids=tuple(item.operation_id for item in ordered),
+            supported_links=supported_links,
+            title=None,
+            summary=None,
+            source_document_ids=source_document_ids,
+        )
+
     normalized = _merge_contributions(contribution_json)
     pages = ConceptPageAssembler().build_top(
         normalized,
@@ -114,21 +162,24 @@ def rebuild_concept_page(
         raise ConceptContributionError("concept rebuild must produce exactly one page")
 
     concept = normalized["concept_ledger"][0]
-    source_document_ids = _authoritative_document_ids(contribution_json)
 
     return RebuiltConceptPage(
         page_id=page_id,
         markdown=str(pages[0]["markdown"]),
         operation_ids=tuple(item.operation_id for item in ordered),
-        supported_links=_supported_links(contribution_json),
+        supported_links=supported_links,
         title=str(concept.get("title") or ""),
         summary=str(
             concept.get("definition")
             or concept.get("why_page_worthy")
             or ""
         ),
-        source_document_ids=tuple(source_document_ids),
+        source_document_ids=source_document_ids,
     )
+
+
+def _is_manual(item: PageContribution) -> bool:
+    return (item.contribution or {}).get("artifact_type") == "manual"
 
 
 def _merge_contributions(
@@ -188,12 +239,6 @@ def _merge_contributions(
         "missing_related_concept_hints": [],
         "warnings": [],
     }
-
-
-def _supported_links(
-    contributions: list[dict[str, Any]],
-) -> tuple[dict[str, Any], ...]:
-    return tuple(replay_supported_links(contributions))
 
 
 def _authoritative_document_ids(

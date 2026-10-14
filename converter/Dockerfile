@@ -73,11 +73,12 @@ RUN mkdir -p /opt/docling-rs/models \
     && rm -rf /var/lib/apt/lists/*
 
 COPY converter/app.py ./converter_app.py
+COPY converter/worker.py ./converter_worker.py
 COPY pipeline/app ./app
 COPY pipeline/prompts ./prompts
 
-# Converter route and restoration CLI must import on the CPU runtime.
-RUN python -c "import converter_app, app.modules.document_restoration.interfaces.cli"
+# Converter worker and restoration CLI must import on the CPU runtime.
+RUN python -c "import converter_app, converter_worker, app.modules.document_restoration.interfaces.cli"
 
 # AWS mounts writable /tmp while the root filesystem remains read-only.
 ENV HOME=/tmp
@@ -85,6 +86,4 @@ ENV XDG_CACHE_HOME=/tmp/.cache
 ENV PYTHONDONTWRITEBYTECODE=1
 USER 10001:10001
 
-EXPOSE 8000
-
-CMD ["uvicorn", "converter_app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python", "-m", "converter_worker"]

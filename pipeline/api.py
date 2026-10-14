@@ -11,12 +11,10 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
 from app.modules.task_cancellation.interfaces.http.routes import router as task_cancellation_router
-from app.modules.agent.interfaces.http.routes import router as agent_router
+from app.modules.data_purge.interfaces.http.routes import router as data_purge_router
 from app.modules.speech.interfaces.http.routes import router as speech_router
-from app.modules.meeting_notes.interfaces.http.routes import router as meeting_notes_router
 from app.modules.agent_run.interfaces.http.routes import internal_router as agent_run_status_router
 from app.modules.agent_run.interfaces.http.routes import router as agent_run_router
-from app.modules.query.interfaces.http.routes import router as query_router
 from app.modules.skill.interfaces.http.routes import agent_router as agent_skill_router
 from app.modules.skill.interfaces.http.routes import router as skill_router
 from app.modules.wiki_ingestion.interfaces.http.routes import router as pipeline_router
@@ -78,9 +76,9 @@ async def lifespan(app: FastAPI):
     if AGENT_SKILLS_ENABLED:
         try:
             database.verify_agent_schema()
-            logger.info("[startup] core_db Agent 스키마 확인 완료")
+            logger.info("[startup] ai_db Agent 스키마 확인 완료")
         except Exception:
-            logger.exception("[startup] core_db Agent 스키마 확인 실패")
+            logger.exception("[startup] ai_db Agent 스키마 확인 실패")
             raise
     yield
 
@@ -115,18 +113,10 @@ async def authenticate_internal_request(request: Request, call_next):
 
 
 internal_token_dependencies = [Depends(require_internal_token)]
-# agent turn은 Skill 기능이 켜져 있어도 내부 토큰이 필요하다 (그 위에 agent service token이 더 붙는다).
-include_internal_router(
-    agent_router,
-    internal_token_dependencies + [Depends(require_agent_service_token)]
-    if AGENT_SKILLS_ENABLED
-    else internal_token_dependencies,
-)
-include_internal_router(query_router, internal_token_dependencies)
 include_internal_router(speech_router, internal_token_dependencies)
-include_internal_router(meeting_notes_router, internal_token_dependencies)
 include_internal_router(pipeline_router, internal_token_dependencies)
 include_internal_router(task_cancellation_router, internal_token_dependencies)
+include_internal_router(data_purge_router, internal_token_dependencies)
 include_internal_router(wiki_schema_router, internal_token_dependencies)
 include_internal_router(agent_run_status_router, internal_token_dependencies)
 agent_service_dependencies = [Depends(require_agent_service_token)]
@@ -190,5 +180,7 @@ Instrumentator(excluded_handlers=["/metrics"]).add(
     )
 ).instrument(app).expose(app, include_in_schema=False)
 
+from app.modules.model_usage.interfaces.http.routes import internal_router as model_usage_internal_router
 from app.modules.model_usage.interfaces.http.routes import router as model_usage_router
 include_internal_router(model_usage_router, internal_token_dependencies)
+include_internal_router(model_usage_internal_router, internal_token_dependencies)

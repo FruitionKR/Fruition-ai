@@ -4,10 +4,8 @@ import time
 from unittest.mock import Mock
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-import api
 from app.core.ai_markdown_sanitizer import external_urls
 from app.modules.meeting_notes.application.generate_meeting_notes import (
     GenerateMeetingNotes,
@@ -18,9 +16,8 @@ from app.modules.meeting_notes.domain.entities import (
 )
 from app.modules.meeting_notes.infrastructure import chat_meeting_notes
 from app.modules.meeting_notes.infrastructure.chat_meeting_notes import ChatMeetingNotes
-from app.modules.meeting_notes.interfaces.http import routes
-from app.modules.meeting_notes.interfaces.http.dependencies import get_meeting_notes
-from app.modules.meeting_notes.interfaces.http.schemas import MeetingNotesRequest
+from app.modules.meeting_notes.interfaces.command.dependencies import build_meeting_notes
+from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCommand
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
 )
@@ -105,53 +102,16 @@ def test_invalid_or_missing_evidence_rejects_notes(bad):
 
 
 def test_duplicate_and_oversized_transcripts_are_rejected():
-    scope = {"workspace_id": "w", "user_id": "u"}
+    scope = {
+        "run_id": "r", "kind": "meeting_notes", "meeting_id": "m",
+        "workspace_id": "w", "user_id": "u", "provider": "openai", "model": "gpt-6-luna",
+    }
     with pytest.raises(ValidationError):
-        MeetingNotesRequest(**scope, segments=[{"id": "s1", "text": "기록"}] * 2)
+        MeetingNotesCommand(**scope, segments=[{"id": "s1", "text": "기록"}] * 2)
     with pytest.raises(ValidationError):
-        MeetingNotesRequest(
+        MeetingNotesCommand(
             **scope, segments=[{"id": f"s{i}", "text": "가" * 10000} for i in range(11)]
         )
-
-
-def test_preview_is_authenticated_and_returns_draft(monkeypatch):
-    monkeypatch.setenv("INTERNAL_CALLBACK_TOKEN", "test-internal")
-    monkeypatch.setattr(routes, "authorize_speech", lambda *args: None)
-    generator = Mock()
-    generator.generate.return_value = candidate()
-    api.app.dependency_overrides[routes.get_meeting_notes] = lambda: (
-        GenerateMeetingNotes(generator)
-    )
-    try:
-        http = TestClient(api.app)
-        payload = {
-            "workspace_id": "w",
-            "user_id": "u",
-            "display_name": "출시 회의",
-            "segments": [{"id": "s1", "text": "기록"}],
-        }
-        assert http.post("/meeting-notes/preview", json=payload).status_code == 401
-        response = http.post(
-            "/meeting-notes/preview",
-            json=payload,
-            headers={"X-Internal-Token": "test-internal"},
-        )
-        assert response.status_code == 200
-        draft = response.json()
-        assert draft["display_name"] == "출시 회의"
-        assert draft["markdown"].startswith("# 출시 회의\n")
-        assert "title" not in draft
-        assert (
-            http.post(
-                "/meeting-notes/preview",
-                json={**payload, "title": "이전 필드"},
-                headers={"X-Internal-Token": "test-internal"},
-            ).status_code
-            == 422
-        )
-        assert response.json()["summary"][0]["source_segment_ids"] == ["s1"]
-    finally:
-        api.app.dependency_overrides.pop(routes.get_meeting_notes, None)
 
 
 def batch_segment_ids(call):
@@ -277,7 +237,7 @@ def test_truncated_json_on_a_single_segment_is_not_swallowed():
 def test_meeting_notes_client_requests_a_large_enough_completion_budget(monkeypatch):
     # 잘린 JSON이 502로 번지지 않게 회의록 호출은 명시적인 출력 예산을 쓴다.
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    config = get_meeting_notes()._generator._client.config
+    config = build_meeting_notes("openai", "gpt-6-luna")._generator._client.config
     assert config.max_tokens == chat_meeting_notes.MAX_OUTPUT_TOKENS
     assert config.max_tokens > 4096
     # 다른 호출자는 기존 기본값을 그대로 쓴다.
@@ -378,21 +338,23 @@ def test_split_retries_also_run_concurrently_and_keep_order():
     ]
 
 
-def test_meeting_notes_call_budget_fits_the_document_side_deadline():
-    # document-svc의 HTTP 호출 예산 270초 안에 최악의 경우가 들어와야 한다.
-    worst_case = (
-        chat_meeting_notes.BATCH_TIMEOUT_SECONDS
-        * (chat_meeting_notes.MAX_BATCH_RETRIES + 1)
-        * chat_meeting_notes.MAX_SPLIT_ROUNDS
-    )
-    assert worst_case <= 240
-
-
 def test_meeting_notes_client_uses_its_own_timeout_and_retry_budget(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    config = get_meeting_notes()._generator._client.config
+    config = build_meeting_notes("openai", "gpt-6-luna")._generator._client.config
     assert config.timeout_seconds == chat_meeting_notes.BATCH_TIMEOUT_SECONDS
     assert config.max_retries == chat_meeting_notes.MAX_BATCH_RETRIES
     # 다른 호출자는 기존 기본값을 그대로 쓴다.
     default = ChatClientConfig(api_key="k", model="gpt-5-nano")
     assert (default.timeout_seconds, default.max_retries) == (180, 2)
+
+
+def test_preview_http_route_is_removed():
+    from fastapi.testclient import TestClient
+
+    import api
+
+    response = TestClient(api.app).post(
+        "/meeting-notes/preview", json={}, headers={"X-Internal-Token": "x"}
+    )
+    assert response.status_code in {401, 404}
+    assert "/meeting-notes/preview" not in api.app.openapi()["paths"]
