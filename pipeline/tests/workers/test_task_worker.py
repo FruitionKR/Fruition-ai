@@ -1882,3 +1882,12 @@ def test_post_ingest_event_carries_parent_ingest_run_id_without_request() -> Non
     assert event["ingest_run_id"] == "ingest-1"
     assert "request" not in event
     assert "ingest_run_id" not in task_worker._event({"run_id": "q-1", "kind": "query"}, "failed")
+
+
+def test_post_ingest_client_retries_invalid_json_once(monkeypatch):
+    from app.modules.wiki_generation.infrastructure.chat_completions_llm import RetryOnceJsonCompletion
+
+    monkeypatch.setattr(task_worker, "api_key_from_env", lambda provider: "key")
+    client = task_worker._post_ingest_client({"provider": "gemini", "model": "gemini-3.5-flash-lite"})
+
+    assert isinstance(client, RetryOnceJsonCompletion)

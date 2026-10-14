@@ -260,6 +260,16 @@ def _complete_json_retrying_once(client: ChatCompletionsJsonClient, system_promp
     return client.complete_json(system_prompt, user_prompt)
 
 
+class RetryOnceJsonCompletion:
+    """위키 편입 경로의 JsonCompletionPort 호출(후보 판정·생성 평가·편입 후 품질 평가)에 한 번 재요청을 붙인다."""
+
+    def __init__(self, client: ChatCompletionsJsonClient) -> None:
+        self.client = client
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> JsonDict:
+        return _complete_json_retrying_once(self.client, system_prompt, user_prompt)
+
+
 class GenericChatCompletionsExtractor:
     def __init__(
         self,

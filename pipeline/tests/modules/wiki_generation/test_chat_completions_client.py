@@ -14,6 +14,7 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     GenericChatCompletionsConceptPageGenerator,
     GenericChatCompletionsConceptResolver,
     GenericChatCompletionsExtractor,
+    RetryOnceJsonCompletion,
     _complete_json_retrying_once,
 )
 from app.modules.wiki_generation.infrastructure.json_output_parser import JsonParseError
@@ -417,6 +418,22 @@ class CompleteJsonRetryTest(unittest.TestCase):
                 ):
                     self.assertEqual(call(client), {"pages": []})
                 self.assertEqual(model.calls, 2)
+
+    def test_judge_candidates_retry_through_wrapper(self) -> None:
+        from app.modules.wiki_generation.application.judge_candidates import judge_concept_update_candidates
+
+        model = _SequenceModel([TRUNCATED_JSON, '{"decisions": []}'])
+        completion = RetryOnceJsonCompletion(_json_client(model))
+
+        with self.assertLogs(chat_completions_llm.logger, "WARNING"):
+            result = judge_concept_update_candidates(
+                completion=completion,
+                concepts=[{"slug": "c-1", "title": "양액"}],
+                candidates=[{"candidate_id": "cand_001", "term": "EC", "slug": "ec", "claim": "c", "refs": [], "candidate_type": "section"}],
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(model.calls, 2)
 
 
 if __name__ == "__main__":
