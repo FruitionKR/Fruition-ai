@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from langsmith import traceable, tracing_context
 
 from app.modules.model_usage.infrastructure.usage_ledger import track_call
-from app.core.pipeline_control import DeadlineExceededError, ensure_task_active, remaining_seconds
+from app.core.pipeline_control import DeadlineExceededError, ensure_task_active, remaining_seconds, task_run_id
 from app.core.langsmith_tracing import langsmith_tracing_enabled
 from app.core.llm_env import inference_profile, resolve_llm_selection
 from app.core.llm_prompt import (
@@ -40,6 +41,8 @@ from app.modules.wiki_generation.infrastructure.json_output_parser import (
     parse_json_object,
     strip_json_fence,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -241,6 +244,32 @@ class ChatCompletionsJsonClient:
         )
 
 
+def _complete_json_retrying_once(client: ChatCompletionsJsonClient, system_prompt: str, user_prompt: str) -> JsonDict:
+    """잘린·깨진 JSON 응답 하나가 문서 편입 전체를 실패시키지 않도록 같은 프롬프트로 한 번만 다시 묻는다."""
+    try:
+        return client.complete_json(system_prompt, user_prompt)
+    except JsonParseError as exc:
+        # 취소·마감이면 재요청하지 않는다. 재요청도 실제 공급사 호출이라 원장에 별도 행으로 남는다.
+        ensure_task_active()
+        # 모델 출력 원문은 개인정보가 섞일 수 있어 남기지 않고 파싱 오류 위치만 남긴다.
+        config = getattr(client, "config", None)
+        logger.warning(
+            "[LLM JSON 재요청] run_id=%s model=%s error=%s",
+            task_run_id.get(), getattr(config, "model", None), exc,
+        )
+    return client.complete_json(system_prompt, user_prompt)
+
+
+class RetryOnceJsonCompletion:
+    """위키 편입 경로의 JsonCompletionPort 호출(후보 판정·생성 평가·편입 후 품질 평가)에 한 번 재요청을 붙인다."""
+
+    def __init__(self, client: ChatCompletionsJsonClient) -> None:
+        self.client = client
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> JsonDict:
+        return _complete_json_retrying_once(self.client, system_prompt, user_prompt)
+
+
 class GenericChatCompletionsExtractor:
     def __init__(
         self,
@@ -255,7 +284,8 @@ class GenericChatCompletionsExtractor:
         self.source_context = source_context
 
     def extract(self, packet: SemanticPacket) -> JsonDict:
-        return self.client.complete_json(
+        return _complete_json_retrying_once(
+            self.client,
             with_schema_prompt(self.system_prompt, self.schema_prompt_provider("ingest")),
             render_semantic_user_prompt(packet, self.source_context),
         )
@@ -273,7 +303,8 @@ class GenericChatCompletionsConceptPageGenerator:
         self.schema_prompt_provider = schema_prompt_provider or (lambda feature: "")
 
     def generate(self, concept: JsonDict, evidence_units: list[JsonDict], source_blocks: Sequence[SourceBlock]) -> JsonDict:
-        return self.client.complete_json(
+        return _complete_json_retrying_once(
+            self.client,
             with_schema_prompt(self.system_prompt, self.schema_prompt_provider("concept")),
             render_concept_page_user_prompt(concept, evidence_units, source_blocks),
         )
@@ -296,7 +327,8 @@ class GenericChatCompletionsConceptResolver:
         existing_concepts: list[JsonDict],
         missing_related_hints: list[JsonDict] | None = None,
     ) -> JsonDict:
-        return self.client.complete_json(
+        return _complete_json_retrying_once(
+            self.client,
             with_schema_prompt(self.system_prompt, self.schema_prompt_provider("concept")),
             render_concept_resolution_user_prompt(incoming_concepts, existing_concepts, missing_related_hints),
         )

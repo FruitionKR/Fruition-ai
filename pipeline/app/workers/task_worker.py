@@ -64,6 +64,7 @@ from app.modules.wiki_embedding.infrastructure.threaded_wiki_embedding_job impor
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
+    RetryOnceJsonCompletion,
 )
 from app.modules.wiki_generation.infrastructure.post_ingest_cluster import (
     build_post_ingest_cluster_artifact,
@@ -546,7 +547,7 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
-def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
+def _post_ingest_client(command: dict[str, Any]) -> RetryOnceJsonCompletion:
     provider, model = resolve_llm_selection(
         str(command["provider"]).strip(),
         str(command["model"]).strip(),
@@ -554,7 +555,7 @@ def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
     api_key = api_key_from_env(provider=provider)
     if not api_key:
         raise RuntimeError(f"{provider} API key가 없습니다.")
-    return ChatCompletionsJsonClient(
+    return RetryOnceJsonCompletion(ChatCompletionsJsonClient(
         ChatClientConfig(
             api_key=api_key,
             model=model,
@@ -563,7 +564,7 @@ def _post_ingest_client(command: dict[str, Any]) -> ChatCompletionsJsonClient:
             json_mode=True,
             provider=provider,
         )
-    )
+    ))
 
 
 def _run_post_ingest_wiki_quality_evaluation(
