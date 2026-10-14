@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import io
 import json
 from collections import deque
 from collections.abc import AsyncIterator
+import wave
 from time import perf_counter
 
 import anyio
@@ -65,11 +67,20 @@ class OpenAISpeech:
                 body = response.json()
                 text = body["text"]
                 receipt["usage"] = body.get("usage")
+                # 공급사가 토큰 usage를 줘도 분당 과금을 계산하도록 WAV 구간은 길이를 직접 남긴다.
+                receipt["audio_seconds"] = _wav_seconds(audio)
                 if not isinstance(text, str):
                     raise TypeError("invalid transcript")
                 return text.strip()
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-            raise SpeechUnavailableError("음성을 전사하지 못했습니다.") from exc
+            # 코드는 회의 녹음 전사 이벤트가 쓴다. HTTP 라우트는 어떤 코드든 502로 응답한다.
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                code = "provider_rate_limited"
+            elif isinstance(exc, TimeoutError):
+                code = "deadline_exceeded"
+            else:
+                code = "provider_unavailable"
+            raise SpeechUnavailableError("음성을 전사하지 못했습니다.", code) from exc
 
     async def synthesize(self, text: str) -> AsyncIterator[str]:
         """원문 낭독 PCM16 24 kHz 오디오를 base64 delta 그대로 흘려보낸다.
@@ -363,6 +374,14 @@ class OpenAISpeech:
                 # 전사를 받지 못한 구간도 오디오는 공급사에 보냈으므로 failed로 남긴다.
                 for call in segment_calls.values():
                     await _finish_segment(call, "failed", None)
+
+
+def _wav_seconds(audio: bytes) -> float | None:
+    try:
+        with wave.open(io.BytesIO(audio)) as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, EOFError):
+        return None
 
 
 async def _finish_segment(

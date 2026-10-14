@@ -474,6 +474,20 @@ def test_meeting_notes_failure_scrubs_transcript_and_replays_code(journal_databa
     assert replay.value.code == "MEETING_NOTES_FAILED"
 
 
+def test_meeting_transcription_completion_scrubs_transcript_but_replays_without_handler(journal_database):
+    from app.core.pipeline_control import ReplayedResult
+    transcription = dict(run_id="meet", workspace_id="ws", user_id="user", kind="meeting_transcription",
+                         meeting_id="m", content_type="audio/mpeg",
+                         recording_key="meetings/m/recording-" + "a" * 36 + ".mp3")
+    journal.execute(transcription, lambda: {"meeting_id": "m", "text": "비밀 전사"})
+    row = stored(journal_database)
+    assert row["status"] == "completed" and row["result"] == {"scrubbed": True}
+    assert "recording_key" not in row["command"] and row["command"]["meeting_id"] == "m"
+    def unexpected():
+        pytest.fail("완료한 작업의 handler를 호출했습니다.")
+    assert isinstance(journal.execute(transcription, unexpected), ReplayedResult)
+
+
 def test_other_kinds_keep_command_and_result(journal_database):
     journal.execute({**command(), "payload": "keep"}, lambda: {"ok": 1})
     with journal_database() as conn:

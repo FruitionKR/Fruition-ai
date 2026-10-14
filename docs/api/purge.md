@@ -30,7 +30,7 @@
 | 스킬(`skills`와 버전·출처) | 팀 스킬 지움 | 개인 스킬 지움 |
 | 에이전트 기록(`agent_runs`와 계획·승인·작업·산출물, LangGraph checkpoint) | 지움 | 본인 것 지움 |
 | 작업 기록(`ai_task_runs`·`ai_task_changes`) | 지움 | 본인 것 지움(상태 무관) |
-| S3 객체 | `wiki/{workspace_id}/`(위키 객체 전부, ADR 0033), 에이전트 산출물. 실행 로그(`pipeline-runs/`)는 제외 | 본인 에이전트 산출물 |
+| S3 객체 | `wiki/{workspace_id}/`(위키 객체 전부, ADR 0033), `pipeline-runs/meeting-transcription/{workspace_id}/`(회의 전사 체크포인트), 에이전트 산출물. 실행 로그(`pipeline-runs/{run_id}/pipeline.log`)는 제외 | 본인 에이전트 산출물, 본인 `meeting_transcription` run의 체크포인트 |
 | `ai_model_usage` | 남김 | 남김 |
 | `ai_purged_scopes` | 워크스페이스 ID 추가 | 사용자 ID 추가 |
 

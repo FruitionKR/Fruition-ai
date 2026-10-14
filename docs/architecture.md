@@ -14,7 +14,7 @@ pipeline 이미지 하나를 API와 각 worker가 command·환경변수를 달�
 
 음성 대화는 명령용 마이크 발화 → STT → 기존 Agent → Query 답변에 한한 TTS로 연결한다. `speech`는 마이크 발화/실시간
 전사와 음성 합성을 제공하며 `meeting_notes`는 확정 전사에서 근거 구간을 가진 회의록 초안을
-생성한다(Kafka `ai.maintenance.command`의 `kind: meeting_notes` 비동기 작업, 최악 약 720초). 마이크 오디오의 bytes 전송은 채팅 파일 첨부 기능을 뜻하지 않는다. 회의 발언은 수행 자료로만
+생성한다(Kafka `ai.maintenance.command`의 `kind: meeting_notes` 비동기 작업, 최악 약 720초). `meeting_transcription`은 S3의 회의 녹음을 구간으로 나눠 전사하는 같은 토픽의 비동기 작업이다([ADR 0035](adr/0035-async-meeting-transcription.md)). 마이크 오디오의 bytes 전송은 채팅 파일 첨부 기능을 뜻하지 않는다. 회의 발언은 수행 자료로만
 사용하고 명령으로 실행하지 않는다. 실시간 오디오는 내부 WebSocket으로 처리하고
 Agent 업무 실행은 기존 Kafka 경로를 유지한다. 사용자 인증·전사 저장·문서 적용은 호출 서비스의
 책임이다. [음성 API와 연동 범위](api/speech.md)를 참고한다.

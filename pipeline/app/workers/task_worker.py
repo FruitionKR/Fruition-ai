@@ -19,7 +19,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
-from app.core.failure_codes import failure_code, stored_code
+from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
@@ -45,6 +45,10 @@ from app.modules.meeting_notes.interfaces.command.dependencies import (
     build_meeting_notes,
 )
 from app.modules.meeting_notes.interfaces.command.schemas import MeetingNotesCommand, MeetingNotesResponse
+from app.modules.speech.domain.errors import MeetingTranscriptionError
+from app.modules.speech.infrastructure.meeting_storage import S3MeetingStorage
+from app.modules.speech.interfaces.command.dependencies import build_meeting_transcription
+from app.modules.speech.interfaces.command.schemas import MeetingTranscriptionCommand
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.domain.entities import ConversationContext, ConversationMessage
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
@@ -480,6 +484,16 @@ def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
     return MeetingNotesResponse(**result).model_dump(mode="json")
 
 
+def _handle_meeting_transcription(command: dict[str, Any]) -> dict[str, Any]:
+    try:
+        request = MeetingTranscriptionCommand.model_validate(command)
+    except ValidationError as exc:
+        raise MeetingTranscriptionError(INPUT_REJECTED) from exc
+    use_case = build_meeting_transcription()
+    # 이 스레드에는 이벤트 루프가 없어 asyncio.run으로 돌린다(컨텍스트 변수는 복사돼 취소 확인·원장 귀속이 이어진다).
+    return asyncio.run(use_case.execute(request.workspace_id, request.run_id, request.meeting_id, request.recording_key))
+
+
 def _validate_restore_contributions(command: dict[str, Any]) -> None:
     expected = command.get("expected_contributions") or {}
     if not expected:
@@ -874,6 +888,8 @@ def _handle(
         return _handle_lint(command)
     if kind == "meeting_notes":
         return _handle_meeting_notes(command)
+    if kind == "meeting_transcription":
+        return _handle_meeting_transcription(command)
     if kind == "post_ingest":
         for attempt in range(POST_INGEST_MAX_ATTEMPTS):
             try:
@@ -893,8 +909,23 @@ def _handle(
 
 def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
-    with usage_scope(command):
-        return _execute_controlled(command, event_publisher)
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
+    terminal = True
+    try:
+        with usage_scope(command):
+            return _execute_controlled(command, event_publisher)
+    except TaskAlreadyExecutingError:
+        terminal = False  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
+        raise
+    except Exception as exc:
+        # 실패를 journal에 남기지 못해 재전달될 run은 체크포인트를 남겨야 구간을 다시 과금하지 않는다.
+        terminal = isinstance(exc, ScopePurgedError) or _failure_is_durable(command)
+        raise
+    finally:
+        # 전사 체크포인트는 개인정보다. 성공(재생 포함), 파기된 범위, journal에 남긴 실패·취소처럼
+        # 종료가 확정되면 지운다. 다른 worker가 실행 중이거나 실패를 남기지 못해 재전달될 run은 남긴다.
+        if command.get("kind") == "meeting_transcription" and terminal:
+            S3MeetingStorage().clear_checkpoints(str(command.get("workspace_id")), str(command.get("run_id")))
 
 
 def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
@@ -1020,6 +1051,7 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         "agent",
         "lint",
         "meeting_notes",
+        "meeting_transcription",
         "post_ingest",
         "restore_ingest",
         "restore_lint",
@@ -1203,7 +1235,8 @@ async def consume() -> None:
 
     async def process(message) -> bool:
         """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
-        command = message.value
+        # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
+        command = message.value if isinstance(message.value, dict) else {}
         try:
             while True:
                 try:
@@ -1248,12 +1281,16 @@ async def consume() -> None:
                     command.get("kind"),
                     command.get("run_id"),
                 )
-            if not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
+            # journal에 등록하지 못한 잘못된 command(필수 필드 없음)는 재전달해도 같으므로 실패로 확정한다.
+            # 그러지 않으면 journal 행이 없어 커밋하지 못하고 같은 offset에서 계속 죽는다(converter #101과 같다).
+            malformed = not all(isinstance(command.get(key), str) and command[key]
+                                for key in ("run_id", "workspace_id", "user_id"))
+            if not malformed and not isinstance(exc, ScopePurgedError) and not _failure_is_durable(command):
                 raise
             event = _event(
                 command,
                 "failed",
-                error=error,
+                error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )
         # 발행이 끝난 뒤에만 완료로 표시해 커밋 대상이 되게 한다.
