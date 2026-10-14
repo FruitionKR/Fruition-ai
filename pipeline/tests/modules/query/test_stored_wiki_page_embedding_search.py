@@ -31,6 +31,13 @@ class FailingDocumentEmbeddingModel(FakeEmbeddingModel):
         return super().embed(texts)
 
 
+def _status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://embedding/embeddings")
+    return httpx.HTTPStatusError(
+        f"{status_code}", request=request, response=httpx.Response(status_code, request=request)
+    )
+
+
 class FakeFallbackSearch:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str]]] = []
@@ -263,7 +270,7 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
     def test_online_embedding_failure_scores_only_stored_vectors(self) -> None:
         stored = "저장 벡터가 있는 페이지"
         stored_hash = hashlib.sha256(stored.encode("utf-8")).hexdigest()
-        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("down")):
+        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("down"), _status_error(503)):
             search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(error))
 
             with patch(
@@ -298,6 +305,15 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
             "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
             return_value=FakeConnection([]),
         ), self.assertRaisesRegex(RuntimeError, "model mismatch"):
+            search.score("query", ["a"])
+
+    def test_online_embedding_does_not_hide_client_errors(self) -> None:
+        search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(_status_error(422)))
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ), self.assertRaises(httpx.HTTPStatusError):
             search.score("query", ["a"])
 
 
