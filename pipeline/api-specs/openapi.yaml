@@ -3906,6 +3906,18 @@ paths:
         schema:
           title: Schema Id
           type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
       - in: header
         name: X-Internal-Token
         required: false

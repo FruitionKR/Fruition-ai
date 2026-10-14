@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from app.modules.wiki_schema.domain.entities import SchemaFragments, WikiSchemaRecord
 from app.modules.wiki_schema.interfaces.http.routes import (
     activate_wiki_schema,
@@ -26,11 +28,11 @@ class FakeCreateSchemaDraftUseCase:
 
 
 class FakeActivateSchemaUseCase:
-    def execute(self, schema_id: str) -> WikiSchemaRecord:
+    def execute(self, schema_id: str, workspace_id: str, user_id: str) -> WikiSchemaRecord:
         return WikiSchemaRecord(
             id=schema_id,
-            workspace_id="ws-1",
-            user_id="user-1",
+            workspace_id=workspace_id,
+            user_id=user_id,
             name="기본 schema",
             raw_markdown="raw",
             fragments=SchemaFragments(global_markdown="- 한국어로 작성한다."),
@@ -38,6 +40,11 @@ class FakeActivateSchemaUseCase:
             issues=[],
             status="active",
         )
+
+
+class FailingActivateSchemaUseCase:
+    def execute(self, schema_id: str, workspace_id: str, user_id: str) -> WikiSchemaRecord:
+        raise ValueError("Schema not found.")
 
 
 class FakeGetActiveSchemaUseCase:
@@ -80,11 +87,26 @@ class SchemaStorageRoutesTest(unittest.TestCase):
     def test_activate_route_returns_active_schema(self) -> None:
         response = activate_wiki_schema(
             schema_id="schema-1",
+            workspace_id="ws-1",
+            user_id="user-1",
             use_case=FakeActivateSchemaUseCase(),  # type: ignore[arg-type]
         )
 
         self.assertEqual(response.id, "schema-1")
+        self.assertEqual(response.workspace_id, "ws-1")
+        self.assertEqual(response.user_id, "user-1")
         self.assertEqual(response.status, "active")
+
+    def test_activate_route_maps_missing_schema_to_404(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            activate_wiki_schema(
+                schema_id="schema-1",
+                workspace_id="ws-other",
+                user_id="user-1",
+                use_case=FailingActivateSchemaUseCase(),  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(ctx.exception.status_code, 404)
 
     def test_get_active_route_returns_active_schema(self) -> None:
         response = get_active_wiki_schema(

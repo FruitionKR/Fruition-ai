@@ -15,7 +15,7 @@ class WikiSchemaRepositoryPort(Protocol):
     def get(self, schema_id: str) -> WikiSchemaRecord | None:
         ...
 
-    def activate(self, schema_id: str) -> WikiSchemaRecord:
+    def activate(self, schema_id: str, workspace_id: str, user_id: str) -> WikiSchemaRecord:
         ...
 
     def get_active(self, workspace_id: str, user_id: str) -> WikiSchemaRecord | None:
