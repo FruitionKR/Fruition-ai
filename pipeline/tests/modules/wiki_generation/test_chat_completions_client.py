@@ -1,14 +1,22 @@
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from langchain_core.messages import AIMessage
 
+from app.core.pipeline_control import PipelineRunCancelledError, task_cancellation_scope, task_run_id
+from app.modules.model_usage.infrastructure import usage_ledger
 from app.modules.wiki_generation.infrastructure import chat_completions_llm
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
+    GenericChatCompletionsConceptPageGenerator,
+    GenericChatCompletionsConceptResolver,
+    GenericChatCompletionsExtractor,
+    _complete_json_retrying_once,
 )
+from app.modules.wiki_generation.infrastructure.json_output_parser import JsonParseError
 
 
 class _Model:
@@ -31,6 +39,28 @@ class _Model:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+class _SequenceModel:
+    """호출마다 준비된 응답을 차례로 돌려준다."""
+
+    def __init__(self, contents: list[str]) -> None:
+        self.contents = list(contents)
+        self.calls = 0
+
+    def invoke(self, messages: list[object]) -> AIMessage:
+        self.calls += 1
+        return AIMessage(content=self.contents.pop(0))
+
+
+TRUNCATED_JSON = '{"notes": [{"title": "온실 환기",'
+
+
+def _json_client(model: _SequenceModel) -> ChatCompletionsJsonClient:
+    with patch.object(chat_completions_llm, "ChatGoogleGenerativeAI", return_value=model, create=True):
+        return ChatCompletionsJsonClient(
+            ChatClientConfig(api_key="provider-key", model="gemini-3.5-flash-lite", provider="gemini")
+        )
 
 
 class _HttpError(RuntimeError):
@@ -290,6 +320,103 @@ class ChatCompletionsJsonClientTest(unittest.TestCase):
             {"provider": "openai", "model": "gpt-5-nano", "json_mode": False},
         )
         tracing.assert_called_once_with(enabled=False)
+
+
+class CompleteJsonRetryTest(unittest.TestCase):
+    def test_retries_once_when_first_response_is_truncated_json(self) -> None:
+        ledger_calls: list[tuple[str, tuple]] = []
+
+        @contextmanager
+        def connect():
+            yield SimpleNamespace(execute=lambda sql, params: ledger_calls.append((sql, params)))
+
+        model = _SequenceModel([TRUNCATED_JSON, '{"notes": []}'])
+        client = _json_client(model)
+        token = task_run_id.set("run-1")
+        try:
+            with (
+                patch.object(usage_ledger.database, "connect_ai", connect),
+                usage_ledger.usage_scope({"run_id": "run-1", "workspace_id": "w", "user_id": "u", "kind": "ingest"}),
+                self.assertLogs(chat_completions_llm.logger, "WARNING") as logs,
+            ):
+                result = _complete_json_retrying_once(client, "system", "user")
+        finally:
+            task_run_id.reset(token)
+
+        self.assertEqual(result, {"notes": []})
+        self.assertEqual(model.calls, 2)
+        # 재요청도 공급사 호출이므로 같은 run에 귀속된 별도 원장 행으로 남는다.
+        inserts = [params for sql, params in ledger_calls if "INSERT" in sql]
+        updates = [params for sql, params in ledger_calls if "UPDATE" in sql]
+        self.assertEqual(len(inserts), 2)
+        self.assertNotEqual(inserts[0][0], inserts[1][0])
+        self.assertEqual([row[1:5] for row in inserts], [("run-1", "w", "u", "ingest")] * 2)
+        self.assertEqual([row[0] for row in updates], ["succeeded", "succeeded"])
+        self.assertEqual(len(logs.records), 1)
+        message = logs.records[0].getMessage()
+        self.assertIn("run_id=run-1", message)
+        self.assertIn("gemini-3.5-flash-lite", message)
+        self.assertIn("line 1", message)
+        self.assertNotIn("온실 환기", message)
+
+    def test_raises_when_retry_is_also_invalid_json(self) -> None:
+        model = _SequenceModel([TRUNCATED_JSON, TRUNCATED_JSON])
+        client = _json_client(model)
+
+        with self.assertLogs(chat_completions_llm.logger, "WARNING"), self.assertRaises(JsonParseError):
+            _complete_json_retrying_once(client, "system", "user")
+
+        self.assertEqual(model.calls, 2)
+
+    def test_cancelled_task_does_not_retry(self) -> None:
+        model = _SequenceModel([TRUNCATED_JSON, '{"notes": []}'])
+        client = _json_client(model)
+        active = iter([True, True, False])  # 첫 호출 전·후는 활성, 재요청 직전에 취소된다.
+
+        with task_cancellation_scope(lambda: next(active)), self.assertRaises(PipelineRunCancelledError):
+            _complete_json_retrying_once(client, "system", "user")
+
+        self.assertEqual(model.calls, 1)
+
+    def test_plain_complete_json_does_not_retry(self) -> None:
+        # 자체 재요청 경로가 있는 호출자(markdown_edit, agent, meeting_notes 등)는 기존처럼 한 번만 묻는다.
+        model = _SequenceModel([TRUNCATED_JSON, '{"notes": []}'])
+        client = _json_client(model)
+
+        with self.assertRaises(JsonParseError):
+            client.complete_json("system", "user")
+
+        self.assertEqual(model.calls, 1)
+
+    def test_semantic_extractor_retries_truncated_json(self) -> None:
+        model = _SequenceModel([TRUNCATED_JSON, '{"notes": []}'])
+        client = _json_client(model)
+        extractor = GenericChatCompletionsExtractor(client, "system")
+
+        with (
+            patch.object(chat_completions_llm, "render_semantic_user_prompt", return_value="user"),
+            self.assertLogs(chat_completions_llm.logger, "WARNING"),
+        ):
+            result = extractor.extract(object())  # type: ignore[arg-type]
+
+        self.assertEqual(result, {"notes": []})
+        self.assertEqual(model.calls, 2)
+
+    def test_concept_adapters_retry_truncated_json(self) -> None:
+        cases = (
+            ("render_concept_page_user_prompt", lambda c: GenericChatCompletionsConceptPageGenerator(c, "s").generate({}, [], [])),
+            ("render_concept_resolution_user_prompt", lambda c: GenericChatCompletionsConceptResolver(c, "s").resolve([], [])),
+        )
+        for renderer, call in cases:
+            with self.subTest(renderer=renderer):
+                model = _SequenceModel([TRUNCATED_JSON, '{"pages": []}'])
+                client = _json_client(model)
+                with (
+                    patch.object(chat_completions_llm, renderer, return_value="user"),
+                    self.assertLogs(chat_completions_llm.logger, "WARNING"),
+                ):
+                    self.assertEqual(call(client), {"pages": []})
+                self.assertEqual(model.calls, 2)
 
 
 if __name__ == "__main__":
