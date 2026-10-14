@@ -8,3 +8,11 @@ class SpeechUnavailableError(RuntimeError):
 
 class InvalidAudioError(ValueError):
     """음성 입력 또는 스트림 순서가 계약과 다름."""
+
+
+class MeetingTranscriptionError(RuntimeError):
+    """회의 녹음 전사 실패. code는 결과 이벤트 error에 그대로 실린다(예외 원문은 싣지 않는다)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code

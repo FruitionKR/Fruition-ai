@@ -10,6 +10,7 @@ import hashlib
 import psycopg
 from psycopg.rows import dict_row
 
+from app.modules.speech.infrastructure.meeting_storage import CHECKPOINT_ROOT, checkpoint_prefix
 from app.modules.wiki_ingestion.infrastructure import object_storage
 from app.core.ai_database import ai_database_url
 
@@ -57,7 +58,8 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE workspace_id = %s AND object_key IS NOT NULL", (workspace_id,))
     # wiki 객체(본문·클러스터·로그·페이지 이력)는 모두 wiki/{workspace_id}/ 아래에 있다(ADR 0033).
-    prefixes = [f"wiki/{workspace_id}/"]
+    # 회의 전사 체크포인트(개인정보)는 pipeline-runs/ 아래지만 로그와 달리 AI가 쓰고 지우는 접두사라 함께 지운다.
+    prefixes = [f"wiki/{workspace_id}/", f"{CHECKPOINT_ROOT}/{workspace_id}/"]
     # 실행 로그(pipeline-runs/*/pipeline.log)는 지우지 않는다. AI 역할에 삭제 권한이 없고 S3 30일 lifecycle로 만료된다.
     keys = artifacts
     deleted = {"s3_objects": _delete_objects(prefixes, keys)}
@@ -104,7 +106,11 @@ def purge_user(user_id: str) -> dict[str, int]:
     with connect() as conn:
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE user_id = %s AND object_key IS NOT NULL", (user_id,))
-    deleted = {"s3_objects": _delete_objects([], artifacts)}
+        # 진행 중인 회의 전사 체크포인트. 작업 기록을 지우기 전에 접두사를 계산한다.
+        prefixes = [checkpoint_prefix(row["workspace_id"], row["id"]) for row in conn.execute(
+            "SELECT id, workspace_id FROM ai_task_runs WHERE user_id = %s AND kind = 'meeting_transcription'",
+            (user_id,)).fetchall()]
+    deleted = {"s3_objects": _delete_objects(prefixes, artifacts)}
 
     with connect() as conn:
         statements = [

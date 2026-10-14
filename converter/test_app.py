@@ -179,64 +179,12 @@ class ConverterCropFirstBoundaryTest(unittest.TestCase):
         self.assertEqual(base64.b64decode(encoded), fixture)
 
 
-class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_disconnect_waits_for_worker_cleanup(self):
-        import asyncio
-        import io
-        from threading import Event
-        from fastapi import UploadFile, HTTPException
-        from starlette.datastructures import Headers
-        cleaned = Event()
-        request = mock.Mock()
-        request.is_disconnected = mock.AsyncMock(return_value=True)
-
-        def convert(content, provider, model, cancelled, actor):
-            try:
-                if not cancelled.wait(2):
-                    raise AssertionError("취소 신호가 전달되지 않았습니다.")
-                raise HTTPException(499, "Conversion cancelled")
-            finally:
-                cleaned.set()
-
-        upload = UploadFile(io.BytesIO(b"pdf"), filename="test.pdf", headers=Headers({"content-type": "application/pdf"}))
-        with mock.patch.object(converter_app, "process_pdf", side_effect=convert):
-            with self.assertRaises(HTTPException) as raised:
-                await asyncio.wait_for(converter_app.convert(request, upload, "gemini", "test"), 3)
-        self.assertEqual(raised.exception.status_code, 499)
-        self.assertTrue(cleaned.is_set())
-
-    async def test_source_batch_passes_usage_actor(self):
-        request = mock.Mock()
-        request.is_disconnected = mock.AsyncMock(return_value=False)
-        body = converter_app.SourceBatchRequest(
-            source_url="signed", byte_size=10, workspace_id="w", user_id="u"
-        )
-        with mock.patch.object(
-            converter_app, "process_source_batch", return_value={"done": True}
-        ) as batch:
-            await converter_app._convert_source_batch(body, request, "r")
-        self.assertEqual(batch.call_args.args[-1], {"run_id": "r", "workspace_id": "w", "user_id": "u"})
-
-    def test_run_id_is_read_from_x_request_id_header_only(self):
-        from fastapi.testclient import TestClient
-        client = TestClient(converter_app.app)
-        payload = {"source_url": "signed", "byte_size": 10, "run_id": "body-id", "workspace_id": "w", "user_id": "u"}
-        with mock.patch.object(converter_app, "process_source_batch", return_value={"done": True}) as batch:
-            client.post("/convert-source-batch", json=payload, headers={"X-Request-Id": "hdr"})
-        self.assertEqual(batch.call_args.args[-1]["run_id"], "hdr")
-        with mock.patch.object(converter_app, "process_pdf", return_value={}) as pdf:
-            client.post("/convert", files={"file": ("a.pdf", b"pdf", "application/pdf")},
-                        data={"run_id": "form-id", "workspace_id": "w", "user_id": "u"}, headers={"X-Request-Id": "hdr"})
-        self.assertEqual(pdf.call_args.args[-1], {"run_id": "hdr", "workspace_id": "w", "user_id": "u"})
-        with mock.patch.object(converter_app, "process_pdf", return_value={}) as pdf:
-            client.post("/convert", files={"file": ("a.pdf", b"pdf", "application/pdf")}, data={"run_id": "form-id"})
-        self.assertIsNone(pdf.call_args.args[-1]["run_id"])
-
+class ConverterCancellationTest(unittest.TestCase):
     def test_cancellation_terminates_running_process(self):
         import tempfile
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
-        from fastapi import HTTPException
+        from app.core.pipeline_control import PipelineRunCancelledError
         cancelled = Event()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -251,18 +199,13 @@ class ConverterCancellationTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(started.exists())
                 process_id = int(started.read_text())
                 cancelled.set()
-                with self.assertRaises(HTTPException) as raised:
+                with self.assertRaises(PipelineRunCancelledError):
                     future.result(timeout=3)
-                self.assertEqual(raised.exception.status_code, 499)
                 with self.assertRaises(ProcessLookupError):
                     os.kill(process_id, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class ConverterRequestDeadlineTest(unittest.IsolatedAsyncioTestCase):
+class ConverterRequestDeadlineTest(unittest.TestCase):
     def test_stage_timeouts_are_capped_to_remaining_time(self):
         from app.core.pipeline_control import request_deadline
         self.assertEqual(converter_app._within_deadline(60), 60)
@@ -271,171 +214,194 @@ class ConverterRequestDeadlineTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(converter_app._within_deadline(5), 5)
 
     def test_expired_deadline_stops_before_running_any_command(self):
-        from fastapi import HTTPException
-        from app.core.pipeline_control import request_deadline
+        from app.core.pipeline_control import DeadlineExceededError, request_deadline
         with mock.patch.object(converter_app, "missing_commands", return_value=[]), \
              mock.patch.object(converter_app, "run_to_file") as diagnostic, \
              mock.patch.object(converter_app, "run") as restoration, \
-             request_deadline(-1), self.assertRaises(HTTPException) as raised:
+             request_deadline(-1), self.assertRaises(DeadlineExceededError):
             converter_app.process_pdf(b"pdf")
-        self.assertEqual(raised.exception.status_code, 504)
         diagnostic.assert_not_called()
         restoration.assert_not_called()
 
-    async def test_source_batch_queue_wait_counts_against_deadline(self):
-        import asyncio
-        from fastapi import HTTPException
-        request = mock.Mock()
-        body = converter_app.SourceBatchRequest(source_url="signed", byte_size=10)
-        busy = asyncio.Semaphore(1)
-        await busy.acquire()
-        with mock.patch.object(converter_app, "_source_conversion_slots", busy), \
-             mock.patch.object(converter_app, "REQUEST_DEADLINE_SECONDS", 0.05), \
-             mock.patch.object(converter_app, "process_source_batch") as batch, \
-             self.assertRaises(HTTPException) as raised:
-            await converter_app.convert_source_batch(body, request, "r")
-        self.assertEqual(raised.exception.status_code, 504)
-        batch.assert_not_called()
-        # 대기하다 포기한 요청이 슬롯을 해제하거나 가로채면 안 된다.
-        self.assertTrue(busy.locked())
+
+def pdf_bytes(pages):
+    import io
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=72, height=72)
+    raw = io.BytesIO()
+    writer.write(raw)
+    return raw.getvalue()
 
 
-class LargePdfRangeBatchTest(unittest.TestCase):
-    def reader(self, size):
-        from threading import Event
-        with mock.patch.dict("os.environ", {"CONVERTER_SOURCE_HOSTS": "storage.example.test"}):
-            return converter_app.S3RangeReader("https://storage.example.test/object?signature=private", size, Event())
+class FakeStorage:
+    """minio.get_object(offset, length)를 흉내 낸다. 요청한 범위를 기록한다."""
 
-    def test_more_than_2gib_seek_fetches_only_one_range(self):
+    def __init__(self, data):
+        self.data, self.requests = data, []
+
+    def get_object(self, bucket, key, offset=0, length=0):
         import io
-        size = 3 * 1024**3
-        reader = self.reader(size)
-        requests = []
-        class Response(io.BytesIO):
-            status = 206
-        def open_range(request, timeout):
-            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
-            requests.append((first, last))
-            response = Response(b"x" * (last - first + 1))
-            response.headers = {"Content-Range": f"bytes {first}-{last}/{size}"}
-            return response
-        reader.opener.open = open_range
+        self.requests.append((offset, length))
+        response = mock.Mock()
+        response.read.return_value = self.data[offset:offset + length]
+        return response
+
+
+class StorageRangeReaderTest(unittest.TestCase):
+    def test_reads_fetch_one_block_and_reuse_the_cache(self):
+        from threading import Event
+        storage = FakeStorage(b"x" * 3000000)
+        reader = converter_app.StorageRangeReader(storage, "b", "k", 3000000, Event())
         reader.seek(-12, 2)
         self.assertEqual(reader.read(12), b"x" * 12)
-        self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0][1] - requests[0][0] + 1, 1024**2)
         reader.seek(-6, 2)
         self.assertEqual(reader.read(6), b"x" * 6)
-        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(storage.requests), 1)
+        self.assertEqual(storage.requests[0][1], 3000000 - 2 * 1024**2)
 
-    def test_unapproved_host_and_ignored_range_are_rejected(self):
+    def test_incomplete_range_fails_the_attempt(self):
         from threading import Event
-        with self.assertRaises(ValueError):
-            converter_app.S3RangeReader("http://169.254.169.254/latest/meta-data", 100, Event())
-        reader = self.reader(100)
-        response = mock.MagicMock()
-        response.__enter__.return_value.status = 200
-        reader.opener.open = mock.Mock(return_value=response)
-        with self.assertRaisesRegex(ValueError, "exact requested"):
+        storage = FakeStorage(b"x" * 10)
+        reader = converter_app.StorageRangeReader(storage, "b", "k", 100, Event())
+        with self.assertRaises(converter_app.ConversionFailedError):
             reader.read(1)
 
-    def range_storage(self, reader, size, responses):
-        """responses의 각 항목은 (first, last) -> 응답 객체 또는 raise할 예외. 요청 순서대로 소비한다."""
-        import io
-        requests = []
-        class Response(io.BytesIO):
-            status = 206
-        def open_range(request, timeout):
-            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
-            requests.append((first, last))
-            outcome = responses.pop(0)
-            if isinstance(outcome, Exception):
-                raise outcome
-            response = Response(b"x" * (last - first + 1))
-            response.headers = {"Content-Range": outcome or f"bytes {first}-{last}/{size}"}
-            return response
-        reader.opener.open = open_range
-        return requests
-
-    def test_http_403_reports_status_and_s3_code_without_retry_or_url(self):
-        import io
-        from urllib.error import HTTPError
-        reader = self.reader(100)
-        body = io.BytesIO(b"<?xml version='1.0'?><Error><Code>AccessDenied</Code><Message>x</Message></Error>")
-        requests = self.range_storage(reader, 100, [HTTPError("https://storage.example.test/object?signature=private", 403, "Forbidden", {}, body)])
-        with self.assertLogs("converter", level="WARNING") as logs, \
-             self.assertRaisesRegex(ValueError, r"Could not read.*403 AccessDenied") as raised:
-            reader.read(1)
-        self.assertEqual(len(requests), 1)
-        self.assertNotIn("signature", str(raised.exception))
-        self.assertNotIn("signature", "\n".join(logs.output))
-        self.assertNotIn("storage.example.test", "\n".join(logs.output))
-
-    def test_transient_failures_are_retried_once(self):
-        from urllib.error import HTTPError, URLError
-        for transient in (URLError("connection reset"), HTTPError("https://storage.example.test/object", 503, "Unavailable", {}, None)):
-            with self.subTest(transient=transient), mock.patch.object(converter_app, "RANGE_RETRY_DELAY_SECONDS", 0):
-                reader = self.reader(100)
-                requests = self.range_storage(reader, 100, [transient, None])
-                self.assertEqual(reader.read(4), b"xxxx")
-                self.assertEqual(len(requests), 2)
-
-    def test_content_range_mismatch_includes_received_header(self):
-        reader = self.reader(100)
-        requests = self.range_storage(reader, 100, ["bytes 0-49/100"])
-        with self.assertRaisesRegex(ValueError, r"exact requested.*bytes 0-49/100"):
-            reader.read(1)
-        self.assertEqual(len(requests), 1)
-
-    def test_page_batches_resume_without_reconverting_previous_pages(self):
-        import io
+    def test_cancelled_event_stops_reading(self):
         from threading import Event
-        from pypdf import PdfReader, PdfWriter
-        writer = PdfWriter()
-        for _ in range(23): writer.add_blank_page(width=72, height=72)
-        raw = io.BytesIO(); writer.write(raw)
-        def convert(path, *args):
-            self.assertIsInstance(path, Path)
-            return {"markdown": f"pages={len(PdfReader(path).pages)}"}
-        with mock.patch.object(converter_app, "S3RangeReader", side_effect=lambda *args: io.BytesIO(raw.getvalue())), \
-             mock.patch.object(converter_app, "process_pdf", side_effect=convert), \
-             mock.patch.dict("os.environ", {"PDF_PAGES_PER_BATCH": "10"}):
-            first = converter_app.process_source_batch("signed", len(raw.getvalue()), 10, "gemini", "model", Event())
-            last = converter_app.process_source_batch("signed", len(raw.getvalue()), 20, "gemini", "model", Event())
-        self.assertEqual((first["page_start"], first["page_end"], first["markdown"], first["done"]), (11, 20, "pages=10", False))
-        self.assertEqual((last["page_start"], last["page_end"], last["markdown"], last["done"]), (21, 23, "pages=3", True))
+        from app.core.pipeline_control import PipelineRunCancelledError
+        cancelled = Event()
+        cancelled.set()
+        reader = converter_app.StorageRangeReader(FakeStorage(b"x" * 10), "b", "k", 10, cancelled)
+        with self.assertRaises(PipelineRunCancelledError):
+            reader.read(1)
 
-
-class SparseLargePdfTest(unittest.TestCase):
     def test_valid_three_gib_pdf_is_parsed_using_only_remote_ranges(self):
-        import io, re
+        import re
         from threading import Event
-        from pypdf import PdfWriter, PdfReader
-        writer = PdfWriter()
-        for _ in range(12): writer.add_blank_page(width=72, height=72)
-        output = io.BytesIO(); writer.write(output); raw = output.getvalue()
+        from pypdf import PdfReader
+        raw = pdf_bytes(12)
         split = raw.index(b"\nxref\n") + 1
         prefix = raw[:split]
         xref_offset = 3 * 1024**3
         suffix = re.sub(rb"startxref\n[0-9]+", f"startxref\n{xref_offset}".encode(), raw[split:])
         size = xref_offset + len(suffix)
         fetched = []
-        class Response(io.BytesIO): status = 206
-        def open_range(request, timeout):
-            first, last = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
-            data = bytearray(b" " * (last - first + 1))
-            for start, value in [(0, prefix), (xref_offset, suffix)]:
-                lo, hi = max(start, first), min(start + len(value), last + 1)
-                if lo < hi: data[lo-first:hi-first] = value[lo-start:hi-start]
-            fetched.append(len(data))
-            response = Response(data); response.headers = {"Content-Range": f"bytes {first}-{last}/{size}"}
-            return response
-        opener = mock.Mock(); opener.open.side_effect = open_range
-        def convert(path, *args): return {"markdown": f"pages={len(PdfReader(path).pages)}"}
-        with mock.patch("urllib.request.build_opener", return_value=opener), \
-             mock.patch.object(converter_app, "process_pdf", side_effect=convert), \
-             mock.patch.dict("os.environ", {"CONVERTER_SOURCE_HOSTS": "storage.example.test", "PDF_PAGES_PER_BATCH": "10"}):
-            result = converter_app.process_source_batch("https://storage.example.test/large.pdf", size, 10, "gemini", "model", Event())
-        self.assertEqual(result["markdown"], "pages=2")
-        self.assertTrue(result["done"])
+
+        class SparseStorage:
+            def get_object(self, bucket, key, offset=0, length=0):
+                data = bytearray(b" " * length)
+                for start, value in [(0, prefix), (xref_offset, suffix)]:
+                    lo, hi = max(start, offset), min(start + len(value), offset + length)
+                    if lo < hi:
+                        data[lo - offset:hi - offset] = value[lo - start:hi - start]
+                fetched.append(len(data))
+                response = mock.Mock()
+                response.read.return_value = bytes(data)
+                return response
+
+        stream = converter_app.StorageRangeReader(SparseStorage(), "b", "k", size, Event())
+        reader, total = converter_app.open_pdf(stream)
+        self.assertEqual(total, 12)
         self.assertLess(sum(fetched), 4 * 1024**2)
+
+    def test_encrypted_and_invalid_pdfs_are_rejected(self):
+        import io
+        from threading import Event
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.encrypt("secret")
+        raw = io.BytesIO()
+        writer.write(raw)
+        for data in (raw.getvalue(), b"not a pdf"):
+            stream = converter_app.StorageRangeReader(FakeStorage(data), "b", "k", len(data), Event())
+            with self.assertRaises(converter_app.InputRejectedError):
+                converter_app.open_pdf(stream)
+
+
+class SplitOnFailureTest(unittest.TestCase):
+    """실패·시간 초과한 범위는 절반으로 나눠 1쪽까지 재시도한다."""
+
+    def setUp(self):
+        from pypdf import PdfReader
+        import io
+        self.reader = PdfReader(io.BytesIO(pdf_bytes(10)))
+
+    def run_pages(self, behavior, start=0, end=10, cancelled=None):
+        from threading import Event
+        calls = []
+
+        def process(path, provider, model, event, actor):
+            from pypdf import PdfReader
+            count = len(PdfReader(path).pages)
+            calls.append(count)
+            outcome = behavior(len(calls), count)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return {"markdown": outcome}
+
+        with mock.patch.object(converter_app, "process_pdf", side_effect=process):
+            try:
+                return converter_app.convert_pages(self.reader, start, end, "gemini", "m", cancelled or Event(), {}), calls
+            except Exception as error:
+                error.calls = calls
+                raise
+
+    def test_success_does_not_split(self):
+        markdown, calls = self.run_pages(lambda n, count: "all")
+        self.assertEqual((markdown, calls), ("all", [10]))
+
+    def test_failure_splits_in_half_and_keeps_page_order(self):
+        markdown, calls = self.run_pages(
+            lambda n, count: converter_app.ConversionFailedError("x") if n == 1 else f"[{count}]")
+        self.assertEqual(calls, [10, 5, 5])
+        self.assertEqual(markdown, "[5]\n\n[5]")
+
+    def test_timeout_splits_but_one_page_failure_fails_the_batch(self):
+        from app.core.pipeline_control import DeadlineExceededError
+        with self.assertRaises(DeadlineExceededError) as raised:
+            self.run_pages(lambda n, count: DeadlineExceededError("attempt"))
+        # 10 -> 5 -> 2 -> 1 쪽까지 내려가 첫 1쪽 실패로 끝난다.
+        self.assertEqual(raised.exception.calls, [10, 5, 2, 1])
+
+    def test_only_the_failing_half_is_split_again(self):
+        def behavior(n, count):
+            if n == 1 or n == 3:
+                return converter_app.ConversionFailedError("x")
+            return f"[{count}]"
+        markdown, calls = self.run_pages(behavior)
+        self.assertEqual(calls, [10, 5, 5, 2, 3])
+        self.assertEqual(markdown, "[5]\n\n[2]\n\n[3]")
+
+    def test_input_rejected_and_cancelled_are_not_split(self):
+        from threading import Event
+        from app.core.pipeline_control import PipelineRunCancelledError
+        for error in (converter_app.InputRejectedError("encrypted"), PipelineRunCancelledError("cancelled")):
+            with self.subTest(error=type(error).__name__), self.assertRaises(type(error)) as raised:
+                self.run_pages(lambda n, count, error=error: error)
+            self.assertEqual(raised.exception.calls, [10])
+        cancelled = Event()
+        cancelled.set()
+        with self.assertRaises(PipelineRunCancelledError) as raised:
+            self.run_pages(lambda n, count: "ok", cancelled=cancelled)
+        self.assertEqual(raised.exception.calls, [])
+
+    def test_expired_batch_deadline_is_not_split(self):
+        from app.core.pipeline_control import DeadlineExceededError, request_deadline
+        with request_deadline(-1), self.assertRaises(DeadlineExceededError) as raised:
+            self.run_pages(lambda n, count: converter_app.ConversionFailedError("x"))
+        self.assertEqual(raised.exception.calls, [10])
+
+    def test_each_attempt_gets_its_own_timeout(self):
+        from app.core.pipeline_control import remaining_seconds
+        seen = []
+        with mock.patch.object(converter_app, "ATTEMPT_TIMEOUT_SECONDS", 1500):
+            self.run_pages(lambda n, count: seen.append(remaining_seconds()) or "ok")
+        self.assertLessEqual(seen[0], 1500)
+        self.assertGreater(seen[0], 1400)
+
+
+if __name__ == "__main__":
+    unittest.main()

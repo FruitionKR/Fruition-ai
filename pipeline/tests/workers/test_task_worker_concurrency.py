@@ -20,7 +20,7 @@ TP = TopicPartition("t", 0)
 def _msg(offset: int, key: bytes | None = None, run_id: str | None = None, partition: int = 0):
     return SimpleNamespace(
         topic="t", partition=partition, offset=offset, key=key,
-        value={"kind": "lint", "run_id": run_id or f"run-{offset}"},
+        value={"kind": "lint", "run_id": run_id or f"run-{offset}", "workspace_id": "ws", "user_id": "user"},
     )
 
 
@@ -273,6 +273,26 @@ def test_non_durable_failure_stops_without_committing_that_offset() -> None:
     # 끝난 offset 1은 offset 0이 안 끝났으므로 커밋되지 않고, 실패한 메시지의 failed 이벤트도 없다.
     assert h.commits == []
     assert ("run-0", "failed") not in h.events
+
+
+@pytest.mark.parametrize("value", [
+    {"kind": "lint", "run_id": "run-0", "workspace_id": "ws"},  # user_id 없음: journal.register가 행을 만들기 전에 KeyError
+    {"kind": "lint", "run_id": "", "workspace_id": "ws", "user_id": "user"},
+    ["not", "a", "command"],
+])
+def test_command_the_journal_cannot_register_is_failed_and_committed(value) -> None:
+    """journal에 등록할 수 없는 command는 재전달해도 같으므로 input_rejected로 확정하고 커밋한다(#101 cd97857과 같은 결함)."""
+    async def handler(command):
+        raise KeyError("user_id")
+
+    async def scenario(h):
+        await h.until(lambda: h.commits)
+
+    message = SimpleNamespace(topic="t", partition=0, offset=0, key=None, value=value)
+    h = _run([message], handler, scenario)
+
+    assert [status for _, status in h.events] == ["failed"]
+    assert h.commits == [{TP: 1}]
 
 
 def test_revoke_commits_contiguous_done_offsets_and_skips_later_commit() -> None:

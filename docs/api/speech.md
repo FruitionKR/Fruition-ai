@@ -25,7 +25,7 @@ AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을
 - 최대 24 MiB. 빈 파일은 거부한다. 모델: `gpt-transcribe`.
 - 성공: `{"text":"사용자 발화"}`. 빈 text는 발화 없음으로 처리한다.
 - 오류: 인증 `401/503`, workspace 거부 `403`, 크기 `413`, 형식 `415`, 빈 입력 `422`, 제공자 실패 `502`, `deadline_seconds` 범위 오류 `422`.
-- 시간 상한: `deadline_seconds`를 보내면 그 시간 안에 전사가 끝나지 않을 때 `502`로 포기한다. ALB idle timeout(120초) 뒤에는 호출자가 끊어 결과를 쓸 곳이 없으므로 채팅 호출자는 `100`을 보낸다. 보내지 않으면(백그라운드 회의 녹음 파일, 최대 24 MiB) 전체 시간 상한 없이 공급사 응답을 최대 900초까지 기다린다.
+- 시간 상한: `deadline_seconds`를 보내면 그 시간 안에 전사가 끝나지 않을 때 `502`로 포기한다. ALB idle timeout(120초) 뒤에는 호출자가 끊어 결과를 쓸 곳이 없으므로 채팅 호출자는 `100`을 보낸다. 보내지 않으면 전체 시간 상한 없이 공급사 응답을 최대 900초까지 기다린다. 회의 녹음 파일은 이 route를 쓰지 않고 [비동기 전사](#회의-녹음-전사)로 처리한다.
 
 이 API는 전사만 반환하고 Agent를 실행하지 않는다. 오디오 bytes만으로 마이크 발화와
 첨부 파일의 출처를 판별할 수 없으므로 호출 서비스가 입력 경로를 구분해야 한다.
@@ -159,6 +159,55 @@ payload의 네 배열 항목은 text와 source_segment_ids를 가진다. 실패�
 Agent의 `GenerateMarkdownEditUseCase`나 편집 평가·재시도 로직을 호출하지 않으며,
 기존 승인·문서 수정 경로에도 아직 연결하지 않았다. 응답의 Markdown과 근거 배열을
 반환할 뿐 DB·S3에 저장하거나 문서 본문을 변경하지 않는다.
+
+## 회의 녹음 전사
+
+회의 녹음 파일 전사는 HTTP route가 아니라 Kafka `ai.maintenance.command`의 command다(ADR 0035, 회의록과 같은 패턴).
+브라우저가 S3에 직접 올린 녹음을 document가 command로 넘기면 AI가 읽어 구간별로 전사하고 결과를 `ai.task.event`로 보낸다.
+녹음 길이는 최대 3시간이며 24 MiB 한도는 없다. 파일 크기 상한(500 MiB)은 document 업로드가 지킨다.
+
+Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. 파티션 키는 `run_id`):
+
+```json
+{"run_id":"meeting_transcription:<meeting_id>:<upload_seq>","kind":"meeting_transcription",
+ "workspace_id":"ws_...","user_id":"...","meeting_id":"...",
+ "recording_key":"meetings/<meeting_id>/recording-<uuid>.<ext>","content_type":"audio/mpeg"}
+```
+
+- `run_id`는 업로드한 녹음마다 달라야 한다(실패 뒤 다시 올리면 새 run). 128자 이하.
+- `recording_key`는 `^meetings/[A-Za-z0-9_-]{1,128}/recording-[0-9a-f-]{36}\.(wav|mp3|m4a|webm)$`이고 `<meeting_id>` 구간이 `meeting_id`와 같아야 한다.
+- `content_type`은 `audio/wav`, `audio/x-wav`, `audio/mpeg`, `audio/mp4`, `audio/x-m4a`, `audio/webm` 중 하나다. 참고용이며 디코딩은 내용으로 한다.
+- 검증에 실패하면 `input_rejected`, OpenAI 키가 없으면 `provider_unavailable`이다.
+
+처리:
+
+1. 객체를 임시 파일로 내려받아 길이를 확인한다. 3시간(10,800초)을 넘으면 공급사 호출 전에 실패한다.
+2. PyAV로 디코딩해 16 kHz mono PCM16으로 바꾸고 목표 10분 단위로 자른다. 경계는 목표 직전 20초 안에서 에너지가 가장 낮은 100 ms 창의 가운데이며, 겹침이 없고 구간은 목표 길이를 넘지 않는다. 구간은 WAV(약 19 MB)로 인코딩한다.
+3. 구간을 최대 `MEETING_TRANSCRIPTION_CONCURRENCY`(기본 4)개씩 `gpt-transcribe`로 전사하고 순서대로 공백 하나로 잇는다. 구간마다 사용량 원장 한 행을 남긴다(kind `meeting_transcription`, run_id는 command의 `run_id`). document는 이 run_id의 크레딧 예약을 정산한다.
+4. 구간 전사는 `pipeline-runs/meeting-transcription/<workspace_id>/<sha256(run_id) 앞 32자>/<index>.txt`에 체크포인트로 남긴다. 같은 run이 재전달되면 체크포인트가 있는 구간은 다시 전사(과금)하지 않는다. 체크포인트는 개인정보라 run이 끝나면(성공·실패·취소) 지우고, 워크스페이스·사용자 파기가 함께 지우며, 스토리지 lifecycle이 최후 보루다.
+5. 전체 마감은 `MEETING_TRANSCRIPTION_DEADLINE_SECONDS`(기본 1500초, worker `max_poll_interval` 1800초 미만)이며 넘으면 `deadline_exceeded`다. 취소(`POST /internal/ai/tasks/{run_id}/cancel`)는 구간 사이와 공급사 호출 직전에 확인해 남은 구간을 호출하지 않는다.
+
+결과 이벤트(`ai.task.event`, key = `run_id`, 봉투는 다른 task_worker 이벤트와 같다):
+
+```json
+{"event_id":"meeting_transcription:<run_id>:succeeded","run_id":"<run_id>","kind":"meeting_transcription","status":"succeeded",
+ "workspace_id":"...","user_id":"...","operation_id":null,"request":{"...":"command"},
+ "payload":{"meeting_id":"...","text":"전체 전사","duration_seconds":1234.5,"chunks":7},"error":null}
+```
+
+`text`는 100,000자 이하가 보장된다(넘으면 `MEETING_TRANSCRIPT_TOO_LONG`). 실패하면 `status: "failed"`, `payload: null`, `error`에 아래 코드 하나를 싣는다. 예외 원문은 싣지 않는다.
+
+| error | 사유 |
+|---|---|
+| `MEETING_RECORDING_TOO_LONG` | 디코딩한 길이가 3시간 초과 |
+| `MEETING_RECORDING_UNREADABLE` | 디코딩할 수 없는 오디오, 오디오 스트림 없음, 객체 없음 |
+| `MEETING_TRANSCRIPT_EMPTY` | 모든 구간에서 인식된 발화가 없음 |
+| `MEETING_TRANSCRIPT_TOO_LONG` | 이은 전사가 100,000자 초과 |
+| `input_rejected`, `provider_rate_limited`, `provider_unavailable`, `deadline_exceeded`, `cancelled`, `internal_error` | 공통 코드([tasks.md](tasks.md)) |
+
+run은 task journal로 실행한다. 완료·실패·취소로 닫히는 즉시 result의 전사 본문과 command의 `recording_key`를 지우고(전사의 소유자는 document다) command hash, 상태, `error_code`, `run_id`만 남긴다. 같은 command가 재전달되면 완료된 run은 공급사 호출 없이 본문 없는 결과(`{"scrubbed": true}`)를 재생해 다시 과금하지 않는다. 첫 결과 이벤트가 유실됐다면 document가 새 `run_id`로 재시도한다(녹음은 S3에 남아 있다). 실행 중이면 끝날 때까지 기다린다.
+
+운영 요구: pipeline worker는 `meetings/*` 읽기와 `pipeline-runs/meeting-transcription/*` 읽기·쓰기·삭제 권한, 임시 디스크 1.2 GiB 이상(내려받은 녹음 500 MiB + 구간 WAV)이 필요하다.
 
 ## 연동 범위와 검증
 

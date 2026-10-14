@@ -24,6 +24,7 @@ Accepted
 - **재전달 대기 간격을 지수 backoff·지터로 하기**: 충돌 상대가 하나(원래 worker)이고 대기 중에도 poll을 계속하므로 단순한 고정 간격으로 충분하다. 필요해지면 바꾼다.
 
 ## Consequences
+- 후속: PDF 변환은 `ai.convert.command` 비동기 작업으로 옮겼고 converter의 840초 HTTP 마감과 `/convert-source-batch`는 삭제했다([ADR 0034](0034-async-pdf-conversion.md)).
 - 후속: 회의록은 `ai.maintenance.command`의 `kind: meeting_notes` 비동기 작업으로 옮겼고 `POST /meeting-notes/preview`는 삭제했다. 동기 마감은 두지 않고 공급사 timeout에 맡기며, 실패는 `MEETING_NOTES_*` 코드로 알린다([음성·회의록](../api/speech.md#회의록-초안)).
 - 마감을 넘기면 작업이 실패하고 같은 `run_id`로 재시도할 수 없다(새 `run_id` 필요). 이전보다 이중 과금과 중복 결과가 줄어든다.
 - 마감 중인 LLM 호출은 내부 재시도 없이 한 번만 시도한다. 일시 오류는 사용자의 재시도로 넘어간다. 공급사 timeout은 연결·읽기 단위라 마감을 약간 넘길 수 있고, 호출 뒤 확인이 결과 저장을 막는다.

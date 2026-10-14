@@ -32,10 +32,44 @@ ingest 결과 이벤트(`kind=document`·`chat_wiki` 등 ingest worker 발행)�
 | `internal_error` | 그 외 모든 실패 |
 | `mutation_intent_required` | Agent 계획 단계에서 변경 의도를 확인해야 하는 되묻기(clarification) 사유 |
 
-기능별 기존 코드(`agent_turn_failed`, `agent_turn_cancelled`, `invalid_agent_turn_request`, `agent_not_configured`, `agent_turn_route_contract_failed`, `markdown_*`, `SKILL_NOT_FOUND`, `SKILL_DISABLED`, `invalid_llm_selection`, `agent_turn_interrupted`, `task_failed`, `interrupted_attempts_exhausted`, `rollback_child_failed`, `MEETING_NOTES_*`, `rollback_*`)는 그대로 유지합니다. 분류는 `app/core/failure_codes.py`의 `failure_code(exc)`가 맡으며, 우리 예외(`TaskFailedError` 등)의 `code`만 그대로 쓰고 SDK 예외의 본문 code는 무시합니다. 저장된 값이 코드 모양이 아니면 재전달 때 `task_failed`로 바꿉니다.
+기능별 기존 코드(`agent_turn_failed`, `agent_turn_cancelled`, `invalid_agent_turn_request`, `agent_not_configured`, `agent_turn_route_contract_failed`, `markdown_*`, `SKILL_NOT_FOUND`, `SKILL_DISABLED`, `invalid_llm_selection`, `agent_turn_interrupted`, `task_failed`, `interrupted_attempts_exhausted`, `rollback_child_failed`, `MEETING_NOTES_*`, `MEETING_RECORDING_TOO_LONG`, `MEETING_RECORDING_UNREADABLE`, `MEETING_TRANSCRIPT_EMPTY`, `MEETING_TRANSCRIPT_TOO_LONG`, `rollback_*`)는 그대로 유지합니다. 분류는 `app/core/failure_codes.py`의 `failure_code(exc)`가 맡으며, 우리 예외(`TaskFailedError` 등)의 `code`만 그대로 쓰고 SDK 예외의 본문 code는 무시합니다. 저장된 값이 코드 모양이 아니면 재전달 때 `task_failed`로 바꿉니다.
 
 
 상태 의미·복구 순서·검증 범위는 [공통 계약](https://github.com/FruitionKR/Fruition-flatform/blob/main/docs/api/ai-task-cancellation.md)을 따릅니다. 업무 DB 복구 API는 [Document](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/tasks.md#업무-변경-복구-내부-api)가 제공합니다.
+
+## PDF 변환 command
+
+document가 Kafka `ai.convert.command`(env `CONVERT_COMMAND_TOPIC`)에 쪽 범위 단위로 발행하고, converter worker가 한 번에 하나씩 처리한다. 결과는 `ai.task.event`로 돌려준다. 근거는 [ADR 0034](../adr/0034-async-pdf-conversion.md)를 따른다.
+
+Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼져 병렬로 처리된다. 같은 문서의 batch는 AI가 서로 독립으로 처리하며, 쪽 순서 병합은 document가 한다.
+
+```json
+{"run_id": "convert:<document_id>:<start_page>", "parent_run_id": "convert:<document_id>", "kind": "convert_batch",
+ "workspace_id": "ws_...", "user_id": "...", "document_id": "<placeholder 문서 id>",
+ "source_key": "sources/documents/<document_id>/original", "start_page": 0, "page_count": 10,
+ "provider": "gemini", "model": "..."}
+```
+
+| 필드 | 규칙 |
+|---|---|
+| `run_id` | batch 식별자. 같은 `run_id`의 재전달은 저장된 결과를 돌려주고 다시 변환하지 않는다. 같은 `run_id`에 다른 내용을 보내면 `input_rejected` |
+| `parent_run_id` | document가 정산하는 변환 run. 모델 사용량(`document_conversion`)은 이 값으로 귀속한다 |
+| `source_key` | object storage의 원본 PDF key. `sources/documents/{id}/original` 형식만 받는다(`s3://` 불가). converter가 범위 읽기로 직접 읽는다 |
+| `start_page` | 0부터. 전체 쪽수 이상이면 `input_rejected` |
+| `page_count` | 1~50. 전체 쪽수를 넘는 끝은 마지막 쪽으로 줄인다 |
+
+성공 이벤트(`status: succeeded`, key = `run_id`, 원본 command `request`는 싣지 않는다)의 `payload`:
+
+| 필드 | 의미 |
+|---|---|
+| `document_id` | command의 `document_id` |
+| `page_start`, `page_end` | 실제 변환한 쪽(1부터, 끝 포함) |
+| `total_pages` | 원본 PDF의 전체 쪽수 |
+| `result_key` | `tmp/convert/{workspace_id}/{document_id}/{start_page}.md`. UTF-8 Markdown이며 이미지는 `data:` URI로 포함한다. document가 읽은 뒤 쓰지 않는 object는 lifecycle이 지운다 |
+
+실패 이벤트(`status: failed`)의 `error`는 위 [실패 코드](#실패-코드-계약)의 공통 코드다: 암호·손상 PDF, 범위·`source_key` 위반은 `input_rejected`, 전체 마감(`CONVERT_BATCH_DEADLINE_SECONDS`, 기본 7200초) 초과는 `deadline_exceeded`, 취소는 `cancelled`, 그 외는 `internal_error`. 예외 원문은 싣지 않는다.
+
+변환 시도가 실패하거나 시도 제한(`CONVERT_ATTEMPT_TIMEOUT_SECONDS`, 기본 1500초)을 넘기면 AI가 쪽 범위를 절반으로 나눠 1쪽까지 다시 시도한다. 1쪽도 실패하면 batch가 실패한다. 입력 거절과 취소는 나누지 않는다. 취소는 위 `POST /internal/ai/tasks/{run_id}/cancel`에 batch의 `run_id`와 `command`를 보내며, 진행 중인 변환은 약 2초 안에 중단된다. `parent_run_id`로는 취소할 수 없고 batch마다 보내야 한다.
 
 ## 모델별 사용량 조회
 
@@ -48,11 +82,11 @@ ingest 결과 이벤트(`kind=document`·`chat_wiki` 등 ingest worker 발행)�
 - 캐시 입력은 전체 입력의 일부, reasoning은 전체 출력의 일부이므로 단순 합산하지 않는다. 알려진 토큰 합계와 사용량 미확인 호출 수를 함께 표시한다. 현재 API는 토큰 조회이며 가격표·크레딧·세금을 반영한 금액을 반환하지 않는다.
 - `unfinished_calls`는 `started`와 `abandoned` 호출을 함께 센다. 취소된 TTS 호출(`cancelled`)은 받은 사용량이 토큰 합계에 포함되며 `failed_calls`·`unfinished_calls`에는 세지 않는다.
 - AI DB `ai_model_usage`에 공통 ChatCompletions 클라이언트·Jev·OpenAI 음성 호출의 시작과 응답 사용량을 별도 트랜잭션으로 기록한다. 호출 전 원장 기록 실패 시 모델을 호출하지 않는다. 응답 기록 실패·프로세스 중단 시 시작 기록이 `started`로 남고, 1시간이 지나면 사용량 조회 직전에 `abandoned`로 닫힌다. 닫힌 뒤 늦게 끝난 호출은 상태와 `finished_at`을 유지하고 사용량만 채운다. 기간 조회는 같은 행을 두 번 돌려주지 않으므로, 늦게 채워진 사용량은 `run_id` 조회로 확인한다. 실패·취소로 사용량 원장을 롤백하지 않는다.
-- Kafka 작업(ingest/query/agent/maintenance), journal 기반 Skill 작업, Agent worker와 채팅 제목 생성의 사용자 컨텍스트를 전달한다. 의미 추출·회의록 묶음 스레드(회의록은 Kafka command `kind: meeting_notes`, run_id는 command의 `run_id`)에는 `copy_context`가 컨텍스트를 전달한다.
+- Kafka 작업(ingest/query/agent/maintenance), journal 기반 Skill 작업, Agent worker와 채팅 제목 생성의 사용자 컨텍스트를 전달한다. 의미 추출·회의록 묶음 스레드(회의록·회의 녹음 전사는 Kafka command `kind: meeting_notes`·`meeting_transcription`, run_id는 command의 `run_id`)에는 `copy_context`가 컨텍스트를 전달한다.
 - HTTP 동기 경로(`/wiki-schema/preview`, `/skills/draft-from-runs/preview`, `/speech/transcriptions`, `/speech/synthesis`, `WS /speech/transcriptions/live`)는 document가 보낸 `X-Request-Id` 헤더(최대 128자)를 `run_id`로, 요청의 `workspace_id`·`user_id`를 귀속 대상으로 기록한다.
 - 귀속 값(`run_id`·`workspace_id`·`user_id`)이 빠진 과금 호출은 건너뛰지 않고 그 값을 `unattributed`로 기록하며 경고 로그를 남긴다. 누락 경로가 없어지면 거부로 바꾼다.
-- PDF converter의 selective repair(OpenAI·Gemini·Claude 직접 호출)는 kind `document_conversion`으로 기록한다. document가 `X-Request-Id` 헤더(최대 128자)로 `run_id`를, `/convert-source-batch` 본문(또는 `/convert` Form)의 선택 필드 `workspace_id`·`user_id`(각 최대 128자)로 나머지를 보내면 (`run_id` 본문·Form 필드는 받지 않는다) converter가 env `MODEL_USAGE_SCOPE`(JSON)로 restoration 하위 프로세스에 넘긴다. 공급사 usage 원값은 아래 토큰 포함 관계에 맞춰 정규화하며, 응답 본문 파싱에 실패해도 받은 사용량은 남긴다. 원장 시작 기록이 실패하면(`AI_DATABASE_URL` 누락, DB 연결 오류) selective repair가 공급사를 호출하지 않고 기본 변환 결과를 유지한다. `AI_DATABASE_URL`이 없으면 `/health`가 `missing_config`에 담아 `degraded`를 돌려준다. 응답을 받은 뒤 사용량 갱신만 실패하면 응답은 그대로 쓰고 경고 로그를 남기며, 그 행은 `started`로 남았다가 `abandoned`로 닫힌다. actor가 빠진 변환 요청은 converter 운영 로그에도 경고로 남는다.
-- 음성은 토큰 대신 오디오 단위를 함께 남긴다. 파일 전사는 공급사 usage(토큰 또는 `duration` 초), TTS(`gpt-realtime-2.1-mini`)는 입력 문자 수(`input_characters`)와 `response.done`의 토큰 usage(입력 텍스트·출력 오디오 토큰), 실시간 전사는 확정 구간(commit)마다 한 행으로 보낸 PCM 길이(`audio_seconds`)와 구간 usage를 기록한다. 전사를 받지 못하고 끝난 구간은 `failed`로 남는다.
+- PDF converter의 selective repair(OpenAI·Gemini·Claude 직접 호출)는 kind `document_conversion`으로 기록한다. converter worker가 `convert_batch` command의 `parent_run_id`를 `run_id`로, command의 `workspace_id`·`user_id`를 귀속 대상으로 env `MODEL_USAGE_SCOPE`(JSON)에 담아 restoration 하위 프로세스에 넘긴다(document가 변환 run 단위로 정산한다). 공급사 usage 원값은 아래 토큰 포함 관계에 맞춰 정규화하며, 응답 본문 파싱에 실패해도 받은 사용량은 남긴다. 원장 시작 기록이 실패하면(`AI_DATABASE_URL` 누락, DB 연결 오류) selective repair가 공급사를 호출하지 않고 기본 변환 결과를 유지한다. 응답을 받은 뒤 사용량 갱신만 실패하면 응답은 그대로 쓰고 경고 로그를 남기며, 그 행은 `started`로 남았다가 `abandoned`로 닫힌다. actor가 빠진 변환 요청은 converter 운영 로그에도 경고로 남는다.
+- 음성은 토큰 대신 오디오 단위를 함께 남긴다. 파일 전사는 공급사 usage(토큰 또는 `duration` 초)와, WAV(회의 녹음 구간)면 샘플 수로 계산한 길이(`audio_seconds`), TTS(`gpt-realtime-2.1-mini`)는 입력 문자 수(`input_characters`)와 `response.done`의 토큰 usage(입력 텍스트·출력 오디오 토큰), 실시간 전사는 확정 구간(commit)마다 한 행으로 보낸 PCM 길이(`audio_seconds`)와 구간 usage를 기록한다. 전사를 받지 못하고 끝난 구간은 `failed`로 남는다.
 - 운영 경로의 Jev 호출은 provider `typesafe`, model `jev-1.13.0`으로 같은 원장에 기록한다. 사용자 실행 컨텍스트(scope)가 없는 독립 스크립트·실험용 호출은 경고 로그만 남기고 기록하지 않는다. 자체 호스팅 임베딩(bge-m3)은 이 원장에 포함되지 않는다. 과거 로그를 소급 집계하지 않는다. SDK 내부 재시도의 미수신 응답 사용량은 확보할 수 없으므로 청구서 대체 자료가 아니다.
 
 ## 호출 단위 사용량 조회

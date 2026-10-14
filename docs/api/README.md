@@ -61,6 +61,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `GET /health` | 서비스 간 호출자 없음 | probe 전용 |
 | `GET /wiki/graph`, `POST /wiki/pages/lookup`, `GET /wiki/pages/{page_id}`, `GET /wiki/documents/{document_id}/context`, `DELETE /wiki/workspaces/.../documents/...`, `GET /wiki/workspaces/.../last-updated` | `core/wiki/repository/PipelineWikiStateRequester.java` | `app.wiki-state.endpoint` |
 | `PATCH /wiki/pages/{page_id}/rename` | `core/wiki/repository/PipelineWikiPageRequester.java`:37 | `app.wiki-page.endpoint` |
+| 회의 녹음 전사(`kind: meeting_transcription`) | **HTTP route 없음** | Kafka `ai.maintenance.command`([계약](speech.md#회의-녹음-전사)) |
 | 회의록 생성(`kind: meeting_notes`, 예전 `POST /meeting-notes/preview`) | **HTTP route 없음** | Kafka `ai.maintenance.command`([계약](speech.md#회의록-초안)) |
 | `POST /wiki/maintenance/lint`, `/wiki/ingest-restore-runs`, `/wiki/lint-restore-runs` | **HTTP 호출자 없음** | Kafka `ai.maintenance.command`(`core/wikimaintenance/service/WikiMaintenanceService.java`:66, `core/aihistory/service/RestoreExecuteService.java`:132) |
 | `POST /wiki-schema/preview`, `/drafts`, `/{schema_id}/activate`, `GET /wiki-schema/active` | `core/wikischema/repository/PipelineWikiSchemaRequester.java`:31,35,39,44-50 | 순수 passthrough |
@@ -103,7 +104,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `ai.task.event` | 발행 | `app/workers/{ingest,task}_worker.py` | 소비: `core/aitask/service/AiTaskResultConsumer.java` |
 | `document.edit.event` | 수신 | `app/workers/edit_event_consumer.py`:34 | `core/document/service/PostgresDocumentEditOutboxPublisher.java`:69 |
 
-`task_worker.py`는 하나의 실행 파일이고 `kind`(`query`·`agent`·`lint`·`meeting_notes`·`post_ingest`·
+`task_worker.py`는 하나의 실행 파일이고 `kind`(`query`·`agent`·`lint`·`meeting_notes`·`meeting_transcription`·`post_ingest`·
 `restore_ingest`·`restore_lint`)로 분기한다(`app/workers/task_worker.py`의 `_handle`).
 document-svc는 모든 AI command를 Postgres outbox에 쓰고
 `core/document/service/AiCommandOutboxPublisher.java`:48이 발행한다.
