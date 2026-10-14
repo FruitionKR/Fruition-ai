@@ -20,7 +20,7 @@ class WikiMaintenanceCommand:
 @dataclass(frozen=True)
 class RestoreContributionCommand:
     operation_id: str
-    document_id: str
+    document_id: str | None
 
 
 @dataclass(frozen=True)

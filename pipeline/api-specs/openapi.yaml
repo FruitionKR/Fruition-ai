@@ -1399,14 +1399,16 @@ components:
     RestoreContributionIn:
       properties:
         document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 기여를 만든 원문 문서입니다. 사람이 고친 수동 기여(ADR 0031)는 원문 문서가 없어 null입니다. 재조립은 operation_id로만 기여를 읽습니다.
           title: Document Id
-          type: string
         operation_id:
           title: Operation Id
           type: string
       required:
       - operation_id
-      - document_id
       title: RestoreContributionIn
       type: object
     ReviseAgentPlanRequest:
@@ -2190,6 +2192,31 @@ components:
       required:
       - page_ids
       title: WikiPageLookupIn
+      type: object
+    WikiPageManualEditIn:
+      additionalProperties: false
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        operation_id:
+          minLength: 1
+          title: Operation Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - user_id
+      - workspace_id
+      - operation_id
+      - markdown
+      title: WikiPageManualEditIn
       type: object
     WikiPageRenameIn:
       additionalProperties: false
@@ -4204,6 +4231,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Wiki Page
+      tags:
+      - wiki
+  /wiki/pages/{page_id}/manual-edit:
+    put:
+      operationId: save_manual_wiki_edit_wiki_pages__page_id__manual_edit_put
+      parameters:
+      - in: path
+        name: page_id
+        required: true
+        schema:
+          title: Page Id
+          type: string
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WikiPageManualEditIn'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Save Manual Wiki Edit Wiki Pages  Page Id  Manual Edit Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Save Manual Wiki Edit
       tags:
       - wiki
   /wiki/pages/{page_id}/rename:
