@@ -16,7 +16,7 @@ Accepted
 - 사람의 수정은 별도 작업 하나의 **수동 기여**로 저장한다. 경로는 `ops/{operation_id}.md`(본문)와 `.json`(`artifact_type: "manual"`, `added_links`, `removed_links`)이다.
   - document-svc가 `base_revision`을 검사한 뒤 `PUT /wiki/pages/{page_id}/manual-edit`을 동기 호출한다.
   - 위키는 워크스페이스 공유 자산이다([0033](0033-workspace-shared-wiki.md)). 페이지와 `[[slug]]` 대상은 `workspace_id`로만 찾고, 마지막 편입자(`wiki_pages.user_id`)를 확인하지 않는다. 누가 고칠 수 있는지는 document-svc가 정한다. 요청의 `user_id`는 수동 기여 JSON에 귀속 정보로만 남는다.
-  - 응답 항목으로 기여와 버전을 기록한다. 기여로 남으므로 작업 로그 되돌리기의 대상이 된다.
+  - 응답 항목으로 기여와 버전을 기록한다. 기여로 남으므로 ingest·lint 되돌리기의 `keep_contributions`에 들어간다. 수동 기여는 원문 문서가 없어 `keep_contributions[].document_id`는 `null`이다(재조립은 `operation_id`로만 기여를 읽는다). 수동 작업(`wiki_edit`) 자체를 되돌리는 복구 명령은 아직 없다(document-svc가 `400`으로 거절한다, 정책 결정 필요).
   - `wiki_page_contributions.object_key`에는 응답의 `contribution_key`(`.json`)를 기록한다. 재편입과 복구가 이 JSON의 `artifact_type`으로 수동 기여를 알아본다.
   - 읽기, 링크 차이 계산, 반영을 모두 워크스페이스 `concept_write_lock` 안에서 한다. 동시에 도는 ingest·restore·lint가 그 사이에 링크나 본문을 바꾸지 못한다.
 - **링크**: 저장할 때 이전 본문과 새 본문의 `[[slug]]` 차이만 edge에 반영한다.
@@ -42,7 +42,7 @@ Accepted
 
 ## Consequences
 - 수동 저장은 동기 HTTP라서 데스크톱 앱 저장 응답에 새 revision을 담을 수 있다.
-- document-svc는 수동 작업을 작업 로그 operation으로 기록하고, 복구할 때 `keep_contributions`에 수동 기여를 포함해야 한다. 이 부분은 별도 이슈다.
+- document-svc는 수동 작업을 작업 로그 operation으로 기록하고, 복구할 때 `keep_contributions`에 수동 기여를 `document_id: null`로 포함해야 한다(FruitionKR/Fruition-document#130).
 - 수동 기여 이후 AI 기여가 같은 링크를 다시 추가하면 replay가 edge를 되살린다. AI가 근거를 새로 찾은 것으로 본다.
 - source 페이지는 마지막 기여의 스냅샷으로 복구한다. 수동 수정 뒤 재편입이 있으면 그 재편입 스냅샷이 이미 수동 본문이므로, 수동 기여만 되돌려도 본문은 바뀌지 않는다.
 - 남길 기여가 수동 기여뿐인 concept 페이지는 근거 문서 연결과 임베딩 단위가 비게 된다.

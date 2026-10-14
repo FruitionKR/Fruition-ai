@@ -326,7 +326,7 @@ ingest 작업의 Wiki 변경을 복원합니다.
     {
       "keep_contributions": [
         {
-          "document_id": "string",
+          "document_id": "string | null",
           "operation_id": "string"
         }
       ],
@@ -466,7 +466,7 @@ lint 작업의 Wiki 변경을 복원합니다.
     {
       "keep_contributions": [
         {
-          "document_id": "string",
+          "document_id": "string | null",
           "operation_id": "string"
         }
       ],
@@ -1113,7 +1113,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 - `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
 - 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
 - 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
-- 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다.
+- 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다. 이때 `content_hash`는 요청 본문이 아니라 저장된 본문의 해시다.
 
 #### 3. Auth 필요 여부
 

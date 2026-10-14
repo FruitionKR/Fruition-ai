@@ -124,7 +124,10 @@ class PipelineRunOut(BaseModel):
 
 class RestoreContributionIn(BaseModel):
     operation_id: str
-    document_id: str
+    document_id: str | None = Field(
+        default=None,
+        description="기여를 만든 원문 문서입니다. 사람이 고친 수동 기여(ADR 0031)는 원문 문서가 없어 null입니다. 재조립은 operation_id로만 기여를 읽습니다.",
+    )
 
 
 class RebuildPageIn(BaseModel):

@@ -421,6 +421,10 @@ def test_save_manual_edit_updates_body_links_and_keeps_title(ai_database) -> Non
     objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"] = "재요청이 덮어쓰면 안 된다"
     assert repository.save_manual_wiki_edit("C1", "user", "ws", "op-m", markdown) == result
     assert objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"] == "재요청이 덮어쓰면 안 된다"
+    # 같은 작업 ID에 다른 본문이 와도 다시 쓰지 않고, 해시는 저장된 본문 기준이다.
+    replay = repository.save_manual_wiki_edit("C1", "user", "ws", "op-m", markdown + "\n다른 본문")
+    assert replay == result
+    assert objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.md"] == markdown
 
 
 def test_save_manual_edit_allows_member_other_than_last_ingester(ai_database) -> None:

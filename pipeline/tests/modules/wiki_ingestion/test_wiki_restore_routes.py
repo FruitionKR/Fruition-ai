@@ -69,6 +69,39 @@ def test_ingest_restore_route_preserves_source_and_contribution_order() -> None:
     ] == ["A2", "L"]
 
 
+def test_restore_route_accepts_manual_contribution_without_document_id() -> None:
+    """수동 기여(ADR 0031)는 원문 문서가 없어 document_id가 null이거나 빠진다."""
+    use_case = RestoreUseCase()
+
+    restore_ingest_operation(
+        IngestOperationRestoreIn(
+            operation_id="restore-1",
+            restore_to_operation_id="A2",
+            cancel_operation_ids=["A3"],
+            workspace_id="ws-1",
+            source_page={"page_id": "S1", "document_id": "doc-source"},
+            rebuild_pages=[
+                {
+                    "page_id": "C3",
+                    "keep_contributions": [
+                        {"operation_id": "A2", "document_id": "doc-A"},
+                        {"operation_id": "M1", "document_id": None},
+                        {"operation_id": "M2"},
+                    ],
+                }
+            ],
+        ),
+        use_case=use_case,
+    )
+
+    kept = use_case.commands[0].rebuild_pages[0].keep_contributions
+    assert [(item.operation_id, item.document_id) for item in kept] == [
+        ("A2", "doc-A"),
+        ("M1", None),
+        ("M2", None),
+    ]
+
+
 def test_lint_restore_route_identifies_deleted_affected_pages() -> None:
     use_case = RestoreUseCase()
 

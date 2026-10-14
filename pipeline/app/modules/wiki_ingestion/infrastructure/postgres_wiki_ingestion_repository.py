@@ -899,14 +899,17 @@ def save_manual_wiki_edit(
                 "contribution_key": contribution_key,
                 "content_hash": "sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
             }
-            if page["markdown_uri"] == storage_uri(markdown_key):
-                # 같은 작업의 재요청이다. 이미 반영했으므로 같은 결과를 돌려준다.
-                return result
             old_markdown = (
                 _read_optional_text_object(str(page["markdown_uri"]))
                 if page["markdown_uri"]
                 else ""
             )
+            if page["markdown_uri"] == storage_uri(markdown_key):
+                # 같은 작업의 재요청이다. 이미 반영했으므로 다시 쓰지 않고, 저장된 본문의 해시를 돌려준다.
+                result["content_hash"] = (
+                    "sha256:" + hashlib.sha256(old_markdown.encode("utf-8")).hexdigest()
+                )
+                return result
             current_links = conn.execute(
                 """
                 SELECT concat(target.page_type, ':', target.slug) AS target,
