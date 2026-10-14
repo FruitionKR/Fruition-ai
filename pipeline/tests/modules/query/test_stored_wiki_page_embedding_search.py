@@ -2,6 +2,8 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 
 
@@ -14,6 +16,26 @@ class FakeEmbeddingModel:
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.embedded_texts.extend(texts)
         return [[1.0, 0.0] for _ in texts]
+
+
+class FailingDocumentEmbeddingModel(FakeEmbeddingModel):
+    """질문 임베딩은 되지만 문서 묶음 임베딩은 임베딩 서버 타임아웃·연결 실패로 끝난다."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if texts != ["query"]:
+            raise self.error
+        return super().embed(texts)
+
+
+def _status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://embedding/embeddings")
+    return httpx.HTTPStatusError(
+        f"{status_code}", request=request, response=httpx.Response(status_code, request=request)
+    )
 
 
 class FakeFallbackSearch:
@@ -244,6 +266,55 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
         # 짧은 문서는 질문 시점에 임베딩하고, 상한을 넘는 문서는 임베딩하지 않아 0점이다.
         self.assertEqual(scores, [1.0, 0.0])
         self.assertEqual(model.embedded_texts, ["query", "짧은 섹션"])
+
+    def test_online_embedding_failure_scores_only_stored_vectors(self) -> None:
+        stored = "저장 벡터가 있는 페이지"
+        stored_hash = hashlib.sha256(stored.encode("utf-8")).hexdigest()
+        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("down"), _status_error(503)):
+            search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(error))
+
+            with patch(
+                "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+                return_value=FakeConnection([{"representation_hash": stored_hash, "embedding_vector": [1.0, 0.0]}]),
+            ), self.assertLogs(
+                "app.modules.query.infrastructure.stored_wiki_page_embedding_search", level="WARNING"
+            ) as logs:
+                scores = search.score("query", [stored, "저장 벡터가 없는 페이지"])
+
+            # 질의는 실패하지 않고, 저장 벡터가 있는 페이지만 임베딩 점수를 받는다.
+            self.assertEqual(scores, [1.0, 0.0])
+            self.assertIn("Online embedding failed", logs.output[0])
+
+    def test_online_embedding_failure_without_any_stored_vector_scores_zero(self) -> None:
+        search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(httpx.ReadTimeout("slow")))
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ), self.assertLogs("app.modules.query.infrastructure.stored_wiki_page_embedding_search", level="WARNING"):
+            scores = search.score("query", ["a", "b"])
+
+        self.assertEqual(scores, [0.0, 0.0])
+
+    def test_online_embedding_does_not_hide_non_transport_errors(self) -> None:
+        search = StoredWikiPageEmbeddingSearch(
+            embedding_model=FailingDocumentEmbeddingModel(RuntimeError("model mismatch"))
+        )
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ), self.assertRaisesRegex(RuntimeError, "model mismatch"):
+            search.score("query", ["a"])
+
+    def test_online_embedding_does_not_hide_client_errors(self) -> None:
+        search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(_status_error(422)))
+
+        with patch(
+            "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+            return_value=FakeConnection([]),
+        ), self.assertRaises(httpx.HTTPStatusError):
+            search.score("query", ["a"])
 
 
 if __name__ == "__main__":

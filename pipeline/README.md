@@ -35,6 +35,8 @@ Query를 검사하려면 `QUERY_EVALUATOR_MODE=llm`, evaluator를 끄려면 `dis
 (`uvicorn app.modules.wiki_embedding.interfaces.http.embedding_server:app`, `X-Internal-Token`)에
 짧은 텍스트 임베딩을 요청합니다. 서버는 요청당 64개, 텍스트당 4,000자까지만 받으므로 저장 벡터가 없는
 문서 중 4,000자 이하는 질문 시점에 서버로 임베딩하고, 더 긴 문서는 임베딩 점수를 0으로 두어 hybrid의 BM25 점수에만 맡깁니다. 설정하지 않으면 기존처럼 프로세스에 모델을 올립니다.
+서버 요청 타임아웃은 `EMBEDDING_TIMEOUT_SECONDS`(기본 10초, 양수)이고, 질문 시점 즉석 임베딩이 타임아웃·연결 실패나 재시도 뒤 5xx로 끝나면
+질의를 실패시키지 않고 저장 벡터가 있는 문서만 임베딩 점수를 받습니다(WARNING 로그).
 LangGraph evaluator loop를 LangSmith에서 확인하려면 아래 tracing 값도 platform의 `infra/.env`에 설정합니다.
 
 ```env
