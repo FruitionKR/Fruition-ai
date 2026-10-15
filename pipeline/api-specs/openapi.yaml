@@ -323,6 +323,11 @@ components:
         action:
           title: Action
           type: string
+        clarification_question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Clarification Question
         error_code:
           anyOf:
           - type: string

@@ -78,6 +78,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   "status": "awaiting_approval",
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
+  "clarification_question": null,
   "plan": {
     "id": "plan_123",
     "version": 1,
@@ -102,6 +103,26 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
       }
     ]
   }
+}
+```
+
+`clarification_question`은 계획 단계가 사용자 요청만으로 변경 의도·범위를 확정하지 못해
+`status=clarification_required`, `error_code=mutation_intent_required`가 된 경우에만 채워집니다.
+무엇이 불명확한지, 어떤 정보를 주면 되는지 사용자에게 설명하는 한국어 문장이며, 그대로 화면에 보여 줄 수 있습니다.
+실행 중 Tool 예산 소진처럼 다른 이유의 `clarification_required`와 그 밖의 모든 상태에서는 `null`입니다.
+`revise`로 다시 계획을 요청하면 비워집니다.
+
+```json
+{
+  "id": "run_123",
+  "workspace_id": "workspace_123",
+  "action": "folder_organize",
+  "skill_version_id": null,
+  "status": "clarification_required",
+  "request_summary": "문서를 날짜별 폴더로 정리해줘",
+  "error_code": "mutation_intent_required",
+  "clarification_question": "각 문서의 생성일 정보가 없어 날짜별로 폴더를 만들 수 없습니다. 문서별 날짜를 알려 주시거나 다른 기준을 선택해 주세요.",
+  "plan": null
 }
 ```
 
@@ -194,6 +215,7 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
   "status": "executing",
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
+  "clarification_question": null,
   "plan": null
 }
 ```
@@ -286,6 +308,7 @@ Backend는 `delete_folder(require_empty=true)`로 빈 폴더를 잠금 상태에
   "status": "cancel_requested",
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
+  "clarification_question": null,
   "plan": null
 }
 ```
@@ -372,6 +395,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/cancel" \
   "status": "rejected",
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
+  "clarification_question": null,
   "plan": null
 }
 ```
@@ -462,6 +486,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/reject" \
   "status": "queued",
   "request_summary": "문서를 저장하지 말고 미리보기만 다시 만들어줘",
   "error_code": null,
+  "clarification_question": null,
   "plan": null
 }
 ```

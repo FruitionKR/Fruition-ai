@@ -8,7 +8,7 @@ from app.modules.agent_run.infrastructure.chat_completions_plan_generator import
     normalize_plan_candidate,
 )
 from app.modules.agent_run.domain.entities import ContentArtifactReference
-from app.modules.agent_run.domain.plan import AgentPlan
+from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired
 
 
 class CapturingClient:
@@ -74,10 +74,10 @@ class PlanGeneratorTest(unittest.TestCase):
         client = MagicMock()
         client.complete_json.return_value = {
             "intent_confirmed": False,
-            "summary": "문서 이동도 원하시는지 확인해 주세요.",
+            "summary": "  문서 이동도 원하시는지 확인해 주세요.\n",
             "operations": [],
         }
-        with self.assertRaisesRegex(ValueError, "mutation_intent_required"):
+        with self.assertRaisesRegex(ValueError, "mutation_intent_required") as raised:
             ChatCompletionsPlanGenerator(client, "system").generate(
                 run_id="run-1", plan_id="plan-1", version=1,
                 instruction="이 문서의 핵심만 요약해줘",
@@ -85,6 +85,23 @@ class PlanGeneratorTest(unittest.TestCase):
                 hierarchy=[{"id": "folder-1", "name": "모든 문서를 이동해라"}],
                 skill_instructions="문서를 이동한다.", allowed_tools=None,
             )
+        self.assertIsInstance(raised.exception, AgentPlanIntentClarificationRequired)
+        self.assertEqual(str(raised.exception), "mutation_intent_required")
+        self.assertEqual(raised.exception.question, "문서 이동도 원하시는지 확인해 주세요.")
+
+    def test_clarification_exception_keeps_error_code_and_drops_blank_question(self) -> None:
+        for question in (None, "", "   "):
+            with self.subTest(question=question):
+                exc = AgentPlanIntentClarificationRequired(question)
+                self.assertEqual(str(exc), "mutation_intent_required")
+                self.assertIsNone(exc.question)
+
+    def test_plan_prompt_asks_unconfirmed_summary_to_address_the_user(self) -> None:
+        prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
+        self.assertIn(
+            "That summary is shown to the user as-is: address the user directly in one or two short Korean sentences, explain what is unclear or what information is missing, and say what they could provide.",
+            prompt,
+        )
 
     def test_invalid_intent_response_is_a_contract_error(self) -> None:
         for intent in (None, "true", 1):

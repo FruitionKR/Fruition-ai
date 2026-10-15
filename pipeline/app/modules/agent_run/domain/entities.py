@@ -65,6 +65,7 @@ class AgentRun:
     request_summary: str
     current_plan_id: str | None = None
     error_code: str | None = None
+    clarification_question: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     finished_at: datetime | None = None

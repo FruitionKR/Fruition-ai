@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import (
     PostgresAgentRunRepository,
     _canonical_json,
+    _row_to_run,
     _validate_artifact_metadata,
     _validate_content_hash,
 )
@@ -101,6 +102,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
             status="clarification_required",
             error_code="react_step_limit_exceeded",
             current_plan_id="plan-1",
+            clarification_question="어떤 문서를 정리할지 알려 주세요.",
         )
         supersede_result = MagicMock()
         update_result = MagicMock()
@@ -131,8 +133,47 @@ class AgentRunRepositoryTest(unittest.TestCase):
 
         update_query = connection.execute.call_args_list[2].args[0]
         self.assertIn("error_code = NULL", update_query)
+        self.assertIn("clarification_question = NULL", update_query)
         self.assertIsNone(run.error_code)
+        self.assertIsNone(run.clarification_question)
         self.assertEqual(connection.execute.call_args_list[2].args[1], (instruction, "run-1"))
+
+    def test_row_maps_clarification_question(self) -> None:
+        row = _run_row(
+            status="clarification_required",
+            error_code="mutation_intent_required",
+            current_plan_id=None,
+            clarification_question="날짜 기준을 알려 주세요.",
+        )
+        self.assertEqual(_row_to_run(row).clarification_question, "날짜 기준을 알려 주세요.")
+        row.pop("clarification_question")
+        self.assertIsNone(_row_to_run(row).clarification_question)
+
+    def test_cancel_clears_clarification_question(self) -> None:
+        connection = MagicMock()
+        locked_result = MagicMock()
+        locked_result.fetchone.return_value = {
+            **_run_row(
+                status="clarification_required",
+                error_code="mutation_intent_required",
+                current_plan_id=None,
+                clarification_question="날짜 기준을 알려 주세요.",
+            ),
+            "result": None,
+        }
+        update_result = MagicMock()
+        update_result.fetchone.return_value = _run_row(
+            status="cancel_requested", error_code=None, current_plan_id=None,
+        )
+        connection.execute.side_effect = [locked_result, MagicMock(), MagicMock(), update_result, MagicMock()]
+        connection_context = MagicMock()
+        connection_context.__enter__.return_value = connection
+
+        with patch.object(database, "connect_ai", return_value=connection_context):
+            run = PostgresAgentRunRepository().cancel("workspace-1", "user-1", "run-1")
+
+        self.assertIn("clarification_question = NULL", connection.execute.call_args_list[3].args[0])
+        self.assertIsNone(run.clarification_question)
 
     def test_repository_uses_ai_database_connection(self) -> None:
         connection = MagicMock()
@@ -428,6 +469,7 @@ def _run_row(
     error_code: str | None,
     current_plan_id: str | None,
     request_summary: str = "문서를 정리해줘",
+    clarification_question: str | None = None,
 ) -> dict[str, object]:
     return {
         "id": "run-1",
@@ -439,6 +481,7 @@ def _run_row(
         "request_summary": request_summary,
         "current_plan_id": current_plan_id,
         "error_code": error_code,
+        "clarification_question": clarification_question,
         "created_at": None,
         "updated_at": None,
         "finished_at": None,

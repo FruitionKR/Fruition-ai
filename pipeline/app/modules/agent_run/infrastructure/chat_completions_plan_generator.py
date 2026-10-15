@@ -105,7 +105,7 @@ class ChatCompletionsPlanGenerator:
                 or not value["summary"].strip()
             ):
                 raise ValueError("Unconfirmed Agent plan must have a summary and no operations.")
-            raise AgentPlanIntentClarificationRequired()
+            raise AgentPlanIntentClarificationRequired(value["summary"].strip())
         plan = normalize_plan_candidate(run_id, plan_id, version, value)
         if any(operation.tool_name not in allowed_plan_tools for operation in plan.operations):
             raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
