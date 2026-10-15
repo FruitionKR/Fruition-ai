@@ -13,9 +13,11 @@ from app.modules.agent_run.interfaces.http.routes import (
     list_agent_artifacts,
     resolve_agent_artifact,
 )
+from app.modules.agent_run.domain.entities import AgentRun
 from app.modules.agent_run.interfaces.http.schemas import (
     AgentArtifactListRequest,
     AgentArtifactResolveRequest,
+    AgentRunResponse,
     AgentToolExecuteAuthorizationRequest,
 )
 
@@ -230,3 +232,42 @@ def test_tool_authorization_route_requires_internal_token_before_repository() ->
     assert unauthorized.status_code == 401
     assert authorized.status_code == 204
     assert repository.read_authorizations == 1
+
+
+def _agent_run(status: str, error_code: str | None, clarification_question: str | None) -> AgentRun:
+    return AgentRun(
+        id="run-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        action="folder_organize",
+        skill_version_id=None,
+        status=status,
+        request_summary="문서를 날짜별로 정리해줘",
+        error_code=error_code,
+        clarification_question=clarification_question,
+    )
+
+
+def test_agent_run_response_exposes_planning_clarification_question() -> None:
+    question = "각 문서의 생성일 정보가 없어 날짜별로 폴더를 만들 수 없습니다. 문서별 날짜를 알려 주세요."
+    response = AgentRunResponse.from_domain(
+        _agent_run("clarification_required", "mutation_intent_required", question),
+    )
+
+    body = response.model_dump()
+    assert body["status"] == "clarification_required"
+    assert body["error_code"] == "mutation_intent_required"
+    assert body["clarification_question"] == question
+    assert body["plan"] is None
+
+
+def test_agent_run_response_hides_clarification_question_outside_clarification_status() -> None:
+    for status in ("queued", "planning", "awaiting_approval", "executing", "completed", "cancel_requested"):
+        response = AgentRunResponse.from_domain(_agent_run(status, None, "이전 질문"))
+        assert response.clarification_question is None
+
+    execution_clarification = AgentRunResponse.from_domain(
+        _agent_run("clarification_required", "react_tool_budget_insufficient", None),
+    )
+    assert "clarification_question" in execution_clarification.model_dump()
+    assert execution_clarification.clarification_question is None

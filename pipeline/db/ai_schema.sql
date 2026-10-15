@@ -281,6 +281,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     model text,
     current_plan_id text,
     error_code text,
+    clarification_question text,
     tool_call_count integer NOT NULL DEFAULT 0,
     document_id text,
     base_version bigint,
@@ -297,6 +298,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS command_envelope_hash varchar(64);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS provider text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
+-- 계획 단계에서 의도를 확정하지 못했을 때 사용자에게 보여 줄 질문. clarification_required에서만 의미가 있다.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
 
 UPDATE agent_runs
 SET model = 'claude-sonnet-5', updated_at = now()

@@ -146,6 +146,8 @@ class AgentRunResponse(BaseModel):
     status: str
     request_summary: str
     error_code: str | None
+    # 계획 단계가 의도를 확정하지 못해 clarification_required가 된 run에서만 채워진다.
+    clarification_question: str | None = None
     plan: AgentPlanResponse | None = None
 
     @classmethod
@@ -158,5 +160,8 @@ class AgentRunResponse(BaseModel):
             status=run.status,
             request_summary=run.request_summary,
             error_code=run.error_code,
+            clarification_question=(
+                run.clarification_question if run.status == "clarification_required" else None
+            ),
             plan=AgentPlanResponse.from_domain(plan) if plan else None,
         )

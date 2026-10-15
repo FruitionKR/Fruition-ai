@@ -36,7 +36,8 @@ class AgentWorkerTest(unittest.TestCase):
         gateway.execute.assert_not_called()
 
     def test_planning_clarification_and_provider_failure_are_distinct(self) -> None:
-        for failure in (AgentPlanIntentClarificationRequired(), RuntimeError("timeout")):
+        question = "어떤 기준으로 폴더를 나눌지 알려 주세요."
+        for failure in (AgentPlanIntentClarificationRequired(question), RuntimeError("timeout")):
             with self.subTest(failure=type(failure).__name__):
                 repository = MagicMock()
                 context = _executing_context()
@@ -54,7 +55,7 @@ class AgentWorkerTest(unittest.TestCase):
                     if isinstance(failure, AgentPlanIntentClarificationRequired):
                         worker.process(job)
                         repository.request_clarification.assert_called_once_with(
-                            "run-1", "mutation_intent_required",
+                            "run-1", "mutation_intent_required", question,
                         )
                         repository.fail.assert_not_called()
                         repository.complete.assert_called_once_with(job)
@@ -1210,8 +1211,27 @@ class AgentWorkerTest(unittest.TestCase):
         self.assertTrue(updated)
         query, parameters = connection.execute.call_args.args
         self.assertIn("error_code = %s", query)
+        self.assertIn("clarification_question = %s", query)
         self.assertIn("status IN ('planning', 'executing')", query)
-        self.assertEqual(parameters, ("react_tool_budget_insufficient", "run-1"))
+        # 실행 단계 되묻기는 질문 문장이 없으므로 이전 계획 단계 질문이 남지 않게 NULL로 덮어쓴다.
+        self.assertEqual(parameters, ("react_tool_budget_insufficient", None, "run-1"))
+
+    def test_repository_persists_planning_clarification_question(self) -> None:
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = {"id": "run-1"}
+        connection_context = MagicMock()
+        connection_context.__enter__.return_value = connection
+
+        with patch.object(database, "connect_ai", return_value=connection_context):
+            updated = PostgresAgentJobRepository().request_clarification(
+                "run-1",
+                "mutation_intent_required",
+                "날짜 기준을 알려 주세요.",
+            )
+
+        self.assertTrue(updated)
+        _, parameters = connection.execute.call_args.args
+        self.assertEqual(parameters, ("mutation_intent_required", "날짜 기준을 알려 주세요.", "run-1"))
 
     def test_terminal_run_status_is_not_overwritten_when_job_fails(self) -> None:
         connection = MagicMock()

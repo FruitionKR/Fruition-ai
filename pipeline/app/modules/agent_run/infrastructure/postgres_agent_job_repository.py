@@ -391,15 +391,21 @@ class PostgresAgentJobRepository:
             raise ValueError("AgentRun not found.")
         return row["remaining"]
 
-    def request_clarification(self, run_id: str, error_code: str) -> bool:
+    def request_clarification(
+        self,
+        run_id: str,
+        error_code: str,
+        question: str | None = None,
+    ) -> bool:
         with database.connect_ai() as conn:
             row = conn.execute(
                 """
                 UPDATE agent_runs
-                SET status = 'clarification_required', error_code = %s, updated_at = now()
+                SET status = 'clarification_required', error_code = %s,
+                    clarification_question = %s, updated_at = now()
                 WHERE id = %s AND status IN ('planning', 'executing') RETURNING id
                 """,
-                (error_code, run_id),
+                (error_code, question, run_id),
             ).fetchone()
         return row is not None
 

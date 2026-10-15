@@ -445,7 +445,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             conn.execute(
                 """
                 UPDATE agent_runs
-                SET current_plan_id = %s, status = 'awaiting_approval', updated_at = now()
+                SET current_plan_id = %s, status = 'awaiting_approval', clarification_question = NULL,
+                    updated_at = now()
                 WHERE id = %s
                 """,
                 (plan.id, run_id),
@@ -572,7 +573,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 """
                 UPDATE agent_runs
                 SET status = 'queued', current_plan_id = NULL, request_summary = %s,
-                    error_code = NULL, updated_at = now(), finished_at = NULL
+                    error_code = NULL, clarification_question = NULL, updated_at = now(),
+                    finished_at = NULL
                 WHERE id = %s RETURNING *
                 """,
                 (instruction.strip(), run_id),
@@ -600,6 +602,7 @@ def _row_to_run(row: dict[str, Any]) -> AgentRun:
         model=row.get("model"),
         current_plan_id=row["current_plan_id"],
         error_code=row["error_code"],
+        clarification_question=row.get("clarification_question"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         finished_at=row["finished_at"],
@@ -771,7 +774,8 @@ def _request_rollback(conn: Any, run_id: str) -> dict[str, Any]:
         "WHERE plan_id IN (SELECT id FROM agent_plans WHERE run_id = %s) AND status = 'pending'", (run_id,),
     )
     updated = conn.execute(
-        "UPDATE agent_runs SET status = 'cancel_requested', error_code = NULL, updated_at = now(), "
+        "UPDATE agent_runs SET status = 'cancel_requested', error_code = NULL, clarification_question = NULL, "
+        "updated_at = now(), "
         "finished_at = NULL WHERE id = %s RETURNING *", (run_id,),
     ).fetchone()
     conn.execute("INSERT INTO agent_jobs (id, run_id, job_type, status) VALUES (%s, %s, 'rollback', 'queued')",
