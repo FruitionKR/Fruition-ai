@@ -103,6 +103,15 @@ class PlanGeneratorTest(unittest.TestCase):
             prompt,
         )
 
+    def test_plan_prompt_plans_date_grouping_with_default_format(self) -> None:
+        prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
+        self.assertIn(
+            "Grouping documents into folders by a stated criterion such as topic, created date, or updated date is also an explicit organization request.",
+            prompt,
+        )
+        self.assertIn("group by calendar day, and name each folder YYYY-MM-DD.", prompt)
+        self.assertIn("because the target or the criterion itself is missing", prompt)
+
     def test_invalid_intent_response_is_a_contract_error(self) -> None:
         for intent in (None, "true", 1):
             with self.subTest(intent=intent):
