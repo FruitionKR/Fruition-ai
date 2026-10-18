@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.llm_env import resolve_workspace_llm_selection
+from app.modules.skill.application.skill_test_run import SkillTestRunResult
 from app.modules.skill.domain.entities import (
     Skill,
     SkillAuthoringResult,
@@ -264,6 +265,69 @@ def _skill_markdown(name: str, description: str, instructions_markdown: str) -> 
         "---\n\n"
         f"{instructions_markdown}"
     )
+
+
+class SkillTestRunDefinitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    description: str = Field(..., min_length=1, max_length=500)
+    instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
+    # allowed_tools는 받지 않는다. 안전 검토에 쓰는 Tool 목록은 capabilities로 계산한다.
+    capabilities: list[CapabilityValue] = Field(..., min_length=1)
+
+
+class SkillTestRunDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str = Field(..., min_length=1)
+    base_version: int = Field(..., ge=0)
+    markdown: str = Field(..., min_length=1)
+
+
+class SkillTestRunTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["selection", "current_section", "whole_document"]
+    start_line: int = Field(..., ge=1)
+    end_line: int = Field(..., ge=1)
+
+
+class SkillTestRunRequest(SkillLlmRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1)
+    definition: SkillTestRunDefinitionRequest
+    document: SkillTestRunDocumentRequest
+    # 생략하면 문서 전체다.
+    target: SkillTestRunTargetRequest | None = None
+
+
+class SkillTestRunChangeResponse(BaseModel):
+    section: str
+    start_line: int
+    end_line: int
+    before: str
+    after: str
+
+
+class SkillTestRunResponse(BaseModel):
+    status: Literal["completed", "blocked"]
+    changes: list[SkillTestRunChangeResponse] = Field(default_factory=list)
+    untouched_sections: list[str] = Field(default_factory=list)
+    result_markdown: str | None = None
+    issues: list[dict[str, object]] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(cls, result: SkillTestRunResult) -> "SkillTestRunResponse":
+        return cls(
+            status=result.status,
+            changes=[SkillTestRunChangeResponse(**change.__dict__) for change in result.changes],
+            untouched_sections=list(result.untouched_sections),
+            result_markdown=result.result_markdown,
+            issues=[dict(issue) for issue in result.issues],
+        )
 
 
 class SkillTaskRequest(BaseModel):
