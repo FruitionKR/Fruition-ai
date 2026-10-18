@@ -26,6 +26,8 @@ SKILL_REJECTION_CODES = frozenset(
         "invalid_instruction_length",
         "invalid_name",
         "invalid_reference",
+        "invalid_result_mode",
+        "invalid_targets",
         "skill_request_invalid",
     }
 )

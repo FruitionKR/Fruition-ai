@@ -2470,3 +2470,157 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def options_skill(capabilities: tuple[str, ...], targets: tuple[str, ...], result_mode: str | None) -> Skill:
+    skill = document_skill()
+    assert skill.enabled_version is not None
+    return replace(
+        skill,
+        enabled_version=replace(
+            skill.enabled_version,
+            capabilities=capabilities,  # type: ignore[arg-type]
+            targets=targets,  # type: ignore[arg-type]
+            result_mode=result_mode,  # type: ignore[arg-type]
+        ),
+    )
+
+
+EDIT_ROUTE = AgentTurnRoute(
+    action="markdown_edit",
+    confidence=0.95,
+    reason="edit",
+    edit_goal="shorten",
+    edit_operation="replace",
+    edit_destination="target",
+    selected_skill_id="skill-1",
+    document_operation="edit",
+    required_capabilities=("document-edit",),
+)
+CREATE_ROUTE = AgentTurnRoute(
+    action="markdown_create",
+    confidence=0.95,
+    reason="create",
+    edit_goal="create_from_chat",
+    selected_skill_id="skill-1",
+    document_operation="create",
+    required_capabilities=("document-create",),
+)
+OPTIONS_MARKDOWN = "# 제목\n\n첫 문단\n\n둘째 문단"
+
+
+class SkillExecutionOptionsTest(unittest.TestCase):
+    def _use_case(self, skill: Skill, route: AgentTurnRoute) -> tuple[HandleAgentTurnUseCase, RecordingMarkdownEditor]:
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=5),
+                    summary="줄였습니다.",
+                    replacement_markdown="# 제목\n\n줄인 문단",
+                )
+            )
+        )
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(route),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            skill_selector=SelectSkillUseCase(FixedSkillRepository(skill)),  # type: ignore[arg-type]
+        )
+        return use_case, editor
+
+    def _request(self, target: MarkdownEditTarget | None) -> AgentTurnRequest:
+        return AgentTurnRequest(
+            message="/brief 짧게 줄여줘",
+            workspace_id="workspace-1",
+            user_id="user-1",
+            active_markdown_context=ActiveMarkdownContext(markdown=OPTIONS_MARKDOWN, target=target),
+        )
+
+    def test_selection_only_skill_asks_for_selection_without_editing(self) -> None:
+        skill = options_skill(("document-edit",), ("selection",), "edit")
+        use_case, editor = self._use_case(skill, EDIT_ROUTE)
+
+        result = use_case.execute(self._request(None))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("선택한 부분", result.message or "")
+        self.assertEqual(editor.requests, [])
+
+    def test_selection_only_skill_edits_the_selection(self) -> None:
+        skill = options_skill(("document-edit",), ("selection",), "edit")
+        use_case, editor = self._use_case(skill, EDIT_ROUTE)
+        selection = MarkdownEditTarget(type="selection", start_line=3, end_line=3)
+
+        use_case.execute(self._request(selection))
+
+        self.assertEqual(editor.requests[0].target, selection)
+
+    def test_current_document_only_skill_edits_whole_document_even_with_selection(self) -> None:
+        skill = options_skill(("document-edit",), ("current_document",), "edit")
+        use_case, editor = self._use_case(skill, EDIT_ROUTE)
+
+        use_case.execute(self._request(MarkdownEditTarget(type="selection", start_line=3, end_line=3)))
+
+        self.assertEqual(editor.requests[0].target.type, "whole_document")
+
+    def test_create_mode_skill_makes_new_document_instead_of_editing(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "create")
+        use_case, editor = self._use_case(skill, EDIT_ROUTE)
+
+        result = use_case.execute(self._request(None))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(editor.requests, [])
+        self.assertEqual(len(editor.create_requests), 1)
+
+    def test_edit_mode_skill_edits_open_document_instead_of_creating(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "edit")
+        use_case, editor = self._use_case(skill, CREATE_ROUTE)
+
+        result = use_case.execute(self._request(None))
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(editor.create_requests, [])
+        self.assertEqual(len(editor.requests), 1)
+
+    def test_auto_mode_skill_asks_when_route_is_uncertain(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        for route in (replace(EDIT_ROUTE, confidence=0.5), replace(CREATE_ROUTE, confidence=0.5)):
+            with self.subTest(action=route.action):
+                use_case, editor = self._use_case(skill, route)
+
+                result = use_case.execute(self._request(None))
+
+                self.assertEqual(result.action, "clarify")
+                self.assertIn("새 문서로 만들까요", result.message or "")
+                self.assertEqual(editor.requests, [])
+                self.assertEqual(editor.create_requests, [])
+
+    def test_auto_mode_skill_follows_confident_route(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        use_case, editor = self._use_case(skill, CREATE_ROUTE)
+
+        result = use_case.execute(self._request(None))
+
+        self.assertEqual(result.action, "markdown_create")
+
+    def test_auto_mode_skill_creates_without_asking_when_no_document_is_open(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        use_case, editor = self._use_case(skill, replace(CREATE_ROUTE, confidence=0.5))
+
+        result = use_case.execute(
+            AgentTurnRequest(message="/brief 회의록 써줘", workspace_id="workspace-1", user_id="user-1")
+        )
+
+        self.assertEqual(result.action, "markdown_create")
+
+    def test_bare_command_of_edit_mode_skill_does_not_create_document(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "edit")
+        use_case, editor = self._use_case(skill, CREATE_ROUTE)
+
+        result = use_case.execute(AgentTurnRequest(message="/brief", workspace_id="workspace-1", user_id="user-1"))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertEqual(editor.create_requests, [])

@@ -94,7 +94,11 @@ team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이�
       "lint_result": {
       },
       "name": "string",
+      "result_mode": "auto",
       "status": "string",
+      "targets": [
+        "current_document"
+      ],
       "version": 0
     },
     "id": "string",
@@ -111,7 +115,11 @@ team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이�
       "lint_result": {
       },
       "name": "string",
+      "result_mode": "auto",
       "status": "string",
+      "targets": [
+        "current_document"
+      ],
       "version": 0
     },
     "owner_user_id": "string",
@@ -183,7 +191,11 @@ curl -X GET "$PIPELINE/skills?workspace_id=<value>&user_id=<value>" \
       "lint_result": {
       },
       "name": "string",
+      "result_mode": "auto",
       "status": "string",
+      "targets": [
+        "current_document"
+      ],
       "version": 0
     },
     "id": "string",
@@ -200,7 +212,11 @@ curl -X GET "$PIPELINE/skills?workspace_id=<value>&user_id=<value>" \
       "lint_result": {
       },
       "name": "string",
+      "result_mode": "auto",
       "status": "string",
+      "targets": [
+        "current_document"
+      ],
       "version": 0
     },
     "owner_user_id": "string",
@@ -253,6 +269,19 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 합집합(`policy.canonical_allowed_tools`: 계획 읽기 `list_root_items`·`list_folder_children`을 앞에 두고 나머지는 이름순)으로
 계산해 같은 검증을 거치고, 응답 `allowed_tools`로 돌려줍니다. 값을 보내면 지금처럼 검증만 합니다.
 
+문서 Skill(`document-create`·`document-edit` 포함)은 게시·수정 payload에 실행 대상 `targets`와 결과 방식 `result_mode`를 선택으로 담습니다.
+
+| 필드 | 타입 | 값 | 규칙 |
+|---|---|---|---|
+| `targets` | `string[]` | `current_document`, `selection` (최대 2개, 중복 불가) | 게시에서 생략하거나 `[]`이면 `["current_document"]`. 수정에서 생략(키 없음)하면 기존 값 유지, `[]`이면 기본값으로 되돌림. 저장 순서는 `current_document`, `selection`으로 고정 |
+| `result_mode` | `string` / `null` | `create`(새 문서), `edit`(현재 문서 수정), `auto`(상황에 맞게) | 게시에서 생략하면 `null`. 수정에서 생략하면 기존 값 유지 |
+
+- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 지침을 다시 분류한 capabilities로 검사).
+- 문서 Skill이 아닌데 `targets`나 `result_mode`를 보내거나 `targets`가 중복이면 `400` `invalid_targets`/`invalid_result_mode`입니다.
+- 수정에서 보내지 않아 이어받은 값이 다시 분류된 capabilities와 맞지 않으면 버립니다(`result_mode`는 `null`, 문서 Skill이 아니게 되면 `targets`는 `[]`).
+- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 `targets: ["current_document"]`, `result_mode: null`로 읽습니다.
+- Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 `edit` Skill은 새 문서를 만들지 않음), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
+
 #### 5. Response body
 
 작성은 초안, 게시·수정은 Skill 응답에 `run_id`를 추가해 `200`으로 반환합니다.
@@ -263,7 +292,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 취소·충돌 상태는 [작업 상태 API](tasks.md)에서 확인합니다.
 처리가 55초(document 대기 60초보다 짧게)를 넘으면 `504` `deadline_exceeded`로 실패합니다. 게시·수정은 반영하지 않고 변경을 되돌리며, 같은 `run_id`로 다시 보내면 `409`입니다.
 
-작성(`skill_author`) 요청이 거절되면 `400 {"detail": {"code", "message"}}`로 사유를 구분합니다.
+작성(`skill_author`) 요청과 게시·수정의 실행 옵션 검증이 거절되면 `400 {"detail": {"code", "message"}}`로 사유를 구분합니다.
 위험 표현은 오류가 아니라 `200` `status: "blocked"`와 `issues[]`로 반환합니다.
 
 | code | 의미 |
@@ -273,6 +302,8 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | `invalid_instruction_length` | 지침이 비었거나 최대 길이를 넘음 |
 | `invalid_name` | Skill 이름 형식 오류 |
 | `invalid_reference` | 참조 문서 개수·중복·빈 id, 접근 불가, 빈 본문, 문서별 40,000자·합계 80,000자 초과 |
+| `invalid_result_mode` | 게시·수정의 `result_mode`가 `capabilities`와 맞지 않거나 문서 Skill이 아님 |
+| `invalid_targets` | 게시·수정의 `targets` 중복, 또는 문서 Skill이 아닌데 `targets`를 보냄 |
 | `skill_request_invalid` | 그 밖의 작성 실패(LLM 출력 계약 위반 등) |
 
 단, 이름 형식(`name` 패턴)과 참조 문서 개수(최대 3개)는 요청 스키마가 먼저 검증하므로 `400` 코드가 아니라 `422` `HTTPValidationError`로 반환됩니다.
@@ -634,7 +665,11 @@ Skill 상세 정보를 조회합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -651,7 +686,11 @@ Skill 상세 정보를 조회합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",
@@ -721,7 +760,11 @@ curl -X GET "$PIPELINE/skills/<value>?workspace_id=<value>&user_id=<value>" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -738,7 +781,11 @@ curl -X GET "$PIPELINE/skills/<value>?workspace_id=<value>&user_id=<value>" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",
@@ -830,7 +877,11 @@ Skill을 비활성화합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -847,7 +898,11 @@ Skill을 비활성화합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",
@@ -919,7 +974,11 @@ curl -X POST "$PIPELINE/skills/<value>/disable" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -936,7 +995,11 @@ curl -X POST "$PIPELINE/skills/<value>/disable" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",
@@ -1028,7 +1091,11 @@ Skill을 활성화합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -1045,7 +1112,11 @@ Skill을 활성화합니다.
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",
@@ -1117,7 +1188,11 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "id": "string",
@@ -1134,7 +1209,11 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
     "lint_result": {
     },
     "name": "string",
+    "result_mode": null,
     "status": "string",
+    "targets": [
+      "current_document"
+    ],
     "version": 1
   },
   "owner_user_id": "string",

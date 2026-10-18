@@ -15,14 +15,21 @@ from app.modules.skill.domain.entities import (
     SkillAuthoringResult,
     SkillCapability,
     SkillDraftProposal,
+    SkillResultMode,
     SkillScopeType,
+    SkillTarget,
     SkillTool,
+    SkillVersion,
 )
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
     canonical_allowed_tools,
+    effective_targets,
+    is_document_skill,
+    result_mode_matches,
     validate_allowed_tools,
+    validate_execution_options,
     validate_skill_name,
 )
 from app.modules.skill.domain.reference_template import (
@@ -311,6 +318,8 @@ class AuthorSkillUseCase:
         instructions_markdown: str,
         expected_capabilities: tuple[SkillCapability, ...],
         expected_allowed_tools: tuple[SkillTool, ...],
+        targets: tuple[SkillTarget, ...] | None = None,
+        result_mode: SkillResultMode | None = None,
     ) -> SkillAuthoringResult:
         if not expected_capabilities or any(
             capability not in CAPABILITY_TOOLS for capability in expected_capabilities
@@ -324,6 +333,8 @@ class AuthorSkillUseCase:
         ) != len(expected_allowed_tools):
             raise ValueError("Published Skill permissions must not contain duplicates.")
         validate_allowed_tools(expected_capabilities, expected_allowed_tools)
+        # LLM 검토 전에 거절해 비용을 쓰지 않는다.
+        targets, result_mode = validate_execution_options(expected_capabilities, targets, result_mode)
         # 이미 검토를 마친 초안이므로 의도를 다시 분류하지 않는다(review_draft와 같다).
         # 재분류하면 참조 문서 없이 초안 본문만 보게 되는데, 본문에 남아 있는 고정 출력 템플릿
         # 섹션 때문에 분류기가 fixed-template이라 답하고, 참조 문서가 없는 요청에서는 그 응답이
@@ -357,6 +368,8 @@ class AuthorSkillUseCase:
             instructions_markdown=proposal.instructions_markdown,
             capabilities=proposal.capabilities,
             allowed_tools=proposal.allowed_tools,
+            targets=targets,
+            result_mode=result_mode,
         )
         return SkillAuthoringResult(status="published", proposal=proposal, skill=skill)
 
@@ -369,7 +382,10 @@ class AuthorSkillUseCase:
         name: str,
         description: str,
         instructions_markdown: str,
+        targets: tuple[SkillTarget, ...] | None = None,
+        result_mode: SkillResultMode | None = None,
     ) -> SkillAuthoringResult:
+        """targets·result_mode는 None이면 기존 값을 유지한다. targets=()는 기본값으로 되돌린다."""
         skill = self._skill_manager.get_manageable(workspace_id, user_id, skill_id)
         reviewed = self.execute(
             workspace_id=workspace_id,
@@ -385,6 +401,12 @@ class AuthorSkillUseCase:
         if reviewed.status != "proposal_ready" or reviewed.proposal is None:
             return reviewed
         proposal = reviewed.proposal
+        targets, result_mode = _updated_execution_options(
+            skill.latest_version or skill.enabled_version,
+            proposal.capabilities,
+            targets,
+            result_mode,
+        )
         ensure_task_active()
         updated = self._skill_manager.update_published(
             workspace_id=workspace_id,
@@ -395,6 +417,8 @@ class AuthorSkillUseCase:
             instructions_markdown=proposal.instructions_markdown,
             capabilities=proposal.capabilities,
             allowed_tools=proposal.allowed_tools,
+            targets=targets,
+            result_mode=result_mode,
         )
         return SkillAuthoringResult(status="published", proposal=proposal, skill=updated)
 
@@ -426,6 +450,28 @@ class AuthorSkillUseCase:
         ):
             raise ValueError("Reviewed Skill must not expand completed AgentRun permissions.")
         return reviewed
+
+
+def _updated_execution_options(
+    previous: SkillVersion | None,
+    capabilities: tuple[SkillCapability, ...],
+    targets: tuple[SkillTarget, ...] | None,
+    result_mode: SkillResultMode | None,
+) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
+    """수정은 지침을 다시 분류해 capabilities가 바뀔 수 있다.
+
+    보낸 값은 그대로 검증해 어긋나면 거절하고, 보내지 않아 이어받은 값은 새 capabilities와 맞지 않으면 버린다.
+    """
+    if targets is None:
+        targets = (
+            effective_targets(previous.capabilities, previous.targets)
+            if previous is not None and is_document_skill(capabilities)
+            else ()
+        )
+    if result_mode is None and previous is not None and is_document_skill(capabilities):
+        inherited = previous.result_mode
+        result_mode = inherited if result_mode_matches(capabilities, inherited) else None
+    return validate_execution_options(capabilities, targets, result_mode)
 
 
 def _validate_references(references: tuple[SkillAuthoringReference, ...]) -> tuple[SkillSafetyIssue, ...]:

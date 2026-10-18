@@ -21,6 +21,8 @@ SkillTool = Literal[
     "create_document",
     "apply_document_edit",
 ]
+SkillTarget = Literal["current_document", "selection"]
+SkillResultMode = Literal["create", "edit", "auto"]
 SkillScopeType = Literal["personal", "team"]
 SkillAuthoringMode = Literal["preserve", "enhance", "regenerate"]
 SkillStatus = Literal["enabled", "disabled"]
@@ -37,6 +39,8 @@ class SkillVersion:
     instructions_markdown: str
     capabilities: tuple[SkillCapability, ...]
     allowed_tools: tuple[SkillTool, ...] = ()
+    targets: tuple[SkillTarget, ...] = ()
+    result_mode: SkillResultMode | None = None
     status: SkillVersionStatus = "draft"
     lint_result: dict[str, object] | None = None
     created_by: str | None = None

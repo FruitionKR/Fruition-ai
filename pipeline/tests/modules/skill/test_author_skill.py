@@ -1301,6 +1301,127 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(result.skill.enabled_version.version, 2)  # type: ignore[union-attr]
         self.assertEqual(generator.authoring_mode, "preserve")
 
+    def _publish_document_skill(self, use_case: AuthorSkillUseCase, **options: object):
+        return use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="concise-document-writer",
+            description="요청한 내용을 간결한 문서로 작성합니다.",
+            instructions_markdown="# 작성 절차\n\n- 핵심 내용을 먼저 정리한다.",
+            expected_capabilities=("document-create",),
+            expected_allowed_tools=("create_document", "list_folder_children", "list_root_items"),
+            **options,  # type: ignore[arg-type]
+        )
+
+    def test_publish_stores_targets_and_result_mode(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+
+        result = self._publish_document_skill(use_case, targets=("selection", "current_document"), result_mode="create")
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.targets, ("current_document", "selection"))
+        self.assertEqual(version.result_mode, "create")
+        response = SkillAuthoringResponse.from_domain(result)
+        self.assertEqual(response.targets, ["current_document", "selection"])
+        self.assertEqual(response.result_mode, "create")
+
+    def test_publish_defaults_document_skill_targets_to_current_document(self) -> None:
+        for options in ({}, {"targets": ()}):
+            with self.subTest(options=options):
+                use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+
+                result = self._publish_document_skill(use_case, **options)
+
+                version = result.skill.enabled_version  # type: ignore[union-attr]
+                self.assertEqual(version.targets, ("current_document",))
+                self.assertIsNone(version.result_mode)
+
+    def test_publish_rejects_result_mode_mismatch_before_llm(self) -> None:
+        generator = FixedGenerator(draft_result())
+        use_case, repository = self.build_use_case(generator)
+
+        for result_mode in ("edit", "auto"):
+            with self.subTest(result_mode=result_mode):
+                with self.assertRaises(SkillRequestRejectedError) as raised:
+                    self._publish_document_skill(use_case, result_mode=result_mode)
+                self.assertEqual(raised.exception.code, "invalid_result_mode")
+
+        self.assertEqual(generator.instruction, "")
+        self.assertEqual(repository.skills, {})
+
+    def test_publish_rejects_duplicate_targets(self) -> None:
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+
+        with self.assertRaises(SkillRequestRejectedError) as raised:
+            self._publish_document_skill(use_case, targets=("selection", "selection"))
+
+        self.assertEqual(raised.exception.code, "invalid_targets")
+        self.assertEqual(repository.skills, {})
+
+    def test_publish_rejects_targets_on_non_document_skill(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+
+        with self.assertRaises(SkillRequestRejectedError) as raised:
+            use_case.publish(
+                workspace_id="workspace-1",
+                user_id="user-1",
+                scope_type="personal",
+                name="concise-document-writer",
+                description="문서를 정리합니다.",
+                instructions_markdown="# 정리 절차\n\n- 폴더를 나눈다.",
+                expected_capabilities=("folder-organize",),
+                expected_allowed_tools=(),
+                result_mode="edit",
+            )
+
+        self.assertEqual(raised.exception.code, "invalid_result_mode")
+
+    def _update(self, use_case: AuthorSkillUseCase, skill_id: str, **options: object):
+        return use_case.update(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            skill_id=skill_id,
+            name="concise-document-writer",
+            description="요청한 내용을 두 문단으로 정리합니다.",
+            instructions_markdown="# 작성 절차\n\n- 핵심 내용을 두 문단으로 정리한다.",
+            **options,  # type: ignore[arg-type]
+        )
+
+    def test_update_keeps_omitted_targets_and_result_mode(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case, targets=("selection",), result_mode="create")
+
+        result = self._update(use_case, created.skill.id)  # type: ignore[union-attr]
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.version, 2)
+        self.assertEqual(version.targets, ("selection",))
+        self.assertEqual(version.result_mode, "create")
+
+    def test_update_replaces_given_targets_and_empty_list_resets_default(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case, targets=("selection",))
+        skill_id = created.skill.id  # type: ignore[union-attr]
+
+        changed = self._update(use_case, skill_id, targets=("current_document", "selection"))
+        reset = self._update(use_case, skill_id, targets=())
+
+        self.assertEqual(changed.skill.enabled_version.targets, ("current_document", "selection"))  # type: ignore[union-attr]
+        self.assertEqual(reset.skill.enabled_version.targets, ("current_document",))  # type: ignore[union-attr]
+
+    def test_update_rejects_given_result_mode_mismatch(self) -> None:
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case)
+
+        with self.assertRaises(SkillRequestRejectedError) as raised:
+            self._update(use_case, created.skill.id, result_mode="edit")  # type: ignore[union-attr]
+
+        self.assertEqual(raised.exception.code, "invalid_result_mode")
+        self.assertEqual(
+            repository.skills[created.skill.id].enabled_version.version, 1  # type: ignore[union-attr]
+        )
+
     def test_backend_reference_reader_uses_authoring_endpoint_without_agent_run(self) -> None:
         response = MagicMock()
         response.read.return_value = json.dumps(
