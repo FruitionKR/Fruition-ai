@@ -21,6 +21,7 @@ from app.modules.skill.domain.entities import (
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
+    canonical_allowed_tools,
     validate_allowed_tools,
     validate_skill_name,
 )
@@ -315,6 +316,9 @@ class AuthorSkillUseCase:
             capability not in CAPABILITY_TOOLS for capability in expected_capabilities
         ):
             raise ValueError("Published Skill contains an unsupported capability.")
+        if not expected_allowed_tools:
+            # 초안 없이 바로 게시하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
+            expected_allowed_tools = canonical_allowed_tools(expected_capabilities)
         if len(set(expected_capabilities)) != len(expected_capabilities) or len(
             set(expected_allowed_tools)
         ) != len(expected_allowed_tools):

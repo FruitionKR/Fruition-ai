@@ -214,6 +214,21 @@ class ManageSkillTest(unittest.TestCase):
                 allowed_tools=("move_document",),
             )
 
+    def test_preview_computes_allowed_tools_when_empty(self) -> None:
+        use_case = ManageSkillUseCase(InMemoryManageSkillRepository())  # type: ignore[arg-type]
+
+        version = use_case.preview(
+            user_id="user-1",
+            name="meeting-notes",
+            description="회의록을 정리한다.",
+            instructions_markdown="회의 내용을 정리한다.",
+            capabilities=("document-edit",),
+            allowed_tools=(),
+        )
+
+        self.assertIn("apply_document_edit", version.allowed_tools)
+        self.assertNotIn("create_document", version.allowed_tools)
+
     def test_rejects_non_english_name(self) -> None:
         use_case = ManageSkillUseCase(InMemoryManageSkillRepository())  # type: ignore[arg-type]
 

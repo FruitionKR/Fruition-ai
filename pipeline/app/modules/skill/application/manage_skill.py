@@ -11,6 +11,7 @@ from app.modules.skill.domain.entities import (
 )
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
+    canonical_allowed_tools,
     validate_allowed_tools,
     validate_skill_name,
 )
@@ -36,6 +37,9 @@ class ManageSkillUseCase:
         capabilities: tuple[SkillCapability, ...],
         allowed_tools: tuple[SkillTool, ...],
     ) -> SkillVersion:
+        if not allowed_tools and capabilities and all(capability in CAPABILITY_TOOLS for capability in capabilities):
+            # 게시와 같은 규칙: 비우면 capabilities로 계산한다.
+            allowed_tools = canonical_allowed_tools(capabilities)
         _validate_definition(name, name, description, instructions_markdown, capabilities, allowed_tools)
         return _new_version(
             skill_id="preview",

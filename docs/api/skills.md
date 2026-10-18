@@ -249,6 +249,9 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 `payload`는 [공개 Skill API](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/skills.md)의 해당 body에 backend가 검증한
 `workspace_id`, `user_id`, `provider`, `model`을 넣은 값입니다. envelope와 payload의 actor는 같아야 합니다.
 게시에는 초안의 `capabilities`, `allowed_tools`를 전달하며 서버가 다시 검증합니다.
+게시(`skill_publish`)의 `allowed_tools`는 선택입니다. 생략하거나 `[]`이면 서버가 `capabilities`별 canonical Tool의
+합집합(`policy.canonical_allowed_tools`: 계획 읽기 `list_root_items`·`list_folder_children`을 앞에 두고 나머지는 이름순)으로
+계산해 같은 검증을 거치고, 응답 `allowed_tools`로 돌려줍니다. 값을 보내면 지금처럼 검증만 합니다.
 
 #### 5. Response body
 
@@ -470,6 +473,8 @@ Skill 지침과 권한을 게시 전에 미리 검증합니다.
 | header | `X-Agent-Service-Token` | `X-Agent-Service-Token` | 예 (인증 계층 검증) | - |
 
 - Content-Type: `application/json` (`SkillDefinitionRequest`)
+
+`allowed_tools`를 생략하거나 `[]`로 보내면 게시와 같은 규칙으로 `capabilities`에서 계산해 검증합니다.
 
 ```json
 {
