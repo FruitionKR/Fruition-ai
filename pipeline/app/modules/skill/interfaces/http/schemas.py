@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.llm_env import resolve_llm_selection
+from app.core.llm_env import resolve_workspace_llm_selection
 from app.modules.skill.domain.entities import (
     Skill,
     SkillAuthoringResult,
@@ -37,7 +37,8 @@ class SkillLlmRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_model_selection(self) -> "SkillLlmRequest":
-        resolve_llm_selection(self.provider, self.model)
+        # 워크스페이스 공용 모델 설정에서 온 값이다. 허용 범위 밖이면 워크스페이스 기본 모델로 대체한다.
+        self.provider, self.model = resolve_workspace_llm_selection(self.provider, self.model)
         return self
 
 

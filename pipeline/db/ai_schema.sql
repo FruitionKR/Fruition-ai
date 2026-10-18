@@ -301,10 +301,11 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
 -- 계획 단계에서 의도를 확정하지 못했을 때 사용자에게 보여 줄 질문. clarification_required에서만 의미가 있다.
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
 
+-- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs
-SET model = 'claude-sonnet-5', updated_at = now()
+SET model = 'claude-haiku-4-5-20251001', updated_at = now()
 WHERE provider = 'claude'
-  AND model = 'claude-haiku-4-5-20251001'
+  AND model <> 'claude-haiku-4-5-20251001'
   AND status NOT IN ('completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled');
 
 CREATE TABLE IF NOT EXISTS skill_version_sources (

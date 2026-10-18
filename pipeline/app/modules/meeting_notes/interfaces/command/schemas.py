@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.llm_env import resolve_llm_selection
+from app.core.llm_env import resolve_workspace_llm_selection
 from app.modules.speech.interfaces.http.schemas import SpeechScope
 
 
@@ -25,7 +25,8 @@ class MeetingNotesCommand(SpeechScope):
 
     @model_validator(mode="after")
     def validate_transcript(self):
-        resolve_llm_selection(self.provider, self.model)
+        # 워크스페이스 공용 모델 설정에서 온 값이다. 허용 범위 밖이면 워크스페이스 기본 모델로 대체한다.
+        self.provider, self.model = resolve_workspace_llm_selection(self.provider, self.model)
         if sum(len(segment.text) for segment in self.segments) > 100000:
             raise ValueError("전사는 100,000자 이하로 보내주세요.")
         if len({segment.id for segment in self.segments}) != len(self.segments):

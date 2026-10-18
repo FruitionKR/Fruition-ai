@@ -17,7 +17,7 @@ from threading import Event
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_llm_selection
+from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_workspace_llm_selection
 from app.core.pipeline_control import (
     DeadlineExceededError,
     PipelineRunCancelledError,
@@ -142,7 +142,8 @@ def process_pdf(
     usage_actor: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     try:
-        provider, model = resolve_llm_selection(provider, model)
+        # 변환 repair는 워크스페이스 공용 모델 설정을 쓴다. 허용 범위 밖이면 워크스페이스 기본 모델로 대체한다.
+        provider, model = resolve_workspace_llm_selection(provider, model)
     except ValueError as exc:
         raise InputRejectedError(str(exc)) from exc
     if missing := missing_commands():
