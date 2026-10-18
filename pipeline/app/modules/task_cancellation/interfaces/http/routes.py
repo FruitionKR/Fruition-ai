@@ -1,6 +1,7 @@
 import httpx
 
 from fastapi import APIRouter, HTTPException
+from app.modules.skill.application.skill_test_run import skill_test_run_command
 from app.modules.task_cancellation.infrastructure.backend_rollback import rollback_backend
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository, register_cancelled_turn
 from app.modules.task_cancellation.interfaces.http.schemas import CancelTaskRequest, TaskStatusResponse
@@ -22,7 +23,12 @@ def cancel_task(run_id: str, request: CancelTaskRequest):
                 register_cancelled_turn(request.command)
                 run = PostgresAgentRunRepository().cancel(request.workspace_id, request.user_id, run_id)
                 return {"id": run.id, "status": run.status, "error_code": run.error_code}
-            journal.register(request.command)
+            if request.command.get("kind") == "skill_test_run":
+                # 테스트 실행은 저장한 것이 없어 되돌릴 변경이 없다. 실행과 같은 신원 command로 맞춰 등록한다
+                # (document는 본문 대신 해시를 담아 보낸다).
+                journal.register(skill_test_run_command(run_id, request.workspace_id, request.user_id))
+            else:
+                journal.register(request.command)
         journal.request_cancel(run_id, request.workspace_id, request.user_id)
         journal.rollback_pending()
         return journal.status(run_id, request.workspace_id, request.user_id)

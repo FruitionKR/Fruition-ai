@@ -4,15 +4,16 @@
 
 Skill 조회·작성·게시·설정 내부 API다. 공개 Gateway 계약은
 [`document-svc Skills API`](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/skills.md)다. Backend가 사용자·워크스페이스·모델 정보를
-검증해 추가한 뒤 6개 관리 API를 내부 HTTP로 호출한다. draft-from-runs·preview는 ai-svc 내부 기능이다.
+검증해 추가한 뒤 6개 관리 API와 테스트 실행을 내부 HTTP로 호출한다. draft-from-runs·preview는 ai-svc 내부 기능이다.
 
-- API 수: 8
+- API 수: 9
 
 ## API 목차
 
 | API | 목적 |
 |---|---|
 | [`POST /skills/tasks`](#summary-post-skills-tasks) | 작성·게시·수정을 취소 가능한 작업으로 실행합니다. |
+| [`POST /skills/test-run`](#summary-post-skills-test-run) | 게시 전 Skill 정의를 저장하지 않고 문서 하나에 적용해 봅니다. |
 | [`GET /skills`](#summary-get-skills) | 사용 가능한 Skill 목록을 조회합니다. |
 | [`POST /skills/draft-from-runs/preview`](#summary-post-skills-draft-from-runs-preview) | 완료된 Agent 실행 결과로 게시 전 Skill 초안을 만듭니다. |
 | [`POST /skills/preview`](#summary-post-skills-preview) | Skill 지침과 권한을 게시 전에 미리 검증합니다. |
@@ -21,7 +22,7 @@ Skill 조회·작성·게시·설정 내부 API다. 공개 Gateway 계약은
 | [`POST /skills/{skill_id}/disable`](#summary-post-skills-skill-id-disable) | Skill을 비활성화합니다. |
 | [`POST /skills/{skill_id}/enable`](#summary-post-skills-skill-id-enable) | Skill을 활성화합니다. |
 
-실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 7개 API는
+실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 8개 API는
 `SKILL_API_ENABLED=true`일 때 노출된다. 모두 `X-Agent-Service-Token`으로 보호한다.
 Skill 작성 분류는 완성된 동작에 필요한 capability를 모두 반환하며, 서버가 각 capability의
 canonical Tool 집합을 합쳐 `allowed_tools`를 확정한다. 따라서 문서 편집 후 이동처럼 복합적인
@@ -340,6 +341,127 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:102-107 → 124 (`app.skill.endpoint`, `X-Agent-Service-Token`). `kind`는 `skill_author`·`skill_publish`·`skill_update`다.
 - 아웃바운드 호출: LLM provider. 참조 읽기는 document-svc `POST /internal/agent/skill-authoring/references/read`(`pipeline/app/modules/skill/infrastructure/backend_skill_reference_reader.py`:27, `DOCUMENT_INTERNAL_BASE_URL`), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19).
 - 미연동 표시: 없음.
+
+<a id="summary-post-skills-test-run"></a>
+### `POST /skills/test-run`
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 게시 전 Skill 정의를 저장하지 않고 문서 하나에 적용해 섹션별 변경 전/후를 돌려줍니다. |
+| 입력 | **Header** — `X-Agent-Service-Token`: 필수, `X-Request-Id`(필수, 사용량 원장·작업 `run_id`)<br>**Body** — `SkillTestRunRequest` |
+| 출력 | `200` — `SkillTestRunResponse` (`completed` 또는 `blocked`) |
+| 조건 | `SKILL_API_ENABLED=true`. Skill·Skill 버전·Agent run·문서를 만들거나 바꾸지 않고, 문서 쓰기 Tool을 호출하지 않습니다. |
+| 주요 오류 | `400` `test_run_unsupported`(폴더 정리 Skill)·`request_id_required`·거절 code·범위 오류<br>`409` 취소·실행 중·같은 `run_id` 재요청<br>`422` 요청 검증 실패<br>`504` `deadline_exceeded` |
+
+<details>
+<summary>상세 계약 보기</summary>
+
+<a id="detail-post-skills-test-run"></a>
+### `POST /skills/test-run` 상세
+
+#### 1. Method + Path
+
+`POST /skills/test-run`
+
+#### 2. 목적
+
+"스킬 만들기" 시트의 테스트 실행 카드용입니다. document-svc가 actor·워크스페이스 모델·문서 본문을 검증해 채워 보냅니다.
+
+1. capability가 `folder-organize`를 포함하면 LLM 호출 없이 `400 {"detail": {"code": "test_run_unsupported"}}`입니다.
+2. 게시(`skill_publish`)와 같은 안전 검토(`AuthorSkillUseCase.execute(... authoring_mode="preserve")`, Tool 목록은 `capabilities`로 계산)를 먼저 거칩니다. 막히면 편집 LLM을 부르지 않고 `200 {"status": "blocked", "changes": [], "issues": [...]}`를 돌려줍니다(`issues`는 `/skills/tasks` 작성의 `blocked`와 같은 형식).
+3. `document-edit`를 가진 Skill은 Agent `markdown_edit`와 같은 `GenerateMarkdownEditUseCase`에 검토된 초안 지침을 `skill_instructions`로 넣어 편집안을 만들고, 편집이 닿은 섹션을 `changes`, 닿지 않은 섹션 제목을 `untouched_sections`, 적용한 전체 본문을 `result_markdown`으로 돌려줍니다.
+4. 문서 생성형(`document-create`·`template`, `document-edit` 없음)은 고른 문서를 참고 자료로 새 문서를 만들어 `result_markdown`만 돌려줍니다(`changes`는 빈 배열).
+
+모델은 요청의 `provider`·`model`이며 워크스페이스 모델 정책(`AI_ALLOWED_LLM_MODELS`, Claude 불가)을 벗어나면 워크스페이스 기본 모델로 대체합니다(게시와 같음).
+
+#### 3. Auth 필요 여부
+
+`X-Agent-Service-Token`이 필요합니다. 문서 읽기 권한과 크레딧은 document-svc가 확인합니다.
+
+#### 4. Request body
+
+| 위치 | 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|---|
+| header | `X-Request-Id` | `string` | 예 | 사용량 원장 `run_id`이자 작업 journal `run_id`(`kind=skill_test_run`) |
+| body | `definition` | object | 예 | `name`, `description`, `instructions_markdown`, `capabilities`. `allowed_tools`는 받지 않습니다(`422`). |
+| body | `document` | object | 예 | `document_id`, `base_version`, `markdown` |
+| body | `target` | object | 아니오 | `selection`·`current_section`·`whole_document`, 1-based `start_line`·`end_line`. 생략하면 문서 전체. 줄 범위를 벗어나면 LLM 호출 전 `400` |
+
+```json
+{
+  "workspace_id": "ws_123",
+  "user_id": "user_123",
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "definition": {
+    "name": "research-summary",
+    "description": "연구 문서의 개요를 핵심 문장 3개로 정리합니다.",
+    "instructions_markdown": "'연구 개요' 섹션만 고친다. 다른 섹션은 바꾸지 않는다.",
+    "capabilities": ["document-edit"]
+  },
+  "document": {"document_id": "doc_123", "base_version": 7, "markdown": "# 연구 개요\n...\n# 방법\n..."},
+  "target": {"type": "selection", "start_line": 1, "end_line": 6}
+}
+```
+
+#### 5. Response body
+
+```json
+{
+  "status": "completed",
+  "changes": [
+    {"section": "연구 개요", "start_line": 1, "end_line": 6, "before": "...", "after": "..."}
+  ],
+  "untouched_sections": ["방법", "결과"],
+  "result_markdown": "# 연구 개요\n...",
+  "issues": []
+}
+```
+
+- `changes`는 편집이 닿은 원본 섹션들을 하나의 블록으로 묶습니다. 여러 섹션에 걸치면 `section`이 제목을 ` · `로 잇고, `start_line`·`end_line`은 원본 기준입니다. 제목 전 본문은 `(제목 없음)` 섹션입니다.
+- 바뀐 내용이 없으면 `changes`는 빈 배열이고 모든 섹션이 `untouched_sections`에 들어갑니다.
+
+#### 6. Error response
+
+| 상태 | code | 의미 |
+|---|---|---|
+| `400` | `test_run_unsupported` | 폴더 정리 Skill |
+| `400` | `request_id_required` | `X-Request-Id` 없음 |
+| `400` | `invalid_name` 등 | 작성 거절 code(`/skills/tasks`와 같음) |
+| `409` | `task_cancelled`·`task_in_progress`·`task_command_mismatch` | 취소됨·실행 중·다른 actor로 같은 `run_id` |
+| `409` | `task_already_completed` | 끝난 `run_id` 재요청. 결과에 문서 본문이 있어 보관하지 않으므로 새 `run_id`로 다시 보냅니다. |
+| `504` | `deadline_exceeded` | 55초 초과 |
+
+#### 7. Pagination / filtering
+
+없음.
+
+#### 8. 권한 규칙
+
+- 저장하지 않음: `skills`·`skill_versions`·`agent_runs` 행을 만들지 않고 `apply_document_edit`·`create_document` 등 문서 쓰기 Tool을 호출하지 않습니다.
+- 실행 추적: 작업 journal(`ai_task_runs`)에 본문 없는 신원 command(`run_id`, `kind=skill_test_run`, `workspace_id`, `user_id`)만 남기고, 끝나면 결과도 `{"scrubbed": true}`로 지웁니다.
+- 사용량: 안전 검토·편집 LLM 호출을 `X-Request-Id` run(`kind=skill_test_run`)으로 원장에 기록합니다(과금 대상).
+- 취소: 55초 내부 deadline과 공통 취소 API는 `/skills/tasks`와 같습니다. document가 보내는 취소 command(본문 대신 `markdown_sha256`)는 `kind=skill_test_run`이면 같은 신원 command로 맞춰 등록하므로 해시가 어긋나지 않고, 되돌릴 변경이 없어 `cancelled`로 끝납니다([작업 취소](tasks.md)).
+
+#### 9. 예시 요청/응답
+
+위 4·5절과 같습니다.
+
+#### 10. 구현 파일
+
+- 진입점: `pipeline/app/modules/skill/interfaces/http/routes.py` (`run_skill_test`)
+- 실행: `pipeline/app/modules/skill/application/skill_test_run.py`, 섹션 변경: `pipeline/app/modules/skill/domain/section_changes.py`
+- 기계 판독 계약: `pipeline/api-specs/openapi.yaml` (`operationId: run_skill_test_skills_test_run_post`)
+
+#### 연동
+
+- 인바운드 호출자: Fruition-document `PipelineSkillRequester.testRun`(FruitionKR/Fruition-document#148, `X-Request-Id`=run_id).
+- 아웃바운드 호출: LLM provider. 문서·access 서비스는 호출하지 않습니다.
+- 미연동 표시: document#148 배포 전에는 호출자 없음.
+
+</details>
+
+[↑ 요약으로 돌아가기](#summary-post-skills-test-run)
 
 <a id="summary-post-skills-draft-from-runs-preview"></a>
 ### `POST /skills/draft-from-runs/preview`

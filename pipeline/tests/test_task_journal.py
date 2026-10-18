@@ -493,3 +493,56 @@ def test_other_kinds_keep_command_and_result(journal_database):
     with journal_database() as conn:
         row = conn.execute("SELECT command, result FROM ai_task_runs WHERE id = 'run'").fetchone()
     assert row["command"]["payload"] == "keep" and row["result"] == {"ok": 1}
+
+
+def document_test_run_cancel_command(run_id):
+    """document가 타임아웃·취소 때 보내는 command. 본문 대신 해시를 담는다(Fruition-document#148)."""
+    return dict(run_id=run_id, kind="skill_test_run", workspace_id="ws", user_id="user", payload=dict(
+        workspace_id="ws", user_id="user", provider="openai", model="gpt-5-nano",
+        definition=dict(name="brief", description="설명", instructions_markdown="지침", capabilities=["document-edit"]),
+        document=dict(document_id="doc", base_version=7, markdown_sha256="a" * 64),
+    ))
+
+
+def cancel_via_route(run_id):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.modules.task_cancellation.interfaces.http.routes import router
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app).post(f"/internal/ai/tasks/{run_id}/cancel", json=dict(
+        workspace_id="ws", user_id="user", command=document_test_run_cancel_command(run_id)))
+
+
+def test_skill_test_run_completion_scrubs_document_result(journal_database):
+    from app.core.pipeline_control import ReplayedResult
+    from app.modules.skill.application.skill_test_run import skill_test_run_command
+    result = journal.execute(skill_test_run_command("trial", "ws", "user"), lambda: {"result_markdown": "비밀 본문"})
+    assert result == {"result_markdown": "비밀 본문"}
+    with journal_database() as conn:
+        row = conn.execute("SELECT status, command, result FROM ai_task_runs WHERE id = 'trial'").fetchone()
+    assert row["status"] == "completed" and row["result"] == {"scrubbed": True}
+    assert "비밀 본문" not in str(row["command"])
+    def unexpected():
+        pytest.fail("완료한 작업의 handler를 호출했습니다.")
+    assert isinstance(journal.execute(skill_test_run_command("trial", "ws", "user"), unexpected), ReplayedResult)
+
+
+def test_document_cancel_command_for_skill_test_run_before_start_is_accepted(journal_database):
+    from app.core.pipeline_control import PipelineRunCancelledError
+    from app.modules.skill.application.skill_test_run import skill_test_run_command
+    response = cancel_via_route("trial")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+    def unexpected():
+        pytest.fail("취소한 테스트 실행의 handler를 호출했습니다.")
+    with pytest.raises(PipelineRunCancelledError):
+        journal.execute(skill_test_run_command("trial", "ws", "user"), unexpected)
+
+
+def test_document_cancel_command_for_finished_skill_test_run_is_accepted(journal_database):
+    from app.modules.skill.application.skill_test_run import skill_test_run_command
+    journal.execute(skill_test_run_command("trial", "ws", "user"), lambda: {"result_markdown": "본문"})
+    response = cancel_via_route("trial")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"

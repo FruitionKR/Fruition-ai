@@ -11,6 +11,7 @@ Document의 [공개 취소 API](https://github.com/FruitionKR/Fruition-document/
 | `POST /internal/ai/tasks/{run_id}/rollback-backend` | `X-Internal-Token` | 같은 actor와 선택 `command` | `204`: Python이 업무 변경을 역순 복구. AI 복구 미완료·충돌 `409` |
 
 취소 command의 ID·actor는 경로·body와 같아야 하며 기존 command와 내용이 다르면 `409`입니다.
+`kind=skill_test_run`(Skill 테스트 실행)은 저장하는 것이 없어 command 본문을 비교하지 않습니다. document가 본문 대신 해시를 담아 보내도 실행과 같은 신원 command(`run_id`·`kind`·`workspace_id`·`user_id`)로 맞춰 등록하고, 되돌릴 변경 없이 `cancelled`로 끝납니다.
 내부 상태 응답의 `error_code`는 오류가 없을 때 `null`입니다. 목록 pagination은 없습니다.
 실패(`failed`)로 닫힌 작업의 `error_code`는 실패 예외가 사유 코드를 가지면 그 코드(예: Skill 거절 `intent_ambiguous`), 없으면 `task_failed`입니다.
 

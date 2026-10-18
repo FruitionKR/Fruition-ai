@@ -1882,6 +1882,182 @@ components:
       - payload
       title: SkillTaskRequest
       type: object
+    SkillTestRunChangeResponse:
+      properties:
+        after:
+          title: After
+          type: string
+        before:
+          title: Before
+          type: string
+        end_line:
+          title: End Line
+          type: integer
+        section:
+          title: Section
+          type: string
+        start_line:
+          title: Start Line
+          type: integer
+      required:
+      - section
+      - start_line
+      - end_line
+      - before
+      - after
+      title: SkillTestRunChangeResponse
+      type: object
+    SkillTestRunDefinitionRequest:
+      additionalProperties: false
+      properties:
+        capabilities:
+          items:
+            enum:
+            - document-create
+            - document-edit
+            - folder-organize
+            - template
+            type: string
+          minItems: 1
+          title: Capabilities
+          type: array
+        description:
+          maxLength: 500
+          minLength: 1
+          title: Description
+          type: string
+        instructions_markdown:
+          maxLength: 30000
+          minLength: 1
+          title: Instructions Markdown
+          type: string
+        name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+          title: Name
+          type: string
+      required:
+      - name
+      - description
+      - instructions_markdown
+      - capabilities
+      title: SkillTestRunDefinitionRequest
+      type: object
+    SkillTestRunDocumentRequest:
+      additionalProperties: false
+      properties:
+        base_version:
+          minimum: 0.0
+          title: Base Version
+          type: integer
+        document_id:
+          minLength: 1
+          title: Document Id
+          type: string
+        markdown:
+          minLength: 1
+          title: Markdown
+          type: string
+      required:
+      - document_id
+      - base_version
+      - markdown
+      title: SkillTestRunDocumentRequest
+      type: object
+    SkillTestRunRequest:
+      additionalProperties: false
+      properties:
+        definition:
+          $ref: '#/components/schemas/SkillTestRunDefinitionRequest'
+        document:
+          $ref: '#/components/schemas/SkillTestRunDocumentRequest'
+        model:
+          minLength: 1
+          title: Model
+          type: string
+        provider:
+          minLength: 1
+          title: Provider
+          type: string
+        target:
+          anyOf:
+          - $ref: '#/components/schemas/SkillTestRunTargetRequest'
+          - type: 'null'
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - provider
+      - model
+      - workspace_id
+      - user_id
+      - definition
+      - document
+      title: SkillTestRunRequest
+      type: object
+    SkillTestRunResponse:
+      properties:
+        changes:
+          items:
+            $ref: '#/components/schemas/SkillTestRunChangeResponse'
+          title: Changes
+          type: array
+        issues:
+          items:
+            additionalProperties: true
+            type: object
+          title: Issues
+          type: array
+        result_markdown:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Markdown
+        status:
+          enum:
+          - completed
+          - blocked
+          title: Status
+          type: string
+        untouched_sections:
+          items:
+            type: string
+          title: Untouched Sections
+          type: array
+      required:
+      - status
+      title: SkillTestRunResponse
+      type: object
+    SkillTestRunTargetRequest:
+      additionalProperties: false
+      properties:
+        end_line:
+          minimum: 1.0
+          title: End Line
+          type: integer
+        start_line:
+          minimum: 1.0
+          title: Start Line
+          type: integer
+        type:
+          enum:
+          - selection
+          - current_section
+          - whole_document
+          title: Type
+          type: string
+      required:
+      - type
+      - start_line
+      - end_line
+      title: SkillTestRunTargetRequest
+      type: object
     SkillVersionResponse:
       properties:
         allowed_tools:
@@ -3435,6 +3611,50 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Execute Skill Task
+      tags:
+      - skills
+  /skills/test-run:
+    post:
+      description: 저장하지 않는 Skill 테스트 실행. 사용량은 X-Request-Id run으로 기록하고 취소는 공통 작업 취소를 따른다.
+      operationId: run_skill_test_skills_test_run_post
+      parameters:
+      - in: header
+        name: X-Request-Id
+        required: false
+        schema:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: X-Request-Id
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillTestRunRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillTestRunResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Run Skill Test
       tags:
       - skills
   /skills/{skill_id}:

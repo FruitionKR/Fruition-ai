@@ -24,7 +24,8 @@ TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_
 # 종료한 run에서 지울 kind별 command 필드. 전사·초안은 document가 소유하므로 AI는 끝난 작업의 본문을 보관하지 않는다.
 # command_hash와 status·error_code·run_id는 남겨 재전달 판정(재생·불일치)에 쓴다.
 # meeting_transcription은 command에 전사가 없어 녹음 객체 키만 지우고, result의 전사 본문은 같은 방식으로 지운다.
-SCRUBBED_COMMAND_KEYS = {"meeting_notes": "segments", "meeting_transcription": "recording_key"}
+# skill_test_run은 command에 본문이 없지만 result에 문서 본문·편집안이 있어 같은 방식으로 result를 지운다.
+SCRUBBED_COMMAND_KEYS = {"meeting_notes": "segments", "meeting_transcription": "recording_key", "skill_test_run": "payload"}
 
 
 class TaskAlreadyExecutingError(RuntimeError):
@@ -57,7 +58,7 @@ def connect():
 
 
 def register(command: dict[str, Any]) -> dict[str, Any]:
-    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "convert_batch"}:
+    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "skill_test_run", "convert_batch"}:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:

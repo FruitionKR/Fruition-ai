@@ -7,24 +7,29 @@ from app.core.pipeline_control import (
     DOCUMENT_SYNC_DEADLINE_SECONDS,
     DeadlineExceededError,
     PipelineRunCancelledError,
+    ReplayedResult,
     request_deadline,
 )
 from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
+from app.modules.markdown_edit.domain.entities import MarkdownEditTarget
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
+from app.modules.skill.application.skill_test_run import require_test_runnable, skill_test_run_command
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
 from app.modules.skill.application.ports import SkillRepositoryPort
 from app.modules.skill.domain.exceptions import (
     SKILL_REJECTION_CODES,
     ReferenceDocumentTooLargeError,
     SkillRequestRejectedError,
+    SkillTestRunUnsupportedError,
 )
 from app.modules.skill.interfaces.http.dependencies import (
     get_author_skill_use_case,
     get_manage_skill_use_case,
     get_propose_skill_draft_use_case,
     get_skill_repository,
+    get_skill_test_run_use_case,
 )
 from app.modules.skill.interfaces.http.schemas import (
     SkillTaskRequest,
@@ -36,6 +41,8 @@ from app.modules.skill.interfaces.http.schemas import (
     SkillDraftProposalRequest,
     SkillPreviewResponse,
     SkillResponse,
+    SkillTestRunRequest,
+    SkillTestRunResponse,
     UpdateSkillRequest,
 )
 
@@ -192,6 +199,68 @@ def preview_skill(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillPreviewResponse.from_domain(version)
+
+
+@router.post("/test-run", response_model=SkillTestRunResponse)
+def run_skill_test(payload: SkillTestRunRequest, request_id: RequestId = None) -> SkillTestRunResponse:
+    """저장하지 않는 Skill 테스트 실행. 사용량은 X-Request-Id run으로 기록하고 취소는 공통 작업 취소를 따른다."""
+    if not request_id:
+        raise HTTPException(400, {"code": "request_id_required", "message": "X-Request-Id is required."})
+    definition = payload.definition
+    try:
+        require_test_runnable(tuple(definition.capabilities))
+    except SkillTestRunUnsupportedError as exc:
+        raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+    # 실행 기록에는 신원만 남긴다. document가 취소 때 보내는 command(본문 대신 해시)와 형태가 달라도
+    # 취소 경로가 같은 신원 command로 맞춰 등록하므로 해시가 어긋나지 않는다.
+    command = skill_test_run_command(request_id, payload.workspace_id, payload.user_id)
+
+    def execute() -> dict[str, object]:
+        use_case = get_skill_test_run_use_case(provider=payload.provider, model=payload.model)
+        target = payload.target
+        result = use_case.execute(
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            name=definition.name,
+            description=definition.description,
+            instructions_markdown=definition.instructions_markdown,
+            capabilities=tuple(definition.capabilities),
+            document_id=payload.document.document_id,
+            markdown=payload.document.markdown,
+            target=(
+                MarkdownEditTarget(type=target.type, start_line=target.start_line, end_line=target.end_line)
+                if target is not None
+                else None
+            ),
+        )
+        return SkillTestRunResponse.from_domain(result).model_dump(mode="json")
+
+    try:
+        with request_deadline(DOCUMENT_SYNC_DEADLINE_SECONDS):
+            result = journal.execute(command, execute)
+    except SkillRequestRejectedError as exc:
+        raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
+    except journal.TaskFailedError as exc:
+        if exc.code in SKILL_REJECTION_CODES:
+            raise HTTPException(400, {"code": exc.code, "message": "Skill test run was already rejected."}) from exc
+        raise HTTPException(409, {"code": exc.code, "message": "Skill test run already failed."}) from exc
+    except journal.TaskCommandMismatchError as exc:
+        raise HTTPException(409, {"code": "task_command_mismatch", "message": str(exc)}) from exc
+    except DeadlineExceededError as exc:
+        raise HTTPException(504, {"code": exc.code, "message": str(exc)}) from exc
+    except PipelineRunCancelledError as exc:
+        raise HTTPException(409, {"code": "task_cancelled", "message": str(exc)}) from exc
+    except journal.TaskAlreadyExecutingError as exc:
+        raise HTTPException(409, {"code": "task_in_progress", "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if isinstance(result, ReplayedResult):
+        # 결과에 문서 본문이 있어 끝난 run은 결과를 지운다. 같은 run_id 재요청은 새 run_id로 다시 보내야 한다.
+        raise HTTPException(409, {"code": "task_already_completed", "message": "Skill test run already completed."})
+    return SkillTestRunResponse.model_validate(result)
 
 
 @router.get("", response_model=list[SkillResponse])
