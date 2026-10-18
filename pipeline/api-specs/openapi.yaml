@@ -1567,6 +1567,15 @@ components:
           - type: string
           - type: 'null'
           title: Question
+        result_mode:
+          anyOf:
+          - enum:
+            - create
+            - edit
+            - auto
+            type: string
+          - type: 'null'
+          title: Result Mode
         scope_type:
           anyOf:
           - enum:
@@ -1593,6 +1602,14 @@ components:
           - published
           title: Status
           type: string
+        targets:
+          items:
+            enum:
+            - current_document
+            - selection
+            type: string
+          title: Targets
+          type: array
         version_id:
           anyOf:
           - type: string
@@ -1893,9 +1910,19 @@ components:
         name:
           title: Name
           type: string
+        result_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Mode
         status:
           title: Status
           type: string
+        targets:
+          items:
+            type: string
+          title: Targets
+          type: array
         version:
           title: Version
           type: integer
@@ -1907,6 +1934,8 @@ components:
       - instructions_markdown
       - capabilities
       - allowed_tools
+      - targets
+      - result_mode
       - lint_result
       - status
       title: SkillVersionResponse

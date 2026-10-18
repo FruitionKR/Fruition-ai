@@ -250,6 +250,8 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     instructions_markdown text NOT NULL,
     capabilities text[] NOT NULL DEFAULT ARRAY[]::text[],
     allowed_tools text[] NOT NULL DEFAULT ARRAY[]::text[],
+    targets text[] NOT NULL DEFAULT ARRAY[]::text[],
+    result_mode text,
     safety_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL,
     created_by text NOT NULL,
@@ -259,6 +261,22 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     CONSTRAINT skill_versions_status_check CHECK (status IN ('draft', 'published', 'rejected')),
     CONSTRAINT skill_versions_unique_version UNIQUE (skill_id, version)
 );
+
+-- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document", "selection"](제한 없음)으로 본다.
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS targets text[] NOT NULL DEFAULT ARRAY[]::text[];
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS result_mode text;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'skill_versions_targets_check') THEN
+        ALTER TABLE skill_versions ADD CONSTRAINT skill_versions_targets_check
+            CHECK (targets <@ ARRAY['current_document', 'selection']::text[]);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'skill_versions_result_mode_check') THEN
+        ALTER TABLE skill_versions ADD CONSTRAINT skill_versions_result_mode_check
+            CHECK (result_mode IS NULL OR result_mode IN ('create', 'edit', 'auto'));
+    END IF;
+END $$;
 
 DO $$
 BEGIN

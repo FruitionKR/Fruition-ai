@@ -137,8 +137,13 @@ def publish_authored_skill(
             instructions_markdown=payload.instructions_markdown,
             expected_capabilities=tuple(payload.capabilities),
             expected_allowed_tools=tuple(payload.allowed_tools),
+            targets=tuple(payload.targets) if payload.targets is not None else None,
+            result_mode=payload.result_mode,
         )
         return SkillAuthoringResponse.from_domain(result)
+    except SkillRequestRejectedError:
+        # 거절 code(invalid_result_mode 등)를 그대로 400 detail로 낸다.
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -224,7 +229,11 @@ def update_skill(
             name=payload.name,
             description=payload.description,
             instructions_markdown=payload.instructions_markdown,
+            targets=tuple(payload.targets) if payload.targets is not None else None,
+            result_mode=payload.result_mode,
         )
+    except SkillRequestRejectedError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillAuthoringResponse.from_domain(result)

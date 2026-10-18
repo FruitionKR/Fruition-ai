@@ -8,6 +8,7 @@ from app.modules.agent.application.ports import (
     ConversationReplierPort,
 )
 from app.modules.agent.domain.entities import (
+    ActiveMarkdownContext,
     AgentAction,
     AgentConversationContext,
     AgentTurnRequest,
@@ -73,6 +74,13 @@ CLARIFY_INCOMPATIBLE_SKILL_MESSAGE = (
     "선택한 Skill이 요청한 모든 작업을 지원하지 않습니다. "
     "다른 Skill을 선택하거나 요청 범위를 줄여 주세요."
 )
+CLARIFY_SKILL_SELECTION_MESSAGE = "이 Skill은 선택한 부분에만 적용돼요. 수정할 부분을 선택한 뒤 다시 요청해 주세요."
+CLARIFY_SKILL_RESULT_MODE_MESSAGE = (
+    "이 Skill은 새 문서로 만들 수도, 지금 문서를 수정할 수도 있어요. "
+    "새 문서로 만들까요, 지금 문서를 수정할까요?"
+)
+# result_mode=auto Skill에서 라우터 확신도가 이보다 낮으면 새 문서/수정을 되묻는다.
+AUTO_RESULT_MODE_MIN_CONFIDENCE = 0.7
 # `/slug`만 보냈을 때 바로 새 문서를 만드는 Skill 기능. template은 문서 생성을 포함한다.
 BARE_COMMAND_CREATE_CAPABILITIES = frozenset({"template", "document-create"})
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
@@ -191,6 +199,11 @@ class HandleAgentTurnUseCase:
                 message=CLARIFY_SKILL_MESSAGE,
                 skill_candidates=candidates,
             )
+        if route.action in {"markdown_create", "markdown_edit"} and selected_skill is not None:
+            route = _route_for_result_mode(route, selected_skill)
+            # 열린 문서가 없으면 수정할 대상이 없어 새 문서 판단은 애매하지 않다.
+            if route.action == "markdown_create" and _has_active_markdown(request) and _is_ambiguous_auto(route, selected_skill):
+                return _clarify_result_mode(route)
         if route.action == "markdown_create":
             return self._execute_markdown_create(request, route, selected_skill)
 
@@ -343,7 +356,9 @@ class HandleAgentTurnUseCase:
                         ),
                         message=CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
                     )
-                target = markdown_context.target or _whole_document_target(markdown_context.markdown)
+                target = _skill_edit_target(selected_skill, markdown_context)
+                if target is None:
+                    return _clarify_document_change(route, CLARIFY_SKILL_SELECTION_MESSAGE)
                 if _missing_current_section(route, target):
                     return _clarify_document_change(
                         route,
@@ -549,7 +564,11 @@ class HandleAgentTurnUseCase:
         markdown_context = request.active_markdown_context
         if markdown_context is None or not markdown_context.markdown.strip():
             return _clarify_document_change(route, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
-        target = markdown_context.target or _whole_document_target(markdown_context.markdown)
+        if _is_ambiguous_auto(route, selected_skill):
+            return _clarify_result_mode(route)
+        target = _skill_edit_target(selected_skill, markdown_context)
+        if target is None:
+            return _clarify_document_change(route, CLARIFY_SKILL_SELECTION_MESSAGE)
         if _missing_current_section(route, target):
             return _clarify_document_change(
                 route,
@@ -590,7 +609,7 @@ class HandleAgentTurnUseCase:
         """
         version = skill.enabled_version
         assert version is not None  # 명시 선택 단계에서 활성 버전을 확인했다.
-        if set(version.capabilities) & BARE_COMMAND_CREATE_CAPABILITIES:
+        if set(version.capabilities) & BARE_COMMAND_CREATE_CAPABILITIES and version.result_mode != "edit":
             route = AgentTurnRoute(
                 action="markdown_create",
                 confidence=1.0,
@@ -984,3 +1003,64 @@ def _skill_instructions(skill: Skill | None) -> str | None:
     if skill is None or skill.enabled_version is None:
         return None
     return skill.enabled_version.instructions_markdown
+
+
+def _skill_edit_target(skill: Skill | None, markdown_context: ActiveMarkdownContext) -> MarkdownEditTarget | None:
+    """Skill의 실행 대상(targets)으로 편집 범위를 정한다. 선택 범위가 필요한데 없으면 None이다."""
+    target = markdown_context.target
+    whole = _whole_document_target(markdown_context.markdown)
+    targets = skill.enabled_version.targets if skill is not None and skill.enabled_version is not None else ()
+    if targets == ("selection",):
+        return target if target is not None and target.type == "selection" else None
+    if targets == ("current_document",):
+        return whole
+    return target or whole
+
+
+def _route_for_result_mode(route: AgentTurnRoute, skill: Skill) -> AgentTurnRoute:
+    """결과 방식이 정해진 Skill(create·edit)은 라우터가 고른 문서 동작을 그 방식으로 맞춘다."""
+    version = skill.enabled_version
+    result_mode = version.result_mode if version is not None else None
+    if result_mode == "create" and route.action == "markdown_edit":
+        return replace(
+            route,
+            action="markdown_create",
+            edit_goal="create_from_chat",
+            edit_operation=None,
+            edit_destination=None,
+            document_operation="create",
+            required_capabilities=("document-create",),
+        )
+    if result_mode == "edit" and route.action == "markdown_create":
+        return replace(
+            route,
+            action="markdown_edit",
+            edit_goal="other",
+            edit_operation="replace",
+            edit_destination="target",
+            document_operation="edit",
+            required_capabilities=("document-edit",),
+        )
+    return route
+
+
+def _is_ambiguous_auto(route: AgentTurnRoute, skill: Skill | None) -> bool:
+    version = skill.enabled_version if skill is not None else None
+    return (
+        version is not None
+        and version.result_mode == "auto"
+        and route.confidence < AUTO_RESULT_MODE_MIN_CONFIDENCE
+    )
+
+
+def _has_active_markdown(request: AgentTurnRequest) -> bool:
+    context = request.active_markdown_context
+    return context is not None and bool(context.markdown.strip())
+
+
+def _clarify_result_mode(route: AgentTurnRoute) -> AgentTurnResult:
+    return AgentTurnResult(
+        action="clarify",
+        route=_non_mutating_route(route, action="clarify", reason="Skill result mode is ambiguous."),
+        message=CLARIFY_SKILL_RESULT_MODE_MESSAGE,
+    )

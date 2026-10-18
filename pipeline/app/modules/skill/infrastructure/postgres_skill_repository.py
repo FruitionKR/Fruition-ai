@@ -9,6 +9,7 @@ from app.core.pipeline_control import PipelineRunCancelledError
 
 from app.modules.skill.application.ports import ManageSkillRepositoryPort, SkillRepositoryPort
 from app.modules.skill.domain.entities import Skill, SkillVersion
+from app.modules.skill.domain.policy import effective_targets
 from app.modules.skill.infrastructure.workspace_authorization import can_manage_team_skills, get_workspace_role
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -24,6 +25,8 @@ SKILL_SELECT = """
         ev.instructions_markdown AS ev_instructions_markdown,
         ev.capabilities AS ev_capabilities,
         ev.allowed_tools AS ev_allowed_tools,
+        ev.targets AS ev_targets,
+        ev.result_mode AS ev_result_mode,
         ev.safety_result AS ev_safety_result,
         ev.status AS ev_status,
         ev.created_by AS ev_created_by,
@@ -37,6 +40,8 @@ SKILL_SELECT = """
         lv.instructions_markdown AS lv_instructions_markdown,
         lv.capabilities AS lv_capabilities,
         lv.allowed_tools AS lv_allowed_tools,
+        lv.targets AS lv_targets,
+        lv.result_mode AS lv_result_mode,
         lv.safety_result AS lv_safety_result,
         lv.status AS lv_status,
         lv.created_by AS lv_created_by,
@@ -269,8 +274,8 @@ def _insert_version(conn: Any, version: SkillVersion) -> None:
         """
         INSERT INTO skill_versions (
             id, skill_id, version, name, description, instructions_markdown,
-            capabilities, allowed_tools, safety_result, status, created_by, published_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            capabilities, allowed_tools, targets, result_mode, safety_result, status, created_by, published_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                   CASE WHEN %s = 'published' THEN now() ELSE NULL END)
         """,
         (
@@ -282,6 +287,8 @@ def _insert_version(conn: Any, version: SkillVersion) -> None:
             version.instructions_markdown,
             list(version.capabilities),
             list(version.allowed_tools),
+            list(version.targets),
+            version.result_mode,
             Json(version.lint_result or {}),
             version.status,
             version.created_by,
@@ -396,6 +403,7 @@ def _row_to_skill(row: dict[str, Any]) -> Skill:
 def _row_to_version(row: dict[str, Any], prefix: str) -> SkillVersion | None:
     if row.get(f"{prefix}_id") is None:
         return None
+    capabilities = tuple(row[f"{prefix}_capabilities"] or ())
     return SkillVersion(
         id=row[f"{prefix}_id"],
         skill_id=row[f"{prefix}_skill_id"],
@@ -403,8 +411,10 @@ def _row_to_version(row: dict[str, Any], prefix: str) -> SkillVersion | None:
         name=row[f"{prefix}_name"],
         description=row[f"{prefix}_description"],
         instructions_markdown=row[f"{prefix}_instructions_markdown"],
-        capabilities=tuple(row[f"{prefix}_capabilities"] or ()),
+        capabilities=capabilities,
         allowed_tools=tuple(row[f"{prefix}_allowed_tools"] or ()),
+        targets=effective_targets(capabilities, tuple(row.get(f"{prefix}_targets") or ())),
+        result_mode=row.get(f"{prefix}_result_mode"),
         lint_result=row[f"{prefix}_safety_result"] or {},
         status=row[f"{prefix}_status"],
         created_by=row[f"{prefix}_created_by"],
