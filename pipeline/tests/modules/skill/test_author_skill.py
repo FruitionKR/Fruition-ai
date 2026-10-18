@@ -821,6 +821,51 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
             ("list_root_items", "list_folder_children", "create_document"),
         )
 
+    def test_final_publish_computes_allowed_tools_when_omitted(self) -> None:
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+
+        result = use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="concise-document-writer",
+            description="요청한 내용을 간결한 문서로 작성합니다.",
+            instructions_markdown="# 작성 절차\n\n- 핵심 내용을 먼저 정리한다.",
+            expected_capabilities=("document-create", "document-edit"),
+            expected_allowed_tools=(),
+        )
+
+        self.assertEqual(result.status, "published")
+        self.assertEqual(
+            result.skill.enabled_version.allowed_tools,  # type: ignore[union-attr]
+            (
+                "list_root_items",
+                "list_folder_children",
+                "apply_document_edit",
+                "create_document",
+                "get_document_content",
+                "get_document_metadata",
+            ),
+        )
+        self.assertEqual(len(repository.skills), 1)
+
+    def test_final_publish_still_validates_explicit_allowed_tools(self) -> None:
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+
+        with self.assertRaisesRegex(ValueError, "allowed_tools"):
+            use_case.publish(
+                workspace_id="workspace-1",
+                user_id="user-1",
+                scope_type="personal",
+                name="concise-document-writer",
+                description="요청한 내용을 간결한 문서로 작성합니다.",
+                instructions_markdown="# 작성 절차\n\n- 핵심 내용을 먼저 정리한다.",
+                expected_capabilities=("document-create",),
+                expected_allowed_tools=("list_root_items", "list_folder_children", "apply_document_edit"),
+            )
+
+        self.assertEqual(repository.skills, {})
+
     def test_final_publish_rejects_personal_data_without_storage(self) -> None:
         use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
 

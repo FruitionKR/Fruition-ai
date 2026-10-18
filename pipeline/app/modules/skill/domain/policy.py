@@ -46,6 +46,13 @@ CAPABILITY_TOOLS: dict[SkillCapability, frozenset[SkillTool]] = {
 }
 
 
+def canonical_allowed_tools(capabilities: tuple[SkillCapability, ...]) -> tuple[SkillTool, ...]:
+    """capability별 canonical Tool의 합집합. 정렬해 같은 capability면 항상 같은 순서가 된다."""
+    return with_required_planning_reads(
+        tuple(sorted({tool for capability in capabilities for tool in CAPABILITY_TOOLS[capability]}))
+    )
+
+
 def validate_allowed_tools(
     capabilities: tuple[SkillCapability, ...],
     allowed_tools: tuple[SkillTool, ...],

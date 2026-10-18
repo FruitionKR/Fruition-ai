@@ -139,7 +139,8 @@ class PublishAuthoredSkillRequest(SkillLlmRequest):
     description: str = Field(..., min_length=1, max_length=500)
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
     capabilities: list[CapabilityValue] = Field(..., min_length=1)
-    allowed_tools: list[ToolValue] = Field(..., min_length=1)
+    # 생략하거나 비우면 서버가 capabilities로 계산한다(policy.canonical_allowed_tools).
+    allowed_tools: list[ToolValue] = Field(default_factory=list)
 
 
 class UpdateSkillRequest(SkillLlmRequest):

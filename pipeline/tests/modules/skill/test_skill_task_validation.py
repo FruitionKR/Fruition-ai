@@ -35,3 +35,15 @@ def test_invalid_skill_payload_is_422_before_task_execution(monkeypatch, kind, i
     assert response.status_code == 422, response.text
     assert response.json()["detail"][0]["loc"][:3] == ["body", "payload", field]
     execute.assert_not_called()
+
+
+def test_publish_payload_accepts_missing_allowed_tools():
+    from app.modules.skill.interfaces.http.schemas import PublishAuthoredSkillRequest
+
+    payload = PublishAuthoredSkillRequest.model_validate(dict(
+        workspace_id="ws", user_id="user", provider="openai", model="gpt-5-nano", scope_type="personal",
+        name="example", description="설명", instructions_markdown="문서를 정리한다",
+        capabilities=["document-edit"],
+    ))
+
+    assert payload.allowed_tools == []
