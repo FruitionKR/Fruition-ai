@@ -279,7 +279,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 - `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 지침을 다시 분류한 capabilities로 검사).
 - 문서 Skill이 아닌데 `targets`나 `result_mode`를 보내거나 `targets`가 중복이면 `400` `invalid_targets`/`invalid_result_mode`입니다.
 - 수정에서 보내지 않아 이어받은 값이 다시 분류된 capabilities와 맞지 않으면 버립니다(`result_mode`는 `null`, 문서 Skill이 아니게 되면 `targets`는 `[]`).
-- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 `targets: ["current_document"]`, `result_mode: null`로 읽습니다.
+- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 지금처럼 선택 범위 편집을 유지하도록 `targets: ["current_document", "selection"]`, `result_mode: null`로 읽습니다. 이런 Skill을 수정하면서 `targets`를 생략하면 이 값을 이어받습니다.
 - Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 `edit` Skill은 새 문서를 만들지 않음), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
 
 #### 5. Response body

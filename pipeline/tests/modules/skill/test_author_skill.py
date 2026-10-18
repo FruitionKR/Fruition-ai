@@ -1410,6 +1410,22 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(changed.skill.enabled_version.targets, ("current_document", "selection"))  # type: ignore[union-attr]
         self.assertEqual(reset.skill.enabled_version.targets, ("current_document",))  # type: ignore[union-attr]
 
+    def test_update_of_legacy_skill_inherits_unrestricted_targets(self) -> None:
+        from dataclasses import replace
+
+        use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case)
+        skill = repository.skills[created.skill.id]  # type: ignore[union-attr]
+        # 컬럼 추가 전 행을 저장소가 읽은 모습(effective_targets 적용 뒤).
+        legacy_version = replace(skill.enabled_version, targets=("current_document", "selection"))  # type: ignore[arg-type]
+        repository.skills[skill.id] = replace(skill, enabled_version=legacy_version, latest_version=legacy_version)
+
+        result = self._update(use_case, skill.id)
+
+        self.assertEqual(
+            result.skill.enabled_version.targets, ("current_document", "selection")  # type: ignore[union-attr]
+        )
+
     def test_update_rejects_given_result_mode_mismatch(self) -> None:
         use_case, repository = self.build_use_case(FixedGenerator(draft_result()))
         created = self._publish_document_skill(use_case)

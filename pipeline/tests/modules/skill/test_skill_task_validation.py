@@ -83,5 +83,5 @@ def test_legacy_skill_version_rows_read_default_targets():
                 "ev_targets": [], "ev_result_mode": None, "ev_safety_result": {}, "ev_status": "published",
                 "ev_created_by": "user", "ev_created_at": None, "ev_published_at": None}
 
-    assert _row_to_version(row(["document-edit"]), "ev").targets == ("current_document",)
+    assert _row_to_version(row(["document-edit"]), "ev").targets == ("current_document", "selection")
     assert _row_to_version(row(["folder-organize"]), "ev").targets == ()

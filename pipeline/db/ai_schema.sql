@@ -262,7 +262,7 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     CONSTRAINT skill_versions_unique_version UNIQUE (skill_id, version)
 );
 
--- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document"]로 본다.
+-- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document", "selection"](제한 없음)으로 본다.
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS targets text[] NOT NULL DEFAULT ARRAY[]::text[];
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS result_mode text;
 

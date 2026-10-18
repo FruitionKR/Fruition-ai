@@ -98,10 +98,14 @@ def effective_targets(
     capabilities: tuple[SkillCapability, ...],
     targets: tuple[SkillTarget, ...],
 ) -> tuple[SkillTarget, ...]:
-    """저장값이 비어 있는 문서 Skill(컬럼 추가 전 행 포함)은 기본 대상으로 읽는다."""
+    """저장값이 비어 있는 문서 Skill은 컬럼 추가 전에 게시된 행이다.
+
+    그때는 대상 제한 없이 선택 범위·문서 전체를 모두 편집했으므로 두 대상을 모두 허용한 것으로 읽는다.
+    새로 게시·수정한 문서 Skill은 항상 대상이 저장된다(validate_execution_options).
+    """
     if not is_document_skill(capabilities):
         return ()
-    return targets or DEFAULT_SKILL_TARGETS
+    return targets or SKILL_TARGET_ORDER
 
 
 def result_mode_matches(capabilities: tuple[SkillCapability, ...], result_mode: SkillResultMode | None) -> bool:

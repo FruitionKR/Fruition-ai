@@ -2616,6 +2616,19 @@ class SkillExecutionOptionsTest(unittest.TestCase):
 
         self.assertEqual(result.action, "markdown_create")
 
+    def test_legacy_document_skill_keeps_editing_the_selection(self) -> None:
+        from app.modules.skill.domain.policy import effective_targets
+
+        # 컬럼 추가 전 행은 targets가 비어 있고, 저장소가 effective_targets로 읽는다.
+        legacy = options_skill(("document-edit",), effective_targets(("document-edit",), ()), None)
+        use_case, editor = self._use_case(legacy, EDIT_ROUTE)
+        selection = MarkdownEditTarget(type="selection", start_line=3, end_line=3)
+
+        result = use_case.execute(self._request(selection))
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(editor.requests[0].target, selection)
+
     def test_bare_command_of_edit_mode_skill_does_not_create_document(self) -> None:
         skill = options_skill(("document-create", "document-edit"), ("current_document",), "edit")
         use_case, editor = self._use_case(skill, CREATE_ROUTE)
@@ -2624,3 +2637,4 @@ class SkillExecutionOptionsTest(unittest.TestCase):
 
         self.assertEqual(result.action, "clarify")
         self.assertEqual(editor.create_requests, [])
+
