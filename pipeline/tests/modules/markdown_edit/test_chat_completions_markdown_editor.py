@@ -77,12 +77,12 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         with patch.dict("os.environ", {"GEMINI_API_KEY": "gemini-key"}, clear=True):
             editor = build_markdown_editor(
                 provider="gemini",
-                model="gemini-3.1-flash-lite",
+                model="gemini-3.5-flash-lite",
             )
 
         client = editor._client  # type: ignore[attr-defined]
         self.assertEqual(client.provider, "gemini")
-        self.assertEqual(client.config.model, "gemini-3.1-flash-lite")
+        self.assertEqual(client.config.model, "gemini-3.5-flash-lite")
         self.assertEqual(client.config.api_key, "gemini-key")
 
     def test_preserves_trailing_newline_for_unchanged_result(self) -> None:

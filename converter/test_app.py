@@ -321,6 +321,23 @@ class StorageRangeReaderTest(unittest.TestCase):
                 converter_app.open_pdf(stream)
 
 
+class WorkspaceRepairModelTest(unittest.TestCase):
+    """변환 repair는 워크스페이스 공용 모델 설정을 쓰므로 Claude·제거된 모델을 기본 모델로 대체한다."""
+
+    def test_claude_or_removed_model_falls_back_to_workspace_default(self) -> None:
+        real = converter_app.resolve_workspace_llm_selection
+        for provider, model in (("claude", "claude-haiku-4-5-20251001"), ("openai", "gpt-5.5")):
+            with self.subTest(provider=provider, model=model):
+                resolved = []
+                with mock.patch.object(
+                    converter_app, "resolve_workspace_llm_selection",
+                    side_effect=lambda p, m: resolved.append(real(p, m)) or resolved[-1],
+                ), mock.patch.object(converter_app, "missing_commands", return_value=["pdftotext"]):
+                    with self.assertRaisesRegex(RuntimeError, "Missing converter commands"):
+                        process_pdf(b"pdf", provider, model)
+                self.assertEqual(resolved, [("gemini", "gemini-3.5-flash-lite")])
+
+
 class SplitOnFailureTest(unittest.TestCase):
     """실패·시간 초과한 범위는 절반으로 나눠 1쪽까지 재시도한다."""
 

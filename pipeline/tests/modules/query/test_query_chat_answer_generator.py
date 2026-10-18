@@ -52,9 +52,9 @@ class QueryChatAnswerGeneratorTest(unittest.TestCase):
             },
             clear=True,
         ):
-            config = _config_from_env(provider="gemini", model="gemini-3.1-flash-lite")
+            config = _config_from_env(provider="gemini", model="gemini-3.5-flash-lite")
 
-        self.assertEqual(config.model, "gemini-3.1-flash-lite")
+        self.assertEqual(config.model, "gemini-3.5-flash-lite")
         self.assertEqual(config.api_key, "secret")
         self.assertEqual(config.provider, "gemini")
 

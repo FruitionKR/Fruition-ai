@@ -219,12 +219,12 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "claude-key"}, clear=True):
             generator = build_skill_authoring_generator(
                 provider="claude",
-                model="claude-sonnet-5",
+                model="claude-haiku-4-5-20251001",
             )
 
         client = generator._client  # type: ignore[attr-defined]
         self.assertEqual(client.provider, "claude")
-        self.assertEqual(client.config.model, "claude-sonnet-5")
+        self.assertEqual(client.config.model, "claude-haiku-4-5-20251001")
         self.assertEqual(client.config.api_key, "claude-key")
         self.assertIsNone(client.config.temperature)
 
@@ -232,7 +232,7 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "openai-key"}, clear=True):
             generator = build_skill_authoring_generator(
                 provider="openai",
-                model="gpt-5-nano",
+                model="gpt-6-luna",
             )
 
         client = generator._client  # type: ignore[attr-defined]
