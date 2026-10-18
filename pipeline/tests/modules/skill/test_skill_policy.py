@@ -1,7 +1,11 @@
 import unittest
 
 from app.modules.skill.domain.entities import SkillCapability
-from app.modules.skill.domain.policy import validate_allowed_tools, with_required_planning_reads
+from app.modules.skill.domain.policy import (
+    canonical_allowed_tools,
+    validate_allowed_tools,
+    with_required_planning_reads,
+)
 
 
 class SkillPolicyTest(unittest.TestCase):
@@ -56,6 +60,25 @@ class SkillPolicyTest(unittest.TestCase):
             with_required_planning_reads(("get_document_content",)),
             ("get_document_content",),
         )
+
+    def test_canonical_allowed_tools_is_deterministic_and_valid(self) -> None:
+        for capabilities in (
+            ("document-create",),
+            ("document-edit",),
+            ("folder-organize",),
+            ("template",),
+            ("document-create", "document-edit"),
+            ("document-edit", "folder-organize"),
+        ):
+            tools = canonical_allowed_tools(capabilities)
+            self.assertEqual(tools, canonical_allowed_tools(tuple(reversed(capabilities))))
+            self.assertEqual(len(tools), len(set(tools)))
+            self.assertEqual(tools[:2], ("list_root_items", "list_folder_children"))
+            validate_allowed_tools(capabilities, tools)
+
+    def test_canonical_allowed_tools_keeps_capability_boundaries(self) -> None:
+        self.assertNotIn("apply_document_edit", canonical_allowed_tools(("document-create",)))
+        self.assertNotIn("create_document", canonical_allowed_tools(("document-edit",)))
 
     def test_defines_only_mvp_capabilities(self) -> None:
         capabilities: tuple[SkillCapability, ...] = (

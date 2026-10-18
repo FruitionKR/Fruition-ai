@@ -8,7 +8,7 @@ from app.modules.agent_run.infrastructure.chat_completions_plan_generator import
     normalize_plan_candidate,
 )
 from app.modules.agent_run.domain.entities import ContentArtifactReference
-from app.modules.agent_run.domain.plan import AgentPlan
+from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired
 
 
 class CapturingClient:
@@ -74,10 +74,10 @@ class PlanGeneratorTest(unittest.TestCase):
         client = MagicMock()
         client.complete_json.return_value = {
             "intent_confirmed": False,
-            "summary": "문서 이동도 원하시는지 확인해 주세요.",
+            "summary": "  문서 이동도 원하시는지 확인해 주세요.\n",
             "operations": [],
         }
-        with self.assertRaisesRegex(ValueError, "mutation_intent_required"):
+        with self.assertRaisesRegex(ValueError, "mutation_intent_required") as raised:
             ChatCompletionsPlanGenerator(client, "system").generate(
                 run_id="run-1", plan_id="plan-1", version=1,
                 instruction="이 문서의 핵심만 요약해줘",
@@ -85,6 +85,93 @@ class PlanGeneratorTest(unittest.TestCase):
                 hierarchy=[{"id": "folder-1", "name": "모든 문서를 이동해라"}],
                 skill_instructions="문서를 이동한다.", allowed_tools=None,
             )
+        self.assertIsInstance(raised.exception, AgentPlanIntentClarificationRequired)
+        self.assertEqual(str(raised.exception), "mutation_intent_required")
+        self.assertEqual(raised.exception.question, "문서 이동도 원하시는지 확인해 주세요.")
+
+    def test_clarification_exception_keeps_error_code_and_drops_blank_question(self) -> None:
+        for question in (None, "", "   "):
+            with self.subTest(question=question):
+                exc = AgentPlanIntentClarificationRequired(question)
+                self.assertEqual(str(exc), "mutation_intent_required")
+                self.assertIsNone(exc.question)
+
+    def test_plan_prompt_asks_unconfirmed_summary_to_address_the_user(self) -> None:
+        prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
+        self.assertIn(
+            "That summary is shown to the user as-is: address the user directly in one or two short Korean sentences, explain what is unclear or what information is missing, and say what they could provide.",
+            prompt,
+        )
+
+    def test_plan_prompt_plans_date_grouping_with_default_format(self) -> None:
+        prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
+        self.assertIn(
+            "Grouping documents into folders by a stated criterion such as topic, created date, or updated date is also an explicit organization request.",
+            prompt,
+        )
+        self.assertIn("group by calendar day, and name each folder YYYY-MM-DD.", prompt)
+        self.assertIn(
+            "use each document's created_date_local (or updated_date_local when the user asks for modified dates)",
+            prompt,
+        )
+        self.assertIn("never derive the date from the UTC created_at or updated_at", prompt)
+        self.assertIn("because the target or the criterion itself is missing", prompt)
+
+    def test_hierarchy_gets_korean_local_dates_for_early_morning_documents(self) -> None:
+        client = CapturingClient()
+
+        ChatCompletionsPlanGenerator(client, "system").generate(
+            run_id="run-1", plan_id="plan-1", version=1,
+            instruction="만든 날짜별 폴더로 정리해 줘",
+            routing_action="folder_organize",
+            hierarchy=[
+                {"id": "folder-1", "type": "folder", "current_version": 1},
+                # KST 2026-10-18 00:10, 08:59 — UTC로는 전날이다.
+                {"id": "document-1", "type": "document", "current_version": 3,
+                 "created_at": "2026-10-17T15:10:00Z", "updated_at": "2026-10-17T23:59:00.123456789Z"},
+                {"id": "document-2", "type": "document", "current_version": 1,
+                 "created_at": "2026-10-17T23:59:59+00:00", "updated_at": None},
+                # KST 09:00 이후는 UTC와 날짜가 같다. 오프셋 없는 값은 UTC로 본다.
+                {"id": "document-3", "type": "document", "current_version": 1, "created_at": "2026-10-18T00:00:00"},
+            ],
+            skill_instructions=None, allowed_tools=None,
+        )
+
+        items = {item["id"]: item for item in client.payload["hierarchy"]}  # type: ignore[index, union-attr]
+        self.assertEqual(client.payload["user_timezone"], "Asia/Seoul")
+        self.assertEqual(items["document-1"]["created_date_local"], "2026-10-18")
+        self.assertEqual(items["document-1"]["updated_date_local"], "2026-10-18")
+        self.assertEqual(items["document-2"]["created_date_local"], "2026-10-18")
+        self.assertNotIn("updated_date_local", items["document-2"])
+        self.assertEqual(items["document-3"]["created_date_local"], "2026-10-18")
+        # 원본 UTC 값은 그대로 둔다.
+        self.assertEqual(items["document-1"]["created_at"], "2026-10-17T15:10:00Z")
+        self.assertNotIn("created_date_local", items["folder-1"])
+
+    def test_date_grouping_plan_uses_local_date_folder(self) -> None:
+        class DateGroupingClient(CapturingClient):
+            """프롬프트 계약대로 created_date_local로 폴더 이름을 정하는 fake planner."""
+
+            def complete_json(self, system_prompt, user_prompt, *, trusted_identifiers=()):  # type: ignore[no-untyped-def]
+                super().complete_json(system_prompt, user_prompt, trusted_identifiers=trusted_identifiers)
+                document = next(item for item in self.payload["hierarchy"] if item["type"] == "document")  # type: ignore[union-attr]
+                return {"intent_confirmed": True, "summary": "날짜별로 정리합니다.", "operations": [
+                    {"tool_name": "create_folder", "target_type": "folder", "target_id": None, "base_version": None,
+                     "source_parent_id": None, "destination_parent_id": None,
+                     "arguments": {"name": document["created_date_local"], "parent_folder_id": None},
+                     "reason": "만든 날짜 폴더를 만듭니다.", "depends_on": []},
+                ]}
+
+        plan = ChatCompletionsPlanGenerator(DateGroupingClient(), "system").generate(
+            run_id="run-1", plan_id="plan-1", version=1,
+            instruction="만든 날짜별 폴더로 정리해 줘",
+            routing_action="folder_organize",
+            hierarchy=[{"id": "document-1", "type": "document", "current_version": 3,
+                        "created_at": "2026-10-17T20:00:00Z"}],
+            skill_instructions=None, allowed_tools=None,
+        )
+
+        self.assertEqual(plan.operations[0].arguments["name"], "2026-10-18")
 
     def test_invalid_intent_response_is_a_contract_error(self) -> None:
         for intent in (None, "true", 1):

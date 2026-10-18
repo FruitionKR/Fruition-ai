@@ -1,7 +1,9 @@
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.llm_env import (
     api_key_from_env,
@@ -20,6 +22,9 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import Chat
 
 
 DEFAULT_PLAN_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "agent_folder_plan.system.md"
+# 날짜 기준 정리의 기본 시간대. 사용자별 시간대 설정이 생기면 그 값으로 바꾼다.
+DEFAULT_USER_TIMEZONE = "Asia/Seoul"
+LOCAL_DATE_FIELDS = (("created_at", "created_date_local"), ("updated_at", "updated_date_local"))
 ALLOWED_PLAN_TOOLS = {
     "create_folder",
     "rename_folder",
@@ -63,7 +68,8 @@ class ChatCompletionsPlanGenerator:
             "plan_id": plan_id,
             "instruction": instruction,
             "routing_action": routing_action,
-            "hierarchy": hierarchy,
+            "user_timezone": DEFAULT_USER_TIMEZONE,
+            "hierarchy": with_local_dates(hierarchy, DEFAULT_USER_TIMEZONE),
             "skill_instructions": skill_instructions,
             "allowed_tools": sorted(allowed_plan_tools),
             "content_artifacts": [
@@ -105,12 +111,44 @@ class ChatCompletionsPlanGenerator:
                 or not value["summary"].strip()
             ):
                 raise ValueError("Unconfirmed Agent plan must have a summary and no operations.")
-            raise AgentPlanIntentClarificationRequired()
+            raise AgentPlanIntentClarificationRequired(value["summary"].strip())
         plan = normalize_plan_candidate(run_id, plan_id, version, value)
         if any(operation.tool_name not in allowed_plan_tools for operation in plan.operations):
             raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
         _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts)
         return plan
+
+
+def with_local_dates(hierarchy: list[dict[str, object]], timezone_name: str) -> list[dict[str, object]]:
+    """created_at·updated_at(UTC)을 사용자 시간대 달력 날짜(YYYY-MM-DD)로 함께 넣는다.
+
+    UTC 날짜로 묶으면 한국 시각 00~09시에 만든 문서가 전날 폴더로 간다.
+    """
+    zone = ZoneInfo(timezone_name)
+    return [
+        {
+            **item,
+            **{
+                local_key: local_date
+                for utc_key, local_key in LOCAL_DATE_FIELDS
+                if (local_date := _local_date(item.get(utc_key), zone)) is not None
+            },
+        }
+        for item in hierarchy
+    ]
+
+
+def _local_date(value: object, zone: ZoneInfo) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        # 백엔드 시각은 UTC다. 오프셋이 빠진 값도 UTC로 본다.
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(zone).date().isoformat()
 
 
 def normalize_plan_candidate(

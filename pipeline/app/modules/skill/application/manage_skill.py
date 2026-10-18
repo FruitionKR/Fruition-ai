@@ -4,13 +4,16 @@ from app.modules.skill.application.ports import ManageSkillRepositoryPort
 from app.modules.skill.domain.entities import (
     Skill,
     SkillCapability,
+    SkillResultMode,
     SkillScopeType,
+    SkillTarget,
     SkillTool,
     SkillVersion,
     SkillVersionStatus,
 )
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
+    canonical_allowed_tools,
     validate_allowed_tools,
     validate_skill_name,
 )
@@ -36,6 +39,9 @@ class ManageSkillUseCase:
         capabilities: tuple[SkillCapability, ...],
         allowed_tools: tuple[SkillTool, ...],
     ) -> SkillVersion:
+        if not allowed_tools and capabilities and all(capability in CAPABILITY_TOOLS for capability in capabilities):
+            # 게시와 같은 규칙: 비우면 capabilities로 계산한다.
+            allowed_tools = canonical_allowed_tools(capabilities)
         _validate_definition(name, name, description, instructions_markdown, capabilities, allowed_tools)
         return _new_version(
             skill_id="preview",
@@ -60,6 +66,8 @@ class ManageSkillUseCase:
         instructions_markdown: str,
         capabilities: tuple[SkillCapability, ...],
         allowed_tools: tuple[SkillTool, ...],
+        targets: tuple[SkillTarget, ...] = (),
+        result_mode: SkillResultMode | None = None,
     ) -> Skill:
         _validate_definition(slug, name, description, instructions_markdown, capabilities, allowed_tools)
         skill_id = str(uuid4())
@@ -72,6 +80,8 @@ class ManageSkillUseCase:
             instructions_markdown=instructions_markdown,
             capabilities=capabilities,
             allowed_tools=allowed_tools,
+            targets=targets,
+            result_mode=result_mode,
             status="published",
         )
         if _blocked_issues(version):
@@ -99,6 +109,8 @@ class ManageSkillUseCase:
         instructions_markdown: str,
         capabilities: tuple[SkillCapability, ...],
         allowed_tools: tuple[SkillTool, ...],
+        targets: tuple[SkillTarget, ...] = (),
+        result_mode: SkillResultMode | None = None,
     ) -> Skill:
         skill = self.get_manageable(workspace_id, user_id, skill_id)
         _validate_definition(
@@ -119,6 +131,8 @@ class ManageSkillUseCase:
             instructions_markdown=instructions_markdown,
             capabilities=capabilities,
             allowed_tools=allowed_tools,
+            targets=targets,
+            result_mode=result_mode,
             status="published",
         )
         if _blocked_issues(version):
@@ -170,6 +184,8 @@ def _new_version(
     instructions_markdown: str,
     capabilities: tuple[SkillCapability, ...],
     allowed_tools: tuple[SkillTool, ...],
+    targets: tuple[SkillTarget, ...] = (),
+    result_mode: SkillResultMode | None = None,
     status: SkillVersionStatus = "draft",
 ) -> SkillVersion:
     issues = inspect_skill_instructions(instructions_markdown)
@@ -182,6 +198,8 @@ def _new_version(
         instructions_markdown=instructions_markdown.strip(),
         capabilities=capabilities,
         allowed_tools=allowed_tools,
+        targets=targets,
+        result_mode=result_mode,
         lint_result={"issues": [issue.__dict__ for issue in issues]},
         status=status,
         created_by=user_id,

@@ -250,6 +250,8 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     instructions_markdown text NOT NULL,
     capabilities text[] NOT NULL DEFAULT ARRAY[]::text[],
     allowed_tools text[] NOT NULL DEFAULT ARRAY[]::text[],
+    targets text[] NOT NULL DEFAULT ARRAY[]::text[],
+    result_mode text,
     safety_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL,
     created_by text NOT NULL,
@@ -259,6 +261,22 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     CONSTRAINT skill_versions_status_check CHECK (status IN ('draft', 'published', 'rejected')),
     CONSTRAINT skill_versions_unique_version UNIQUE (skill_id, version)
 );
+
+-- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document", "selection"](제한 없음)으로 본다.
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS targets text[] NOT NULL DEFAULT ARRAY[]::text[];
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS result_mode text;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'skill_versions_targets_check') THEN
+        ALTER TABLE skill_versions ADD CONSTRAINT skill_versions_targets_check
+            CHECK (targets <@ ARRAY['current_document', 'selection']::text[]);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'skill_versions_result_mode_check') THEN
+        ALTER TABLE skill_versions ADD CONSTRAINT skill_versions_result_mode_check
+            CHECK (result_mode IS NULL OR result_mode IN ('create', 'edit', 'auto'));
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -281,6 +299,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     model text,
     current_plan_id text,
     error_code text,
+    clarification_question text,
     tool_call_count integer NOT NULL DEFAULT 0,
     document_id text,
     base_version bigint,
@@ -297,11 +316,14 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS command_envelope_hash varchar(64);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS provider text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
+-- 계획 단계에서 의도를 확정하지 못했을 때 사용자에게 보여 줄 질문. clarification_required에서만 의미가 있다.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
 
+-- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs
-SET model = 'claude-sonnet-5', updated_at = now()
+SET model = 'claude-haiku-4-5-20251001', updated_at = now()
 WHERE provider = 'claude'
-  AND model = 'claude-haiku-4-5-20251001'
+  AND model <> 'claude-haiku-4-5-20251001'
   AND status NOT IN ('completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled');
 
 CREATE TABLE IF NOT EXISTS skill_version_sources (

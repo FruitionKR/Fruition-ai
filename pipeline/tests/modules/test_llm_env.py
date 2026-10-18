@@ -12,6 +12,7 @@ from app.core.llm_env import (
     resolve_llm_provider,
     resolve_llm_provider_defaults,
     resolve_llm_selection,
+    resolve_workspace_llm_selection,
 )
 
 
@@ -23,7 +24,7 @@ class LlmEnvTest(unittest.TestCase):
             {
                 "openai": "gpt-6-luna",
                 "gemini": "gemini-3.5-flash-lite",
-                "claude": "claude-sonnet-5",
+                "claude": "claude-haiku-4-5-20251001",
             },
         )
         for provider, model in DEFAULT_LLM_MODELS.items():
@@ -71,6 +72,59 @@ class LlmEnvTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     resolve_llm_selection(provider, model)
 
+    def test_default_allowlist_matches_catalog(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            for provider, model in DEFAULT_LLM_MODELS.items():
+                with self.subTest(provider=provider):
+                    self.assertEqual(resolve_llm_selection(provider, model), (provider, model))
+            for provider, model in (
+                ("openai", "gpt-5.5"),
+                ("gemini", "gemini-3.1-pro-preview"),
+                ("claude", "claude-sonnet-5"),
+                ("claude", "claude-opus-4-8"),
+            ):
+                with self.subTest(provider=provider, model=model):
+                    with self.assertRaisesRegex(ValueError, "Model not allowed"):
+                        resolve_llm_selection(provider, model)
+
+    def test_allowlist_can_be_overridden_by_env(self) -> None:
+        with patch.dict("os.environ", {"AI_ALLOWED_LLM_MODELS": " gpt-5.5 , gemini-3.5-flash-lite "}, clear=True):
+            self.assertEqual(resolve_llm_selection("openai", "gpt-5.5"), ("openai", "gpt-5.5"))
+            with self.assertRaisesRegex(ValueError, "Model not allowed"):
+                resolve_llm_selection("openai", "gpt-6-luna")
+
+    def test_workspace_selection_keeps_allowed_openai_and_gemini(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                resolve_workspace_llm_selection("openai", " gpt-6-luna "),
+                ("openai", "gpt-6-luna"),
+            )
+            self.assertEqual(
+                resolve_workspace_llm_selection("gemini", "gemini-3.5-flash-lite"),
+                ("gemini", "gemini-3.5-flash-lite"),
+            )
+
+    def test_workspace_selection_falls_back_for_claude_or_removed_models(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            for provider, model in (
+                ("claude", "claude-haiku-4-5-20251001"),
+                ("claude", "claude-sonnet-5"),
+                ("openai", "gpt-5.5"),
+                ("gemini", "gemini-3.1-pro-preview"),
+            ):
+                with self.subTest(provider=provider, model=model):
+                    with self.assertLogs("app.core.llm_env", level="WARNING"):
+                        self.assertEqual(
+                            resolve_workspace_llm_selection(provider, model),
+                            ("gemini", "gemini-3.5-flash-lite"),
+                        )
+
+    def test_workspace_selection_still_rejects_malformed_input(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_workspace_llm_selection(None, "gpt-6-luna")
+        with self.assertRaisesRegex(ValueError, "Unsupported provider"):
+            resolve_workspace_llm_selection("upstage", "solar-pro2")
+
     def test_provider_api_key_envs_are_fixed(self) -> None:
         expected = {
             "openai": "OPENAI_API_KEY",
@@ -100,7 +154,7 @@ class LlmEnvTest(unittest.TestCase):
             inference_profile("gemini", "gemini-3.1-flash-lite"),
             {"reasoning_effort": "low"},
         )
-        self.assertEqual(inference_profile("claude", "claude-sonnet-5"), {})
+        self.assertEqual(inference_profile("claude", "claude-haiku-4-5-20251001"), {})
 
     def test_reasoning_profile_is_sent_only_to_reasoning_models(self) -> None:
         """비추론 모델은 추론 수준 파라미터를 받으면 400을 낸다."""

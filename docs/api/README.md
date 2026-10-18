@@ -10,7 +10,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [Agent](agent.md) | 11 | turn은 Kafka, run·artifact 조회·Tool 인가는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
 | [Wiki Ingest](pipeline.md) | 7 | ingest는 Kafka, run 상태는 내부 HTTP, 나머지는 운영용 |
 | [음성·회의록](speech.md) | HTTP 2 + WS 1 + Kafka | 전사·실시간은 내부 HTTP/WS, 합성은 호출자 없음, 회의록은 Kafka `ai.maintenance.command`, 화면은 전부 미연동 |
-| [Skills](skills.md) | 8 | 작업 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
+| [Skills](skills.md) | 9 | 작업 실행·테스트 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
 | [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
 | [AI 데이터 파기](purge.md) | 2 | 내부 HTTP, Document 쪽 호출 연결 전 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
@@ -18,7 +18,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [임베딩 서버](embedding.md) | 2 | 별도 프로세스의 내부 HTTP, 배포 전 호출자 없음 |
 
 Agent 승인 run 5개와 실행 결과 기반 Skill 초안 API는 `AGENT_SKILLS_ENABLED=true`,
-나머지 Skill API 7개는 `SKILL_API_ENABLED=true`일 때 노출된다. 이 문서는 선택 기능을
+나머지 Skill API 8개는 `SKILL_API_ENABLED=true`일 때 노출된다. 이 문서는 선택 기능을
 모두 켠 전체 계약을 기준으로 한다.
 
 ## 연동 요약
@@ -65,7 +65,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | 회의록 생성(`kind: meeting_notes`, 예전 `POST /meeting-notes/preview`) | **HTTP route 없음** | Kafka `ai.maintenance.command`([계약](speech.md#회의록-초안)) |
 | `POST /wiki/maintenance/lint`, `/wiki/ingest-restore-runs`, `/wiki/lint-restore-runs` | **HTTP 호출자 없음** | Kafka `ai.maintenance.command`(`core/wikimaintenance/service/WikiMaintenanceService.java`:66, `core/aihistory/service/RestoreExecuteService.java`:132) |
 | `POST /wiki-schema/preview`, `/drafts`, `/{schema_id}/activate`, `GET /wiki-schema/active` | `core/wikischema/repository/PipelineWikiSchemaRequester.java`:31,35,39,44-50 | 순수 passthrough |
-| `POST /skills/tasks`, `GET /skills`, `GET /skills/{id}`, `DELETE /skills/{id}`, `POST /skills/{id}/{enable,disable}` | `core/skill/repository/PipelineSkillRequester.java` | `app.skill.endpoint` |
+| `POST /skills/tasks`, `POST /skills/test-run`, `GET /skills`, `GET /skills/{id}`, `DELETE /skills/{id}`, `POST /skills/{id}/{enable,disable}` | `core/skill/repository/PipelineSkillRequester.java` | `app.skill.endpoint` |
 | `POST /skills/preview`, `POST /skills/draft-from-runs/preview` | **호출자 없음** | |
 | `POST /speech/transcriptions` | `core/speech/SpeechTranscriptionClient.java`:31-38, `core/meeting/MeetingTranscriptionWorker.java`:69-72 | |
 | `POST /speech/synthesis` | **호출자 없음** | 중계 설정조차 없다 |

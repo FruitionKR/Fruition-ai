@@ -238,7 +238,12 @@ class AgentJobRepositoryPort(Protocol):
     def remaining_tool_calls(self, run_id: str) -> int:
         ...
 
-    def request_clarification(self, run_id: str, error_code: str) -> bool:
+    def request_clarification(
+        self,
+        run_id: str,
+        error_code: str,
+        question: str | None = None,
+    ) -> bool:
         ...
 
     def next_plan_version(self, run_id: str) -> int:

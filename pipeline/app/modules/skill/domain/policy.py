@@ -1,6 +1,7 @@
 import re
 
-from app.modules.skill.domain.entities import SkillCapability, SkillTool
+from app.modules.skill.domain.entities import SkillCapability, SkillResultMode, SkillTarget, SkillTool
+from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 
 
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -46,6 +47,13 @@ CAPABILITY_TOOLS: dict[SkillCapability, frozenset[SkillTool]] = {
 }
 
 
+def canonical_allowed_tools(capabilities: tuple[SkillCapability, ...]) -> tuple[SkillTool, ...]:
+    """capability별 canonical Tool의 합집합. 정렬해 같은 capability면 항상 같은 순서가 된다."""
+    return with_required_planning_reads(
+        tuple(sorted({tool for capability in capabilities for tool in CAPABILITY_TOOLS[capability]}))
+    )
+
+
 def validate_allowed_tools(
     capabilities: tuple[SkillCapability, ...],
     allowed_tools: tuple[SkillTool, ...],
@@ -69,3 +77,65 @@ def with_required_planning_reads(allowed_tools: tuple[SkillTool, ...]) -> tuple[
     return tuple(
         dict.fromkeys((*PLANNING_READ_TOOLS, *allowed_tools))
     )
+
+
+# targets·result_mode는 문서를 만들거나 고치는 Skill에서만 의미가 있다.
+DOCUMENT_SKILL_CAPABILITIES: frozenset[SkillCapability] = frozenset({"document-create", "document-edit"})
+SKILL_TARGET_ORDER: tuple[SkillTarget, ...] = ("current_document", "selection")
+DEFAULT_SKILL_TARGETS: tuple[SkillTarget, ...] = ("current_document",)
+RESULT_MODE_CAPABILITIES: dict[SkillResultMode, frozenset[SkillCapability]] = {
+    "create": frozenset({"document-create"}),
+    "edit": frozenset({"document-edit"}),
+    "auto": frozenset({"document-create", "document-edit"}),
+}
+
+
+def is_document_skill(capabilities: tuple[SkillCapability, ...]) -> bool:
+    return bool(DOCUMENT_SKILL_CAPABILITIES.intersection(capabilities))
+
+
+def effective_targets(
+    capabilities: tuple[SkillCapability, ...],
+    targets: tuple[SkillTarget, ...],
+) -> tuple[SkillTarget, ...]:
+    """저장값이 비어 있는 문서 Skill은 컬럼 추가 전에 게시된 행이다.
+
+    그때는 대상 제한 없이 선택 범위·문서 전체를 모두 편집했으므로 두 대상을 모두 허용한 것으로 읽는다.
+    새로 게시·수정한 문서 Skill은 항상 대상이 저장된다(validate_execution_options).
+    """
+    if not is_document_skill(capabilities):
+        return ()
+    return targets or SKILL_TARGET_ORDER
+
+
+def result_mode_matches(capabilities: tuple[SkillCapability, ...], result_mode: SkillResultMode | None) -> bool:
+    return result_mode is None or RESULT_MODE_CAPABILITIES[result_mode].issubset(capabilities)
+
+
+def validate_execution_options(
+    capabilities: tuple[SkillCapability, ...],
+    targets: tuple[SkillTarget, ...] | None,
+    result_mode: SkillResultMode | None,
+) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
+    """targets·result_mode를 capabilities와 맞춰 저장할 값으로 정규화한다.
+
+    targets는 생략·빈 값이면 기본값이고, 순서는 SKILL_TARGET_ORDER로 고정한다.
+    """
+    if targets and len(set(targets)) != len(targets):
+        raise SkillRequestRejectedError("invalid_targets", "targets must not contain duplicates.")
+    if not is_document_skill(capabilities):
+        if targets:
+            raise SkillRequestRejectedError("invalid_targets", "targets require a document Skill capability.")
+        if result_mode is not None:
+            raise SkillRequestRejectedError(
+                "invalid_result_mode",
+                "result_mode requires a document Skill capability.",
+            )
+        return (), None
+    if not result_mode_matches(capabilities, result_mode):
+        raise SkillRequestRejectedError(
+            "invalid_result_mode",
+            f"result_mode {result_mode} does not match capabilities.",
+        )
+    ordered = tuple(target for target in SKILL_TARGET_ORDER if target in (targets or ()))
+    return ordered or DEFAULT_SKILL_TARGETS, result_mode

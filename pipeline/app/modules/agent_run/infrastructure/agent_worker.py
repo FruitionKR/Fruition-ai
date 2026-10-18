@@ -264,7 +264,7 @@ class AgentWorker:
                 content_artifacts=content_artifacts,
             )
         except AgentPlanIntentClarificationRequired as exc:
-            if not self._repository.request_clarification(run_id, str(exc)):
+            if not self._repository.request_clarification(run_id, str(exc), exc.question):
                 raise ValueError("AgentRun cannot request planning clarification.") from exc
             return str(exc)
         if context.run.skill_version_id is not None:

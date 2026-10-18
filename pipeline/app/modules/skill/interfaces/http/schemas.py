@@ -3,7 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.llm_env import resolve_llm_selection
+from app.core.llm_env import resolve_workspace_llm_selection
+from app.modules.skill.application.skill_test_run import SkillTestRunResult
 from app.modules.skill.domain.entities import (
     Skill,
     SkillAuthoringResult,
@@ -14,6 +15,8 @@ from app.modules.skill.domain.entities import (
 
 
 CapabilityValue = Literal["document-create", "document-edit", "folder-organize", "template"]
+TargetValue = Literal["current_document", "selection"]
+ResultModeValue = Literal["create", "edit", "auto"]
 ToolValue = Literal[
     "list_root_items",
     "list_folder_children",
@@ -37,7 +40,8 @@ class SkillLlmRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_model_selection(self) -> "SkillLlmRequest":
-        resolve_llm_selection(self.provider, self.model)
+        # 워크스페이스 공용 모델 설정에서 온 값이다. 허용 범위 밖이면 워크스페이스 기본 모델로 대체한다.
+        self.provider, self.model = resolve_workspace_llm_selection(self.provider, self.model)
         return self
 
 
@@ -80,6 +84,8 @@ class SkillAuthoringResponse(BaseModel):
     instructions_markdown: str | None = None
     capabilities: list[CapabilityValue] = Field(default_factory=list)
     allowed_tools: list[ToolValue] = Field(default_factory=list)
+    targets: list[TargetValue] = Field(default_factory=list)
+    result_mode: ResultModeValue | None = None
     issues: list[dict[str, object]] = Field(default_factory=list)
 
     @classmethod
@@ -88,6 +94,7 @@ class SkillAuthoringResponse(BaseModel):
             proposal = result.proposal
             skill = result.skill
             version = skill.enabled_version if skill else None
+            stored = version or (skill.latest_version if skill else None)
             return cls(
                 status=result.status,
                 skill_id=skill.id if skill else None,
@@ -103,6 +110,9 @@ class SkillAuthoringResponse(BaseModel):
                 instructions_markdown=proposal.instructions_markdown,
                 capabilities=list(proposal.capabilities),
                 allowed_tools=list(proposal.allowed_tools),
+                # 실행 대상·결과 방식은 게시된 버전에만 있다(초안 단계는 빈 값).
+                targets=list(stored.targets) if stored else [],
+                result_mode=stored.result_mode if stored else None,
                 issues=[issue.__dict__ for issue in result.issues],
             )
         if result.skill is None:
@@ -125,6 +135,8 @@ class SkillAuthoringResponse(BaseModel):
             instructions_markdown=version.instructions_markdown,
             capabilities=list(version.capabilities),
             allowed_tools=list(version.allowed_tools),
+            targets=list(version.targets),
+            result_mode=version.result_mode,
         )
 
 
@@ -138,7 +150,11 @@ class PublishAuthoredSkillRequest(SkillLlmRequest):
     description: str = Field(..., min_length=1, max_length=500)
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
     capabilities: list[CapabilityValue] = Field(..., min_length=1)
-    allowed_tools: list[ToolValue] = Field(..., min_length=1)
+    # 생략하거나 비우면 서버가 capabilities로 계산한다(policy.canonical_allowed_tools).
+    allowed_tools: list[ToolValue] = Field(default_factory=list)
+    # 문서 Skill의 실행 대상·결과 방식. 생략하면 targets는 기본값(["current_document"]), result_mode는 null이다.
+    targets: list[TargetValue] | None = Field(default=None, max_length=2)
+    result_mode: ResultModeValue | None = None
 
 
 class UpdateSkillRequest(SkillLlmRequest):
@@ -149,6 +165,9 @@ class UpdateSkillRequest(SkillLlmRequest):
     name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     description: str = Field(..., min_length=1, max_length=500)
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
+    # 생략(null)하면 기존 값을 유지한다. targets=[]는 기본값(["current_document"])으로 되돌린다.
+    targets: list[TargetValue] | None = Field(default=None, max_length=2)
+    result_mode: ResultModeValue | None = None
 
 
 class SkillActorRequest(BaseModel):
@@ -164,6 +183,8 @@ class SkillVersionResponse(BaseModel):
     instructions_markdown: str
     capabilities: list[str]
     allowed_tools: list[str]
+    targets: list[str]
+    result_mode: str | None
     lint_result: dict[str, object]
     status: str
 
@@ -177,6 +198,8 @@ class SkillVersionResponse(BaseModel):
             instructions_markdown=version.instructions_markdown,
             capabilities=list(version.capabilities),
             allowed_tools=list(version.allowed_tools),
+            targets=list(version.targets),
+            result_mode=version.result_mode,
             lint_result=version.lint_result or {},
             status=version.status,
         )
@@ -262,6 +285,69 @@ def _skill_markdown(name: str, description: str, instructions_markdown: str) -> 
         "---\n\n"
         f"{instructions_markdown}"
     )
+
+
+class SkillTestRunDefinitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    description: str = Field(..., min_length=1, max_length=500)
+    instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
+    # allowed_tools는 받지 않는다. 안전 검토에 쓰는 Tool 목록은 capabilities로 계산한다.
+    capabilities: list[CapabilityValue] = Field(..., min_length=1)
+
+
+class SkillTestRunDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str = Field(..., min_length=1)
+    base_version: int = Field(..., ge=0)
+    markdown: str = Field(..., min_length=1)
+
+
+class SkillTestRunTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["selection", "current_section", "whole_document"]
+    start_line: int = Field(..., ge=1)
+    end_line: int = Field(..., ge=1)
+
+
+class SkillTestRunRequest(SkillLlmRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1)
+    definition: SkillTestRunDefinitionRequest
+    document: SkillTestRunDocumentRequest
+    # 생략하면 문서 전체다.
+    target: SkillTestRunTargetRequest | None = None
+
+
+class SkillTestRunChangeResponse(BaseModel):
+    section: str
+    start_line: int
+    end_line: int
+    before: str
+    after: str
+
+
+class SkillTestRunResponse(BaseModel):
+    status: Literal["completed", "blocked"]
+    changes: list[SkillTestRunChangeResponse] = Field(default_factory=list)
+    untouched_sections: list[str] = Field(default_factory=list)
+    result_markdown: str | None = None
+    issues: list[dict[str, object]] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(cls, result: SkillTestRunResult) -> "SkillTestRunResponse":
+        return cls(
+            status=result.status,
+            changes=[SkillTestRunChangeResponse(**change.__dict__) for change in result.changes],
+            untouched_sections=list(result.untouched_sections),
+            result_markdown=result.result_markdown,
+            issues=[dict(issue) for issue in result.issues],
+        )
 
 
 class SkillTaskRequest(BaseModel):

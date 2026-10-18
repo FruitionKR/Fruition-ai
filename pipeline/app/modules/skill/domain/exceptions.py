@@ -19,6 +19,15 @@ class ReferenceDocumentTooLargeError(Exception):
         super().__init__("EDITABLE 참조 문서는 30,000자 이하여야 합니다.")
 
 
+class SkillTestRunUnsupportedError(ValueError):
+    """폴더 정리처럼 문서 한 개로 미리 실행해 볼 수 없는 Skill."""
+
+    code = "test_run_unsupported"
+
+    def __init__(self) -> None:
+        super().__init__("Skill test run supports document and template Skills only.")
+
+
 SKILL_REJECTION_CODES = frozenset(
     {
         "intent_ambiguous",
@@ -26,6 +35,8 @@ SKILL_REJECTION_CODES = frozenset(
         "invalid_instruction_length",
         "invalid_name",
         "invalid_reference",
+        "invalid_result_mode",
+        "invalid_targets",
         "skill_request_invalid",
     }
 )

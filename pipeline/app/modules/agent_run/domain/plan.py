@@ -28,10 +28,14 @@ OperationStatus = Literal[
 
 
 class AgentPlanIntentClarificationRequired(ValueError):
-    """사용자 요청만으로 변경 의도를 확인할 수 없다."""
+    """사용자 요청만으로 변경 의도를 확인할 수 없다.
 
-    def __init__(self) -> None:
+    question은 무엇이 불명확한지 사용자에게 설명하는 한국어 문장이다. str(exc)는 error_code로 쓰이므로
+    question과 무관하게 "mutation_intent_required"로 유지한다."""
+
+    def __init__(self, question: str | None = None) -> None:
         super().__init__("mutation_intent_required")
+        self.question = (question or "").strip() or None
 
 
 @dataclass(frozen=True)

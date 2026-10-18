@@ -24,7 +24,7 @@ from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
 
-from app.core.llm_env import api_key_from_env, resolve_llm_selection
+from app.core.llm_env import api_key_from_env, resolve_llm_selection, resolve_workspace_llm_selection
 from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
 from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
@@ -548,7 +548,7 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_ingest_client(command: dict[str, Any]) -> RetryOnceJsonCompletion:
-    provider, model = resolve_llm_selection(
+    provider, model = resolve_workspace_llm_selection(
         str(command["provider"]).strip(),
         str(command["model"]).strip(),
     )
@@ -603,9 +603,14 @@ def _run_post_ingest_wiki_quality_evaluation(
     ]
     if not cases:
         return []
+    # 편입 후속 감사도 워크스페이스 공용 모델 설정을 쓴다.
+    provider, model = resolve_workspace_llm_selection(
+        str(command["provider"]).strip(),
+        str(command["model"]).strip(),
+    )
     use_case = build_answer_query_use_case(
-        provider=str(command["provider"]).strip(),
-        model=str(command["model"]).strip(),
+        provider=provider,
+        model=model,
         allow_web_search=False,
         evaluator_mode="disabled",
         wiki_repository=PostgresWikiRepository(),
