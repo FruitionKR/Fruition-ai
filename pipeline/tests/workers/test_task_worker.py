@@ -414,17 +414,36 @@ def test_meeting_notes_command_returns_draft_payload() -> None:
     with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
         payload = task_worker._handle(_meeting_command())
 
-    assert set(payload) == {"display_name", "markdown", "summary", "decisions", "action_items", "open_questions"}
+    # 기존 네 배열은 그대로 두고 시안 구성용 필드를 더한다. document는 네 배열만 읽어도 깨지지 않는다.
+    assert set(payload) == {
+        "display_name", "markdown", "summary", "decisions", "action_items", "open_questions",
+        "meeting_date", "attendees", "discussion", "next_schedule",
+    }
     assert payload["display_name"] == "출시 회의"
     assert payload["markdown"].startswith("# 출시 회의\n")
     event = task_worker._event(_meeting_command(), "succeeded", payload=payload, with_request=False)
     assert "request" not in event and event["payload"] == payload
 
 
+def test_meeting_notes_command_passes_date_and_attendees_to_header() -> None:
+    notes = {
+        "attendees": ["박지훈"],
+        "summary": [{"text": "출시 일정을 논의했다.", "source_segment_ids": ["s1"]}],
+    }
+    command = {**_meeting_command(), "meeting_date": "2026-10-19", "attendees": ["김민수", "박지훈"]}
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
+        payload = task_worker._handle(command)
+
+    assert payload["meeting_date"] == "2026-10-19"
+    assert payload["attendees"] == ["김민수", "박지훈"]
+    assert "- 날짜: 2026-10-19\n- 참석자: 김민수, 박지훈" in payload["markdown"]
+
+
 @pytest.mark.parametrize(
     ("overrides", "code"),
     [
         ({"segments": [{"id": "s1", "text": "a"}, {"id": "s1", "text": "b"}]}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"attendees": [" "]}, "MEETING_NOTES_INPUT_REJECTED"),
         ({"model": "unknown-model"}, "MEETING_NOTES_INPUT_REJECTED"),
         ({"title": "이전 필드"}, "MEETING_NOTES_INPUT_REJECTED"),
     ],

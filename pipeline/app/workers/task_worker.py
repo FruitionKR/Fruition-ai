@@ -481,6 +481,8 @@ def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
         result = use_case.execute(
             request.display_name,
             [TranscriptSegment(s.id, s.text) for s in request.segments],
+            meeting_date=request.meeting_date,
+            attendees=tuple(request.attendees),
         )
     except PipelineRunCancelledError:
         raise
