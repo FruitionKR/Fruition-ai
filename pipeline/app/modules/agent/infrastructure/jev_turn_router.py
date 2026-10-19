@@ -178,6 +178,22 @@ def route_options(request: AgentTurnRequest) -> list[dict[str, Any]]:
             for skill in request.available_skills:
                 if set(group).issubset(_supported_capabilities(skill.capabilities)):
                     options.append({**value, "selected_skill_id": skill.id})
+    if request.mode == "task":
+        # 작업 탭에서 질문·잡담은 답변 갈래 대신 채팅 탭 안내 clarify로 받는다.
+        options.append({
+            "action": "clarify",
+            "retrieval_source": "none",
+            "document_operation": "none",
+            "persist": False,
+            "required_capabilities": [],
+            "edit_goal": None,
+            "edit_operation": None,
+            "edit_destination": None,
+            "confidence": 1.0,
+            "reason": JEV_ROUTE_REASON,
+            "selected_skill_id": None,
+            "skill_candidates": [],
+        })
     return options
 
 

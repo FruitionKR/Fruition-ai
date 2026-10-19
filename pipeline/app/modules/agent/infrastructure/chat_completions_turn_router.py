@@ -23,6 +23,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
+from app.modules.agent.domain.task_mode import TASK_MODE_EXCLUDED_ACTIONS, task_mode_route
 from app.modules.markdown_edit.domain.entities import EditDestination, EditOperationType
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
@@ -89,6 +90,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 
         payload = route_payload(request)
         route, failures = self._complete_route(payload)
+        route = task_mode_route(route, request)
         failures.extend(_route_failures(route, request))
         if failures:
             logger.warning("[Agent route 재시도] contractFailures=%s", failures)
@@ -101,6 +103,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
                 retry_payload,
                 trusted_contract_failures=failures,
             )
+            route = task_mode_route(route, request)
             failures.extend(_route_failures(route, request))
             if failures:
                 raise AgentTurnRouteContractError(failures)
@@ -131,6 +134,14 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 
 def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     """라우터 모델에 보낼 사용자 요청 상태다. Jev 라우터도 같은 상태를 쓴다."""
+    payload = _route_state(request)
+    # 기존 턴의 상태는 그대로 두고, 작업 탭 턴에만 mode를 싣는다.
+    if request.mode is not None:
+        payload["mode"] = request.mode
+    return payload
+
+
+def _route_state(request: AgentTurnRequest) -> dict[str, object]:
     return {
         "message": request.message,
         "conversation_summary": (
@@ -262,10 +273,16 @@ def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:
 
 def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     failures: list[str] = []
+    if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
+        failures.append(
+            f"task mode does not allow {route.action}; use clarify with document_operation none "
+            "for questions or conversation"
+        )
     if (
         route.action == "clarify"
         and route.edit_goal is None
         and not route.skill_candidates
+        and request.mode != "task"
     ):
         failures.append(
             "clarify requires a supported Markdown target reason or ambiguous Skill candidates; "

@@ -18,6 +18,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
+from app.modules.agent.domain.task_mode import is_task_mode, task_mode_route
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
     AgentRunStarterPort,
@@ -67,6 +68,10 @@ from app.modules.skill.domain.safety import inspect_skill_instructions
 
 CLARIFY_MARKDOWN_TARGET_MESSAGE = "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요."
 CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."
+CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
+    "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
+    "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
+)
 DEFERRED_TEMPLATE_MESSAGE = "template 기반 전체 문서 재구성은 이후 단계에서 다루겠습니다. 현재는 선택 영역, 현재 섹션, 또는 문서 전체의 일반 편집만 지원합니다."
 CLARIFY_INSERT_AFTER_TARGET_MESSAGE = "내용을 추가할 현재 섹션을 선택한 뒤 다시 요청해 주세요."
 CLARIFY_SKILL_MESSAGE = "이 요청에 적용할 Skill을 선택하거나 Skill 없이 계속해 주세요."
@@ -152,7 +157,8 @@ class HandleAgentTurnUseCase:
         if selection.explicit_skill_id is not None and not request.message.strip():
             return self._execute_bare_skill_command(request, selection.skills[0])
         resolved = selection.resolve_route(self._router.route(request))
-        route = resolved.route
+        # 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
+        route = task_mode_route(resolved.route, request)
         selected_skill = resolved.skill
         action_message = {
             "markdown_edit": "문서 편집 요청으로 확인했어요.",
@@ -428,7 +434,11 @@ class HandleAgentTurnUseCase:
             return self._execute_markdown_edit(request, route, selected_skill)
 
         if route.action == "clarify":
-            if route.edit_goal == "template_transform":
+            if is_task_mode(request) and route.edit_goal is None:
+                message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
+            elif is_task_mode(request) and not _has_active_markdown(request):
+                message = CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+            elif route.edit_goal == "template_transform":
                 message = DEFERRED_TEMPLATE_MESSAGE
             elif route.edit_operation == "insert_after":
                 message = CLARIFY_INSERT_AFTER_TARGET_MESSAGE

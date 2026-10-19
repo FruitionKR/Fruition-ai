@@ -138,6 +138,8 @@ class AgentTurnRequestBody(BaseModel):
     skill_scope_type: Literal["personal", "team"] | None = None
     skill_authoring_mode: Literal["preserve", "enhance"] = "enhance"
     skill_reference_document_ids: list[str] = Field(default_factory=list, max_length=3)
+    # 작업 탭에서 보낸 턴이면 "task". 생략하면 기존 동작이다.
+    mode: Literal["task"] | None = None
 
     @model_validator(mode="after")
     def validate_skill_selection(self) -> Self:
@@ -177,6 +179,7 @@ class AgentTurnRequestBody(BaseModel):
             skill_scope_type=self.skill_scope_type,
             skill_authoring_mode=self.skill_authoring_mode,
             skill_reference_document_ids=tuple(self.skill_reference_document_ids),
+            mode=self.mode,
         )
 
 

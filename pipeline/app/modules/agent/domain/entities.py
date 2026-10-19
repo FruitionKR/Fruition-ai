@@ -38,6 +38,8 @@ AgentAction = Literal[
 SkillMode = Literal["auto", "explicit", "off"]
 RetrievalSource = Literal["none", "workspace", "web"]
 DocumentOperation = Literal["none", "create", "edit"]
+# 작업 탭 요청. None이면 기존(채팅 겸용) 동작이다.
+AgentTurnMode = Literal["task"]
 @dataclass(frozen=True)
 class SkillCandidate:
     id: str
@@ -94,6 +96,7 @@ class AgentTurnRequest:
     allow_web_search: bool | None = None
     provider: str | None = None
     model: str | None = None
+    mode: AgentTurnMode | None = None
 
 
 @dataclass(frozen=True)
