@@ -14,7 +14,7 @@ from app.modules.agent_run.application.ports import (
     AgentRunRepositoryPort,
 )
 from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
     read_text_object,
@@ -458,6 +458,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         plan: AgentPlan,
         approval_id: str,
         job_id: str,
+        selected_operation_ids: tuple[str, ...] | None = None,
     ) -> AgentRun:
         with database.connect_ai() as conn:
             locked = conn.execute(
@@ -481,12 +482,30 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
-                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved')
+                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision, operation_ids
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved', %s)
                 """,
-                (approval_id, run.id, plan.id, plan.version, plan.operation_hash, run.user_id),
+                (
+                    approval_id,
+                    run.id,
+                    plan.id,
+                    plan.version,
+                    plan.operation_hash,
+                    run.user_id,
+                    list(selected_operation_ids) if selected_operation_ids is not None else None,
+                ),
             )
             conn.execute("UPDATE agent_plans SET status = 'approved' WHERE id = %s", (plan.id,))
+            if selected_operation_ids is not None:
+                # 고르지 않은 작업은 실행하지 않는다. 실패와 구별되도록 not_selected로 남긴다.
+                conn.execute(
+                    """
+                    UPDATE agent_plan_operations
+                    SET status = 'skipped', error_code = %s, updated_at = now()
+                    WHERE plan_id = %s AND status = 'pending' AND NOT (id = ANY(%s))
+                    """,
+                    (NOT_SELECTED_ERROR_CODE, plan.id, list(selected_operation_ids)),
+                )
             updated = conn.execute(
                 """
                 UPDATE agent_runs SET status = 'executing', updated_at = now()

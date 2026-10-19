@@ -49,7 +49,9 @@ class AgentApprovalRepositoryPort(Protocol):
         plan: AgentPlan,
         approval_id: str,
         job_id: str,
+        selected_operation_ids: tuple[str, ...] | None = None,
     ) -> AgentRun:
+        """selected_operation_ids가 있으면 나머지 작업을 not_selected로 건너뛴다. None이면 전체 실행이다."""
         ...
 
 

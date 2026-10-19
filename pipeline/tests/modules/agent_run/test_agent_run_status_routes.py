@@ -271,3 +271,45 @@ def test_agent_run_response_hides_clarification_question_outside_clarification_s
     )
     assert "clarification_question" in execution_clarification.model_dump()
     assert execution_clarification.clarification_question is None
+
+
+def test_approve_route_rejects_invalid_operation_selection_with_400() -> None:
+    from app.modules.agent_run.application.approve_agent_plan import ApproveAgentPlanUseCase
+    from app.modules.agent_run.interfaces.http.routes import approve_agent_run
+    from app.modules.agent_run.interfaces.http.schemas import ApproveAgentPlanRequest
+    from tests.modules.agent_run.test_approve_agent_plan import _three_operation_repository
+
+    repository = _three_operation_repository()
+    use_case = ApproveAgentPlanUseCase(repository)  # type: ignore[arg-type]
+
+    def request(operation_ids: list[str] | None, operation_hash: str | None = None) -> ApproveAgentPlanRequest:
+        return ApproveAgentPlanRequest(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            plan_version=1,
+            operation_hash=operation_hash or repository.plan.operation_hash,
+            operation_ids=operation_ids,
+        )
+
+    with pytest.raises(HTTPException) as missing_dependency:
+        approve_agent_run("run-1", request(["op-2"]), use_case)
+    with pytest.raises(HTTPException) as stale:
+        approve_agent_run("run-1", request(["op-1"], "b" * 64), use_case)
+    response = approve_agent_run("run-1", request(["op-1", "op-2"]), use_case)
+
+    assert missing_dependency.value.status_code == 400
+    assert stale.value.status_code == 409
+    assert response.status == "executing"
+    assert repository.selected == ("op-1", "op-2")
+
+
+def test_approve_request_rejects_empty_operation_ids() -> None:
+    from pydantic import ValidationError
+
+    from app.modules.agent_run.interfaces.http.schemas import ApproveAgentPlanRequest
+
+    with pytest.raises(ValidationError):
+        ApproveAgentPlanRequest(
+            workspace_id="workspace-1", user_id="user-1", plan_version=1,
+            operation_hash="a" * 64, operation_ids=[],
+        )

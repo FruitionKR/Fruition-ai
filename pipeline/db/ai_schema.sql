@@ -388,6 +388,9 @@ CREATE TABLE IF NOT EXISTS agent_approvals (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- 부분 승인으로 고른 작업 ID. NULL이면 계획 전체를 승인했다. 나머지 작업은 skipped(not_selected)가 된다.
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS operation_ids text[];
+
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id text PRIMARY KEY,
     run_id text NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,

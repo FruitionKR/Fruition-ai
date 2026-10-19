@@ -16,7 +16,7 @@
 | ai_task_runs·ai_task_changes | ai-svc | 비 Agent 작업·부모/자식·AI DB/객체 저장소 변경 기록 | command hash, 취소 상태, 역순 복구 기록. `attempt`는 handler 시작 횟수이며 worker가 죽어 중단된 run은 재전달 시 부분 변경을 되돌리고 같은 전달 안에서 다시 실행한다(`AI_TASK_MAX_INTERRUPTED_ATTEMPTS`, 기본 3회 초과 시 `failed`/`interrupted_attempts_exhausted`) |
 | skills·skill_versions·skill_version_sources | ai-svc | 개인·팀 Skill과 게시 version(문서 Skill의 실행 대상 `targets`·결과 방식 `result_mode` 포함)·생성 근거 | 개인은 `owner_user_id`, 팀은 `workspace_id`; 팀 권한은 access-svc 조회 |
 | agent_runs·agent_plans·agent_plan_operations | ai-svc | Agent 실행·승인 대상 plan·operation | Markdown command는 Spring이 공급한 run ID와 envelope hash를 영속. 완료 `result`는 route를, 실패 `result`는 error code·예외 유형과 route 계약 교정 사유를 보존 |
-| agent_approvals·agent_jobs·agent_tool_executions·agent_run_artifacts | ai-svc | 승인·lease/retry·Tool 멱등 실행·비동기 artifact | run/plan/operation FK, Tool 호출 수 40회 제한 |
+| agent_approvals·agent_jobs·agent_tool_executions·agent_run_artifacts | ai-svc | 승인·lease/retry·Tool 멱등 실행·비동기 artifact | run/plan/operation FK, Tool 호출 수 40회 제한. 부분 승인은 `agent_approvals.operation_ids`에 고른 작업을 남기고 나머지 operation을 `skipped`(`not_selected`)로 둔다 |
 | checkpoint_migrations·checkpoints·checkpoint_blobs·checkpoint_writes | ai-svc | LangGraph Agent 중단·재개 상태 | `PostgresSaver`가 `AI_DATABASE_URL`로 사용 |
 
 Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다.

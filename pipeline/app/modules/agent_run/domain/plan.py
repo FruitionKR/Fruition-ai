@@ -99,6 +99,39 @@ def build_agent_plan(
     )
 
 
+# 부분 승인에서 고르지 않은 작업의 상태 코드. 실패가 아니므로 run 결과 판정에서 뺀다.
+NOT_SELECTED_ERROR_CODE = "not_selected"
+
+
+class AgentPlanSelectionInvalid(ValueError):
+    """부분 승인으로 고른 작업 목록이 현재 계획과 맞지 않는다."""
+
+
+def selected_operation_ids(plan: AgentPlan, operation_ids: list[str] | None) -> tuple[str, ...] | None:
+    """부분 승인할 작업 ID를 계획에 비춰 검사한다. None이면 전체 승인이다.
+
+    계획의 모든 작업을 고르면 전체 승인과 같아 None을 돌려준다. 고른 작업이 고르지 않은 작업의 결과에
+    기대면(depends_on) 실행할 수 없으므로 거절한다.
+    """
+    if operation_ids is None:
+        return None
+    if not operation_ids:
+        raise AgentPlanSelectionInvalid("operation_ids must not be empty.")
+    if len(set(operation_ids)) != len(operation_ids):
+        raise AgentPlanSelectionInvalid("operation_ids must not contain duplicates.")
+    planned = {operation.id: operation for operation in plan.operations}
+    unknown = [operation_id for operation_id in operation_ids if operation_id not in planned]
+    if unknown:
+        raise AgentPlanSelectionInvalid("operation_ids must reference operations in the current plan.")
+    selected = set(operation_ids)
+    for operation_id in operation_ids:
+        if any(dependency not in selected for dependency in planned[operation_id].depends_on):
+            raise AgentPlanSelectionInvalid("Selected operations must include every operation they depend on.")
+    if selected == set(planned):
+        return None
+    return tuple(operation.id for operation in plan.operations if operation.id in selected)
+
+
 def _operation_hash(operations: tuple[AgentPlanOperation, ...]) -> str:
     canonical = [
         {

@@ -166,11 +166,11 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. |
-| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash |
+| 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. 고른 작업만 실행하는 부분 승인도 받습니다. |
+| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids` |
 | 출력 | `200` — `status=executing`인 `AgentRunResponse` |
 | 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. |
-| 주요 오류 | `409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
+| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -186,6 +186,12 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 조회한 계획과 같은 version·hash에만 승인을 기록하고 execution job을 등록합니다.
 
+`operation_ids`(1~20개)를 보내면 고른 작업(`plan.operations[].id`)만 실행합니다. 고르지 않은 작업은
+승인 시점에 `status=skipped`, `error_code=not_selected`가 되며 실행·검증·복구 대상이 아닙니다.
+`plan_version`·`operation_hash`는 부분 승인이어도 계획 전체 기준으로 검사합니다. 계획의 모든 작업을 고르면
+생략한 것과 같습니다(전체 실행). 고른 작업만 성공하면 run은 `completed`이며, 고르지 않은 작업은
+`partial_failed` 판정에 포함하지 않습니다. 고른 목록은 `agent_approvals.operation_ids`에 남습니다.
+
 #### 3. Auth 필요 여부
 
 - 필요: `X-Agent-Service-Token`
@@ -197,9 +203,16 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
   "workspace_id": "workspace_123",
   "user_id": "user_123",
   "plan_version": 1,
-  "operation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  "operation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "operation_ids": ["plan_123-op-1", "plan_123-op-3"]
 }
 ```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `plan_version` | `integer` | 예 | 승인할 plan 버전 |
+| `operation_hash` | `string` | 예 | 계획 전체의 operation hash(64자) |
+| `operation_ids` | `string[]` \| `null` | 아니오 | 실행할 작업 ID(1~20개). 생략·`null`이면 계획 전체 |
 
 #### 5. Response body
 
@@ -222,7 +235,8 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 #### 6. Error response
 
-- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 입력 검증 실패, `503` 토큰 미설정
+- `400`: `operation_ids` 중복·계획에 없는 ID·고른 작업이 고르지 않은 작업에 의존(`depends_on`)
+- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 입력 검증 실패(빈 배열·20개 초과 포함), `503` 토큰 미설정
 
 #### 7. Pagination / filtering
 
