@@ -2710,6 +2710,7 @@ class CreateSkillWithoutDocumentTest(unittest.TestCase):
         self.assertEqual(result.route.document_operation, "create")
         started = starter.requests[0]
         self.assertEqual(started.target_folder_id, "folder-9")  # type: ignore[attr-defined]
+        self.assertEqual(started.rule_summary, "문서를 간결하게 작성합니다.")  # type: ignore[attr-defined]
         self.assertEqual(started.content.purpose, "create_document")  # type: ignore[attr-defined]
         self.assertEqual(len(editor.create_requests), 1)
 

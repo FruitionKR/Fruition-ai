@@ -93,6 +93,11 @@ class AgentArtifactResolveResponse(AgentArtifactResponse):
     markdown: str
 
 
+class AgentPlanOperationWarningResponse(BaseModel):
+    type: str = Field(..., description="duplicate_name(같은 위치에 같은 이름) 또는 depends_on_unselected")
+    message: str
+
+
 class AgentPlanOperationResponse(BaseModel):
     id: str
     sequence: int
@@ -107,6 +112,10 @@ class AgentPlanOperationResponse(BaseModel):
     depends_on: list[str]
     status: str
     error_code: str | None
+    # 중복 의심 등 승인 전에 확인할 점. 없으면 null이다.
+    warning: AgentPlanOperationWarningResponse | None = None
+    # 승인 화면의 기본 선택 여부. 중복이 의심되거나 그런 작업에 의존하면 false다.
+    suggested_selected: bool = True
 
     @classmethod
     def from_domain(cls, operation: AgentPlanOperation) -> "AgentPlanOperationResponse":
@@ -124,6 +133,12 @@ class AgentPlanOperationResponse(BaseModel):
             depends_on=list(operation.depends_on),
             status=operation.status,
             error_code=operation.error_code,
+            warning=(
+                AgentPlanOperationWarningResponse.model_validate(operation.warning)
+                if operation.warning is not None
+                else None
+            ),
+            suggested_selected=operation.suggested_selected,
         )
 
 
@@ -159,6 +174,8 @@ class AgentRunResponse(BaseModel):
     clarification_question: str | None = None
     # 턴에서 지정한 작업 대상 폴더(폴더 정리 범위·새 문서 위치). 지정하지 않았으면 null이다.
     target_folder_id: str | None = None
+    # 선택한 Skill의 규칙 요약(실행 시점 Skill 설명). Skill 없이 실행했으면 null이다.
+    rule_summary: str | None = None
     plan: AgentPlanResponse | None = None
 
     @classmethod
@@ -175,5 +192,6 @@ class AgentRunResponse(BaseModel):
                 run.clarification_question if run.status == "clarification_required" else None
             ),
             target_folder_id=run.target_folder_id,
+            rule_summary=run.rule_summary,
             plan=AgentPlanResponse.from_domain(plan) if plan else None,
         )

@@ -53,6 +53,10 @@ class AgentPlanOperation:
     depends_on: tuple[str, ...] = ()
     status: OperationStatus = "pending"
     error_code: str | None = None
+    # 승인 화면 안내용 메타데이터다. 실행 내용이 아니므로 operation_hash에 넣지 않는다.
+    # warning은 {"type", "message"}이며, 중복 의심 작업은 suggested_selected=False로 기본 선택에서 뺀다.
+    warning: dict[str, str] | None = None
+    suggested_selected: bool = True
 
 
 @dataclass(frozen=True)

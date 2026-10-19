@@ -245,6 +245,10 @@ components:
         status:
           title: Status
           type: string
+        suggested_selected:
+          default: true
+          title: Suggested Selected
+          type: boolean
         target_id:
           anyOf:
           - type: string
@@ -256,6 +260,10 @@ components:
         tool_name:
           title: Tool Name
           type: string
+        warning:
+          anyOf:
+          - $ref: '#/components/schemas/AgentPlanOperationWarningResponse'
+          - type: 'null'
       required:
       - id
       - sequence
@@ -271,6 +279,20 @@ components:
       - status
       - error_code
       title: AgentPlanOperationResponse
+      type: object
+    AgentPlanOperationWarningResponse:
+      properties:
+        message:
+          title: Message
+          type: string
+        type:
+          description: duplicate_name(같은 위치에 같은 이름) 또는 depends_on_unselected
+          title: Type
+          type: string
+      required:
+      - type
+      - message
+      title: AgentPlanOperationWarningResponse
       type: object
     AgentPlanResponse:
       properties:
@@ -343,6 +365,11 @@ components:
         request_summary:
           title: Request Summary
           type: string
+        rule_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rule Summary
         skill_version_id:
           anyOf:
           - type: string

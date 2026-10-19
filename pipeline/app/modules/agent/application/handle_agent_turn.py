@@ -430,6 +430,11 @@ class HandleAgentTurnUseCase:
                     skill_version_id=skill_version_id,
                     content=content,
                     target_folder_id=request.folder_id,
+                    rule_summary=(
+                        selected_skill.enabled_version.description
+                        if selected_skill is not None and selected_skill.enabled_version is not None
+                        else None
+                    ),
                 )
             )
             return AgentTurnResult(

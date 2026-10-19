@@ -320,6 +320,8 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
 -- 턴에서 지정한 작업 대상 폴더(document-svc 폴더 UUID). 폴더 정리 범위이자 새 문서 위치다. NULL이면 워크스페이스 전체·루트.
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS target_folder_id text;
+-- 선택한 Skill의 규칙 요약(실행 시점 Skill 설명). 승인 화면 안내용이며 Skill 없이 실행하면 NULL.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS rule_summary text;
 
 -- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs
@@ -378,6 +380,11 @@ CREATE TABLE IF NOT EXISTS agent_plan_operations (
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT agent_plan_operations_unique_sequence UNIQUE (plan_id, sequence)
 );
+
+-- 승인 화면 안내용 검토 결과. 실행 내용이 아니므로 operation_hash에 포함하지 않는다.
+-- warning은 {"type", "message"}(중복 의심 등), suggested_selected는 화면의 기본 선택 여부다.
+ALTER TABLE agent_plan_operations ADD COLUMN IF NOT EXISTS warning jsonb;
+ALTER TABLE agent_plan_operations ADD COLUMN IF NOT EXISTS suggested_selected boolean NOT NULL DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS agent_approvals (
     id text PRIMARY KEY,

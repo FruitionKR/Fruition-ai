@@ -43,6 +43,8 @@ class StartAgentRunRequest:
     content: StartAgentRunContent | None = None
     # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. None이면 워크스페이스 전체·루트다.
     target_folder_id: str | None = None
+    # 선택한 Skill의 규칙 요약(Skill 설명). 승인 화면에 그대로 보여 준다. Skill 없이 실행하면 None이다.
+    rule_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class AgentRun:
     provider: str | None = None
     model: str | None = None
     target_folder_id: str | None = None
+    rule_summary: str | None = None
 
 
 @dataclass(frozen=True)

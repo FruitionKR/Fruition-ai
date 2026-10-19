@@ -27,6 +27,7 @@ from app.modules.agent_run.domain.entities import (
     ContentArtifactReference,
 )
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOperation
+from app.modules.agent_run.domain.plan_review import review_duplicate_names
 
 
 logger = logging.getLogger(__name__)
@@ -272,7 +273,7 @@ class AgentWorker:
             unsupported = {operation.tool_name for operation in plan.operations} - set(context.allowed_tools)
             if unsupported:
                 raise ValueError("Agent plan contains tools not allowed by the selected Skill.")
-        self._run_repository.save_plan(run_id, plan)
+        self._run_repository.save_plan(run_id, review_duplicate_names(plan, hierarchy))
 
     def _inspect_hierarchy(self, context: AgentRunContext) -> list[dict[str, object]]:
         root = self._read_tool(context, "list_root_items", {})

@@ -88,6 +88,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   "error_code": null,
   "clarification_question": null,
   "target_folder_id": null,
+  "rule_summary": null,
   "plan": {
     "id": "plan_123",
     "version": 1,
@@ -108,7 +109,9 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
         "reason": "사용자가 확인한 편집안을 반영합니다.",
         "depends_on": [],
         "status": "pending",
-        "error_code": null
+        "error_code": null,
+        "warning": null,
+        "suggested_selected": true
       }
     ]
   }
@@ -122,6 +125,57 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `revise`로 다시 계획을 요청하면 비워집니다.
 
 `target_folder_id`는 턴에서 지정한 작업 대상 폴더(`ai.agent.command`의 `folder_id`)이며, 지정하지 않았으면 `null`입니다.
+`rule_summary`는 선택한 Skill의 규칙 요약으로, run을 만들 때의 Skill 설명(`skill_versions.description`)을 보존한 값입니다.
+Skill 없이 실행했으면 `null`입니다.
+
+`plan.operations[]`의 `warning`·`suggested_selected`는 승인 화면 안내용 검토 결과이며 실행 내용이 아니라
+`operation_hash`에 포함하지 않습니다. 계획 생성 직후 계층 스냅샷에 계획을 적용한 결과로 판정합니다.
+
+- `warning`: `{"type": string, "message": string}` 또는 `null`. `message`는 그대로 보여 줄 한국어 문장입니다.
+  - `duplicate_name`: 작업 결과 같은 폴더에 같은 종류(폴더·문서)·같은 이름의 항목이 둘 이상 생깁니다(공백·대소문자·NFC·문서의 `.md` 차이는 무시). 기존 항목과 겹치면 그 작업을, 계획이 만든·옮긴 항목끼리 겹치면 나중 작업을 표시합니다. 같은 항목을 바꾸는 이름 변경·이동 작업에 모두 붙습니다.
+  - `depends_on_unselected`: 기본 선택에서 빠진 작업에 의존(`depends_on`)하는 작업입니다.
+- `suggested_selected`: 화면의 기본 선택 여부입니다. `warning`이 있으면 `false`입니다. 기본 선택 그대로 `operation_ids`로 승인해도 의존 작업 누락이 생기지 않습니다.
+
+```json
+{
+  "id": "run_456",
+  "workspace_id": "workspace_123",
+  "action": "folder_organize",
+  "skill_version_id": "skill_version_123",
+  "status": "awaiting_approval",
+  "request_summary": "날짜_분류_제목 형식으로 정리해줘",
+  "error_code": null,
+  "clarification_question": null,
+  "target_folder_id": "44444444-4444-4444-4444-444444444444",
+  "rule_summary": "문서 이름을 날짜_분류_제목 형식으로 바꾸고 분류별 폴더로 옮깁니다.",
+  "plan": {
+    "id": "plan_456",
+    "version": 1,
+    "summary": "아직 바꾸지 않았습니다. 승인하면 아래 작업을 실행합니다.",
+    "operation_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "status": "awaiting_approval",
+    "operations": [
+      {
+        "id": "plan_456-op-1",
+        "sequence": 1,
+        "tool_name": "rename_document",
+        "target_type": "document",
+        "target_id": "doc_1",
+        "base_version": 2,
+        "source_parent_id": "44444444-4444-4444-4444-444444444444",
+        "destination_parent_id": null,
+        "arguments": {"document_id": "doc_1", "display_name": "2026-10-19_회의_주간회의", "base_version": 2},
+        "reason": "규칙에 맞게 이름을 바꿉니다.",
+        "depends_on": [],
+        "status": "pending",
+        "error_code": null,
+        "warning": {"type": "duplicate_name", "message": "같은 위치에 이름이 같은 문서 '2026-10-19_회의_주간회의'이(가) 있어 중복일 수 있어요."},
+        "suggested_selected": false
+      }
+    ]
+  }
+}
+```
 
 ```json
 {

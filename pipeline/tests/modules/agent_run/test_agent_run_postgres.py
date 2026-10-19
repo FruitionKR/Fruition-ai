@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -57,10 +58,12 @@ def _operation(plan_id: str, sequence: int, depends_on: tuple[int, ...] = ()) ->
         arguments={"name": f"폴더 {sequence}", "parent_folder_id": None},
         reason="정리",
         depends_on=tuple(f"{plan_id}-op-{dependency}" for dependency in depends_on),
+        warning={"type": "duplicate_name", "message": "중복일 수 있어요."} if sequence == 3 else None,
+        suggested_selected=sequence != 3,
     )
 
 
-def _awaiting_run(runs, *, target_folder_id: str | None = None):
+def _awaiting_run(runs, *, target_folder_id: str | None = None, rule_summary: str | None = None):
     run = runs.create_with_planning_job(
         AgentRun(
             id="run-1",
@@ -71,6 +74,7 @@ def _awaiting_run(runs, *, target_folder_id: str | None = None):
             status="queued",
             request_summary="정리",
             target_folder_id=target_folder_id,
+            rule_summary=rule_summary,
         ),
         "planning-job",
     )
@@ -146,3 +150,24 @@ def test_target_folder_is_stored_and_returned_with_the_run(repositories) -> None
     assert body["target_folder_id"] == "folder-9"
     approved = runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
     assert AgentRunResponse.from_domain(approved).model_dump()["target_folder_id"] == "folder-9"
+
+
+def test_plan_review_metadata_and_rule_summary_round_trip(repositories) -> None:
+    from app.modules.agent_run.interfaces.http.schemas import AgentRunResponse
+
+    runs, _, _ = repositories
+    run, plan = _awaiting_run(runs, rule_summary="날짜_분류_제목 형식으로 이름을 바꾼다.")
+
+    body = AgentRunResponse.from_domain(run, plan).model_dump()
+    assert body["rule_summary"] == "날짜_분류_제목 형식으로 이름을 바꾼다."
+    operations = {operation["id"]: operation for operation in body["plan"]["operations"]}
+    assert operations["plan-1-op-1"]["warning"] is None
+    assert operations["plan-1-op-1"]["suggested_selected"] is True
+    assert operations["plan-1-op-3"]["warning"] == {"type": "duplicate_name", "message": "중복일 수 있어요."}
+    assert operations["plan-1-op-3"]["suggested_selected"] is False
+    # 검토 메타데이터는 해시에 들지 않아, 메타데이터가 다른 같은 계획도 해시가 같다.
+    stripped = build_agent_plan(
+        "plan-1", run.id, 1, "정리",
+        tuple(replace(operation, warning=None, suggested_selected=True) for operation in plan.operations),
+    )
+    assert stripped.operation_hash == plan.operation_hash
