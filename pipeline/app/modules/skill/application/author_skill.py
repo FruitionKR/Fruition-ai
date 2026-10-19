@@ -27,7 +27,6 @@ from app.modules.skill.domain.policy import (
     canonical_allowed_tools,
     effective_targets,
     is_document_skill,
-    result_mode_matches,
     validate_allowed_tools,
     validate_execution_options,
     validate_skill_name,
@@ -385,8 +384,19 @@ class AuthorSkillUseCase:
         targets: tuple[SkillTarget, ...] | None = None,
         result_mode: SkillResultMode | None = None,
     ) -> SkillAuthoringResult:
-        """targets·result_mode는 None이면 기존 값을 유지한다. targets=()는 기본값으로 되돌린다."""
+        """targets·result_mode는 None이면 기존 값을 유지한다. targets=()는 기본값으로 되돌린다.
+
+        지침이 이전 버전과 같으면 의도를 다시 분류하지 않고 이전 capabilities·allowed_tools를 그대로 쓴다.
+        설명·이름만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 작성 -> 수정)를 바꾸면 안 되기 때문이다.
+        """
         skill = self._skill_manager.get_manageable(workspace_id, user_id, skill_id)
+        previous = skill.latest_version or skill.enabled_version
+        preserved_capabilities = None
+        preserved_allowed_tools = None
+        if previous is not None and previous.instructions_markdown.strip() == instructions_markdown.strip():
+            preserved_capabilities = previous.capabilities
+            # 컬럼 추가 전 행처럼 저장된 Tool 표가 비어 있으면 게시와 같이 서버 정책으로 계산한다.
+            preserved_allowed_tools = previous.allowed_tools or canonical_allowed_tools(previous.capabilities)
         reviewed = self.execute(
             workspace_id=workspace_id,
             user_id=user_id,
@@ -397,12 +407,14 @@ class AuthorSkillUseCase:
             reference_document_ids=(),
             allow_clarification=False,
             authoring_mode="preserve",
+            preserved_capabilities=preserved_capabilities,
+            preserved_allowed_tools=preserved_allowed_tools,
         )
         if reviewed.status != "proposal_ready" or reviewed.proposal is None:
             return reviewed
         proposal = reviewed.proposal
         targets, result_mode = _updated_execution_options(
-            skill.latest_version or skill.enabled_version,
+            previous,
             proposal.capabilities,
             targets,
             result_mode,
@@ -458,9 +470,12 @@ def _updated_execution_options(
     targets: tuple[SkillTarget, ...] | None,
     result_mode: SkillResultMode | None,
 ) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
-    """수정은 지침을 다시 분류해 capabilities가 바뀔 수 있다.
+    """지침을 바꾼 수정은 다시 분류해 capabilities가 바뀔 수 있다.
 
-    보낸 값은 그대로 검증해 어긋나면 거절하고, 보내지 않아 이어받은 값은 새 capabilities와 맞지 않으면 버린다.
+    보낸 값과 이어받은 값을 모두 새 capabilities로 검증해 어긋나면 invalid_result_mode로 거절한다.
+    이어받은 result_mode를 조용히 버리면 사용자가 고르지 않은 결과 방식(null)이 저장되기 때문이다.
+    호출자는 새 capabilities에 맞는 result_mode를 보내 다시 요청하면 된다.
+    새 capabilities가 문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
     """
     if targets is None:
         targets = (
@@ -469,8 +484,7 @@ def _updated_execution_options(
             else ()
         )
     if result_mode is None and previous is not None and is_document_skill(capabilities):
-        inherited = previous.result_mode
-        result_mode = inherited if result_mode_matches(capabilities, inherited) else None
+        result_mode = previous.result_mode
     return validate_execution_options(capabilities, targets, result_mode)
 
 
