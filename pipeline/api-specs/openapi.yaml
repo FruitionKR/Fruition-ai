@@ -351,6 +351,11 @@ components:
         status:
           title: Status
           type: string
+        target_folder_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Folder Id
         workspace_id:
           title: Workspace Id
           type: string

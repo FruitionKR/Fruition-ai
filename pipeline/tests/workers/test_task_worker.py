@@ -1210,6 +1210,27 @@ def test_agent_command_without_mode_keeps_legacy_mode() -> None:
     assert use_case.execute.call_args.args[0].mode is None
 
 
+def test_agent_command_passes_target_folder_to_request_body() -> None:
+    """document-svc는 작업 대상 폴더를 folder_id로 싣고, 지정하지 않으면 키를 싣지 않는다."""
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "이 폴더 문서를 주제별로 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "mode": "task",
+    }
+
+    with_folder = _run_agent_command({**command, "folder_id": "44444444-4444-4444-4444-444444444444"})
+    without_folder = _run_agent_command(command)
+
+    assert with_folder.execute.call_args.args[0].folder_id == "44444444-4444-4444-4444-444444444444"
+    assert with_folder.execute.call_args.args[0].document_id is None
+    assert without_folder.execute.call_args.args[0].folder_id is None
+
+
 def test_agent_command_rejects_auto_skill_id() -> None:
     command = {
         "run_id": "agent_0123456789abcdef0123456789abcdef",

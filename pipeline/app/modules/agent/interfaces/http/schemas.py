@@ -140,6 +140,8 @@ class AgentTurnRequestBody(BaseModel):
     skill_reference_document_ids: list[str] = Field(default_factory=list, max_length=3)
     # 작업 탭에서 보낸 턴이면 "task". 생략하면 기존 동작이다.
     mode: Literal["task"] | None = None
+    # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. 생략하면 루트·워크스페이스 전체다.
+    folder_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def validate_skill_selection(self) -> Self:
@@ -180,6 +182,7 @@ class AgentTurnRequestBody(BaseModel):
             skill_authoring_mode=self.skill_authoring_mode,
             skill_reference_document_ids=tuple(self.skill_reference_document_ids),
             mode=self.mode,
+            folder_id=self.folder_id,
         )
 
 

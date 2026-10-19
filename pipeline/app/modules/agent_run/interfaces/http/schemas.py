@@ -157,6 +157,8 @@ class AgentRunResponse(BaseModel):
     error_code: str | None
     # 계획 단계가 의도를 확정하지 못해 clarification_required가 된 run에서만 채워진다.
     clarification_question: str | None = None
+    # 턴에서 지정한 작업 대상 폴더(폴더 정리 범위·새 문서 위치). 지정하지 않았으면 null이다.
+    target_folder_id: str | None = None
     plan: AgentPlanResponse | None = None
 
     @classmethod
@@ -172,5 +174,6 @@ class AgentRunResponse(BaseModel):
             clarification_question=(
                 run.clarification_question if run.status == "clarification_required" else None
             ),
+            target_folder_id=run.target_folder_id,
             plan=AgentPlanResponse.from_domain(plan) if plan else None,
         )

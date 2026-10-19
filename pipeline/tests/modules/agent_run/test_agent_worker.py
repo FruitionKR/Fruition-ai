@@ -35,6 +35,42 @@ class AgentWorkerTest(unittest.TestCase):
         plans.save_plan.assert_called_once_with("run-1", generator.generate.return_value)
         gateway.execute.assert_not_called()
 
+    def test_planning_with_target_folder_scopes_hierarchy_and_passes_folder(self) -> None:
+        repository = MagicMock()
+        context = _executing_context()
+        repository.load_context.return_value = replace(
+            context,
+            run=replace(context.run, status="queued", skill_version_id=None, target_folder_id="folder-a"),
+        )
+        repository.next_plan_version.return_value = 1
+        plans, gateway, generator = MagicMock(), MagicMock(), MagicMock()
+        generator.generate.return_value = replace(_approved_plan(), status="awaiting_approval")
+        worker = AgentWorker(repository, plans, gateway, generator)
+        hierarchy = [
+            {"id": "folder-a", "type": "folder", "parent_id": None},
+            {"id": "folder-b", "type": "folder", "parent_id": None},
+            {"id": "folder-a1", "type": "folder", "parent_id": "folder-a"},
+            {"id": "doc-b", "type": "document", "parent_id": "folder-b"},
+            {"id": "doc-a1", "type": "document", "parent_id": "folder-a1"},
+        ]
+        with (
+            patch.object(worker, "_inspect_hierarchy", return_value=hierarchy),
+            patch.object(worker, "_load_content_artifacts", return_value=()),
+        ):
+            worker._plan_run("run-1")
+
+        kwargs = generator.generate.call_args.kwargs
+        self.assertEqual(kwargs["target_folder_id"], "folder-a")
+        self.assertEqual([item["id"] for item in kwargs["hierarchy"]], ["folder-a", "folder-a1", "doc-a1"])
+
+    def test_scoped_hierarchy_rejects_missing_target_folder(self) -> None:
+        from app.modules.agent_run.infrastructure.agent_worker import scoped_hierarchy
+
+        hierarchy = [{"id": "doc-1", "type": "document", "parent_id": None}]
+        self.assertIs(scoped_hierarchy(hierarchy, None), hierarchy)
+        with self.assertRaisesRegex(ValueError, "target folder"):
+            scoped_hierarchy(hierarchy, "doc-1")
+
     def test_planning_clarification_and_provider_failure_are_distinct(self) -> None:
         question = "어떤 기준으로 폴더를 나눌지 알려 주세요."
         for failure in (AgentPlanIntentClarificationRequired(question), RuntimeError("timeout")):

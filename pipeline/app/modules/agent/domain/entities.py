@@ -97,6 +97,8 @@ class AgentTurnRequest:
     provider: str | None = None
     model: str | None = None
     mode: AgentTurnMode | None = None
+    # 작업 대상 폴더(document-svc가 검증한 폴더 UUID). 폴더 정리 범위·새 문서 위치. None이면 루트·전체다.
+    folder_id: str | None = None
 
 
 @dataclass(frozen=True)

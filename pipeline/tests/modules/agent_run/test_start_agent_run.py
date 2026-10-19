@@ -40,6 +40,16 @@ class StartAgentRunTest(unittest.TestCase):
         )
         self.assertEqual(repository.arguments[0].request_summary, instruction)
 
+    def test_run_keeps_target_folder_from_turn(self) -> None:
+        repository = RecordingRepository()
+        StartAgentRunUseCase(repository).start(
+            StartAgentRunRequest(
+                workspace_id="workspace-1", user_id="user-1", instruction="이 폴더를 정리해줘",
+                provider="openai", model="gpt-5-nano", target_folder_id="folder-9",
+            )
+        )
+        self.assertEqual(repository.arguments[0].target_folder_id, "folder-9")
+
     def test_creation_markdown_gets_generated_artifact_id_and_sha256(self) -> None:
         repository = RecordingRepository()
         markdown = "# 생성 문서\n"

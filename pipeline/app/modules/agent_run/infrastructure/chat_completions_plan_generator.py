@@ -53,6 +53,7 @@ class ChatCompletionsPlanGenerator:
         skill_instructions: str | None,
         allowed_tools: tuple[str, ...] | None,
         content_artifacts: tuple[ContentArtifactReference, ...] = (),
+        target_folder_id: str | None = None,
     ) -> AgentPlan:
         allowed_plan_tools = (
             ALLOWED_PLAN_TOOLS
@@ -70,6 +71,7 @@ class ChatCompletionsPlanGenerator:
             "routing_action": routing_action,
             "user_timezone": DEFAULT_USER_TIMEZONE,
             "hierarchy": with_local_dates(hierarchy, DEFAULT_USER_TIMEZONE),
+            "target_folder_id": target_folder_id,
             "skill_instructions": skill_instructions,
             "allowed_tools": sorted(allowed_plan_tools),
             "content_artifacts": [
@@ -112,7 +114,14 @@ class ChatCompletionsPlanGenerator:
             ):
                 raise ValueError("Unconfirmed Agent plan must have a summary and no operations.")
             raise AgentPlanIntentClarificationRequired(value["summary"].strip())
-        plan = normalize_plan_candidate(run_id, plan_id, version, value)
+        plan = normalize_plan_candidate(
+            run_id, plan_id, version, _place_creates_in_target_folder(value, target_folder_id)
+        )
+        if target_folder_id is not None and any(
+            operation.tool_name in {"move_folder", "move_document"} and operation.destination_parent_id is None
+            for operation in plan.operations
+        ):
+            raise ValueError("Agent plan cannot move items outside the target folder.")
         if any(operation.tool_name not in allowed_plan_tools for operation in plan.operations):
             raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
         _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts)
@@ -149,6 +158,30 @@ def _local_date(value: object, zone: ZoneInfo) -> str | None:
         # 백엔드 시각은 UTC다. 오프셋이 빠진 값도 UTC로 본다.
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(zone).date().isoformat()
+
+
+def _place_creates_in_target_folder(value: dict[str, Any], target_folder_id: str | None) -> dict[str, Any]:
+    """대상 폴더가 있으면 위치를 정하지 않은(최상위) 생성 작업을 그 폴더 안으로 둔다.
+
+    대상 폴더는 사용자가 턴에서 고른 새 문서 위치이므로, 모델이 최상위로 둔 생성도 그 폴더에 만든다.
+    """
+    raw_operations = value.get("operations")
+    if target_folder_id is None or not isinstance(raw_operations, list):
+        return value
+    destination_keys = {"create_folder": "parent_folder_id", "create_document": "folder_id"}
+    placed: list[object] = []
+    for raw in raw_operations:
+        tool_name = raw.get("tool_name") if isinstance(raw, dict) else None
+        key = destination_keys.get(tool_name) if isinstance(tool_name, str) else None
+        arguments = raw.get("arguments") if key else None
+        if key and isinstance(arguments, dict) and key in arguments and arguments[key] is None:
+            raw = {
+                **raw,
+                "arguments": {**arguments, key: target_folder_id},
+                "destination_parent_id": target_folder_id,
+            }
+        placed.append(raw)
+    return {**value, "operations": placed}
 
 
 def normalize_plan_candidate(

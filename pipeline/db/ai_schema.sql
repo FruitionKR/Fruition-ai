@@ -318,6 +318,8 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS provider text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
 -- 계획 단계에서 의도를 확정하지 못했을 때 사용자에게 보여 줄 질문. clarification_required에서만 의미가 있다.
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
+-- 턴에서 지정한 작업 대상 폴더(document-svc 폴더 UUID). 폴더 정리 범위이자 새 문서 위치다. NULL이면 워크스페이스 전체·루트.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS target_folder_id text;
 
 -- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs

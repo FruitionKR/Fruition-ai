@@ -60,7 +60,7 @@ def _operation(plan_id: str, sequence: int, depends_on: tuple[int, ...] = ()) ->
     )
 
 
-def _awaiting_run(runs):
+def _awaiting_run(runs, *, target_folder_id: str | None = None):
     run = runs.create_with_planning_job(
         AgentRun(
             id="run-1",
@@ -70,6 +70,7 @@ def _awaiting_run(runs):
             skill_version_id=None,
             status="queued",
             request_summary="정리",
+            target_folder_id=target_folder_id,
         ),
         "planning-job",
     )
@@ -131,3 +132,17 @@ def test_full_approval_keeps_every_operation_pending(repositories) -> None:
     with connect() as conn:
         approval = conn.execute("SELECT operation_ids FROM agent_approvals WHERE id = 'approval-1'").fetchone()
     assert approval["operation_ids"] is None
+
+
+def test_target_folder_is_stored_and_returned_with_the_run(repositories) -> None:
+    from app.modules.agent_run.interfaces.http.schemas import AgentRunResponse
+
+    runs, jobs, _ = repositories
+    run, plan = _awaiting_run(runs, target_folder_id="folder-9")
+
+    assert run.target_folder_id == "folder-9"
+    assert jobs.load_context(run.id).run.target_folder_id == "folder-9"
+    body = AgentRunResponse.from_domain(run, plan).model_dump()
+    assert body["target_folder_id"] == "folder-9"
+    approved = runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
+    assert AgentRunResponse.from_domain(approved).model_dump()["target_folder_id"] == "folder-9"

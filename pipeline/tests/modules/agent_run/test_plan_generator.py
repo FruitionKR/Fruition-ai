@@ -591,6 +591,96 @@ class PlanGeneratorTest(unittest.TestCase):
         self.assertEqual(operation.arguments["content_artifact_id"], "artifact-create")
         self.assertEqual(operation.arguments["content_hash"], "sha256:create")
 
+    def test_target_folder_places_top_level_create_document_inside_it(self) -> None:
+        client = CapturingClient()
+        captured: dict[str, object] = {}
+
+        def complete_json(_system_prompt, user_prompt, **_kwargs):
+            captured.update(json.loads(user_prompt))
+            return {
+                "intent_confirmed": True,
+                "summary": "새 문서를 만듭니다.",
+                "operations": [
+                    {
+                        "tool_name": "create_document",
+                        "target_type": "document",
+                        "target_id": None,
+                        "base_version": None,
+                        "source_parent_id": None,
+                        "destination_parent_id": None,
+                        "arguments": {
+                            "display_name": "새 문서.md",
+                            "folder_id": None,
+                            "content_artifact_id": "artifact-create",
+                            "content_hash": "sha256:create",
+                        },
+                        "reason": "요청한 문서를 만듭니다.",
+                        "depends_on": [],
+                    },
+                ],
+            }
+
+        client.complete_json = complete_json  # type: ignore[method-assign]
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(  # type: ignore[arg-type]
+            run_id="run-1", plan_id="plan-1", version=1, instruction="회의 정리 문서를 만들어줘",
+            routing_action="workspace_workflow",
+            hierarchy=[{"id": "folder-9", "type": "folder", "current_version": 1, "parent_id": None}],
+            skill_instructions=None, allowed_tools=None,
+            content_artifacts=(
+                ContentArtifactReference(id="artifact-create", content_hash="sha256:create", purpose="create_document"),
+            ),
+            target_folder_id="folder-9",
+        )
+
+        self.assertEqual(captured["target_folder_id"], "folder-9")
+        operation = plan.operations[0]
+        self.assertEqual(operation.arguments["folder_id"], "folder-9")
+        self.assertEqual(operation.destination_parent_id, "folder-9")
+
+    def test_target_folder_rejects_moving_items_to_top_level(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "문서를 최상위로 옮깁니다.",
+            "operations": [
+                {
+                    "tool_name": "move_document",
+                    "target_type": "document",
+                    "target_id": "document-1",
+                    "base_version": 3,
+                    "source_parent_id": "folder-9",
+                    "destination_parent_id": None,
+                    "arguments": {"document_id": "document-1", "folder_id": None, "position": None, "base_version": 3},
+                    "reason": "옮깁니다.",
+                    "depends_on": [],
+                },
+            ],
+        }
+        hierarchy = [
+            {"id": "folder-9", "type": "folder", "current_version": 1, "parent_id": None},
+            {"id": "document-1", "type": "document", "current_version": 3, "parent_id": "folder-9"},
+        ]
+        generator = ChatCompletionsPlanGenerator(client, "system")
+
+        with self.assertRaisesRegex(ValueError, "outside the target folder"):
+            generator.generate(
+                run_id="run-1", plan_id="plan-1", version=1, instruction="정리해줘",
+                routing_action="folder_organize", hierarchy=hierarchy,
+                skill_instructions=None, allowed_tools=None, target_folder_id="folder-9",
+            )
+        # 대상 폴더가 없으면 최상위 이동은 기존처럼 허용한다.
+        plan = generator.generate(
+            run_id="run-1", plan_id="plan-1", version=1, instruction="정리해줘",
+            routing_action="folder_organize", hierarchy=hierarchy,
+            skill_instructions=None, allowed_tools=None,
+        )
+        self.assertIsNone(plan.operations[0].destination_parent_id)
+
+    def test_plan_prompt_scopes_operations_to_target_folder(self) -> None:
+        prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
+        self.assertIn("When payload.target_folder_id is not null", prompt)
+        self.assertIn("never move items to the top level (null)", prompt)
+
     def test_create_document_requires_consistent_destination_metadata(self) -> None:
         candidate = {
             "intent_confirmed": True,

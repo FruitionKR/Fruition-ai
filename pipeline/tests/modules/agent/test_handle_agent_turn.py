@@ -2638,3 +2638,88 @@ class SkillExecutionOptionsTest(unittest.TestCase):
         self.assertEqual(result.action, "clarify")
         self.assertEqual(editor.create_requests, [])
 
+
+
+class CreateSkillWithoutDocumentTest(unittest.TestCase):
+    """결과 방식 create Skill은 기준 문서 없이(루트·폴더만 고른 턴) 실행해도 새 문서를 만든다."""
+
+    def _use_case(self, route: AgentTurnRoute) -> tuple[HandleAgentTurnUseCase, RecordingMarkdownEditor, RecordingAgentRunStarter]:
+        skill = options_skill(("document-create",), (), "create")
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=1),
+                    summary="",
+                    replacement_markdown="# 제목",
+                )
+            )
+        )
+        starter = RecordingAgentRunStarter()
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(route),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            skill_selector=SelectSkillUseCase(FixedSkillRepository(skill)),  # type: ignore[arg-type]
+            agent_run_starter=starter,  # type: ignore[arg-type]
+        )
+        return use_case, editor, starter
+
+    def _request(self, **values: object) -> AgentTurnRequest:
+        return AgentTurnRequest(
+            message="/brief 이번 주 회의 내용을 정리해줘",
+            workspace_id="workspace-1",
+            user_id="user-1",
+            **values,  # type: ignore[arg-type]
+        )
+
+    def test_edit_or_document_clarify_route_becomes_new_document_preview(self) -> None:
+        clarify_edit = AgentTurnRoute(
+            action="clarify", confidence=0.4, reason="no document", edit_goal="other", document_operation="edit",
+        )
+        for route in (EDIT_ROUTE, clarify_edit):
+            with self.subTest(action=route.action):
+                use_case, editor, _ = self._use_case(route)
+
+                result = use_case.execute(self._request(mode="task"))
+
+                self.assertEqual(result.action, "markdown_create")
+                self.assertEqual(result.route.selected_skill_id, "skill-1")
+                self.assertEqual(editor.requests, [])
+                self.assertEqual(len(editor.create_requests), 1)
+
+    def test_persisting_workflow_creates_document_in_target_folder(self) -> None:
+        route = AgentTurnRoute(
+            action="workspace_workflow",
+            confidence=0.9,
+            reason="save",
+            edit_goal="other",
+            edit_operation="replace",
+            edit_destination="target",
+            selected_skill_id="skill-1",
+            document_operation="edit",
+            persist=True,
+            required_capabilities=("document-edit",),
+        )
+        use_case, editor, starter = self._use_case(route)
+
+        result = use_case.execute(self._request(folder_id="folder-9"))
+
+        self.assertEqual(result.action, "workspace_workflow")
+        self.assertEqual(result.route.document_operation, "create")
+        started = starter.requests[0]
+        self.assertEqual(started.target_folder_id, "folder-9")  # type: ignore[attr-defined]
+        self.assertEqual(started.content.purpose, "create_document")  # type: ignore[attr-defined]
+        self.assertEqual(len(editor.create_requests), 1)
+
+    def test_create_only_skill_also_creates_when_a_document_is_open(self) -> None:
+        use_case, editor, _ = self._use_case(EDIT_ROUTE)
+
+        result = use_case.execute(
+            self._request(active_markdown_context=ActiveMarkdownContext(markdown=OPTIONS_MARKDOWN))
+        )
+
+        # 편집 기능이 없는 create Skill이 지원 검사에서 빠져 "지원하지 않음"으로 끝나지 않는다.
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(editor.requests, [])

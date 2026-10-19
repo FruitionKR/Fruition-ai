@@ -210,6 +210,8 @@ def _handle_agent(
             "skill_scope_type": command.get("skill_scope_type"),
             # 작업 탭 턴은 "task"다. 이 값이 없으면 기존 동작이다.
             "mode": command.get("mode"),
+            # 작업 대상 폴더. document-svc는 지정하지 않은 턴에 키를 싣지 않는다.
+            "folder_id": command.get("folder_id"),
         })
         result = agent_to_response(
             build_handle_agent_turn_use_case(

@@ -7,6 +7,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `/agent/runs/**`와 artifact 조회·Tool 인가·상태 조회는 Backend가 내부 HTTP로 호출한다.
 `POST /internal/agent/runs/artifacts/register`는 현재 저장소 안에 운영 호출자가 없다.
 
+`ai.agent.command`의 선택 키 `folder_id`(document-svc가 검증한 폴더 UUID)는 작업 대상 폴더다. 지정하지 않은 턴은
+키를 싣지 않으며 기존처럼 워크스페이스 전체·최상위(루트)를 대상으로 한다. 지정하면 다음과 같이 쓴다.
+
+- 이 턴이 만든 승인형 run(`folder_organize`·`workspace_workflow`)에 `target_folder_id`로 저장하고 `AgentRunResponse`에 돌려준다.
+- 계획 단계는 계층 스냅샷을 그 폴더와 하위 항목으로 줄여 모델에 주고, 모든 작업이 그 안에 머물게 한다. 최상위로 옮기는 작업이 나오면 계획을 거절한다.
+- 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
+- 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
+
 - API 수: 11
 
 ## API 목차
@@ -79,6 +87,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
   "clarification_question": null,
+  "target_folder_id": null,
   "plan": {
     "id": "plan_123",
     "version": 1,
@@ -111,6 +120,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 무엇이 불명확한지, 어떤 정보를 주면 되는지 사용자에게 설명하는 한국어 문장이며, 그대로 화면에 보여 줄 수 있습니다.
 실행 중 Tool 예산 소진처럼 다른 이유의 `clarification_required`와 그 밖의 모든 상태에서는 `null`입니다.
 `revise`로 다시 계획을 요청하면 비워집니다.
+
+`target_folder_id`는 턴에서 지정한 작업 대상 폴더(`ai.agent.command`의 `folder_id`)이며, 지정하지 않았으면 `null`입니다.
 
 ```json
 {

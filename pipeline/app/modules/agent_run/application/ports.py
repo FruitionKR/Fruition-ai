@@ -160,6 +160,7 @@ class AgentPlanGeneratorPort(Protocol):
         skill_instructions: str | None,
         allowed_tools: tuple[str, ...] | None,
         content_artifacts: tuple[ContentArtifactReference, ...] = (),
+        target_folder_id: str | None = None,
     ) -> AgentPlan:
         ...
 

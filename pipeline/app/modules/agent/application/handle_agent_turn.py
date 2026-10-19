@@ -161,7 +161,10 @@ class HandleAgentTurnUseCase:
         request = selection.request
         if selection.explicit_skill_id is not None and not request.message.strip():
             return self._execute_bare_skill_command(request, selection.skills[0])
-        resolved = selection.resolve_route(self._router.route(request))
+        routed = self._router.route(request)
+        resolved = selection.resolve_route(
+            _create_skill_route(routed, _routed_skill(selection, routed))
+        )
         # 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
         route = task_mode_route(resolved.route, request)
         selected_skill = resolved.skill
@@ -426,6 +429,7 @@ class HandleAgentTurnUseCase:
                     action=route.action,
                     skill_version_id=skill_version_id,
                     content=content,
+                    target_folder_id=request.folder_id,
                 )
             )
             return AgentTurnResult(
@@ -1085,6 +1089,37 @@ def _route_for_result_mode(route: AgentTurnRoute, skill: Skill) -> AgentTurnRout
             document_operation="edit",
             required_capabilities=("document-edit",),
         )
+    return route
+
+
+def _routed_skill(selection: PreparedSkillSelection, route: AgentTurnRoute) -> Skill | None:
+    skill_id = selection.explicit_skill_id or route.selected_skill_id
+    return next((skill for skill in selection.skills if skill.id == skill_id), None)
+
+
+def _create_skill_route(route: AgentTurnRoute, skill: Skill | None) -> AgentTurnRoute:
+    """결과 방식이 create인 Skill은 기준 문서가 없어도(루트·폴더만 고른 턴 포함) 새 문서로 실행한다.
+
+    열린 문서가 없으면 라우터는 편집 요청을 문서 편집이나 대상 확인(clarify)으로 둔다. create Skill은 기준 문서를
+    고치지 않으므로, 편집 기능이 없는 Skill이 지원 여부 검사에서 빠지기 전에 새 문서 생성으로 맞춘다.
+    """
+    version = skill.enabled_version if skill is not None else None
+    if version is None or version.result_mode != "create":
+        return route
+    create_fields = {
+        "edit_goal": "create_from_chat",
+        "edit_operation": None,
+        "edit_destination": None,
+        "document_operation": "create",
+        "required_capabilities": ("document-create",),
+        "selected_skill_id": skill.id,
+    }
+    if route.action == "workspace_workflow" and route.document_operation == "edit":
+        return replace(route, **create_fields)
+    if route.action == "markdown_edit" or (
+        route.action == "clarify" and route.document_operation == "edit" and not route.skill_candidates
+    ):
+        return replace(route, action="markdown_create", persist=False, **create_fields)
     return route
 
 

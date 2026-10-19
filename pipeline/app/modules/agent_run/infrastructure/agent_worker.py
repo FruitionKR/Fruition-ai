@@ -244,7 +244,7 @@ class AgentWorker:
             "planning",
         ):
             raise ValueError("AgentRun cannot enter planning.")
-        hierarchy = self._inspect_hierarchy(context)
+        hierarchy = scoped_hierarchy(self._inspect_hierarchy(context), context.run.target_folder_id)
         content_artifacts = self._load_content_artifacts(context)
         plan_id = str(uuid4())
         try:
@@ -262,6 +262,7 @@ class AgentWorker:
                     else None
                 ),
                 content_artifacts=content_artifacts,
+                target_folder_id=context.run.target_folder_id,
             )
         except AgentPlanIntentClarificationRequired as exc:
             if not self._repository.request_clarification(run_id, str(exc), exc.question):
@@ -655,6 +656,29 @@ class AgentWorker:
             user_id=context.run.user_id,
             arguments=arguments,
         )
+
+def scoped_hierarchy(
+    hierarchy: list[dict[str, object]],
+    target_folder_id: str | None,
+) -> list[dict[str, object]]:
+    """대상 폴더가 있으면 그 폴더와 하위 항목만 남긴다. 계획은 이 범위 밖을 대상으로 삼을 수 없다."""
+    if target_folder_id is None:
+        return hierarchy
+    target = next(
+        (item for item in hierarchy if str(item.get("id")) == target_folder_id and item.get("type") == "folder"),
+        None,
+    )
+    if target is None:
+        raise ValueError("Agent target folder is not in the workspace hierarchy.")
+    in_scope = {target_folder_id}
+    scoped = [target]
+    # 탐색 결과는 부모가 자식보다 먼저 나오므로 한 번 훑어 하위 항목을 모은다.
+    for item in hierarchy:
+        if item.get("parent_id") in in_scope and item is not target:
+            scoped.append(item)
+            in_scope.add(str(item.get("id")))
+    return scoped
+
 
 def _route_job_event(state: AgentRunGraphState) -> str:
     event = state.get("event")
