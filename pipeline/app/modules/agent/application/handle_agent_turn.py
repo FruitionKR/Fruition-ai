@@ -42,6 +42,7 @@ from app.modules.markdown_edit.domain.entities import (
 from app.modules.markdown_edit.domain.markdown_target_scope import (
     apply_markdown_edit,
     markdown_line_count,
+    markdown_line_range,
 )
 from app.modules.query.application.answer_query import AnswerQueryUseCase
 from app.modules.query.application.conversation_context_resolver import (
@@ -62,6 +63,10 @@ from app.modules.skill.domain.entities import (
     SkillAuthoringProposal,
     SkillAuthoringResult,
     SkillScopeType,
+)
+from app.modules.skill.domain.instruction_placeholders import (
+    EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    render_skill_instructions,
 )
 from app.modules.skill.domain.policy import validate_skill_name
 from app.modules.skill.domain.safety import inspect_skill_instructions
@@ -339,7 +344,7 @@ class HandleAgentTurnUseCase:
                             user_id=request.user_id,
                             conversation_summary=_conversation_context_text(request),
                             reference_context=reference_context,
-                            skill_instructions=_skill_instructions(selected_skill),
+                            skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=False),
                             output_language=request.output_language,
                         )
                     ).document.markdown
@@ -391,7 +396,7 @@ class HandleAgentTurnUseCase:
                             edit_goal=route.edit_goal,
                             edit_operation=route.edit_operation or "replace",
                             edit_destination=route.edit_destination or "target",
-                            skill_instructions=_skill_instructions(selected_skill),
+                            skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True),
                             output_language=request.output_language,
                         )
                     ).edit
@@ -598,7 +603,7 @@ class HandleAgentTurnUseCase:
                 edit_goal=route.edit_goal,
                 edit_operation=route.edit_operation or "replace",
                 edit_destination=route.edit_destination or "target",
-                skill_instructions=_skill_instructions(selected_skill),
+                skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True),
                 output_language=request.output_language,
             )
         )
@@ -664,7 +669,7 @@ class HandleAgentTurnUseCase:
                 user_id=request.user_id,
                 conversation_summary=_conversation_context_text(request),
                 reference_context=reference_context,
-                skill_instructions=_skill_instructions(selected_skill),
+                skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=False),
                 output_language=request.output_language,
             )
         )
@@ -1009,10 +1014,39 @@ def _markdown_basis(skill: Skill | None) -> str:
     return "스킬 없이 요청 내용을 바탕으로"
 
 
-def _skill_instructions(skill: Skill | None) -> str | None:
+def _skill_instructions(
+    skill: Skill | None,
+    request: AgentTurnRequest,
+    *,
+    document_in_payload: bool,
+) -> str | None:
+    """Skill 지침의 자리표시자를 이번 요청 값으로 채운다.
+
+    편집처럼 문서 본문이 이미 모델 payload에 있으면 `{문서}`는 본문을 다시 싣지 않고 그 위치를 가리킨다.
+    """
     if skill is None or skill.enabled_version is None:
         return None
-    return skill.enabled_version.instructions_markdown
+    context = request.active_markdown_context
+    return render_skill_instructions(
+        skill.enabled_version.instructions_markdown,
+        request=request.message,
+        selection=_selection_text(context),
+        document=context.markdown if context is not None and not document_in_payload else None,
+        document_reference=EDIT_PAYLOAD_DOCUMENT_REFERENCE if document_in_payload else None,
+    )
+
+
+def _selection_text(context: ActiveMarkdownContext | None) -> str | None:
+    if context is None or context.target is None or context.target.type != "selection":
+        return None
+    target = context.target
+    if (
+        target.start_line < 1
+        or target.end_line < target.start_line
+        or target.end_line > markdown_line_count(context.markdown)
+    ):
+        return None
+    return markdown_line_range(context.markdown, target.start_line, target.end_line)
 
 
 def _skill_edit_target(skill: Skill | None, markdown_context: ActiveMarkdownContext) -> MarkdownEditTarget | None:

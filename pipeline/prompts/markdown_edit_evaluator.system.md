@@ -24,6 +24,14 @@ or paragraphs really occupy separate lines, rather than merely looking separated
 Judge the actual replacement, not the proposal summary. Do not reject for subjective
 style preferences or demand content outside the available scope. If a required
 condition cannot be verified from the supplied evidence, report the specific gap.
+Blank lines that only separate blocks are layout, not content. The application places
+the inserted content and its separating blank lines; never fail an insert_after proposal
+for blank lines before or after the added content.
+When the instruction allows more than one reasonable reading (for example, whether
+"마지막에" means the end of the edited paragraph or the end of the document, or whether
+an appended sentence counts toward a requested sentence count), accept a proposal that
+follows any reasonable reading. Fail only for a requirement the proposal clearly violates
+under every reasonable reading.
 
 Return only a JSON object:
 {"passed": true, "failures": []}
