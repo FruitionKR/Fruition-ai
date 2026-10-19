@@ -1161,6 +1161,55 @@ def test_agent_command_passes_web_search_flag_to_request_body() -> None:
     assert use_case.execute.call_args.args[0].allow_web_search is True
 
 
+def _run_agent_command(command: dict[str, object]) -> MagicMock:
+    use_case = MagicMock()
+    response = MagicMock()
+    response.model_dump.return_value = {"ok": True}
+    context = MagicMock()
+    context.__enter__.return_value = MagicMock()
+    with (
+        patch.object(task_worker, "_register_agent_command", return_value=("execute", None)),
+        patch.object(task_worker, "build_handle_agent_turn_use_case", return_value=use_case),
+        patch.object(task_worker, "agent_to_response", return_value=response),
+        patch.object(task_worker.database, "connect_ai", return_value=context),
+    ):
+        task_worker._handle_agent(command)
+    return use_case
+
+
+def test_agent_command_passes_task_mode_to_request_body() -> None:
+    """작업 탭 턴은 document 서버가 mode=task를 실어 보낸다. 문서 없이도 요청까지 그대로 닿아야 한다."""
+    use_case = _run_agent_command({
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "회의록 폴더를 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "mode": "task",
+    })
+
+    request = use_case.execute.call_args.args[0]
+    assert request.mode == "task"
+    assert request.document_id is None
+    assert request.active_markdown_context is None
+
+
+def test_agent_command_without_mode_keeps_legacy_mode() -> None:
+    use_case = _run_agent_command({
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "질문",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    })
+
+    assert use_case.execute.call_args.args[0].mode is None
+
+
 def test_agent_command_rejects_auto_skill_id() -> None:
     command = {
         "run_id": "agent_0123456789abcdef0123456789abcdef",

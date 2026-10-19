@@ -182,6 +182,7 @@ def _handle_agent(
 ) -> dict[str, Any]:
     # 문서를 열지 않은 턴은 편집 대상이 없어 document_id·base_version·apply_operation_id·
     # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·clarify·reject만 낸다.
+    # 작업 탭 턴(mode=task)은 문서 없이도 폴더 정리·워크플로를 낼 수 있고, 문서 편집이면 clarify로 되묻는다.
     _required(command, "run_id", "workspace_id", "user_id", "message")
     run_id = str(command["run_id"])
     state, replay = _register_agent_command(command)
@@ -207,6 +208,8 @@ def _handle_agent(
             "skill_draft_user_directives": command.get("skill_draft_user_directives", []),
             "skill_draft_excluded_literals": command.get("skill_draft_excluded_literals", []),
             "skill_scope_type": command.get("skill_scope_type"),
+            # 작업 탭 턴은 "task"다. 이 값이 없으면 기존 동작이다.
+            "mode": command.get("mode"),
         })
         result = agent_to_response(
             build_handle_agent_turn_use_case(
