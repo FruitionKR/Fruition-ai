@@ -1438,6 +1438,59 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
             repository.skills[created.skill.id].enabled_version.version, 1  # type: ignore[union-attr]
         )
 
+    def test_update_with_same_instructions_keeps_capabilities_without_reclassifying(self) -> None:
+        # 분류기는 "고친다"가 들어간 지침을 document-edit로 볼 수 있다. 지침이 그대로면 묻지 않아야 한다.
+        generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
+        use_case, _ = self.build_use_case(generator)
+        created = self._publish_document_skill(use_case, targets=("selection",), result_mode="create")
+        before = created.skill.enabled_version  # type: ignore[union-attr]
+
+        result = use_case.update(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            skill_id=created.skill.id,  # type: ignore[union-attr]
+            name="concise-document-writer",
+            description="설명만 바꿨습니다.",
+            instructions_markdown=before.instructions_markdown + "\n",
+        )
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.version, 2)
+        self.assertEqual(version.description, "설명만 바꿨습니다.")
+        self.assertEqual(version.capabilities, ("document-create",))
+        self.assertEqual(version.allowed_tools, before.allowed_tools)
+        self.assertEqual(version.targets, ("selection",))
+        self.assertEqual(version.result_mode, "create")
+        self.assertEqual(generator.classification_count, 0)
+
+    def test_update_with_changed_instructions_reclassifies_capabilities(self) -> None:
+        generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
+        use_case, _ = self.build_use_case(generator)
+        created = self._publish_document_skill(use_case, targets=("selection",), result_mode="create")
+
+        result = self._update(use_case, created.skill.id, result_mode="edit")  # type: ignore[union-attr]
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(generator.classification_count, 1)
+        self.assertEqual(version.capabilities, ("document-edit",))
+        self.assertIn("apply_document_edit", version.allowed_tools)
+        self.assertNotIn("create_document", version.allowed_tools)
+        self.assertEqual(version.targets, ("selection",))
+        self.assertEqual(version.result_mode, "edit")
+
+    def test_update_rejects_inherited_result_mode_that_conflicts_with_reclassified_capabilities(self) -> None:
+        generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
+        use_case, repository = self.build_use_case(generator)
+        created = self._publish_document_skill(use_case, result_mode="create")
+
+        with self.assertRaises(SkillRequestRejectedError) as raised:
+            self._update(use_case, created.skill.id)  # type: ignore[union-attr]
+
+        self.assertEqual(raised.exception.code, "invalid_result_mode")
+        stored = repository.skills[created.skill.id]  # type: ignore[union-attr]
+        self.assertEqual(stored.enabled_version.version, 1)  # type: ignore[union-attr]
+        self.assertEqual(stored.enabled_version.result_mode, "create")  # type: ignore[union-attr]
+
     def test_backend_reference_reader_uses_authoring_endpoint_without_agent_run(self) -> None:
         response = MagicMock()
         response.read.return_value = json.dumps(
