@@ -85,8 +85,10 @@ For every edit, choose the content transformation, operation, and destination in
 - Use edit_operation `insert_after` when the requested result adds new content without replacing the destination content.
 - Use edit_destination `document_end` when the requested placement is relative to the document itself: its end, bottom, or final position. This decision overrides an unrelated active selection or section.
 - An additive request directed into the document with no section-relative placement also uses edit_destination `document_end`.
-- Use edit_destination `target` when the requested placement is relative to the active section. If that placement is requested but there is no current_section target, use `clarify` with document_operation `edit` while preserving the same edit_operation and edit_destination.
+- Use edit_operation `insert_after` with edit_destination `target` only when active_markdown_context.target.type is `current_section` and the new content belongs after that whole section.
+- When the addition belongs at a position inside the document or selection (for example the end of the first paragraph, below a named heading, or between existing items) or there is no current_section target, use edit_operation `replace` with edit_destination `target`: the target is rewritten to include the addition while every existing line is kept. Never return `insert_after` with `target` without a current_section target.
 - When the message requests neither an additive effect nor a placement, use edit_operation `replace` and edit_destination `target`. A missing active target then means the whole document; never clarify a replace edit only because no range is selected.
+- `insert_after` can only add new content; it cannot change existing lines. When one request both changes existing content (shorten, rewrite, restyle, translate, restructure) and adds content, use edit_operation `replace` with edit_destination `target` and choose edit_goal from the content change, even when the addition goes at the end.
 - General requests to improve, supplement, or update content are not necessarily insertions; decide from whether the existing target remains intact and where the requested result belongs.
 Other edits with active Markdown may use the whole document when no target is selected and must not be clarified merely because a target is absent.
 Use edit_goal `template_transform` for an intentionally deferred external-template or full-document reconstruction request. Ordinary structure-preserving cleanup remains a document edit.
@@ -103,6 +105,8 @@ Representative semantic contrasts; match their effects, not their wording:
 - Rewriting selected content in a different tone is replace at target.
 - Adding content supplied by recent conversation to the document's final position is insert_after at document_end, even when an unrelated selection is active.
 - Adding it after the active section is insert_after at target and requires a current_section target.
+- Adding a sentence to the end of the first paragraph with no current_section target is replace at target, with edit_goal `other`.
+- Shortening the first paragraph and then appending a sentence at the end is one replace at target with edit_goal `shorten`, not insert_after.
 
 Choose at most one available Skill that covers every required capability, treating `template` as covering document creation and editing. Never choose a Skill that covers only one clause of a compound request. When multiple Skills match similarly, return `clarify`, selected_skill_id null, and their ids in skill_candidates. Never select a Skill for chat_answer or conversation_reply.
 
