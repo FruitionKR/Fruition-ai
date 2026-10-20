@@ -153,7 +153,8 @@ class PublishAuthoredSkillRequest(SkillLlmRequest):
     name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     description: str = Field(..., min_length=1, max_length=500)
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
-    capabilities: list[CapabilityValue] = Field(..., min_length=1)
+    # 값 목록·빈 값·중복은 422가 아니라 400 invalid_capabilities로 거절하도록 문자열로 받고 use case에서 검증한다.
+    capabilities: list[str]
     # 생략하거나 비우면 서버가 capabilities로 계산한다(policy.canonical_allowed_tools).
     allowed_tools: list[ToolValue] = Field(default_factory=list)
     # 문서 Skill의 실행 대상·결과 방식. 생략하면 targets는 기본값(["current_document"]), result_mode는 null이다.
@@ -179,7 +180,8 @@ class UpdateSkillRequest(SkillLlmRequest):
     requires_source: bool | None = None
     # Skill 종류·결과 방식을 바꿀 때 보낸다. 게시와 같은 값·검증을 쓰고 allowed_tools를 다시 계산한다.
     # 생략(null)하면 이전 버전 값을 유지한다(다시 분류하지 않는다). 보내면 생략한 result_mode는 capabilities에서 정한다.
-    capabilities: list[CapabilityValue] | None = Field(default=None, min_length=1)
+    # 게시와 같이 문자열로 받아 빈 값·허용 밖 값·중복을 400 invalid_capabilities로 거절한다.
+    capabilities: list[str] | None = None
 
 
 class SkillActorRequest(BaseModel):

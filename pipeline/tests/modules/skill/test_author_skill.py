@@ -1596,9 +1596,10 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(body["allowed_tools"], list(canonical_allowed_tools(("folder-organize",))))
         self.assertEqual(body["targets"], [])
         self.assertIsNone(body["result_mode"])
-        self.assertEqual(duplicated.status_code, 400)
-        self.assertEqual(unknown.status_code, 422)
-        self.assertEqual(empty.status_code, 422)
+        for rejected in (duplicated, unknown, empty):
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertEqual(rejected.json()["detail"]["code"], "invalid_capabilities")
+            self.assertTrue(rejected.json()["detail"]["message"])
 
     def test_update_with_capabilities_changes_edit_skill_to_create(self) -> None:
         use_case, _ = self.build_use_case(FixedGenerator(draft_result()))

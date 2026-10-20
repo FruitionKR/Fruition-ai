@@ -513,13 +513,25 @@ def _published_allowed_tools(
     capabilities: tuple[SkillCapability, ...],
     allowed_tools: tuple[SkillTool, ...],
 ) -> tuple[SkillTool, ...]:
-    """게시·수정에서 사용자가 정한 capabilities를 검증하고 저장할 Tool 표를 돌려준다."""
-    if not capabilities or any(capability not in CAPABILITY_TOOLS for capability in capabilities):
-        raise ValueError("Published Skill contains an unsupported capability.")
+    """게시·수정에서 사용자가 정한 capabilities를 검증하고 저장할 Tool 표를 돌려준다.
+
+    capabilities는 요청 스키마가 문자열 목록으로만 받으므로(422 대신 거절 code로 구분) 여기서
+    빈 값·허용 밖 값·중복을 invalid_capabilities로 거절한다.
+    """
+    if not capabilities:
+        raise SkillRequestRejectedError("invalid_capabilities", "capabilities must not be empty.")
+    unsupported = sorted({capability for capability in capabilities if capability not in CAPABILITY_TOOLS})
+    if unsupported:
+        raise SkillRequestRejectedError(
+            "invalid_capabilities",
+            f"capabilities contains unsupported values: {unsupported}",
+        )
+    if len(set(capabilities)) != len(capabilities):
+        raise SkillRequestRejectedError("invalid_capabilities", "capabilities must not contain duplicates.")
     if not allowed_tools:
         # 초안 없이 바로 게시·수정하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
         allowed_tools = canonical_allowed_tools(capabilities)
-    if len(set(capabilities)) != len(capabilities) or len(set(allowed_tools)) != len(allowed_tools):
+    if len(set(allowed_tools)) != len(allowed_tools):
         raise ValueError("Published Skill permissions must not contain duplicates.")
     validate_allowed_tools(capabilities, allowed_tools)
     return allowed_tools
