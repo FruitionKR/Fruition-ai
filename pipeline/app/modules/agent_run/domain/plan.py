@@ -38,6 +38,17 @@ class AgentPlanIntentClarificationRequired(ValueError):
         self.question = (question or "").strip() or None
 
 
+class AgentPlanOutOfScope(ValueError):
+    """대상 폴더를 고른 실행에서 폴더 밖으로 옮기는 작업을 빼고 나니 남는 작업이 없다.
+
+    code는 run의 error_code로 저장되어 프론트가 안내 문구를 고르는 데 쓴다."""
+
+    code = "plan_out_of_scope"
+
+    def __init__(self) -> None:
+        super().__init__("Agent plan cannot move items outside the target folder.")
+
+
 @dataclass(frozen=True)
 class AgentPlanOperation:
     id: str

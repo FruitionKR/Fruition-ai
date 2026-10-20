@@ -8,7 +8,8 @@ from app.modules.agent_run.infrastructure.chat_completions_plan_generator import
     normalize_plan_candidate,
 )
 from app.modules.agent_run.domain.entities import ContentArtifactReference
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired
+from app.core.failure_codes import failure_code
+from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOutOfScope
 
 
 class CapturingClient:
@@ -47,6 +48,71 @@ class CapturingClient:
                 }
             ],
         }
+
+
+SCOPED_HIERARCHY = [
+    {"id": "folder-9", "type": "folder", "current_version": 1, "parent_id": None},
+    {"id": "folder-child", "type": "folder", "current_version": 1, "parent_id": "folder-9"},
+    {"id": "document-1", "type": "document", "current_version": 3, "parent_id": "folder-9"},
+    {"id": "document-2", "type": "document", "current_version": 1, "parent_id": "folder-9"},
+]
+
+
+def _scoped_request(*, target_folder_id: str | None) -> dict[str, object]:
+    return {
+        "run_id": "run-1", "plan_id": "plan-1", "version": 1, "instruction": "분류별 폴더로 정리해줘",
+        "routing_action": "folder_organize", "hierarchy": SCOPED_HIERARCHY,
+        "skill_instructions": None, "allowed_tools": None, "target_folder_id": target_folder_id,
+    }
+
+
+_UNSET = object()
+
+
+def _move(document_id, base_version, folder_id, *, depends_on=(), destination_parent_id=_UNSET):
+    return {
+        "tool_name": "move_document",
+        "target_type": "document",
+        "target_id": document_id,
+        "base_version": base_version,
+        "source_parent_id": "folder-9",
+        "destination_parent_id": (
+            (folder_id if isinstance(folder_id, str) else None)
+            if destination_parent_id is _UNSET
+            else destination_parent_id
+        ),
+        "arguments": {"document_id": document_id, "folder_id": folder_id, "position": None, "base_version": base_version},
+        "reason": "분류 폴더로 옮깁니다.",
+        "depends_on": list(depends_on),
+    }
+
+
+def _create_folder(name, parent_folder_id, *, depends_on=()):
+    return {
+        "tool_name": "create_folder",
+        "target_type": "folder",
+        "target_id": None,
+        "base_version": None,
+        "source_parent_id": None,
+        "destination_parent_id": parent_folder_id if isinstance(parent_folder_id, str) else None,
+        "arguments": {"name": name, "parent_folder_id": parent_folder_id},
+        "reason": "분류 폴더를 만듭니다.",
+        "depends_on": list(depends_on),
+    }
+
+
+def _rename(document_id, base_version, *, depends_on=()):
+    return {
+        "tool_name": "rename_document",
+        "target_type": "document",
+        "target_id": document_id,
+        "base_version": base_version,
+        "source_parent_id": None,
+        "destination_parent_id": None,
+        "arguments": {"document_id": document_id, "display_name": "2026-10-20_회의록_주간.md", "base_version": base_version},
+        "reason": "이름 형식을 맞춥니다.",
+        "depends_on": list(depends_on),
+    }
 
 
 class PlanGeneratorTest(unittest.TestCase):
@@ -637,49 +703,109 @@ class PlanGeneratorTest(unittest.TestCase):
         self.assertEqual(operation.arguments["folder_id"], "folder-9")
         self.assertEqual(operation.destination_parent_id, "folder-9")
 
-    def test_target_folder_rejects_moving_items_to_top_level(self) -> None:
+    def test_target_folder_moves_items_without_destination_into_it(self) -> None:
         client = MagicMock()
         client.complete_json.return_value = {
             "intent_confirmed": True,
-            "summary": "문서를 최상위로 옮깁니다.",
-            "operations": [
-                {
-                    "tool_name": "move_document",
-                    "target_type": "document",
-                    "target_id": "document-1",
-                    "base_version": 3,
-                    "source_parent_id": "folder-9",
-                    "destination_parent_id": None,
-                    "arguments": {"document_id": "document-1", "folder_id": None, "position": None, "base_version": 3},
-                    "reason": "옮깁니다.",
-                    "depends_on": [],
-                },
-            ],
+            "summary": "문서를 옮깁니다.",
+            "operations": [_move("document-1", 3, None)],
         }
-        hierarchy = [
-            {"id": "folder-9", "type": "folder", "current_version": 1, "parent_id": None},
-            {"id": "document-1", "type": "document", "current_version": 3, "parent_id": "folder-9"},
-        ]
         generator = ChatCompletionsPlanGenerator(client, "system")
 
-        with self.assertRaisesRegex(ValueError, "outside the target folder"):
-            generator.generate(
-                run_id="run-1", plan_id="plan-1", version=1, instruction="정리해줘",
-                routing_action="folder_organize", hierarchy=hierarchy,
-                skill_instructions=None, allowed_tools=None, target_folder_id="folder-9",
-            )
+        plan = generator.generate(**_scoped_request(target_folder_id="folder-9"))
+
+        operation = plan.operations[0]
+        self.assertEqual(operation.arguments["folder_id"], "folder-9")
+        self.assertEqual(operation.destination_parent_id, "folder-9")
         # 대상 폴더가 없으면 최상위 이동은 기존처럼 허용한다.
-        plan = generator.generate(
-            run_id="run-1", plan_id="plan-1", version=1, instruction="정리해줘",
-            routing_action="folder_organize", hierarchy=hierarchy,
-            skill_instructions=None, allowed_tools=None,
-        )
+        plan = generator.generate(**_scoped_request(target_folder_id=None))
+        self.assertIsNone(plan.operations[0].arguments["folder_id"])
         self.assertIsNone(plan.operations[0].destination_parent_id)
+
+    def test_target_folder_allows_moving_into_folder_created_in_same_plan(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "분류 폴더를 만들고 문서를 옮깁니다.",
+            "operations": [
+                _create_folder("회의록", "folder-9"),
+                _create_folder("세부", {"$operation_result": "plan-1-op-1", "field": "id"}, depends_on=[1]),
+                _move("document-1", 3, {"$operation_result": "plan-1-op-1", "field": "id"}, depends_on=[1]),
+                _move("document-2", 1, {"$operation_result": "plan-1-op-2", "field": "id"}, depends_on=[2]),
+            ],
+        }
+
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual(len(plan.operations), 4)
+        self.assertEqual(plan.operations[2].arguments["folder_id"], {"$operation_result": "plan-1-op-1", "field": "id"})
+        self.assertIsNone(plan.operations[2].destination_parent_id)
+
+    def test_target_folder_allows_moving_into_descendant_folder(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "하위 폴더로 옮깁니다.",
+            "operations": [_move("document-1", 3, "folder-child", destination_parent_id=None)],
+        }
+
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual(plan.operations[0].arguments["folder_id"], "folder-child")
+        self.assertEqual(plan.operations[0].destination_parent_id, "folder-child")
+
+    def test_target_folder_drops_out_of_scope_moves_and_their_dependents(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "문서를 정리합니다.",
+            "operations": [
+                _move("document-1", 3, "folder-outside"),
+                _rename("document-1", 3, depends_on=[1]),
+                _create_folder("회의록", "folder-9"),
+                _move("document-2", 1, {"$operation_result": "plan-1-op-3", "field": "id"}, depends_on=[3]),
+            ],
+        }
+
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual([operation.tool_name for operation in plan.operations], ["create_folder", "move_document"])
+        self.assertEqual(plan.operations[1].depends_on, ("plan-1-op-1",))
+        self.assertEqual(plan.operations[1].arguments["folder_id"], {"$operation_result": "plan-1-op-1", "field": "id"})
+        self.assertIn("대상 폴더 밖으로 옮기는 작업 2개는 계획에서 뺐어요.", plan.summary)
+
+    def test_target_folder_fails_with_code_when_every_operation_is_out_of_scope(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "문서를 옮깁니다.",
+            "operations": [_move("document-1", 3, "folder-outside")],
+        }
+
+        with self.assertRaises(AgentPlanOutOfScope) as raised:
+            ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual(failure_code(raised.exception), "plan_out_of_scope")
+
+    def test_move_destination_reference_must_point_to_created_folder(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "문서를 옮깁니다.",
+            "operations": [
+                _rename("document-2", 1),
+                _move("document-1", 3, {"$operation_result": "plan-1-op-1", "field": "id"}, depends_on=[1]),
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "destination must match"):
+            ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
 
     def test_plan_prompt_scopes_operations_to_target_folder(self) -> None:
         prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
         self.assertIn("When payload.target_folder_id is not null", prompt)
         self.assertIn("never move items to the top level (null)", prompt)
+        self.assertIn("first create each new folder with create_folder inside payload.target_folder_id", prompt)
 
     def test_create_document_requires_consistent_destination_metadata(self) -> None:
         candidate = {

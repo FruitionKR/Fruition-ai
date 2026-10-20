@@ -15,6 +15,7 @@ from app.modules.agent_run.domain.plan import (
     AgentPlan,
     AgentPlanIntentClarificationRequired,
     AgentPlanOperation,
+    AgentPlanOutOfScope,
     build_agent_plan,
 )
 from app.modules.agent_run.domain.entities import ContentArtifactReference
@@ -114,14 +115,9 @@ class ChatCompletionsPlanGenerator:
             ):
                 raise ValueError("Unconfirmed Agent plan must have a summary and no operations.")
             raise AgentPlanIntentClarificationRequired(value["summary"].strip())
-        plan = normalize_plan_candidate(
-            run_id, plan_id, version, _place_creates_in_target_folder(value, target_folder_id)
-        )
-        if target_folder_id is not None and any(
-            operation.tool_name in {"move_folder", "move_document"} and operation.destination_parent_id is None
-            for operation in plan.operations
-        ):
-            raise ValueError("Agent plan cannot move items outside the target folder.")
+        candidate = _place_creates_in_target_folder(value, target_folder_id)
+        candidate = _scope_moves_to_target_folder(candidate, target_folder_id, hierarchy, plan_id)
+        plan = normalize_plan_candidate(run_id, plan_id, version, candidate)
         if any(operation.tool_name not in allowed_plan_tools for operation in plan.operations):
             raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
         _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts)
@@ -182,6 +178,101 @@ def _place_creates_in_target_folder(value: dict[str, Any], target_folder_id: str
             }
         placed.append(raw)
     return {**value, "operations": placed}
+
+
+MOVE_DESTINATION_KEYS = {"move_folder": "parent_folder_id", "move_document": "folder_id"}
+OUT_OF_SCOPE_NOTE = "대상 폴더 밖으로 옮기는 작업 {count}개는 계획에서 뺐어요."
+
+
+def _scope_moves_to_target_folder(
+    value: dict[str, Any],
+    target_folder_id: str | None,
+    hierarchy: list[dict[str, object]],
+    plan_id: str,
+) -> dict[str, Any]:
+    """대상 폴더가 있으면 이동 작업의 목적지를 그 폴더 범위로 맞춘다.
+
+    - 목적지를 비운(null) 이동은 대상 폴더로 옮기는 것으로 본다(최상위 이동은 범위 밖이라 허용하지 않는다).
+    - 같은 계획의 create_folder 결과 참조나 범위 안 폴더 id는 그대로 둔다. 범위 안 폴더는 hierarchy(대상 폴더와
+      하위 항목만 담긴 스냅샷)에 있는 폴더다.
+    - 범위 밖 폴더 id로 옮기는 작업은 계획에서 빼고, 그 작업에 기대는 작업도 함께 뺀 뒤 요약에 알린다.
+      남는 작업이 없으면 AgentPlanOutOfScope로 실패시킨다.
+    """
+    raw_operations = value.get("operations")
+    if target_folder_id is None or not isinstance(raw_operations, list):
+        return value
+    scope_folder_ids = {
+        str(item.get("id")) for item in hierarchy if item.get("type") == "folder" and item.get("id") is not None
+    }
+    placed: list[object] = []
+    dropped: set[int] = set()
+    for sequence, raw in enumerate(raw_operations, start=1):
+        tool_name = raw.get("tool_name") if isinstance(raw, dict) else None
+        key = MOVE_DESTINATION_KEYS.get(tool_name) if isinstance(tool_name, str) else None
+        arguments = raw.get("arguments") if key else None
+        if key and isinstance(arguments, dict) and key in arguments:
+            destination = arguments[key]
+            if destination is None:
+                raw = {
+                    **raw,
+                    "arguments": {**arguments, key: target_folder_id},
+                    "destination_parent_id": target_folder_id,
+                }
+            elif isinstance(destination, str) and destination not in scope_folder_ids:
+                dropped.add(sequence)
+            elif isinstance(destination, str) and raw.get("destination_parent_id") is None:
+                raw = {**raw, "destination_parent_id": destination}
+        placed.append(raw)
+    if not dropped:
+        return {**value, "operations": placed}
+    for sequence, raw in enumerate(placed, start=1):
+        if sequence in dropped or not isinstance(raw, dict):
+            continue
+        dependencies = raw.get("depends_on", [])
+        references = _operation_references(raw.get("arguments"))
+        if (isinstance(dependencies, list) and dropped.intersection(dependencies)) or any(
+            f"{plan_id}-op-{index}" in references for index in dropped
+        ):
+            dropped.add(sequence)
+    kept = [(sequence, raw) for sequence, raw in enumerate(placed, start=1) if sequence not in dropped]
+    if not kept:
+        raise AgentPlanOutOfScope()
+    renumbered = {old: new for new, (old, _raw) in enumerate(kept, start=1)}
+    operations = [_renumber_operation(raw, renumbered, plan_id) for _sequence, raw in kept]
+    summary = value.get("summary")
+    note = OUT_OF_SCOPE_NOTE.format(count=len(dropped))
+    return {
+        **value,
+        "summary": f"{summary.strip()} {note}" if isinstance(summary, str) and summary.strip() else summary,
+        "operations": operations,
+    }
+
+
+def _renumber_operation(raw: object, renumbered: dict[int, int], plan_id: str) -> object:
+    """작업을 뺀 뒤 남은 작업의 depends_on 순번과 결과 참조 id를 새 순번으로 바꾼다."""
+    if not isinstance(raw, dict):
+        return raw
+    references = {f"{plan_id}-op-{old}": f"{plan_id}-op-{new}" for old, new in renumbered.items()}
+    dependencies = raw.get("depends_on", [])
+    return {
+        **raw,
+        "arguments": _rewrite_references(raw.get("arguments"), references),
+        **(
+            {"depends_on": [renumbered.get(item, item) for item in dependencies]}
+            if isinstance(dependencies, list)
+            else {}
+        ),
+    }
+
+
+def _rewrite_references(value: object, references: dict[str, str]) -> object:
+    if isinstance(value, dict):
+        if set(value) == {"$operation_result", "field"} and isinstance(value["$operation_result"], str):
+            return {**value, "$operation_result": references.get(value["$operation_result"], value["$operation_result"])}
+        return {key: _rewrite_references(item, references) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_rewrite_references(item, references) for item in value]
+    return value
 
 
 def normalize_plan_candidate(
@@ -336,13 +427,12 @@ def _validate_plan_against_hierarchy(
         }.get(operation.tool_name)
         if destination_key:
             destination = operation.arguments.get(destination_key)
-            if (
-                operation.tool_name in {"create_folder", "create_document"}
-                and isinstance(destination, dict)
-                and (
-                    operation.destination_parent_id is not None
-                    or not _valid_create_destination_reference(operation, destination, operations)
+            if isinstance(destination, dict) and (
+                (
+                    operation.tool_name in {"create_folder", "create_document"}
+                    and operation.destination_parent_id is not None
                 )
+                or not _valid_created_folder_reference(operation, destination, operations)
             ):
                 raise ValueError("Agent plan destination must match the tool arguments.")
             if not isinstance(destination, dict) and destination != operation.destination_parent_id:
@@ -421,7 +511,7 @@ def _operation_references(value: object) -> set[str]:
     return set()
 
 
-def _valid_create_destination_reference(
+def _valid_created_folder_reference(
     operation: AgentPlanOperation,
     value: dict[str, object],
     operations: dict[str, AgentPlanOperation],
