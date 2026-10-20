@@ -51,17 +51,46 @@ class JudgeCandidatesTest(unittest.TestCase):
             }
         )
 
+        existing = "# Active\n\n## cluster: back-emf\n\n### Evidence Claims\n- claim_001: 역기전력 [doc:B0001]"
         result = judge_meaning_cluster_candidates(
             completion=completion,
-            existing_active_markdown="# Active",
+            existing_active_markdown=existing,
             candidates=[candidate()],
         )
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["decision"], "same_cluster")
         self.assertEqual(result[0]["promotion_status"], "candidate")
-        self.assertEqual(completion.payload["existing_active_clusters"], "# Active")
+        self.assertEqual(completion.payload["existing_active_clusters"], existing)
         self.assertIn("MeaningClusterJudge", completion.system_prompt)
+
+    def test_blocks_promotion_unless_evidence_joins_existing_cluster(self) -> None:
+        cases = {
+            "new cluster": ("new_cluster", "back-emf"),
+            "same_cluster to a cluster not in active.md": ("same_cluster", "cogging-torque"),
+        }
+        for name, (decision, target) in cases.items():
+            with self.subTest(name):
+                completion = FakeCompletion(
+                    {
+                        "decisions": [
+                            {
+                                "candidate_id": "cand_001",
+                                "decision": decision,
+                                "target_cluster_id": target,
+                                "promotion_status": "candidate",
+                            }
+                        ]
+                    }
+                )
+
+                [result] = judge_meaning_cluster_candidates(
+                    completion=completion,
+                    existing_active_markdown="# Active\n\n## cluster: back-emf",
+                    candidates=[candidate()],
+                )
+
+                self.assertEqual(result["promotion_status"], "none")
 
     def test_concept_update_prompt_excludes_related_subtopics_from_same_concept(self) -> None:
         completion = FakeCompletion({"decisions": []})

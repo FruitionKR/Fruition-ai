@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
+from app.modules.wiki_generation.domain.text_utils import slugify
 
 
 def judge_meaning_cluster_candidates(
@@ -85,6 +87,10 @@ Schema:
     }
     raw = completion.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
     valid_candidate_ids = {item["candidate_id"] for item in candidates}
+    existing_cluster_ids = {
+        slugify(cluster_id)
+        for cluster_id in re.findall(r"^## cluster:\s*(.+?)\s*$", existing_active_markdown, re.MULTILINE)
+    }
     normalized_decisions: list[dict[str, Any]] = []
     for item, candidate_id in _valid_candidate_decisions(raw, valid_candidate_ids):
         decision = str(item.get("decision") or "new_cluster")
@@ -92,6 +98,12 @@ Schema:
             decision = "new_cluster"
         promotion_status = str(item.get("promotion_status") or "none")
         if promotion_status not in {"none", "candidate", "needs_review"}:
+            promotion_status = "none"
+        # 새 묶음은 같은 편입에서 승격하지 않는다. 이미 쌓인 묶음에 근거를 더한 경우만 후보가 된다.
+        if promotion_status == "candidate" and (
+            decision != "same_cluster"
+            or slugify(str(item.get("target_cluster_id") or "")) not in existing_cluster_ids
+        ):
             promotion_status = "none"
         normalized_decisions.append(
             {
