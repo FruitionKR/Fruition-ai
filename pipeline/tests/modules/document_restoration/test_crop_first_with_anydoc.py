@@ -310,6 +310,98 @@ class CropFirstWithAnyDocTest(unittest.TestCase):
             self.assertEqual(second.count("![figure]"), 1)
             self.assertNotIn(token, second)
 
+    def test_link_continuations_marks_table_split_across_pages(self) -> None:
+        def table(region_id: str, page: int, bbox: list[float]) -> dict[str, object]:
+            return {"id": region_id, "page": page, "type": "table_candidate", "bbox": bbox}
+
+        cases = {
+            "continued": ([], [50, 40, 550, 300], True),
+            "body text below first table": ([(1, 700)], [50, 40, 550, 300], False),
+            "body text above second table": ([(2, 200)], [50, 300, 550, 500], False),
+            "different width": ([], [120, 40, 550, 300], False),
+        }
+        for name, (texts, second_bbox, expected) in cases.items():
+            with self.subTest(name), fitz.open() as document:
+                for _ in range(2):
+                    page = document.new_page(width=600, height=842)
+                    # 쪽번호처럼 아래 margin 띠에 있는 글자는 본문으로 보지 않는다.
+                    page.insert_text((290, 820), "1")
+                for page_number, y in texts:
+                    document[page_number - 1].insert_text((60, y), "body")
+                regions = [
+                    table("first", 1, [50, 400, 550, 650]),
+                    table("second", 2, second_bbox),
+                ]
+
+                module.link_continuations(document, regions)
+
+                self.assertEqual(regions[1].get("continues") == "first", expected)
+                self.assertNotIn("continues", regions[0])
+
+    def test_assemble_drops_fragment_merged_into_previous_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            manifest_file = output_dir / "manifest.json"
+            output_file = output_dir / "final" / "restored.md"
+            layout = output_dir / "layout" / "auto"
+            (layout / "recovered_blocks").mkdir(parents=True)
+            (layout / "evaluations").mkdir(parents=True)
+            (layout / "recovered_blocks" / "table-1.md").write_text(
+                "| A |\n| --- |\n| 1 |\n| 2 |", encoding="utf-8"
+            )
+            (layout / "evaluations" / "table-2.json").write_text(
+                json.dumps({"merged_into": "table-1"}), encoding="utf-8"
+            )
+            manifest_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "body-1",
+                            "page": 1,
+                            "order": 0,
+                            "type": "paragraph",
+                            "source_text": "intro XQ001QX",
+                            "body_broken": False,
+                        },
+                        {
+                            "id": "table-1",
+                            "page": 1,
+                            "order": 1,
+                            "type": "table_candidate",
+                            "token": "XQ001QX",
+                            "asset": "layout/crop_first/assets/specials/table-1.png",
+                        },
+                        {
+                            "id": "body-2",
+                            "page": 2,
+                            "order": 0,
+                            "type": "paragraph",
+                            "source_text": "XQ002QX\n\nafter",
+                            "body_broken": False,
+                        },
+                        {
+                            "id": "table-2",
+                            "page": 2,
+                            "order": 1,
+                            "type": "table_candidate",
+                            "token": "XQ002QX",
+                            "continues": "table-1",
+                            "asset": "layout/crop_first/assets/specials/table-2.png",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            module.assemble(manifest_file, output_dir, output_file)
+
+            result = output_file.read_text(encoding="utf-8")
+            self.assertEqual(result.count("| A |"), 1)
+            self.assertIn("| 2 |", result)
+            self.assertIn("<!-- page 2 -->\n\nafter", result)
+            self.assertNotIn("자동 복원 실패", result)
+            self.assertNotIn("XQ", result)
+
 
 if __name__ == "__main__":
     unittest.main()
