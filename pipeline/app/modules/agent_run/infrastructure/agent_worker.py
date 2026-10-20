@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import logging
 import threading
+from contextlib import nullcontext
 from typing import Annotated, Any, TypedDict
 from uuid import uuid4
 
@@ -93,7 +94,7 @@ class AgentWorker:
         )
         heartbeat.start()
         try:
-            with self._repository.execution_lock(job.run_id):
+            with self._execution_lock(job):
                 self._run_job(job)
             self._repository.complete(job)
         except Exception as exc:
@@ -110,6 +111,18 @@ class AgentWorker:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
+
+    def _execution_lock(self, job: AgentJob):
+        """실행 중인 run과 같은 run을 동시에 진행하지 않게 잠근다.
+
+        markdown_turn 복구는 상태만 닫는다. 턴의 부수 효과(자식 AgentRun·Skill 게시)는 부모 행 잠금 아래에서
+        status가 executing일 때만 기록되므로, 취소 요청(cancel_requested) 뒤에는 더 늘지 않는다. 그래서 턴 worker가
+        쥔 실행 잠금을 기다리지 않는다. 기다리면 모델 연결에 멈춘 턴 worker가 살아 있는 동안 취소가 끝나지 않고,
+        이 worker의 다른 job까지 함께 멈춘다. 멈춘 턴이 나중에 끝나도 executing이 아니라 결과를 남기지 못한다.
+        """
+        if job.job_type == "rollback" and self._repository.load_context(job.run_id).run.action == "markdown_turn":
+            return nullcontext()
+        return self._repository.execution_lock(job.run_id)
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentRunGraphState)
