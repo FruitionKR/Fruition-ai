@@ -24,6 +24,8 @@ from app.modules.skill.domain.entities import (
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
+    DOCUMENT_SKILL_CAPABILITIES,
+    RESULT_MODE_CAPABILITIES,
     canonical_allowed_tools,
     can_create_document,
     effective_targets,
@@ -337,18 +339,7 @@ class AuthorSkillUseCase:
         규칙으로 정할 수 없으면 False다. 게시는 의도를 다시 분류하지 않으므로(아래) 작성 초안의
         requires_source(LLM 분류 포함)를 그대로 보내야 그 판단이 유지된다.
         """
-        if not expected_capabilities or any(
-            capability not in CAPABILITY_TOOLS for capability in expected_capabilities
-        ):
-            raise ValueError("Published Skill contains an unsupported capability.")
-        if not expected_allowed_tools:
-            # 초안 없이 바로 게시하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
-            expected_allowed_tools = canonical_allowed_tools(expected_capabilities)
-        if len(set(expected_capabilities)) != len(expected_capabilities) or len(
-            set(expected_allowed_tools)
-        ) != len(expected_allowed_tools):
-            raise ValueError("Published Skill permissions must not contain duplicates.")
-        validate_allowed_tools(expected_capabilities, expected_allowed_tools)
+        expected_allowed_tools = _published_allowed_tools(expected_capabilities, expected_allowed_tools)
         # LLM 검토 전에 거절해 비용을 쓰지 않는다.
         targets, result_mode = validate_execution_options(expected_capabilities, targets, result_mode)
         # 이미 검토를 마친 초안이므로 의도를 다시 분류하지 않는다(review_draft와 같다).
@@ -410,6 +401,7 @@ class AuthorSkillUseCase:
         targets: tuple[SkillTarget, ...] | None = None,
         result_mode: SkillResultMode | None = None,
         requires_source: bool | None = None,
+        capabilities: tuple[SkillCapability, ...] | None = None,
     ) -> SkillAuthoringResult:
         """수정은 보낸 필드만 바꾸는 부분 수정이다. targets·result_mode·requires_source는 None이면 기존 값을 유지한다.
         targets=()는 기본값으로 되돌린다.
@@ -418,12 +410,23 @@ class AuthorSkillUseCase:
         실행 규칙 문장만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 폴더 정리 -> 문서 수정+폴더 정리)와
         대상·결과 방식을 바꾸면 이후 실행이 엉뚱한 대상을 요구하기 때문이다. 의도 분류는 작성(초안) 경로에서만 한다.
         지침이 바뀌면 안전 검토(LLM)는 그대로 다시 한다.
+
+        capabilities를 보내면 사용자가 Skill 종류·결과 방식을 직접 바꾼 것이다(잘못 저장된 종류의 복구 포함).
+        게시와 같은 규칙으로 검증하고 allowed_tools를 다시 계산한다. 생략한 result_mode는 이전 값 대신
+        capabilities에서 정해지는 값을 쓴다(_updated_execution_options).
         """
         skill = self._skill_manager.get_manageable(workspace_id, user_id, skill_id)
         previous = skill.latest_version or skill.enabled_version
         preserved_capabilities = None
         preserved_allowed_tools = None
-        if previous is not None:
+        if capabilities is not None:
+            # LLM 검토 전에 거절해 비용을 쓰지 않는다(게시와 같다).
+            preserved_allowed_tools = _published_allowed_tools(capabilities, ())
+            preserved_capabilities = capabilities
+            validate_execution_options(
+                capabilities, targets, result_mode or _capability_result_mode(capabilities)
+            )
+        elif previous is not None:
             preserved_capabilities = previous.capabilities
             # 컬럼 추가 전 행처럼 저장된 Tool 표가 비어 있으면 게시와 같이 서버 정책으로 계산한다.
             preserved_allowed_tools = previous.allowed_tools or canonical_allowed_tools(previous.capabilities)
@@ -448,6 +451,7 @@ class AuthorSkillUseCase:
             proposal.capabilities,
             targets,
             result_mode,
+            capabilities_changed=capabilities is not None,
         )
         proposal = replace(
             proposal,
@@ -505,15 +509,44 @@ class AuthorSkillUseCase:
         return reviewed
 
 
+def _published_allowed_tools(
+    capabilities: tuple[SkillCapability, ...],
+    allowed_tools: tuple[SkillTool, ...],
+) -> tuple[SkillTool, ...]:
+    """게시·수정에서 사용자가 정한 capabilities를 검증하고 저장할 Tool 표를 돌려준다."""
+    if not capabilities or any(capability not in CAPABILITY_TOOLS for capability in capabilities):
+        raise ValueError("Published Skill contains an unsupported capability.")
+    if not allowed_tools:
+        # 초안 없이 바로 게시·수정하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
+        allowed_tools = canonical_allowed_tools(capabilities)
+    if len(set(capabilities)) != len(capabilities) or len(set(allowed_tools)) != len(allowed_tools):
+        raise ValueError("Published Skill permissions must not contain duplicates.")
+    validate_allowed_tools(capabilities, allowed_tools)
+    return allowed_tools
+
+
+def _capability_result_mode(capabilities: tuple[SkillCapability, ...]) -> SkillResultMode | None:
+    """capabilities의 문서 기능 조합으로 정해지는 결과 방식(edit/create/auto). 문서 Skill이 아니면 None."""
+    document_capabilities = DOCUMENT_SKILL_CAPABILITIES.intersection(capabilities)
+    for mode, required in RESULT_MODE_CAPABILITIES.items():
+        if required == document_capabilities:
+            return mode
+    return None
+
+
 def _updated_execution_options(
     previous: SkillVersion | None,
     capabilities: tuple[SkillCapability, ...],
     targets: tuple[SkillTarget, ...] | None,
     result_mode: SkillResultMode | None,
+    *,
+    capabilities_changed: bool = False,
 ) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
     """수정 버전의 targets·result_mode. 보내지 않은 값은 이전 버전에서 이어받는다.
 
-    수정은 capabilities를 이어받으므로(update) 이어받은 값은 capabilities와 맞는다.
+    capabilities를 이어받았으면 이어받은 값은 capabilities와 맞는다.
+    capabilities를 새로 보냈으면(capabilities_changed) 생략한 result_mode는 이전 값 대신 capabilities에서 정한다.
+    targets는 이전 버전도 문서 Skill이었을 때만 이어받고, 아니면 기본값(["current_document"])이다.
     보낸 값이 capabilities와 어긋나면 invalid_result_mode·invalid_targets로 거절한다.
     문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
     """
@@ -523,8 +556,11 @@ def _updated_execution_options(
             if previous is not None and is_document_skill(capabilities)
             else ()
         )
-    if result_mode is None and previous is not None and is_document_skill(capabilities):
-        result_mode = previous.result_mode
+    if result_mode is None and is_document_skill(capabilities):
+        if capabilities_changed:
+            result_mode = _capability_result_mode(capabilities)
+        elif previous is not None:
+            result_mode = previous.result_mode
     return validate_execution_options(capabilities, targets, result_mode)
 
 

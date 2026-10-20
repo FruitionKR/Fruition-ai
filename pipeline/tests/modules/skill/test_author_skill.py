@@ -15,6 +15,7 @@ from app.modules.skill.domain.entities import (
     SkillVersion,
 )
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
+from app.modules.skill.domain.policy import canonical_allowed_tools
 from app.modules.skill.infrastructure.chat_completions_skill_authoring_generator import (
     ChatCompletionsSkillAuthoringGenerator,
     DEFAULT_PROMPT,
@@ -1517,6 +1518,180 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(version.targets, ())
         self.assertIsNone(version.result_mode)
         self.assertFalse(version.requires_source)
+
+    def test_update_with_capabilities_repairs_misclassified_folder_skill(self) -> None:
+        # 회귀: 문서 수정+폴더 정리로 잘못 저장된 폴더 정리 Skill을 capabilities로 복구한다.
+        generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
+        use_case, _ = self.build_use_case(generator)
+        created = use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="tidy-names",
+            description="폴더 안 문서 이름을 정리합니다.",
+            instructions_markdown="# 정리 절차\n\n- 문서 이름을 날짜로 시작하게 바꾼다.",
+            expected_capabilities=("document-edit", "folder-organize"),
+            expected_allowed_tools=(),
+            targets=("current_document",),
+            result_mode="edit",
+        )
+
+        result = use_case.update(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            skill_id=created.skill.id,  # type: ignore[union-attr]
+            name="tidy-names",
+            description="폴더 안 문서 이름을 정리합니다.",
+            instructions_markdown="# 정리 절차\n\n- 문서 이름을 날짜로 시작하게 바꾼다.",
+            capabilities=("folder-organize",),
+        )
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.version, 2)
+        self.assertEqual(generator.classification_count, 0)
+        self.assertEqual(version.capabilities, ("folder-organize",))
+        self.assertEqual(version.allowed_tools, canonical_allowed_tools(("folder-organize",)))
+        self.assertNotIn("apply_document_edit", version.allowed_tools)
+        self.assertEqual(version.targets, ())
+        self.assertIsNone(version.result_mode)
+        self.assertFalse(version.requires_source)
+
+    def test_update_task_route_forwards_capabilities(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case, result_mode="create")
+        application = FastAPI()
+        application.include_router(skill_router)
+
+        def post(capabilities: object):
+            with (
+                patch("app.modules.skill.interfaces.http.routes.get_author_skill_use_case", return_value=use_case),
+                patch(
+                    "app.modules.task_cancellation.infrastructure.postgres_task_journal.execute",
+                    side_effect=lambda command, execute: execute(),
+                ),
+            ):
+                return TestClient(application).post(
+                    "/skills/tasks",
+                    json={"run_id": "skill-update", "kind": "skill_update", "workspace_id": "workspace-1",
+                          "user_id": "user-1", "skill_id": created.skill.id, "payload": {  # type: ignore[union-attr]
+                              "workspace_id": "workspace-1",
+                              "user_id": "user-1",
+                              "provider": "openai",
+                              "model": "gpt-5-nano",
+                              "name": "concise-document-writer",
+                              "description": "폴더를 정리합니다.",
+                              "instructions_markdown": "# 정리 절차\n\n- 폴더를 나눈다.",
+                              "capabilities": capabilities,
+                          }},
+                )
+
+        response = post(["folder-organize"])
+        duplicated = post(["folder-organize", "folder-organize"])
+        unknown = post(["document-delete"])
+        empty = post([])
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["capabilities"], ["folder-organize"])
+        self.assertEqual(body["allowed_tools"], list(canonical_allowed_tools(("folder-organize",))))
+        self.assertEqual(body["targets"], [])
+        self.assertIsNone(body["result_mode"])
+        self.assertEqual(duplicated.status_code, 400)
+        self.assertEqual(unknown.status_code, 422)
+        self.assertEqual(empty.status_code, 422)
+
+    def test_update_with_capabilities_changes_edit_skill_to_create(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="concise-document-writer",
+            description="열린 문서를 간결하게 고칩니다.",
+            instructions_markdown="# 작성 절차\n\n- 핵심 내용을 먼저 정리한다.",
+            expected_capabilities=("document-edit",),
+            expected_allowed_tools=(),
+            targets=("selection",),
+            result_mode="edit",
+        )
+
+        result = self._update(
+            use_case,
+            created.skill.id,  # type: ignore[union-attr]
+            capabilities=("document-create",),
+            result_mode="create",
+            requires_source=True,
+        )
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.capabilities, ("document-create",))
+        self.assertEqual(version.allowed_tools, canonical_allowed_tools(("document-create",)))
+        self.assertEqual(version.result_mode, "create")
+        self.assertEqual(version.targets, ("selection",))
+        self.assertTrue(version.requires_source)
+
+    def test_update_with_capabilities_derives_omitted_result_mode_and_default_targets(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="concise-document-writer",
+            description="폴더를 정리합니다.",
+            instructions_markdown="# 정리 절차\n\n- 폴더를 나눈다.",
+            expected_capabilities=("folder-organize",),
+            expected_allowed_tools=(),
+        )
+        skill_id = created.skill.id  # type: ignore[union-attr]
+
+        for capabilities, expected_mode in (
+            (("document-edit",), "edit"),
+            (("document-create",), "create"),
+            (("document-edit", "document-create"), "auto"),
+        ):
+            with self.subTest(capabilities=capabilities):
+                result = self._update(use_case, skill_id, capabilities=capabilities)
+                version = result.skill.enabled_version  # type: ignore[union-attr]
+                self.assertEqual(version.result_mode, expected_mode)
+                self.assertEqual(version.targets, ("current_document",))
+                if expected_mode == "edit":
+                    self.assertFalse(version.requires_source)
+
+    def test_update_with_capabilities_drops_requires_source_when_no_longer_creating(self) -> None:
+        use_case, _ = self.build_use_case(FixedGenerator(draft_result()))
+        created = self._publish_document_skill(use_case, result_mode="create", requires_source=True)
+
+        result = self._update(
+            use_case, created.skill.id, capabilities=("document-edit",)  # type: ignore[union-attr]
+        )
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.result_mode, "edit")
+        self.assertFalse(version.requires_source)
+
+    def test_update_with_capabilities_rejects_invalid_values_before_llm(self) -> None:
+        generator = FixedGenerator(draft_result())
+        use_case, repository = self.build_use_case(generator)
+        created = self._publish_document_skill(use_case)
+        skill_id = created.skill.id  # type: ignore[union-attr]
+        generator.instruction = ""
+
+        for options, code in (
+            ({"capabilities": ("folder-organize",), "targets": ("current_document",)}, "invalid_targets"),
+            ({"capabilities": ("folder-organize",), "result_mode": "edit"}, "invalid_result_mode"),
+            ({"capabilities": ("document-edit",), "result_mode": "create"}, "invalid_result_mode"),
+        ):
+            with self.subTest(options=options):
+                with self.assertRaises(SkillRequestRejectedError) as raised:
+                    self._update(use_case, skill_id, **options)
+                self.assertEqual(raised.exception.code, code)
+        for capabilities in ((), ("document-edit", "document-edit"), ("unknown",)):
+            with self.subTest(capabilities=capabilities):
+                with self.assertRaises(ValueError):
+                    self._update(use_case, skill_id, capabilities=capabilities)
+
+        self.assertEqual(generator.instruction, "")
+        self.assertEqual(repository.skills[skill_id].enabled_version.version, 1)  # type: ignore[union-attr]
 
     def test_update_rejects_given_result_mode_that_does_not_match_preserved_capabilities(self) -> None:
         generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))

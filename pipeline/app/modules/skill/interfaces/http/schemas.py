@@ -177,6 +177,9 @@ class UpdateSkillRequest(SkillLlmRequest):
     result_mode: ResultModeValue | None = None
     # 생략(null)하면 지침을 고쳤어도 이전 값을 유지한다(capabilities도 다시 분류하지 않는다). 생성 Skill이 아니면 무시한다.
     requires_source: bool | None = None
+    # Skill 종류·결과 방식을 바꿀 때 보낸다. 게시와 같은 값·검증을 쓰고 allowed_tools를 다시 계산한다.
+    # 생략(null)하면 이전 버전 값을 유지한다(다시 분류하지 않는다). 보내면 생략한 result_mode는 capabilities에서 정한다.
+    capabilities: list[CapabilityValue] | None = Field(default=None, min_length=1)
 
 
 class SkillActorRequest(BaseModel):

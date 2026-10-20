@@ -302,6 +302,7 @@ def update_skill(
             targets=tuple(payload.targets) if payload.targets is not None else None,
             result_mode=payload.result_mode,
             requires_source=payload.requires_source,
+            capabilities=tuple(payload.capabilities) if payload.capabilities is not None else None,
         )
     except SkillRequestRejectedError:
         raise

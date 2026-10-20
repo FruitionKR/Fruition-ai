@@ -281,9 +281,16 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | `targets` | `string[]` | `current_document`, `selection` (최대 2개, 중복 불가) | 게시에서 생략하거나 `[]`이면 `["current_document"]`. 수정에서 생략(키 없음)하면 기존 값 유지, `[]`이면 기본값으로 되돌림. 저장 순서는 `current_document`, `selection`으로 고정 |
 | `result_mode` | `string` / `null` | `create`(새 문서), `edit`(현재 문서 수정), `auto`(상황에 맞게) | 게시에서 생략하면 `null`. 수정에서 생략하면 기존 값 유지 |
 
-- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 이전 버전에서 이어받은 capabilities로 검사).
+- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 보낸 `capabilities`, 생략했으면 이전 버전에서 이어받은 capabilities로 검사).
 - 문서 Skill이 아닌데 `targets`나 `result_mode`를 보내거나 `targets`가 중복이면 `400` `invalid_targets`/`invalid_result_mode`입니다.
 - 수정(`skill_update`)은 보낸 필드만 바꾸는 부분 수정입니다. 지침(`instructions_markdown`)을 고쳐도 의도를 다시 분류하지 않고 이전 버전의 `capabilities`·`allowed_tools`를 그대로 이어받으므로, 보내지 않은 `targets`·`result_mode`도 그대로 유지됩니다(지침이 바뀌면 안전 검토만 다시 합니다). 의도 분류는 작성(`skill_author`) 초안에서만 합니다.
+- 수정에서 Skill 종류·결과 방식을 바꾸려면 `capabilities`(선택, `string[]`, 1개 이상)를 보냅니다. 값과 검증은 게시와 같습니다(허용 값 밖이나 빈 배열은 `422`, 중복은 `400`(문자열 `detail`), LLM 검토 전에 거절). 보내면:
+  - `allowed_tools`는 새 `capabilities`로 다시 계산합니다(`policy.canonical_allowed_tools`).
+  - 문서 Skill이 아니게 되면 `targets`는 `[]`, `result_mode`는 `null`로 저장합니다. 이때 `targets`·`result_mode`를 보내면 게시와 같이 `400` `invalid_targets`/`invalid_result_mode`입니다.
+  - 문서 Skill이면 생략한 `result_mode`는 이전 값 대신 `capabilities`에서 정합니다(`document-edit`→`edit`, `document-create`→`create`, 둘 다→`auto`). 생략한 `targets`는 이전 버전도 문서 Skill이었으면 이어받고, 아니면 `["current_document"]`입니다. 보낸 `result_mode`가 `capabilities`와 맞지 않으면 `400` `invalid_result_mode`입니다.
+  - `requires_source`는 위 규칙과 같습니다(생략하면 이전 값, 새 문서를 만들지 않는 Skill이 되면 `false`).
+  - 예: `["document-edit","folder-organize"]`·`targets: ["current_document"]`로 잘못 저장된 폴더 정리 Skill에 `capabilities: ["folder-organize"]`를 보내면 폴더 정리 Tool 표, `targets: []`, `result_mode: null`로 복구됩니다.
+  - 생략하면 지금처럼 이전 버전 값을 이어받고 다시 분류하지 않습니다.
 - 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 지금처럼 선택 범위 편집을 유지하도록 `targets: ["current_document", "selection"]`, `result_mode: null`로 읽습니다. 이런 Skill을 수정하면서 `targets`를 생략하면 이 값을 이어받습니다.
 - Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 실행은 고른 문서·폴더로 동작: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
 
