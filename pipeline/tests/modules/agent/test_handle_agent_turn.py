@@ -1913,19 +1913,6 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         self.assertIn("brief", editor.create_requests[0].instruction)
         self.assertIsNotNone(result.generated_markdown)
 
-    def test_bare_non_document_skill_command_explains_usage(self) -> None:
-        use_case, router, editor = self._bare_command_use_case("folder-organize")
-
-        result = use_case.execute(
-            AgentTurnRequest(message="/brief", workspace_id="workspace-1", user_id="user-1")
-        )
-
-        self.assertEqual(result.action, "clarify")
-        self.assertIn("`/brief` 뒤에", result.message or "")
-        self.assertIn("문서를 간결하게 작성합니다.", result.message or "")
-        self.assertEqual(router.requests, [])
-        self.assertEqual(editor.create_requests, [])
-
     def test_stops_for_ambiguous_skill_selection(self) -> None:
         skill = document_skill("folder-organize")
         editor = RecordingMarkdownEditor(
@@ -2629,14 +2616,16 @@ class SkillExecutionOptionsTest(unittest.TestCase):
         self.assertEqual(result.action, "markdown_edit")
         self.assertEqual(editor.requests[0].target, selection)
 
-    def test_bare_command_of_edit_mode_skill_does_not_create_document(self) -> None:
+    def test_bare_command_of_edit_mode_skill_without_document_asks_for_document(self) -> None:
         skill = options_skill(("document-create", "document-edit"), ("current_document",), "edit")
         use_case, editor = self._use_case(skill, CREATE_ROUTE)
 
         result = use_case.execute(AgentTurnRequest(message="/brief", workspace_id="workspace-1", user_id="user-1"))
 
         self.assertEqual(result.action, "clarify")
+        self.assertIn("문서를 연 뒤", result.message or "")
         self.assertEqual(editor.create_requests, [])
+        self.assertEqual(editor.requests, [])
 
 
 
@@ -2724,3 +2713,271 @@ class CreateSkillWithoutDocumentTest(unittest.TestCase):
         # 편집 기능이 없는 create Skill이 지원 검사에서 빠져 "지원하지 않음"으로 끝나지 않는다.
         self.assertEqual(result.action, "markdown_create")
         self.assertEqual(editor.requests, [])
+
+
+class BareSkillCommandTargetTest(unittest.TestCase):
+    """`/slug`만 보낸 실행(사이드바에서 대상 선택)은 Skill 결과 방식과 고른 문서·폴더로 실행한다."""
+
+    def _use_case(
+        self,
+        skill: Skill,
+        route: AgentTurnRoute | None = None,
+    ) -> tuple[HandleAgentTurnUseCase, FixedRouter, RecordingMarkdownEditor, RecordingAgentRunStarter]:
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=5),
+                    summary="지침대로 고쳤습니다.",
+                    replacement_markdown="# 제목\n\n고친 문단",
+                )
+            )
+        )
+        # bare 명령은 라우터를 부르지 않는다. 불리면 대화 답변으로 분류돼 Skill이 빠진다.
+        router = FixedRouter(route or AgentTurnRoute(action="conversation_reply", confidence=1.0, reason="empty"))
+        starter = RecordingAgentRunStarter()
+        use_case = HandleAgentTurnUseCase(
+            router=router,
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            skill_selector=SelectSkillUseCase(FixedSkillRepository(skill)),  # type: ignore[arg-type]
+            agent_run_starter=starter,  # type: ignore[arg-type]
+        )
+        return use_case, router, editor, starter
+
+    def _request(self, *, document: bool = False, message: str = "/brief", **values: object) -> AgentTurnRequest:
+        document_values: dict[str, object] = (
+            {
+                "active_markdown_context": ActiveMarkdownContext(markdown=OPTIONS_MARKDOWN),
+                "document_id": "document-1",
+                "base_version": 3,
+            }
+            if document
+            else {}
+        )
+        return AgentTurnRequest(
+            message=message,
+            workspace_id="workspace-1",
+            user_id="user-1",
+            mode="task",
+            **document_values,  # type: ignore[arg-type]
+            **values,  # type: ignore[arg-type]
+        )
+
+    def test_edit_skill_with_document_returns_edit_preview_from_skill_rules(self) -> None:
+        skill = options_skill(("document-edit",), ("current_document",), "edit")
+        use_case, router, editor, starter = self._use_case(skill)
+
+        result = use_case.execute(self._request(document=True))
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(result.route.selected_skill_id, "skill-1")
+        self.assertEqual(router.requests, [])
+        self.assertEqual(editor.requests[0].target.type, "whole_document")
+        self.assertEqual(editor.requests[0].skill_instructions, "핵심 내용을 세 문단 이내로 작성한다.")
+        self.assertIn("brief", editor.requests[0].instruction)
+        self.assertIsNotNone(result.edit)
+        self.assertIsNotNone(result.source_markdown_sha256)
+        self.assertEqual(editor.create_requests, [])
+        self.assertEqual(starter.requests, [])
+
+    def test_selection_only_edit_skill_without_selection_asks_for_selection(self) -> None:
+        skill = options_skill(("document-edit",), ("selection",), "edit")
+        use_case, _, editor, _ = self._use_case(skill)
+
+        result = use_case.execute(self._request(document=True))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("선택한 부분에만", result.message or "")
+        self.assertEqual(editor.requests, [])
+
+    def test_selection_only_edit_skill_edits_the_selection(self) -> None:
+        skill = options_skill(("document-edit",), ("selection",), "edit")
+        use_case, _, editor, _ = self._use_case(skill)
+        selection = MarkdownEditTarget(type="selection", start_line=3, end_line=3)
+
+        result = use_case.execute(
+            self._request(
+                active_markdown_context=ActiveMarkdownContext(markdown=OPTIONS_MARKDOWN, target=selection),
+            )
+        )
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(editor.requests[0].target, selection)
+
+    def test_edit_skill_with_folder_only_asks_for_document(self) -> None:
+        skill = options_skill(("document-edit",), ("current_document",), "edit")
+        use_case, _, editor, starter = self._use_case(skill)
+
+        result = use_case.execute(self._request(folder_id="folder-9"))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("문서를 연 뒤", result.message or "")
+        self.assertEqual(editor.requests, [])
+        self.assertEqual(editor.create_requests, [])
+        self.assertEqual(starter.requests, [])
+
+    def test_create_skill_with_document_uses_document_as_source(self) -> None:
+        skill = options_skill(("document-create",), (), "create")
+        skill = replace(
+            skill,
+            enabled_version=replace(skill.enabled_version, instructions_markdown="{문서}를 세 줄로 요약한다."),  # type: ignore[arg-type]
+        )
+        use_case, router, editor, _ = self._use_case(skill)
+
+        result = use_case.execute(self._request(document=True, folder_id="folder-9"))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(router.requests, [])
+        create_request = editor.create_requests[0]
+        self.assertEqual(
+            create_request.reference_context["source_document"],  # type: ignore[index]
+            {"document_id": "document-1", "markdown": OPTIONS_MARKDOWN},
+        )
+        self.assertIn("참고 문서", create_request.instruction)
+        # 본문은 reference_context에 한 번만 싣고 지침은 그 위치를 가리킨다.
+        self.assertNotIn(OPTIONS_MARKDOWN, create_request.skill_instructions or "")
+        self.assertIn("reference_context.source_document", create_request.skill_instructions or "")
+        self.assertEqual(editor.requests, [])
+
+    def test_create_skill_with_folder_only_creates_without_source(self) -> None:
+        for capability in ("document-create", "template"):
+            with self.subTest(capability=capability):
+                skill = options_skill((capability,), (), "create")
+                use_case, _, editor, _ = self._use_case(skill)
+
+                result = use_case.execute(self._request(folder_id="folder-9"))
+
+                self.assertEqual(result.action, "markdown_create")
+                self.assertNotIn("source_document", editor.create_requests[0].reference_context or {})
+                self.assertNotIn("참고 문서", editor.create_requests[0].instruction)
+
+    def test_auto_skill_with_document_asks_create_or_edit(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        use_case, router, editor, starter = self._use_case(skill)
+
+        result = use_case.execute(self._request(document=True))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("새 문서로 만들까요, 지금 문서를 수정할까요?", result.message or "")
+        self.assertEqual(result.route.document_operation, "none")
+        self.assertEqual(router.requests, [])
+        self.assertEqual(editor.requests, [])
+        self.assertEqual(editor.create_requests, [])
+        self.assertEqual(starter.requests, [])
+
+    def test_auto_skill_without_document_creates(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        for values in ({"folder_id": "folder-9"}, {}):
+            with self.subTest(values=values):
+                use_case, _, editor, _ = self._use_case(skill)
+
+                result = use_case.execute(self._request(**values))
+
+                self.assertEqual(result.action, "markdown_create")
+                self.assertEqual(len(editor.create_requests), 1)
+
+    def test_legacy_skill_without_result_mode_follows_capabilities(self) -> None:
+        cases = (
+            (("document-edit",), True, "markdown_edit"),
+            (("document-create",), True, "markdown_create"),
+            (("template",), True, "clarify"),
+            (("template",), False, "markdown_create"),
+        )
+        for capabilities, document, expected in cases:
+            with self.subTest(capabilities=capabilities, document=document):
+                skill = options_skill(capabilities, ("current_document", "selection"), None)
+                use_case, _, _, _ = self._use_case(skill)
+
+                result = use_case.execute(self._request(document=document))
+
+                self.assertEqual(result.action, expected)
+
+    def test_folder_skill_with_folder_starts_scoped_plan(self) -> None:
+        skill = options_skill(("folder-organize",), (), None)
+        use_case, router, editor, starter = self._use_case(skill)
+
+        result = use_case.execute(self._request(folder_id="folder-9"))
+
+        self.assertEqual(result.action, "folder_organize")
+        self.assertEqual(result.run_id, "run-1")
+        self.assertEqual(result.run_status, "queued")
+        self.assertEqual(router.requests, [])
+        started = starter.requests[0]
+        self.assertEqual(started.action, "folder_organize")  # type: ignore[attr-defined]
+        self.assertEqual(started.target_folder_id, "folder-9")  # type: ignore[attr-defined]
+        self.assertEqual(started.skill_version_id, "version-1")  # type: ignore[attr-defined]
+        self.assertEqual(started.rule_summary, "문서를 간결하게 작성합니다.")  # type: ignore[attr-defined]
+        self.assertIn("이 폴더", started.instruction)  # type: ignore[attr-defined]
+        self.assertEqual(editor.create_requests, [])
+
+    def test_folder_skill_without_folder_plans_whole_workspace(self) -> None:
+        skill = options_skill(("folder-organize",), (), None)
+        for document in (False, True):
+            with self.subTest(document=document):
+                use_case, _, _, starter = self._use_case(skill)
+
+                result = use_case.execute(self._request(document=document))
+
+                self.assertEqual(result.action, "folder_organize")
+                self.assertIsNone(starter.requests[0].target_folder_id)  # type: ignore[attr-defined]
+                self.assertIn("워크스페이스", starter.requests[0].instruction)  # type: ignore[attr-defined]
+
+    def test_create_skill_with_instruction_also_uses_selected_document_as_source(self) -> None:
+        skill = options_skill(("document-create",), (), "create")
+        use_case, router, editor, _ = self._use_case(skill, EDIT_ROUTE)
+
+        result = use_case.execute(self._request(document=True, message="/brief 이 문서에 적용해 줘"))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(len(router.requests), 1)
+        self.assertEqual(
+            editor.create_requests[0].reference_context["source_document"]["document_id"],  # type: ignore[index]
+            "document-1",
+        )
+
+    def test_edit_skill_with_instruction_edits_selected_document(self) -> None:
+        skill = options_skill(("document-edit",), ("current_document",), "edit")
+        use_case, _, editor, _ = self._use_case(skill, CREATE_ROUTE)
+
+        result = use_case.execute(self._request(document=True, message="/brief 이 문서에 적용해 줘"))
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(editor.requests[0].instruction, "이 문서에 적용해 줘")
+
+    def test_auto_skill_with_instruction_asks_when_route_is_uncertain(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        use_case, _, editor, _ = self._use_case(skill, replace(EDIT_ROUTE, confidence=0.5))
+
+        result = use_case.execute(self._request(document=True, message="/brief 이 문서에 적용해 줘"))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("새 문서로 만들까요", result.message or "")
+        self.assertEqual(editor.requests, [])
+
+    def test_auto_skill_with_create_answer_uses_document_as_source(self) -> None:
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        use_case, _, editor, _ = self._use_case(skill, CREATE_ROUTE)
+
+        result = use_case.execute(self._request(document=True, message="/brief 새 문서로 만들어 줘"))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertIn("source_document", editor.create_requests[0].reference_context or {})
+
+    def test_folder_skill_with_instruction_starts_scoped_plan(self) -> None:
+        skill = options_skill(("folder-organize",), (), None)
+        route = AgentTurnRoute(
+            action="folder_organize",
+            confidence=0.95,
+            reason="folder request",
+            selected_skill_id="skill-1",
+            persist=True,
+            required_capabilities=("folder-organize",),
+        )
+        use_case, _, _, starter = self._use_case(skill, route)
+
+        result = use_case.execute(self._request(folder_id="folder-9", message="/brief 이 폴더를 정리해 줘"))
+
+        self.assertEqual(result.action, "folder_organize")
+        self.assertEqual(starter.requests[0].target_folder_id, "folder-9")  # type: ignore[attr-defined]

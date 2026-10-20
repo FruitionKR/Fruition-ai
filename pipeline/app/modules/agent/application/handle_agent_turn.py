@@ -66,6 +66,7 @@ from app.modules.skill.domain.entities import (
 )
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
     render_skill_instructions,
 )
 from app.modules.skill.domain.policy import validate_skill_name
@@ -91,8 +92,9 @@ CLARIFY_SKILL_RESULT_MODE_MESSAGE = (
 )
 # result_mode=auto Skill에서 라우터 확신도가 이보다 낮으면 새 문서/수정을 되묻는다.
 AUTO_RESULT_MODE_MIN_CONFIDENCE = 0.7
-# `/slug`만 보냈을 때 바로 새 문서를 만드는 Skill 기능. template은 문서 생성을 포함한다.
-BARE_COMMAND_CREATE_CAPABILITIES = frozenset({"template", "document-create"})
+# 문서 생성·편집을 할 수 있는 Skill 기능. template은 둘 다 포함한다.
+CREATE_CAPABILITIES = frozenset({"template", "document-create"})
+EDIT_CAPABILITIES = frozenset({"template", "document-edit"})
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
 BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
@@ -339,17 +341,8 @@ class HandleAgentTurnUseCase:
                 if reuses_create_preview and creation_markdown is None:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if creation_markdown is None:
-                    reference_context = self._resolve_reference_context(request, route)
                     creation_markdown = self._markdown_create_use_case.execute(
-                        MarkdownCreateRequest(
-                            instruction=request.message,
-                            workspace_id=request.workspace_id,
-                            user_id=request.user_id,
-                            conversation_summary=_conversation_context_text(request),
-                            reference_context=reference_context,
-                            skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=False),
-                            output_language=request.output_language,
-                        )
+                        self._markdown_create_request(request, route, selected_skill)
                     ).document.markdown
                 content = StartAgentRunContent(markdown=creation_markdown)
             elif route.action == "workspace_workflow" and route.document_operation == "edit":
@@ -626,42 +619,87 @@ class HandleAgentTurnUseCase:
         )
 
     def _execute_bare_skill_command(self, request: AgentTurnRequest, skill: Skill) -> AgentTurnResult:
-        """`/slug`만 보낸 요청. 할 일이 비어 있어 라우터에 맡기지 않는다.
+        """`/slug`만 보낸 요청. 할 일이 비어 있어 라우터에 맡기지 않고 Skill 정의와 고른 대상으로 실행한다.
 
-        문서를 만드는 Skill은 그 지침으로 새 문서 초안을 만든다(슬래시 템플릿과 같은 동작).
-        그 밖의 Skill은 무엇을 할지 정할 수 없으므로 사용법을 안내한다.
+        - 폴더 정리 Skill: 고른 폴더(`folder_id`, 없으면 워크스페이스 전체)의 정리 계획 run을 만든다.
+        - 결과 방식 edit: 열린(고른) 문서를 Skill 지침대로 고친 편집안을 만든다. 문서가 없으면 문서를 고르라고 되묻는다.
+        - 결과 방식 create: Skill 지침으로 새 문서 초안을 만든다. 고른 문서가 있으면 그 본문을 원문으로 쓴다.
+        - 결과 방식 auto: 고른 문서가 있으면 새 문서/수정 중 무엇인지 되묻고, 없으면 새 문서 초안을 만든다.
         """
         version = skill.enabled_version
         assert version is not None  # 명시 선택 단계에서 활성 버전을 확인했다.
-        if set(version.capabilities) & BARE_COMMAND_CREATE_CAPABILITIES and version.result_mode != "edit":
+        mode = _bare_command_mode(version.capabilities, version.result_mode)
+        if mode is None:
+            return self._start_bare_folder_plan(request, skill)
+        has_document = _has_active_markdown(request)
+        if mode == "edit" or (mode == "auto" and has_document):
             route = AgentTurnRoute(
-                action="markdown_create",
+                action="markdown_edit",
                 confidence=1.0,
-                reason="Bare Skill command creates a document from the Skill.",
-                edit_goal="create_from_chat",
+                reason="Bare Skill command applies the Skill to the selected document.",
+                edit_goal="other",
+                edit_operation="replace",
+                edit_destination="target",
                 selected_skill_id=skill.id,
-                document_operation="create",
-                required_capabilities=("document-create",),
+                document_operation="edit",
+                required_capabilities=("document-edit",),
             )
-            publish_query_event(self._event_publisher, "agent.routed", "새 문서 작성 요청으로 확인했어요.")
-            return self._execute_markdown_create(
-                replace(request, message=f"'{version.name}' Skill의 지침과 형식으로 새 문서 초안을 작성해 주세요."),
+            if mode == "auto":
+                return _clarify_result_mode(route)
+            publish_query_event(self._event_publisher, "agent.routed", "문서 편집 요청으로 확인했어요.")
+            return self._execute_markdown_edit(
+                replace(request, message=f"'{version.name}' Skill의 지침을 이 문서에 적용해 주세요."),
                 route,
                 skill,
             )
-        return AgentTurnResult(
-            action="clarify",
-            route=AgentTurnRoute(
-                action="clarify",
-                confidence=1.0,
-                reason="Bare Skill command has no instruction.",
-                selected_skill_id=skill.id,
-            ),
-            message=(
-                f"`/{skill.slug}` 뒤에 이 Skill로 할 일을 함께 적어 주세요. "
-                f"형식: `/{skill.slug} (할 일)`\n\n{version.description}"
-            ),
+        route = AgentTurnRoute(
+            action="markdown_create",
+            confidence=1.0,
+            reason="Bare Skill command creates a document from the Skill.",
+            edit_goal="create_from_chat",
+            selected_skill_id=skill.id,
+            document_operation="create",
+            required_capabilities=("document-create",),
         )
+        publish_query_event(self._event_publisher, "agent.routed", "새 문서 작성 요청으로 확인했어요.")
+        message = (
+            f"'{version.name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요."
+            if has_document
+            else f"'{version.name}' Skill의 지침과 형식으로 새 문서 초안을 작성해 주세요."
+        )
+        return self._execute_markdown_create(replace(request, message=message), route, skill)
+
+    def _start_bare_folder_plan(self, request: AgentTurnRequest, skill: Skill) -> AgentTurnResult:
+        """폴더 정리 Skill의 `/slug`. 고른 폴더(없으면 워크스페이스 전체)로 승인형 정리 계획 run을 만든다."""
+        if self._agent_run_starter is None or not request.workspace_id or not request.user_id:
+            raise AgentConfigurationError("Workspace workflow requires workspace_id and user_id.")
+        version = skill.enabled_version
+        assert version is not None
+        scope = "이 폴더" if request.folder_id else "워크스페이스"
+        instruction = f"'{version.name}' Skill의 지침에 따라 {scope}를 정리해 주세요."
+        route = AgentTurnRoute(
+            action="folder_organize",
+            confidence=1.0,
+            reason="Bare Skill command organizes the selected folder.",
+            selected_skill_id=skill.id,
+            persist=True,
+            required_capabilities=("folder-organize",),
+        )
+        publish_query_event(self._event_publisher, "agent.routed", "폴더 정리 계획을 준비하고 있어요.")
+        run_id, run_status = self._agent_run_starter.start(
+            StartAgentRunRequest(
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                instruction=instruction,
+                provider=request.provider,
+                model=request.model,
+                action=route.action,
+                skill_version_id=version.id,
+                target_folder_id=request.folder_id,
+                rule_summary=version.description,
+            )
+        )
+        return AgentTurnResult(action=route.action, route=route, run_id=run_id, run_status=run_status)
 
     def _execute_markdown_create(
         self,
@@ -669,24 +707,44 @@ class HandleAgentTurnUseCase:
         route: AgentTurnRoute,
         selected_skill: Skill | None,
     ) -> AgentTurnResult:
-        reference_context = self._resolve_reference_context(request, route)
+        create_request = self._markdown_create_request(request, route, selected_skill)
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
-        result = self._markdown_create_use_case.execute(
-            MarkdownCreateRequest(
-                instruction=request.message,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                conversation_summary=_conversation_context_text(request),
-                reference_context=reference_context,
-                skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=False),
-                output_language=request.output_language,
-            )
-        )
+        result = self._markdown_create_use_case.execute(create_request)
         return AgentTurnResult(
             action="markdown_create",
             route=route,
             generated_markdown=result.document,
             message=f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
+        )
+
+    def _markdown_create_request(
+        self,
+        request: AgentTurnRequest,
+        route: AgentTurnRoute,
+        selected_skill: Skill | None,
+    ) -> MarkdownCreateRequest:
+        """새 문서 요청. 명시한 Skill을 문서를 고른 채 실행하면 그 문서를 원문(source_document)으로 싣는다."""
+        reference_context = self._resolve_reference_context(request, route)
+        uses_source_document = _uses_source_document(request, selected_skill)
+        if uses_source_document:
+            assert request.active_markdown_context is not None
+            reference_context["source_document"] = {
+                "document_id": request.document_id,
+                "markdown": request.active_markdown_context.markdown,
+            }
+        return MarkdownCreateRequest(
+            instruction=request.message,
+            workspace_id=request.workspace_id,
+            user_id=request.user_id,
+            conversation_summary=_conversation_context_text(request),
+            reference_context=reference_context,
+            skill_instructions=_skill_instructions(
+                selected_skill,
+                request,
+                document_in_payload=False,
+                document_in_reference_context=uses_source_document,
+            ),
+            output_language=request.output_language,
         )
 
     def _resolve_reference_context(
@@ -1028,21 +1086,53 @@ def _skill_instructions(
     request: AgentTurnRequest,
     *,
     document_in_payload: bool,
+    document_in_reference_context: bool = False,
 ) -> str | None:
     """Skill 지침의 자리표시자를 이번 요청 값으로 채운다.
 
-    편집처럼 문서 본문이 이미 모델 payload에 있으면 `{문서}`는 본문을 다시 싣지 않고 그 위치를 가리킨다.
+    편집처럼 문서 본문이 이미 모델 payload(markdown 또는 reference_context.source_document)에 있으면
+    `{문서}`는 본문을 다시 싣지 않고 그 위치를 가리킨다.
     """
     if skill is None or skill.enabled_version is None:
         return None
     context = request.active_markdown_context
+    if document_in_payload:
+        document_reference: str | None = EDIT_PAYLOAD_DOCUMENT_REFERENCE
+    elif document_in_reference_context:
+        document_reference = REFERENCE_CONTEXT_DOCUMENT_REFERENCE
+    else:
+        document_reference = None
     return render_skill_instructions(
         skill.enabled_version.instructions_markdown,
         request=request.message,
         selection=_selection_text(context),
-        document=context.markdown if context is not None and not document_in_payload else None,
-        document_reference=EDIT_PAYLOAD_DOCUMENT_REFERENCE if document_in_payload else None,
+        document=context.markdown if context is not None and document_reference is None else None,
+        document_reference=document_reference,
     )
+
+
+def _uses_source_document(request: AgentTurnRequest, skill: Skill | None) -> bool:
+    """명시한(`/slug`·skill_id) Skill로 새 문서를 만들 때 고른(열린) 문서가 있으면 그 문서를 원문으로 쓴다."""
+    return skill is not None and request.skill_mode == "explicit" and _has_active_markdown(request)
+
+
+def _bare_command_mode(
+    capabilities: tuple[str, ...],
+    result_mode: str | None,
+) -> str | None:
+    """`/slug`만 보낸 Skill의 결과 방식. 문서 기능이 없는 폴더 정리 Skill은 None이다.
+
+    결과 방식이 없는(이전에 게시한) Skill은 기능으로 정한다: 생성·편집 둘 다면 auto.
+    """
+    can_create = bool(CREATE_CAPABILITIES & set(capabilities))
+    can_edit = bool(EDIT_CAPABILITIES & set(capabilities))
+    if not can_create and not can_edit:
+        return None
+    if result_mode is not None:
+        return result_mode
+    if can_create and can_edit:
+        return "auto"
+    return "create" if can_create else "edit"
 
 
 def _selection_text(context: ActiveMarkdownContext | None) -> str | None:
@@ -1109,6 +1199,9 @@ def _create_skill_route(route: AgentTurnRoute, skill: Skill | None) -> AgentTurn
     고치지 않으므로, 편집 기능이 없는 Skill이 지원 여부 검사에서 빠지기 전에 새 문서 생성으로 맞춘다.
     """
     version = skill.enabled_version if skill is not None else None
+    if skill is not None and version is not None and version.result_mode == "edit" and route.action == "markdown_create":
+        # 반대로 edit Skill은 라우터가 새 문서를 골라도 지원 검사에서 빠지기 전에 문서 편집으로 맞춘다.
+        return _route_for_result_mode(route, skill)
     if version is None or version.result_mode != "create":
         return route
     create_fields = {

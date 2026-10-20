@@ -15,6 +15,24 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 할 일 없이 `/slug`만 보낸 턴(Skill 실행)
+
+`message`가 `/slug`뿐이면(사이드바 "실행"처럼 대상만 고른 경우) 라우터를 거치지 않고 Skill 정의와 고른 대상으로 실행한다.
+고른 문서는 `active_markdown_context`(+`document_id`·`base_version`), 고른 폴더는 `folder_id`로 보낸다.
+결과 방식이 없는(이전에 게시한) 문서 Skill은 기능으로 정한다: 생성·편집(또는 `template`)이면 `auto`, 생성만이면 `create`, 편집만이면 `edit`.
+
+| Skill | 문서를 고름 | 폴더만 고름 / 대상 없음 |
+|---|---|---|
+| `result_mode=edit` | Skill 지침으로 편집안(`markdown_edit`). `targets`가 `["selection"]`뿐인데 선택 범위가 없으면 `clarify` | `clarify`(수정할 문서를 열라는 안내) |
+| `result_mode=create` | 그 문서를 원문으로 새 문서 초안(`markdown_create`) | 입력 없이 새 문서 초안(`markdown_create`) |
+| `result_mode=auto` | `clarify`("새 문서로 만들까요, 지금 문서를 수정할까요?", 문서 동작 없음) | 새 문서 초안(`markdown_create`) |
+| 폴더 정리(문서 기능 없음) | 워크스페이스 전체 정리 계획(`folder_organize` run) | `folder_id` 범위(없으면 워크스페이스 전체)의 정리 계획(`folder_organize` run, `target_folder_id`) |
+
+- 원문은 생성 payload의 `reference_context.source_document`(`document_id`, `markdown`)로 싣고, 지침의 `{문서}`는 그 위치를 가리킨다.
+  할 일을 붙인 턴(`/slug 할 일`)도 명시한 Skill로 새 문서를 만들면서 문서를 골랐다면 같은 원문을 싣는다.
+- 할 일을 붙인 턴은 라우터를 거치며 결과 방식으로 동작을 맞춘다: `create` Skill은 새 문서, `edit` Skill은 라우터가 새 문서를 골라도 문서 편집,
+  `auto` Skill은 문서가 열려 있고 확신도가 0.7 미만이면 위와 같은 `clarify`. 되묻기에는 `/slug 새 문서로 만들어 줘`나 `/slug 지금 문서를 수정해 줘`처럼 답하면 된다.
+
 - API 수: 11
 
 ## API 목차
