@@ -191,3 +191,17 @@ def resolve_requires_source(
     if inferred is not None:
         return inferred
     return bool(classified)
+
+
+def legacy_requires_source(
+    capabilities: tuple[SkillCapability, ...],
+    result_mode: SkillResultMode | None,
+) -> bool:
+    """컬럼 추가 전에 게시된 Skill(저장값 NULL)의 원문 필요 여부.
+
+    그때는 명시한 생성 Skill을 문서를 고른 채 실행하면 항상 그 문서를 원문으로 썼다. 그 동작을 지키도록
+    template은 False, 새 문서를 만드는 문서 Skill(document-create, 결과 방식 create·auto·없음)은 True, 그 밖은 False다.
+    """
+    if "template" in capabilities:
+        return False
+    return "document-create" in capabilities and result_mode != "edit"

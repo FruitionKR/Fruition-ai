@@ -254,11 +254,17 @@ class RequiresSourceStoredRowTest(unittest.TestCase):
         }
 
     def test_legacy_rows_compute_requires_source_on_read(self) -> None:
+        # 이전에는 명시한 생성 Skill이 고른 문서를 항상 원문으로 썼다. `{문서}`가 없어도 그 동작을 지킨다.
         cases = (
             (SOURCE_INSTRUCTIONS, ["document-create"], "create", True),
-            (PLAIN_INSTRUCTIONS, ["document-create"], "create", False),
+            (PLAIN_INSTRUCTIONS, ["document-create"], "create", True),
+            (PLAIN_INSTRUCTIONS, ["document-create", "document-edit"], "auto", True),
+            (PLAIN_INSTRUCTIONS, ["document-create"], None, True),
             (PLAIN_INSTRUCTIONS, ["template"], None, False),
+            (SOURCE_INSTRUCTIONS, ["document-create", "template"], None, False),
+            (SOURCE_INSTRUCTIONS, ["document-create", "document-edit"], "edit", False),
             (SOURCE_INSTRUCTIONS, ["document-edit"], "edit", False),
+            (PLAIN_INSTRUCTIONS, ["folder-organize"], None, False),
         )
         for instructions, capabilities, result_mode, expected in cases:
             with self.subTest(capabilities=capabilities, instructions=instructions):

@@ -297,7 +297,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 - 새 문서를 만들지 않는 Skill(결과 방식 `edit`, `document-edit`·`folder-organize`만 있는 Skill)에서는 의미가 없어 보낸 값을 무시하고 `false`로 저장합니다(거절하지 않음).
 - 작성(`skill_author`) 초안 응답의 `requires_source`는 규칙·분류로 판단한 값입니다. 게시는 의도를 다시 분류하지 않으므로, 초안의 판단을 유지하려면 게시 payload에 초안의 `requires_source`(사용자가 바꾼 값)를 그대로 보내야 합니다. 생략하면 `{문서}`·`template` 규칙만 적용되고 그 밖은 `false`입니다.
 - 수정에서 생략하면 지침이 이전과 같을 때 이전 값을 이어받고, 지침을 바꿨으면 다시 분류한 값을 씁니다.
-- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 항상 `boolean`으로 포함됩니다. 컬럼 추가 전에 게시된 Skill(저장값 없음)은 조회할 때 `{문서}`가 있으면 `true`, 그 밖(`template` 포함)은 `false`로 계산해 돌려줍니다.
+- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 항상 `boolean`으로 포함됩니다. 컬럼 추가 전에 게시된 Skill(저장값 없음)은 이전 동작(명시한 생성 Skill은 고른 문서를 원문으로 씀)을 지키도록 조회할 때 계산합니다: `template`이 있으면 `false`, `document-create`가 있고 결과 방식이 `edit`가 아니면(`create`·`auto`·`null`) `true`, 그 밖은 `false`. 이 값은 수정에서 지침을 바꾸지 않으면 그대로 이어받습니다.
 - Agent 실행 반영: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)의 새 문서 원문 규칙을 따릅니다.
 
 #### 5. Response body
