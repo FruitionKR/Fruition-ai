@@ -314,13 +314,23 @@ class CropFirstWithAnyDocTest(unittest.TestCase):
         def table(region_id: str, page: int, bbox: list[float]) -> dict[str, object]:
             return {"id": region_id, "page": page, "type": "table_candidate", "bbox": bbox}
 
+        def figure(region_id: str, page: int, bbox: list[float]) -> dict[str, object]:
+            return {"id": region_id, "page": page, "type": "figure_candidate", "bbox": bbox}
+
         cases = {
-            "continued": ([], [50, 40, 550, 300], True),
-            "body text below first table": ([(1, 700)], [50, 40, 550, 300], False),
-            "body text above second table": ([(2, 200)], [50, 300, 550, 500], False),
-            "different width": ([], [120, 40, 550, 300], False),
+            "continued": ([], [50, 40, 550, 300], [], True),
+            "figure detected on the same table": (
+                [], [50, 40, 550, 300], [figure("same", 2, [50, 40, 550, 300])], True
+            ),
+            "figure below first table": (
+                [], [50, 40, 550, 300], [figure("below", 1, [50, 660, 550, 760])], False
+            ),
+            "last row left below the detected table": ([(1, 670)], [50, 40, 550, 300], [], True),
+            "body text below first table": ([(1, 700)], [50, 40, 550, 300], [], False),
+            "body text above second table": ([(2, 200)], [50, 300, 550, 500], [], False),
+            "different width": ([], [120, 40, 550, 300], [], False),
         }
-        for name, (texts, second_bbox, expected) in cases.items():
+        for name, (texts, second_bbox, figures, expected) in cases.items():
             with self.subTest(name), fitz.open() as document:
                 for _ in range(2):
                     page = document.new_page(width=600, height=842)
@@ -330,13 +340,31 @@ class CropFirstWithAnyDocTest(unittest.TestCase):
                     document[page_number - 1].insert_text((60, y), "body")
                 regions = [
                     table("first", 1, [50, 400, 550, 650]),
+                    *figures,
                     table("second", 2, second_bbox),
                 ]
 
                 module.link_continuations(document, regions)
 
-                self.assertEqual(regions[1].get("continues") == "first", expected)
+                self.assertEqual(regions[-1].get("continues") == "first", expected)
                 self.assertNotIn("continues", regions[0])
+                if name == "last row left below the detected table":
+                    # 남은 행까지 crop과 본문 가리기에 들어가도록 영역을 넓힌다.
+                    self.assertGreater(regions[0]["bbox"][3], 665)
+
+    def test_link_continuations_keeps_page_number_out_of_table(self) -> None:
+        with fitz.open() as document:
+            for number in ("1", "2"):
+                document.new_page(width=600, height=842).insert_text((290, 815), number)
+            regions = [
+                {"id": "first", "page": 1, "type": "table_candidate", "bbox": [50, 400, 550, 800]},
+                {"id": "second", "page": 2, "type": "table_candidate", "bbox": [50, 40, 550, 300]},
+            ]
+
+            module.link_continuations(document, regions)
+
+            self.assertEqual(regions[1]["continues"], "first")
+            self.assertEqual(regions[0]["bbox"][3], 800)
 
     def test_assemble_drops_fragment_merged_into_previous_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
