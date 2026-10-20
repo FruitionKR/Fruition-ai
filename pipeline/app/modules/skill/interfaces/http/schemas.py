@@ -87,7 +87,8 @@ class SkillAuthoringResponse(BaseModel):
     targets: list[TargetValue] = Field(default_factory=list)
     result_mode: ResultModeValue | None = None
     # 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는 Skill인지. 초안은 규칙·분류로 판단한 값이다.
-    requires_source: bool = False
+    # null은 아직 정하지 않은 초안이다(게시 때 규칙으로 정한다).
+    requires_source: bool | None = False
     issues: list[dict[str, object]] = Field(default_factory=list)
 
     @classmethod

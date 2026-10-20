@@ -107,7 +107,8 @@ class SkillAuthoringProposal:
     instructions_markdown: str
     capabilities: tuple[SkillCapability, ...] = ()
     allowed_tools: tuple[SkillTool, ...] = ()
-    requires_source: bool = False
+    # None이면 아직 정하지 않은 값이다(게시 때 규칙으로 정한다. 예: 원문 필요 여부가 없던 대기 제안).
+    requires_source: bool | None = False
 
 
 @dataclass(frozen=True)

@@ -214,6 +214,57 @@ class RequiresSourceAuthoringTest(unittest.TestCase):
         self.assertEqual(generator.classification_count, 0)
         self.assertFalse(result.skill.enabled_version.requires_source)  # type: ignore[union-attr]
 
+    def test_update_with_changed_capabilities_decides_by_rules_instead_of_previous_value(self) -> None:
+        # 원문 없이 만들던 Skill(False)을 다른 종류로 바꾸고 지침에 `{문서}`를 넣으면, 이전 값 대신 규칙으로 True다.
+        generator = FixedGenerator(draft_result())
+        use_case, repository = self._use_case(generator)
+        created = self._publish(use_case, result_mode="create", requires_source=False)
+
+        result = self._update(
+            use_case,
+            created.skill.id,  # type: ignore[union-attr]
+            SOURCE_INSTRUCTIONS,
+            capabilities=("document-create", "document-edit"),
+        )
+
+        self.assertEqual(generator.classification_count, 0)
+        stored = repository.skills[created.skill.id].enabled_version  # type: ignore[union-attr]
+        self.assertTrue(stored.requires_source)  # type: ignore[union-attr]
+        self.assertTrue(result.skill.enabled_version.requires_source)  # type: ignore[union-attr]
+
+    def test_update_with_changed_capabilities_still_honors_explicit_value(self) -> None:
+        use_case, _ = self._use_case(FixedGenerator(draft_result()))
+        created = self._publish(use_case, result_mode="create", requires_source=True)
+
+        result = self._update(
+            use_case,
+            created.skill.id,  # type: ignore[union-attr]
+            SOURCE_INSTRUCTIONS,
+            capabilities=("document-create", "document-edit"),
+            requires_source=False,
+        )
+
+        self.assertFalse(result.skill.enabled_version.requires_source)  # type: ignore[union-attr]
+
+    def test_update_with_same_capabilities_and_placeholder_keeps_previous_value(self) -> None:
+        # capabilities를 다시 보내도 이전과 같고 지침만 고쳤으면 이전 판단(False)을 이어받는다.
+        generator = FixedGenerator(draft_result())
+        use_case, _ = self._use_case(generator)
+        created = self._publish(use_case, result_mode="create", requires_source=False)
+
+        omitted = self._update(use_case, created.skill.id, SOURCE_INSTRUCTIONS)  # type: ignore[union-attr]
+        resent = self._update(
+            use_case,
+            created.skill.id,  # type: ignore[union-attr]
+            SOURCE_INSTRUCTIONS,
+            capabilities=("document-create",),
+            result_mode="create",
+        )
+
+        self.assertEqual(generator.classification_count, 0)
+        self.assertFalse(omitted.skill.enabled_version.requires_source)  # type: ignore[union-attr]
+        self.assertFalse(resent.skill.enabled_version.requires_source)  # type: ignore[union-attr]
+
     def test_http_requests_accept_optional_requires_source(self) -> None:
         base = {
             "provider": "openai",

@@ -455,13 +455,7 @@ class AuthorSkillUseCase:
         )
         proposal = replace(
             proposal,
-            requires_source=_updated_requires_source(
-                previous,
-                proposal,
-                result_mode,
-                requires_source,
-                preserved=preserved_capabilities is not None,
-            ),
+            requires_source=_updated_requires_source(previous, proposal, result_mode, requires_source),
         )
         ensure_task_active()
         updated = self._skill_manager.update_published(
@@ -581,27 +575,33 @@ def _updated_requires_source(
     proposal: SkillAuthoringProposal,
     result_mode: SkillResultMode | None,
     explicit: bool | None,
-    *,
-    preserved: bool,
 ) -> bool:
-    """수정 버전의 원문 필요 여부. 명시값이 없으면 지침을 고쳤어도 이전 생성 Skill의 값을 이어받는다.
+    """수정 버전의 원문 필요 여부. 사용자가 명시한 값이 가장 앞선다.
 
-    이전 버전이 새 문서를 만들지 않던 Skill이면(예: 결과 방식 edit -> create) 이어받을 값이 없어 규칙으로 정한다.
-    preserved는 이전 버전의 capabilities를 이어받았는지다(이전 버전이 없을 때만 False).
+    명시값이 없고 Skill 종류(capabilities)·결과 방식이 이전 버전과 같으면 지침을 고쳤어도 이전 값을 이어받는다
+    (지침만 고친 수정은 의도를 다시 정하지 않는다).
+    종류나 결과 방식이 바뀌었으면 이전 값은 다른 종류의 판단이라 명시값으로 쓰지 않고 규칙(`{문서}`·template)으로
+    다시 정한다. 규칙으로 정할 수 없을 때만 이전 값을 분류값 대신 쓴다(수정 경로는 의도를 다시 분류하지 않는다).
+    이전 버전이 새 문서를 만들지 않던 Skill이면(예: 결과 방식 edit -> create) 이어받을 값이 없다.
     """
-    if (
-        explicit is None
-        and preserved
-        and previous is not None
-        and can_create_document(previous.capabilities, previous.result_mode)
-    ):
-        explicit = previous.requires_source
+    inherited = (
+        previous.requires_source
+        if previous is not None and can_create_document(previous.capabilities, previous.result_mode)
+        else None
+    )
+    unchanged_kind = (
+        previous is not None
+        and set(previous.capabilities) == set(proposal.capabilities)
+        and previous.result_mode == result_mode
+    )
+    if explicit is None and unchanged_kind:
+        explicit = inherited
     return resolve_requires_source(
         proposal.capabilities,
         result_mode,
         proposal.instructions_markdown,
         explicit=explicit,
-        classified=None if preserved else proposal.requires_source,
+        classified=inherited,
     )
 
 

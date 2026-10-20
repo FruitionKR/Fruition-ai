@@ -904,7 +904,7 @@ class HandleAgentTurnUseCase:
                     instructions_markdown=proposal.instructions_markdown,
                     capabilities=proposal.capabilities,
                     allowed_tools=proposal.allowed_tools,
-                    requires_source=bool(proposal.requires_source),
+                    requires_source=proposal.requires_source,
                 ),
             )
         scope_type = _scope_from_text(request.message)
@@ -920,7 +920,7 @@ class HandleAgentTurnUseCase:
                     instructions_markdown=proposal.instructions_markdown,
                     capabilities=proposal.capabilities,
                     allowed_tools=proposal.allowed_tools,
-                    requires_source=bool(proposal.requires_source),
+                    requires_source=proposal.requires_source,
                 ),
             )
         raise ValueError("현재 제안은 게시, 재생성, 보안 재검토, 커맨드·범위 변경을 지원합니다.")

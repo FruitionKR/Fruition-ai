@@ -561,6 +561,54 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         )
         self.assertEqual(authorer.kwargs, {})
 
+    def test_pending_skill_title_and_scope_revision_keep_undecided_requires_source(self) -> None:
+        # 대기 제안의 requires_source가 없으면(None) 게시 때 규칙으로 정해야 하므로 False로 바꾸지 않는다.
+        authorer = RecordingSkillAuthorer()
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="selection", start_line=1, end_line=1),
+                    summary="unused",
+                    replacement_markdown="unused",
+                )
+            )
+        )
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(
+                AgentTurnRoute(action="skill_authoring", confidence=1.0, reason="pending Skill revision")
+            ),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            skill_authorer=authorer,  # type: ignore[arg-type]
+        )
+
+        def revise(message: str, requires_source: bool | None):
+            return use_case.execute(
+                AgentTurnRequest(
+                    message=message,
+                    workspace_id="workspace-1",
+                    user_id="user-1",
+                    conversation_context=AgentConversationContext(
+                        pending_skill_proposal=PendingSkillProposal(
+                            scope_type="personal",
+                            name="meeting-notes",
+                            description="회의 내용을 정리합니다.",
+                            instructions_markdown="# 작성 절차\n\n- {문서}의 결정 사항을 구분한다.",
+                            capabilities=("document-create",),
+                            allowed_tools=("list_root_items", "list_folder_children", "create_document"),
+                            requires_source=requires_source,
+                        )
+                    ),
+                )
+            ).skill_authoring_result.proposal  # type: ignore[union-attr]
+
+        self.assertIsNone(revise("제목을 weekly-meeting-notes로 바꿔줘", None).requires_source)
+        self.assertIsNone(revise("팀 스킬로 바꿔줘", None).requires_source)
+        self.assertTrue(revise("팀 스킬로 바꿔줘", True).requires_source)
+        self.assertEqual(authorer.kwargs, {})
+
     def test_pending_skill_approval_publishes_after_revalidation(self) -> None:
         authorer = RecordingSkillAuthorer()
         editor = RecordingMarkdownEditor(
