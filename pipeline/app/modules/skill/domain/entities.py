@@ -41,6 +41,8 @@ class SkillVersion:
     allowed_tools: tuple[SkillTool, ...] = ()
     targets: tuple[SkillTarget, ...] = ()
     result_mode: SkillResultMode | None = None
+    # 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는지. 저장값이 없던(이전에 게시한) 행은 읽을 때 계산한다.
+    requires_source: bool = False
     status: SkillVersionStatus = "draft"
     lint_result: dict[str, object] | None = None
     created_by: str | None = None
@@ -105,6 +107,7 @@ class SkillAuthoringProposal:
     instructions_markdown: str
     capabilities: tuple[SkillCapability, ...] = ()
     allowed_tools: tuple[SkillTool, ...] = ()
+    requires_source: bool = False
 
 
 @dataclass(frozen=True)

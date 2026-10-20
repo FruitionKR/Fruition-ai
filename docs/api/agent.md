@@ -24,12 +24,26 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | Skill | 문서를 고름 | 폴더만 고름 / 대상 없음 |
 |---|---|---|
 | `result_mode=edit` | Skill 지침으로 편집안(`markdown_edit`). `targets`가 `["selection"]`뿐인데 선택 범위가 없으면 `clarify` | `clarify`(수정할 문서를 열라는 안내) |
-| `result_mode=create` | 그 문서를 원문으로 새 문서 초안(`markdown_create`) | 입력 없이 새 문서 초안(`markdown_create`) |
+| `result_mode=create`, `requires_source=true` | 그 문서를 원문으로 새 문서 초안(`markdown_create`) | 폴더: 폴더 바로 아래 Markdown 문서들을 원문으로 새 문서 초안. 대상 없음: 입력 없이 새 문서 초안 |
+| `result_mode=create`, `requires_source=false` | 원문 없이 새 문서 초안(문서는 위치로만 쓴다) | 원문 없이 새 문서 초안(폴더는 위치로만 쓴다) |
 | `result_mode=auto` | `clarify`("새 문서로 만들까요, 지금 문서를 수정할까요?", 문서 동작 없음) | 새 문서 초안(`markdown_create`) |
 | 폴더 정리(문서 기능 없음) | 워크스페이스 전체 정리 계획(`folder_organize` run) | `folder_id` 범위(없으면 워크스페이스 전체)의 정리 계획(`folder_organize` run, `target_folder_id`) |
 
-- 원문은 생성 payload의 `reference_context.source_document`(`document_id`, `markdown`)로 싣고, 지침의 `{문서}`는 그 위치를 가리킨다.
-  할 일을 붙인 턴(`/slug 할 일`)도 명시한 Skill로 새 문서를 만들면서 문서를 골랐다면 같은 원문을 싣는다.
+- 원문은 Skill 버전의 `requires_source`([Skill API](skills.md))가 `true`일 때만 쓴다. `false`면 문서·폴더를 골라도 원문 없이
+  새 문서 위치로만 쓴다. 문서를 고른 상태에서 `requires_source=false` Skill을 실행할 때 클라이언트는 그 문서의 부모 폴더를 `folder_id`로 보내며,
+  `active_markdown_context`가 와도 원문이나 `{문서}` 값으로 쓰지 않는다(`{문서}`는 `(현재 문서 없음)`).
+- 문서 원문은 생성 payload의 `reference_context.source_document`(`document_id`, `markdown`)로 싣고, 지침의 `{문서}`는 그 위치를 가리킨다.
+  문서와 `folder_id`가 함께 오면 문서가 원문이다.
+- 폴더 원문(`requires_source=true`, 문서 없이 `folder_id`만)은 document-svc `POST /internal/agent/skill-execution/folder-sources/read`로
+  그 폴더 **바로 아래**(하위 폴더 제외) Markdown 문서 중 사용자가 읽을 수 있는 문서를 읽는다. 최근 수정순 최대 20개, 본문 합계 60,000자까지
+  싣고(상한을 넘는 문서에서 멈추며, 첫 문서 하나가 상한을 넘으면 그 문서 앞부분만), `reference_context.source_documents`
+  (`document_id`, `title`, `updated_at`, `markdown` 배열)로 싣는다. 지침의 `{문서}`는 그 위치를 가리킨다.
+  일부만 읽었으면 결과 `message`에 "폴더 문서 N개 중 최근 수정한 M개만 읽었어요."(본문을 자른 경우 "폴더 문서가 길어 일부 내용만 읽었어요.")를 덧붙인다.
+  폴더를 읽을 수 없거나(403·404) 읽을 문서가 없으면 초안을 만들지 않고 `clarify`로 다른 대상을 고르라고 안내한다.
+- `/slug`만 보낸 턴은 할 일이 없으므로 앞선 대화(`recent_conversation_summary`·`recent_messages`·`reference_context`)를 생성 payload에
+  싣지 않는다. 원문은 명시한 문서·폴더뿐이다(앞 턴 내용이 초안에 섞이지 않게).
+- 할 일을 붙인 턴(`/slug 할 일`)도 명시한 Skill로 새 문서를 만들면 같은 원문 규칙(문서·폴더)을 따른다. 이 턴은 할 일이 대화를 가리킬 수 있어
+  대화 맥락을 함께 싣되, 생성 프롬프트는 명시한 원문을 대화보다 우선한다.
 - 할 일을 붙인 턴은 라우터를 거치며 결과 방식으로 동작을 맞춘다: `create` Skill은 새 문서, `edit` Skill은 라우터가 새 문서를 골라도 문서 편집,
   `auto` Skill은 문서가 열려 있고 확신도가 0.7 미만이면 위와 같은 `clarify`. 되묻기에는 `/slug 새 문서로 만들어 줘`나 `/slug 지금 문서를 수정해 줘`처럼 답하면 된다.
 

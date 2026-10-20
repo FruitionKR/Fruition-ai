@@ -2459,7 +2459,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def options_skill(capabilities: tuple[str, ...], targets: tuple[str, ...], result_mode: str | None) -> Skill:
+def options_skill(
+    capabilities: tuple[str, ...],
+    targets: tuple[str, ...],
+    result_mode: str | None,
+    *,
+    requires_source: bool = False,
+) -> Skill:
     skill = document_skill()
     assert skill.enabled_version is not None
     return replace(
@@ -2469,6 +2475,7 @@ def options_skill(capabilities: tuple[str, ...], targets: tuple[str, ...], resul
             capabilities=capabilities,  # type: ignore[arg-type]
             targets=targets,  # type: ignore[arg-type]
             result_mode=result_mode,  # type: ignore[arg-type]
+            requires_source=requires_source,
         ),
     )
 
@@ -2819,7 +2826,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
         self.assertEqual(starter.requests, [])
 
     def test_create_skill_with_document_uses_document_as_source(self) -> None:
-        skill = options_skill(("document-create",), (), "create")
+        skill = options_skill(("document-create",), (), "create", requires_source=True)
         skill = replace(
             skill,
             enabled_version=replace(skill.enabled_version, instructions_markdown="{문서}를 세 줄로 요약한다."),  # type: ignore[arg-type]
@@ -2835,7 +2842,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
             create_request.reference_context["source_document"],  # type: ignore[index]
             {"document_id": "document-1", "markdown": OPTIONS_MARKDOWN},
         )
-        self.assertIn("참고 문서", create_request.instruction)
+        self.assertIn("고른 문서를 원문으로", create_request.instruction)
         # 본문은 reference_context에 한 번만 싣고 지침은 그 위치를 가리킨다.
         self.assertNotIn(OPTIONS_MARKDOWN, create_request.skill_instructions or "")
         self.assertIn("reference_context.source_document", create_request.skill_instructions or "")
@@ -2925,7 +2932,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
                 self.assertIn("워크스페이스", starter.requests[0].instruction)  # type: ignore[attr-defined]
 
     def test_create_skill_with_instruction_also_uses_selected_document_as_source(self) -> None:
-        skill = options_skill(("document-create",), (), "create")
+        skill = options_skill(("document-create",), (), "create", requires_source=True)
         use_case, router, editor, _ = self._use_case(skill, EDIT_ROUTE)
 
         result = use_case.execute(self._request(document=True, message="/brief 이 문서에 적용해 줘"))
@@ -2957,7 +2964,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
         self.assertEqual(editor.requests, [])
 
     def test_auto_skill_with_create_answer_uses_document_as_source(self) -> None:
-        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto")
+        skill = options_skill(("document-create", "document-edit"), ("current_document",), "auto", requires_source=True)
         use_case, _, editor, _ = self._use_case(skill, CREATE_ROUTE)
 
         result = use_case.execute(self._request(document=True, message="/brief 새 문서로 만들어 줘"))

@@ -1609,6 +1609,10 @@ components:
           - type: string
           - type: 'null'
           title: Question
+        requires_source:
+          default: false
+          title: Requires Source
+          type: boolean
         result_mode:
           anyOf:
           - enum:
@@ -2128,6 +2132,9 @@ components:
         name:
           title: Name
           type: string
+        requires_source:
+          title: Requires Source
+          type: boolean
         result_mode:
           anyOf:
           - type: string
@@ -2154,6 +2161,7 @@ components:
       - allowed_tools
       - targets
       - result_mode
+      - requires_source
       - lint_result
       - status
       title: SkillVersionResponse

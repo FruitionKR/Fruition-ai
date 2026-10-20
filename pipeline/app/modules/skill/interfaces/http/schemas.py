@@ -86,6 +86,8 @@ class SkillAuthoringResponse(BaseModel):
     allowed_tools: list[ToolValue] = Field(default_factory=list)
     targets: list[TargetValue] = Field(default_factory=list)
     result_mode: ResultModeValue | None = None
+    # 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는 Skill인지. 초안은 규칙·분류로 판단한 값이다.
+    requires_source: bool = False
     issues: list[dict[str, object]] = Field(default_factory=list)
 
     @classmethod
@@ -113,6 +115,7 @@ class SkillAuthoringResponse(BaseModel):
                 # 실행 대상·결과 방식은 게시된 버전에만 있다(초안 단계는 빈 값).
                 targets=list(stored.targets) if stored else [],
                 result_mode=stored.result_mode if stored else None,
+                requires_source=stored.requires_source if stored else proposal.requires_source,
                 issues=[issue.__dict__ for issue in result.issues],
             )
         if result.skill is None:
@@ -137,6 +140,7 @@ class SkillAuthoringResponse(BaseModel):
             allowed_tools=list(version.allowed_tools),
             targets=list(version.targets),
             result_mode=version.result_mode,
+            requires_source=version.requires_source,
         )
 
 
@@ -155,6 +159,9 @@ class PublishAuthoredSkillRequest(SkillLlmRequest):
     # 문서 Skill의 실행 대상·결과 방식. 생략하면 targets는 기본값(["current_document"]), result_mode는 null이다.
     targets: list[TargetValue] | None = Field(default=None, max_length=2)
     result_mode: ResultModeValue | None = None
+    # 원문 필요 여부를 사용자가 정한 값. 생략(null)하면 지침의 `{문서}`·template 규칙으로 정하고, 정할 수 없으면 false다.
+    # 새 문서를 만들지 않는 Skill(결과 방식 edit, 폴더 정리 등)에서는 무시하고 false로 저장한다.
+    requires_source: bool | None = None
 
 
 class UpdateSkillRequest(SkillLlmRequest):
@@ -168,6 +175,8 @@ class UpdateSkillRequest(SkillLlmRequest):
     # 생략(null)하면 기존 값을 유지한다. targets=[]는 기본값(["current_document"])으로 되돌린다.
     targets: list[TargetValue] | None = Field(default=None, max_length=2)
     result_mode: ResultModeValue | None = None
+    # 생략(null)하면 지침이 같을 때 이전 값을 유지하고, 지침을 바꿨으면 다시 판단한다. 생성 Skill이 아니면 무시한다.
+    requires_source: bool | None = None
 
 
 class SkillActorRequest(BaseModel):
@@ -185,6 +194,7 @@ class SkillVersionResponse(BaseModel):
     allowed_tools: list[str]
     targets: list[str]
     result_mode: str | None
+    requires_source: bool
     lint_result: dict[str, object]
     status: str
 
@@ -200,6 +210,7 @@ class SkillVersionResponse(BaseModel):
             allowed_tools=list(version.allowed_tools),
             targets=list(version.targets),
             result_mode=version.result_mode,
+            requires_source=version.requires_source,
             lint_result=version.lint_result or {},
             status=version.status,
         )

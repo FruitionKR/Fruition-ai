@@ -88,6 +88,7 @@ class PendingSkillProposalRequest(BaseModel):
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
     capabilities: list[CapabilityValue] = Field(..., min_length=1)
     allowed_tools: list[ToolValue] = Field(..., min_length=1)
+    requires_source: bool | None = None
 
     def to_domain(self) -> PendingSkillProposal:
         return PendingSkillProposal(
@@ -97,6 +98,7 @@ class PendingSkillProposalRequest(BaseModel):
             instructions_markdown=self.instructions_markdown,
             capabilities=tuple(self.capabilities),
             allowed_tools=tuple(self.allowed_tools),
+            requires_source=self.requires_source,
         )
 
 

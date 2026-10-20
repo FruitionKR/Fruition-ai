@@ -63,6 +63,8 @@ class PendingSkillProposal:
     instructions_markdown: str
     capabilities: tuple[SkillCapability, ...]
     allowed_tools: tuple[SkillTool, ...]
+    # 작성 초안의 원문 필요 여부(skill_authoring.requires_source). 없으면 게시 때 규칙으로 정한다.
+    requires_source: bool | None = None
 
 
 @dataclass(frozen=True)

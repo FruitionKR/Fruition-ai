@@ -68,6 +68,7 @@ class ManageSkillUseCase:
         allowed_tools: tuple[SkillTool, ...],
         targets: tuple[SkillTarget, ...] = (),
         result_mode: SkillResultMode | None = None,
+        requires_source: bool = False,
     ) -> Skill:
         _validate_definition(slug, name, description, instructions_markdown, capabilities, allowed_tools)
         skill_id = str(uuid4())
@@ -82,6 +83,7 @@ class ManageSkillUseCase:
             allowed_tools=allowed_tools,
             targets=targets,
             result_mode=result_mode,
+            requires_source=requires_source,
             status="published",
         )
         if _blocked_issues(version):
@@ -111,6 +113,7 @@ class ManageSkillUseCase:
         allowed_tools: tuple[SkillTool, ...],
         targets: tuple[SkillTarget, ...] = (),
         result_mode: SkillResultMode | None = None,
+        requires_source: bool = False,
     ) -> Skill:
         skill = self.get_manageable(workspace_id, user_id, skill_id)
         _validate_definition(
@@ -133,6 +136,7 @@ class ManageSkillUseCase:
             allowed_tools=allowed_tools,
             targets=targets,
             result_mode=result_mode,
+            requires_source=requires_source,
             status="published",
         )
         if _blocked_issues(version):
@@ -186,6 +190,7 @@ def _new_version(
     allowed_tools: tuple[SkillTool, ...],
     targets: tuple[SkillTarget, ...] = (),
     result_mode: SkillResultMode | None = None,
+    requires_source: bool = False,
     status: SkillVersionStatus = "draft",
 ) -> SkillVersion:
     issues = inspect_skill_instructions(instructions_markdown)
@@ -200,6 +205,7 @@ def _new_version(
         allowed_tools=allowed_tools,
         targets=targets,
         result_mode=result_mode,
+        requires_source=requires_source,
         lint_result={"issues": [issue.__dict__ for issue in issues]},
         status=status,
         created_by=user_id,

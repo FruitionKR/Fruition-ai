@@ -6,6 +6,7 @@ from dataclasses import replace
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
+    FolderSourceReaderPort,
 )
 from app.modules.agent.domain.entities import (
     ActiveMarkdownContext,
@@ -18,6 +19,13 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
+from app.modules.agent.domain.folder_sources import (
+    MAX_FOLDER_SOURCE_DOCUMENTS,
+    FolderSourceUnavailableError,
+    SelectedFolderSources,
+    folder_source_notice,
+    select_folder_sources,
+)
 from app.modules.agent.domain.task_mode import is_task_mode, task_mode_route
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
@@ -67,6 +75,7 @@ from app.modules.skill.domain.entities import (
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
+    REFERENCE_CONTEXT_FOLDER_REFERENCE,
     render_skill_instructions,
 )
 from app.modules.skill.domain.policy import validate_skill_name
@@ -95,6 +104,9 @@ AUTO_RESULT_MODE_MIN_CONFIDENCE = 0.7
 # 문서 생성·편집을 할 수 있는 Skill 기능. template은 둘 다 포함한다.
 CREATE_CAPABILITIES = frozenset({"template", "document-create"})
 EDIT_CAPABILITIES = frozenset({"template", "document-edit"})
+EMPTY_FOLDER_SOURCE_MESSAGE = (
+    "이 폴더 바로 아래에 읽을 수 있는 Markdown 문서가 없어요. 문서가 있는 폴더나 문서를 골라 다시 실행해 주세요."
+)
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
 BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
@@ -126,6 +138,7 @@ class HandleAgentTurnUseCase:
         conversation_replier: ConversationReplierPort | None = None,
         markdown_turn_repository: AgentRunManagementRepositoryPort | None = None,
         event_publisher: QueryEventPublisherPort | None = None,
+        folder_source_reader: FolderSourceReaderPort | None = None,
     ) -> None:
         self._event_publisher = event_publisher
         self._router = router
@@ -140,6 +153,7 @@ class HandleAgentTurnUseCase:
         self._web_search_query_use_case_factory = web_search_query_use_case_factory
         self._conversation_replier = conversation_replier
         self._markdown_turn_repository = markdown_turn_repository
+        self._folder_source_reader = folder_source_reader
 
     def execute(self, request: AgentTurnRequest) -> AgentTurnResult:
         if not request.message.strip():
@@ -341,9 +355,11 @@ class HandleAgentTurnUseCase:
                 if reuses_create_preview and creation_markdown is None:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if creation_markdown is None:
-                    creation_markdown = self._markdown_create_use_case.execute(
-                        self._markdown_create_request(request, route, selected_skill)
-                    ).document.markdown
+                    try:
+                        create_request, _ = self._markdown_create_request(request, route, selected_skill)
+                    except FolderSourceUnavailableError as exc:
+                        return _clarify_document_change(route, str(exc))
+                    creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
                 content = StartAgentRunContent(markdown=creation_markdown)
             elif route.action == "workspace_workflow" and route.document_operation == "edit":
                 markdown_context = request.active_markdown_context
@@ -623,7 +639,9 @@ class HandleAgentTurnUseCase:
 
         - 폴더 정리 Skill: 고른 폴더(`folder_id`, 없으면 워크스페이스 전체)의 정리 계획 run을 만든다.
         - 결과 방식 edit: 열린(고른) 문서를 Skill 지침대로 고친 편집안을 만든다. 문서가 없으면 문서를 고르라고 되묻는다.
-        - 결과 방식 create: Skill 지침으로 새 문서 초안을 만든다. 고른 문서가 있으면 그 본문을 원문으로 쓴다.
+        - 결과 방식 create: Skill 지침으로 새 문서 초안을 만든다. 원문이 필요한 Skill(requires_source)이면 고른 문서,
+          문서가 없으면 고른 폴더 바로 아래 Markdown 문서들을 원문으로 쓴다. 원문이 필요 없으면 위치로만 쓴다.
+        - 할 일이 없으므로 앞선 대화 내용은 원문으로 쓰지 않는다(명시한 문서·폴더만 원문이다).
         - 결과 방식 auto: 고른 문서가 있으면 새 문서/수정 중 무엇인지 되묻고, 없으면 새 문서 초안을 만든다.
         """
         version = skill.enabled_version
@@ -662,12 +680,14 @@ class HandleAgentTurnUseCase:
             required_capabilities=("document-create",),
         )
         publish_query_event(self._event_publisher, "agent.routed", "새 문서 작성 요청으로 확인했어요.")
-        message = (
-            f"'{version.name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요."
-            if has_document
-            else f"'{version.name}' Skill의 지침과 형식으로 새 문서 초안을 작성해 주세요."
-        )
-        return self._execute_markdown_create(replace(request, message=message), route, skill)
+        source = _create_source(request, skill)
+        basis = {
+            "document": "고른 문서를 원문으로 삼아 ",
+            "folder": "고른 폴더의 문서들을 원문으로 삼아 ",
+            "none": "",
+        }[source]
+        message = f"'{version.name}' Skill의 지침과 형식으로 {basis}새 문서 초안을 작성해 주세요."
+        return self._execute_markdown_create(replace(request, message=message), route, skill, bare=True)
 
     def _start_bare_folder_plan(self, request: AgentTurnRequest, skill: Skill) -> AgentTurnResult:
         """폴더 정리 Skill의 `/slug`. 고른 폴더(없으면 워크스페이스 전체)로 승인형 정리 계획 run을 만든다."""
@@ -706,15 +726,21 @@ class HandleAgentTurnUseCase:
         request: AgentTurnRequest,
         route: AgentTurnRoute,
         selected_skill: Skill | None,
+        *,
+        bare: bool = False,
     ) -> AgentTurnResult:
-        create_request = self._markdown_create_request(request, route, selected_skill)
+        try:
+            create_request, source_notice = self._markdown_create_request(request, route, selected_skill, bare=bare)
+        except FolderSourceUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
         result = self._markdown_create_use_case.execute(create_request)
+        notice = f"\n\n{source_notice}" if source_notice else ""
         return AgentTurnResult(
             action="markdown_create",
             route=route,
             generated_markdown=result.document,
-            message=f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
+            message=f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}{notice}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
         )
 
     def _markdown_create_request(
@@ -722,30 +748,74 @@ class HandleAgentTurnUseCase:
         request: AgentTurnRequest,
         route: AgentTurnRoute,
         selected_skill: Skill | None,
-    ) -> MarkdownCreateRequest:
-        """새 문서 요청. 명시한 Skill을 문서를 고른 채 실행하면 그 문서를 원문(source_document)으로 싣는다."""
-        reference_context = self._resolve_reference_context(request, route)
-        uses_source_document = _uses_source_document(request, selected_skill)
-        if uses_source_document:
+        *,
+        bare: bool = False,
+    ) -> tuple[MarkdownCreateRequest, str | None]:
+        """새 문서 요청과 결과 메시지에 덧붙일 원문 안내.
+
+        명시한 Skill이 원문을 필요로 하면(requires_source) 고른 문서를 source_document로, 문서 없이 폴더를 골랐으면
+        폴더 바로 아래 Markdown 문서들을 source_documents로 싣는다. 원문이 필요 없는 Skill은 고른 문서가 있어도
+        원문으로 쓰지 않는다(새 문서 위치로만 쓴다).
+        `/slug`만 보낸 실행(bare)은 앞선 대화를 원문처럼 섞지 않도록 대화 맥락을 싣지 않는다.
+
+        폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError를 낸다.
+        """
+        reference_context = {} if bare else self._resolve_reference_context(request, route)
+        source = _create_source(request, selected_skill)
+        notice = None
+        if source == "document":
             assert request.active_markdown_context is not None
             reference_context["source_document"] = {
                 "document_id": request.document_id,
                 "markdown": request.active_markdown_context.markdown,
             }
-        return MarkdownCreateRequest(
-            instruction=request.message,
+        elif source == "folder":
+            sources = self._read_folder_sources(request)
+            reference_context["source_documents"] = [
+                {
+                    "document_id": document.document_id,
+                    "title": document.title,
+                    "updated_at": document.updated_at,
+                    "markdown": document.markdown,
+                }
+                for document in sources.documents
+            ]
+            notice = folder_source_notice(sources)
+        return (
+            MarkdownCreateRequest(
+                instruction=request.message,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                conversation_summary=None if bare else _conversation_context_text(request),
+                reference_context=reference_context,
+                skill_instructions=_skill_instructions(
+                    selected_skill,
+                    request,
+                    document_in_payload=False,
+                    document_in_reference_context=source == "document",
+                    folder_in_reference_context=source == "folder",
+                    inline_active_document=not _explicit_without_source(request, selected_skill),
+                ),
+                output_language=request.output_language,
+            ),
+            notice,
+        )
+
+    def _read_folder_sources(self, request: AgentTurnRequest) -> SelectedFolderSources:
+        if self._folder_source_reader is None or not request.workspace_id or not request.user_id:
+            raise AgentConfigurationError("Folder source reading requires workspace_id, user_id, and a reader.")
+        assert request.folder_id is not None
+        publish_query_event(self._event_publisher, "agent.reading_sources", "고른 폴더의 문서를 읽고 있어요.")
+        listing = self._folder_source_reader.read(
             workspace_id=request.workspace_id,
             user_id=request.user_id,
-            conversation_summary=_conversation_context_text(request),
-            reference_context=reference_context,
-            skill_instructions=_skill_instructions(
-                selected_skill,
-                request,
-                document_in_payload=False,
-                document_in_reference_context=uses_source_document,
-            ),
-            output_language=request.output_language,
+            folder_id=request.folder_id,
+            max_documents=MAX_FOLDER_SOURCE_DOCUMENTS,
         )
+        sources = select_folder_sources(listing)
+        if not sources.documents:
+            raise FolderSourceUnavailableError(EMPTY_FOLDER_SOURCE_MESSAGE)
+        return sources
 
     def _resolve_reference_context(
         self,
@@ -792,6 +862,7 @@ class HandleAgentTurnUseCase:
                 instructions_markdown=proposal.instructions_markdown,
                 expected_capabilities=proposal.capabilities,
                 expected_allowed_tools=proposal.allowed_tools,
+                requires_source=proposal.requires_source,
             )
         if SECURITY_REVIEW_PATTERN.search(request.message):
             return self._skill_authorer.execute(
@@ -833,6 +904,7 @@ class HandleAgentTurnUseCase:
                     instructions_markdown=proposal.instructions_markdown,
                     capabilities=proposal.capabilities,
                     allowed_tools=proposal.allowed_tools,
+                    requires_source=bool(proposal.requires_source),
                 ),
             )
         scope_type = _scope_from_text(request.message)
@@ -848,6 +920,7 @@ class HandleAgentTurnUseCase:
                     instructions_markdown=proposal.instructions_markdown,
                     capabilities=proposal.capabilities,
                     allowed_tools=proposal.allowed_tools,
+                    requires_source=bool(proposal.requires_source),
                 ),
             )
         raise ValueError("현재 제안은 게시, 재생성, 보안 재검토, 커맨드·범위 변경을 지원합니다.")
@@ -1087,6 +1160,8 @@ def _skill_instructions(
     *,
     document_in_payload: bool,
     document_in_reference_context: bool = False,
+    folder_in_reference_context: bool = False,
+    inline_active_document: bool = True,
 ) -> str | None:
     """Skill 지침의 자리표시자를 이번 요청 값으로 채운다.
 
@@ -1100,20 +1175,44 @@ def _skill_instructions(
         document_reference: str | None = EDIT_PAYLOAD_DOCUMENT_REFERENCE
     elif document_in_reference_context:
         document_reference = REFERENCE_CONTEXT_DOCUMENT_REFERENCE
+    elif folder_in_reference_context:
+        document_reference = REFERENCE_CONTEXT_FOLDER_REFERENCE
     else:
         document_reference = None
+    inline_document = (
+        context.markdown
+        if context is not None and document_reference is None and inline_active_document
+        else None
+    )
     return render_skill_instructions(
         skill.enabled_version.instructions_markdown,
         request=request.message,
         selection=_selection_text(context),
-        document=context.markdown if context is not None and document_reference is None else None,
+        document=inline_document,
         document_reference=document_reference,
     )
 
 
-def _uses_source_document(request: AgentTurnRequest, skill: Skill | None) -> bool:
-    """명시한(`/slug`·skill_id) Skill로 새 문서를 만들 때 고른(열린) 문서가 있으면 그 문서를 원문으로 쓴다."""
-    return skill is not None and request.skill_mode == "explicit" and _has_active_markdown(request)
+def _create_source(request: AgentTurnRequest, skill: Skill | None) -> str:
+    """명시한(`/slug`·skill_id) Skill로 새 문서를 만들 때 원문으로 쓸 대상: document·folder·none.
+
+    원문이 필요한 Skill(requires_source)만 원문을 쓴다. 고른 문서가 있으면 그 문서, 없고 폴더를 골랐으면 그 폴더다.
+    원문이 필요 없는 Skill은 문서·폴더를 골라도 새 문서 위치로만 쓴다(프론트가 문서의 부모 폴더를 folder_id로 보낸다).
+    """
+    version = skill.enabled_version if skill is not None else None
+    if version is None or request.skill_mode != "explicit" or not version.requires_source:
+        return "none"
+    if _has_active_markdown(request):
+        return "document"
+    if request.folder_id:
+        return "folder"
+    return "none"
+
+
+def _explicit_without_source(request: AgentTurnRequest, skill: Skill | None) -> bool:
+    """명시한 Skill이 원문이 필요 없는 Skill이면 열린 문서 본문을 `{문서}`에도 넣지 않는다."""
+    version = skill.enabled_version if skill is not None else None
+    return version is not None and request.skill_mode == "explicit" and not version.requires_source
 
 
 def _bare_command_mode(

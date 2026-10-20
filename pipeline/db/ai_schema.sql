@@ -265,6 +265,8 @@ CREATE TABLE IF NOT EXISTS skill_versions (
 -- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document", "selection"](제한 없음)으로 본다.
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS targets text[] NOT NULL DEFAULT ARRAY[]::text[];
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS result_mode text;
+-- 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는 Skill인지. 기존 행(NULL)은 읽을 때 지침의 `{문서}` 유무로 계산한다.
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS requires_source boolean;
 
 DO $$
 BEGIN

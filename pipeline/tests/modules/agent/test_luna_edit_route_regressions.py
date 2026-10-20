@@ -126,6 +126,8 @@ def tag_skill() -> Skill:
                 "TAG[{요청}] DOC[{문서}] SEL[{선택한 부분}] KEEP[{이름}]"
             ),
             capabilities=("document-create", "document-edit"),
+            # 지침에 `{문서}`가 있어 저장소가 원문 필요(requires_source)로 읽는 Skill이다.
+            requires_source=True,
             status="published",
         ),
     )
