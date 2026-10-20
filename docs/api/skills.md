@@ -281,9 +281,9 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | `targets` | `string[]` | `current_document`, `selection` (최대 2개, 중복 불가) | 게시에서 생략하거나 `[]`이면 `["current_document"]`. 수정에서 생략(키 없음)하면 기존 값 유지, `[]`이면 기본값으로 되돌림. 저장 순서는 `current_document`, `selection`으로 고정 |
 | `result_mode` | `string` / `null` | `create`(새 문서), `edit`(현재 문서 수정), `auto`(상황에 맞게) | 게시에서 생략하면 `null`. 수정에서 생략하면 기존 값 유지 |
 
-- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 지침을 다시 분류한 capabilities로 검사).
+- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 이전 버전에서 이어받은 capabilities로 검사).
 - 문서 Skill이 아닌데 `targets`나 `result_mode`를 보내거나 `targets`가 중복이면 `400` `invalid_targets`/`invalid_result_mode`입니다.
-- 수정에서 보내지 않아 이어받은 값이 다시 분류된 capabilities와 맞지 않으면 버립니다(`result_mode`는 `null`, 문서 Skill이 아니게 되면 `targets`는 `[]`).
+- 수정(`skill_update`)은 보낸 필드만 바꾸는 부분 수정입니다. 지침(`instructions_markdown`)을 고쳐도 의도를 다시 분류하지 않고 이전 버전의 `capabilities`·`allowed_tools`를 그대로 이어받으므로, 보내지 않은 `targets`·`result_mode`도 그대로 유지됩니다(지침이 바뀌면 안전 검토만 다시 합니다). 의도 분류는 작성(`skill_author`) 초안에서만 합니다.
 - 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 지금처럼 선택 범위 편집을 유지하도록 `targets: ["current_document", "selection"]`, `result_mode: null`로 읽습니다. 이런 Skill을 수정하면서 `targets`를 생략하면 이 값을 이어받습니다.
 - Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 실행은 고른 문서·폴더로 동작: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
 
@@ -296,8 +296,8 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 - 정하는 순서: 사용자가 보낸 값 → 지침에 `{문서}` 자리표시자가 있으면 `true` → `template` Skill이면 `false` → 의도 분류 LLM 판단(작성 초안의 `capabilities` 분류와 같은 호출의 `requires_source` 필드) → `false`.
 - 새 문서를 만들지 않는 Skill(결과 방식 `edit`, `document-edit`·`folder-organize`만 있는 Skill)에서는 의미가 없어 보낸 값을 무시하고 `false`로 저장합니다(거절하지 않음).
 - 작성(`skill_author`) 초안 응답의 `requires_source`는 규칙·분류로 판단한 값입니다. 게시는 의도를 다시 분류하지 않으므로, 초안의 판단을 유지하려면 게시 payload에 초안의 `requires_source`(사용자가 바꾼 값)를 그대로 보내야 합니다. 생략하면 `{문서}`·`template` 규칙만 적용되고 그 밖은 `false`입니다.
-- 수정에서 생략하면 지침이 이전과 같을 때 이전 값을 이어받고, 지침을 바꿨으면 다시 분류한 값을 씁니다.
-- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 항상 `boolean`으로 포함됩니다. 컬럼 추가 전에 게시된 Skill(저장값 없음)은 이전 동작(명시한 생성 Skill은 고른 문서를 원문으로 씀)을 지키도록 조회할 때 계산합니다: `template`이 있으면 `false`, `document-create`가 있고 결과 방식이 `edit`가 아니면(`create`·`auto`·`null`) `true`, 그 밖은 `false`. 이 값은 수정에서 지침을 바꾸지 않으면 그대로 이어받습니다.
+- 수정에서 생략하면 지침을 고쳤어도 이전 값을 이어받습니다(이전 버전이 새 문서를 만들지 않던 Skill이면 위 규칙으로 정합니다).
+- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 항상 `boolean`으로 포함됩니다. 컬럼 추가 전에 게시된 Skill(저장값 없음)은 이전 동작(명시한 생성 Skill은 고른 문서를 원문으로 씀)을 지키도록 조회할 때 계산합니다: `template`이 있으면 `false`, `document-create`가 있고 결과 방식이 `edit`가 아니면(`create`·`auto`·`null`) `true`, 그 밖은 `false`. 이 값은 수정에서 `requires_source`를 생략하면 그대로 이어받습니다.
 - Agent 실행 반영: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)의 새 문서 원문 규칙을 따릅니다.
 
 #### 5. Response body

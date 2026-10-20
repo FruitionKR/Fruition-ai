@@ -175,7 +175,7 @@ class UpdateSkillRequest(SkillLlmRequest):
     # 생략(null)하면 기존 값을 유지한다. targets=[]는 기본값(["current_document"])으로 되돌린다.
     targets: list[TargetValue] | None = Field(default=None, max_length=2)
     result_mode: ResultModeValue | None = None
-    # 생략(null)하면 지침이 같을 때 이전 값을 유지하고, 지침을 바꿨으면 다시 판단한다. 생성 Skill이 아니면 무시한다.
+    # 생략(null)하면 지침을 고쳤어도 이전 값을 유지한다(capabilities도 다시 분류하지 않는다). 생성 Skill이 아니면 무시한다.
     requires_source: bool | None = None
 
 

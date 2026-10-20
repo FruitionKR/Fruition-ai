@@ -411,18 +411,19 @@ class AuthorSkillUseCase:
         result_mode: SkillResultMode | None = None,
         requires_source: bool | None = None,
     ) -> SkillAuthoringResult:
-        """targets·result_mode는 None이면 기존 값을 유지한다. targets=()는 기본값으로 되돌린다.
+        """수정은 보낸 필드만 바꾸는 부분 수정이다. targets·result_mode·requires_source는 None이면 기존 값을 유지한다.
+        targets=()는 기본값으로 되돌린다.
 
-        requires_source는 None이면 지침이 같을 때 이전 값을 유지하고, 지침을 바꿨으면 다시 분류한 값을 쓴다.
-
-        지침이 이전 버전과 같으면 의도를 다시 분류하지 않고 이전 capabilities·allowed_tools를 그대로 쓴다.
-        설명·이름만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 작성 -> 수정)를 바꾸면 안 되기 때문이다.
+        지침을 고쳤어도 의도를 다시 분류하지 않고 이전 capabilities·allowed_tools를 그대로 쓴다.
+        실행 규칙 문장만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 폴더 정리 -> 문서 수정+폴더 정리)와
+        대상·결과 방식을 바꾸면 이후 실행이 엉뚱한 대상을 요구하기 때문이다. 의도 분류는 작성(초안) 경로에서만 한다.
+        지침이 바뀌면 안전 검토(LLM)는 그대로 다시 한다.
         """
         skill = self._skill_manager.get_manageable(workspace_id, user_id, skill_id)
         previous = skill.latest_version or skill.enabled_version
         preserved_capabilities = None
         preserved_allowed_tools = None
-        if previous is not None and previous.instructions_markdown.strip() == instructions_markdown.strip():
+        if previous is not None:
             preserved_capabilities = previous.capabilities
             # 컬럼 추가 전 행처럼 저장된 Tool 표가 비어 있으면 게시와 같이 서버 정책으로 계산한다.
             preserved_allowed_tools = previous.allowed_tools or canonical_allowed_tools(previous.capabilities)
@@ -455,7 +456,7 @@ class AuthorSkillUseCase:
                 proposal,
                 result_mode,
                 requires_source,
-                instructions_unchanged=preserved_capabilities is not None,
+                preserved=preserved_capabilities is not None,
             ),
         )
         ensure_task_active()
@@ -510,12 +511,11 @@ def _updated_execution_options(
     targets: tuple[SkillTarget, ...] | None,
     result_mode: SkillResultMode | None,
 ) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
-    """지침을 바꾼 수정은 다시 분류해 capabilities가 바뀔 수 있다.
+    """수정 버전의 targets·result_mode. 보내지 않은 값은 이전 버전에서 이어받는다.
 
-    보낸 값과 이어받은 값을 모두 새 capabilities로 검증해 어긋나면 invalid_result_mode로 거절한다.
-    이어받은 result_mode를 조용히 버리면 사용자가 고르지 않은 결과 방식(null)이 저장되기 때문이다.
-    호출자는 새 capabilities에 맞는 result_mode를 보내 다시 요청하면 된다.
-    새 capabilities가 문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
+    수정은 capabilities를 이어받으므로(update) 이어받은 값은 capabilities와 맞는다.
+    보낸 값이 capabilities와 어긋나면 invalid_result_mode·invalid_targets로 거절한다.
+    문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
     """
     if targets is None:
         targets = (
@@ -534,16 +534,16 @@ def _updated_requires_source(
     result_mode: SkillResultMode | None,
     explicit: bool | None,
     *,
-    instructions_unchanged: bool,
+    preserved: bool,
 ) -> bool:
-    """수정 버전의 원문 필요 여부. 명시값이 없고 지침이 같으면 이전 생성 Skill의 값을 이어받는다.
+    """수정 버전의 원문 필요 여부. 명시값이 없으면 지침을 고쳤어도 이전 생성 Skill의 값을 이어받는다.
 
     이전 버전이 새 문서를 만들지 않던 Skill이면(예: 결과 방식 edit -> create) 이어받을 값이 없어 규칙으로 정한다.
-    지침을 바꿨으면 proposal.requires_source가 다시 분류한 값이다.
+    preserved는 이전 버전의 capabilities를 이어받았는지다(이전 버전이 없을 때만 False).
     """
     if (
         explicit is None
-        and instructions_unchanged
+        and preserved
         and previous is not None
         and can_create_document(previous.capabilities, previous.result_mode)
     ):
@@ -553,7 +553,7 @@ def _updated_requires_source(
         result_mode,
         proposal.instructions_markdown,
         explicit=explicit,
-        classified=None if instructions_unchanged else proposal.requires_source,
+        classified=None if preserved else proposal.requires_source,
     )
 
 

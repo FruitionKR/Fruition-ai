@@ -1463,30 +1463,71 @@ class AuthorSkillUseCaseTest(unittest.TestCase):
         self.assertEqual(version.result_mode, "create")
         self.assertEqual(generator.classification_count, 0)
 
-    def test_update_with_changed_instructions_reclassifies_capabilities(self) -> None:
+    def test_update_with_changed_instructions_keeps_capabilities_without_reclassifying(self) -> None:
+        # 실행 규칙 문장만 고친 수정이 분류기 판단(document-edit)으로 Skill 종류를 바꾸면 안 된다.
         generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
         use_case, _ = self.build_use_case(generator)
         created = self._publish_document_skill(use_case, targets=("selection",), result_mode="create")
+        before = created.skill.enabled_version  # type: ignore[union-attr]
 
-        result = self._update(use_case, created.skill.id, result_mode="edit")  # type: ignore[union-attr]
+        result = self._update(use_case, created.skill.id)  # type: ignore[union-attr]
 
         version = result.skill.enabled_version  # type: ignore[union-attr]
-        self.assertEqual(generator.classification_count, 1)
-        self.assertEqual(version.capabilities, ("document-edit",))
-        self.assertIn("apply_document_edit", version.allowed_tools)
-        self.assertNotIn("create_document", version.allowed_tools)
+        self.assertEqual(generator.classification_count, 0)
+        self.assertEqual(generator.authoring_mode, "preserve")
+        self.assertEqual(version.instructions_markdown, "# 작성 절차\n\n- 핵심 내용을 두 문단으로 정리한다.")
+        self.assertEqual(version.capabilities, ("document-create",))
+        self.assertEqual(version.allowed_tools, before.allowed_tools)
         self.assertEqual(version.targets, ("selection",))
-        self.assertEqual(version.result_mode, "edit")
+        self.assertEqual(version.result_mode, "create")
 
-    def test_update_rejects_inherited_result_mode_that_conflicts_with_reclassified_capabilities(self) -> None:
+    def test_update_of_folder_skill_with_changed_instructions_keeps_folder_kind(self) -> None:
+        # 회귀: 폴더 정리 Skill의 실행 규칙만 고쳐 저장하면 document-edit가 붙고 targets가
+        # ["current_document"]로 바뀌어, 폴더 실행마다 "Markdown 문서를 연 뒤" 되묻던 문제.
+        generator = FixedGenerator(
+            draft_result(), intent_result(skill_kinds=["document-edit", "folder-organize"])
+        )
+        use_case, _ = self.build_use_case(generator)
+        created = use_case.publish(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            scope_type="personal",
+            name="tidy-names",
+            description="폴더 안 문서 이름을 정리합니다.",
+            instructions_markdown="# 정리 절차\n\n- 문서 이름을 날짜로 시작하게 바꾼다.",
+            expected_capabilities=("folder-organize",),
+            expected_allowed_tools=(),
+        )
+        before = created.skill.enabled_version  # type: ignore[union-attr]
+
+        result = use_case.update(
+            workspace_id="workspace-1",
+            user_id="user-1",
+            skill_id=created.skill.id,  # type: ignore[union-attr]
+            name="tidy-names",
+            description="폴더 안 문서 이름을 정리합니다.",
+            instructions_markdown="# 정리 절차\n\n- 문서 이름을 날짜로 시작하게 바꾸고 제목을 고친다.",
+        )
+
+        version = result.skill.enabled_version  # type: ignore[union-attr]
+        self.assertEqual(version.version, 2)
+        self.assertEqual(generator.classification_count, 0)
+        self.assertEqual(version.capabilities, ("folder-organize",))
+        self.assertEqual(version.allowed_tools, before.allowed_tools)
+        self.assertEqual(version.targets, ())
+        self.assertIsNone(version.result_mode)
+        self.assertFalse(version.requires_source)
+
+    def test_update_rejects_given_result_mode_that_does_not_match_preserved_capabilities(self) -> None:
         generator = FixedGenerator(draft_result(), intent_result(skill_kinds=["document-edit"]))
         use_case, repository = self.build_use_case(generator)
         created = self._publish_document_skill(use_case, result_mode="create")
 
         with self.assertRaises(SkillRequestRejectedError) as raised:
-            self._update(use_case, created.skill.id)  # type: ignore[union-attr]
+            self._update(use_case, created.skill.id, result_mode="edit")  # type: ignore[union-attr]
 
         self.assertEqual(raised.exception.code, "invalid_result_mode")
+        self.assertEqual(generator.classification_count, 0)
         stored = repository.skills[created.skill.id]  # type: ignore[union-attr]
         self.assertEqual(stored.enabled_version.version, 1)  # type: ignore[union-attr]
         self.assertEqual(stored.enabled_version.result_mode, "create")  # type: ignore[union-attr]

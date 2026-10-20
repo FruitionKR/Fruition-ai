@@ -203,15 +203,16 @@ class RequiresSourceAuthoringTest(unittest.TestCase):
         self.assertTrue(kept.skill.enabled_version.requires_source)  # type: ignore[union-attr]
         self.assertFalse(changed.skill.enabled_version.requires_source)  # type: ignore[union-attr]
 
-    def test_update_with_changed_instructions_uses_reclassified_value(self) -> None:
+    def test_update_with_changed_instructions_keeps_previous_value_without_classifying(self) -> None:
+        # 분류기가 원문이 필요하다고 볼 지침으로 고쳐도, 생략한 requires_source는 이전 값을 이어받는다.
         generator = FixedGenerator(draft_result(), {**intent_result(), "requires_source": True})
         use_case, _ = self._use_case(generator)
         created = self._publish(use_case, result_mode="create")
 
         result = self._update(use_case, created.skill.id, "# 작성 절차\n\n- 고른 자료를 묶어 보고서로 만든다.")  # type: ignore[union-attr]
 
-        self.assertEqual(generator.classification_count, 1)
-        self.assertTrue(result.skill.enabled_version.requires_source)  # type: ignore[union-attr]
+        self.assertEqual(generator.classification_count, 0)
+        self.assertFalse(result.skill.enabled_version.requires_source)  # type: ignore[union-attr]
 
     def test_http_requests_accept_optional_requires_source(self) -> None:
         base = {
