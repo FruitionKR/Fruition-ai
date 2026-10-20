@@ -2,6 +2,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.core.llm_env import DEFAULT_LLM_MODELS
+
 from app.modules.document_restoration.application.models import (
     PreparedRestoration,
     RestoreDocumentCommand,
@@ -147,10 +149,8 @@ class RestoreDocumentUseCaseTest(unittest.TestCase):
         self.assertEqual(stages.stages[-1], RestorationStage.ASSEMBLE_MARKDOWN)
 
     def test_cli_uses_provider_default_model_when_model_is_omitted(self) -> None:
-        for provider, model in (
-            ("openai", "gpt-5-nano"),
-            ("claude", "claude-sonnet-5"),
-        ):
+        for provider in ("openai", "claude"):
+            model = DEFAULT_LLM_MODELS[provider]
             with self.subTest(provider=provider):
                 argv = [
                     "restore-document",

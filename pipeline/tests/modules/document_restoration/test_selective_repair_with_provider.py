@@ -7,6 +7,8 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
+import fitz
+
 from app.modules.document_restoration.infrastructure.crop_first_with_anydoc import (
     assemble,
 )
@@ -15,6 +17,7 @@ from app.modules.document_restoration.infrastructure.selective_repair_with_provi
     block_markdown,
     call_page,
     clean_previous_results,
+    group_candidates,
     markdown_fragments,
     normalize_replacement,
     page_markdown,
@@ -465,7 +468,7 @@ Second
                 detected_markdown=detected_markdown,
                 output_dir=output_dir,
                 provider="gemini",
-                model="gemini-3.1-flash-lite",
+                model="gemini-3.5-flash-lite",
                 max_workers=1,
             )
             error = urllib.error.HTTPError(
@@ -486,6 +489,9 @@ Second
             ), mock.patch(
                 f"{MODULE}.block_image",
                 return_value="crop",
+            ), mock.patch(
+                f"{MODULE}.table_layout",
+                return_value={},
             ), mock.patch(
                 f"{MODULE}.call_page",
                 side_effect=error,
@@ -567,6 +573,135 @@ Second
             self.assertFalse(stale_recovered.exists())
             self.assertFalse(preserved_evaluation.exists())
             self.assertFalse(preserved_recovered.exists())
+
+    def test_groups_continued_table_fragments_into_one_chain(self) -> None:
+        blocks = [
+            {"id": "table-a", "page": 1, "type": "table_candidate"},
+            {"id": "table-b", "page": 2, "type": "table_candidate", "continues": "table-a"},
+            {"id": "table-c", "page": 3, "type": "table_candidate", "continues": "table-b"},
+            {"id": "equation-1", "page": 2, "type": "equation_candidate"},
+            {"id": "table-d", "page": 2, "type": "table_candidate"},
+        ]
+
+        grouped = group_candidates(blocks)
+
+        self.assertEqual(
+            {key: [block["id"] for block in value] for key, value in grouped.items()},
+            {
+                (1, "table", "table-a"): ["table-a", "table-b", "table-c"],
+                (2, "equation", ""): ["equation-1"],
+                (2, "table", ""): ["table-d"],
+            },
+        )
+
+
+class ContinuedTableRepairTest(unittest.TestCase):
+    TABLE = "| 구분 | 내용 |\n|---|---|\n| 기획 | A |\n| 개발 | B |"
+
+    def _run(self, responses: list[dict[str, object]]) -> tuple[Path, mock.MagicMock]:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output_dir = Path(temp_dir.name)
+        pdf_file = output_dir / "input.pdf"
+        with fitz.open() as document:
+            for text in ("Plan A", "Build B"):
+                document.new_page().insert_text((60, 100), text)
+            document.save(pdf_file)
+        manifest_file = output_dir / "manifest.json"
+        manifest_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "table-a",
+                        "page": 1,
+                        "order": 1,
+                        "type": "table_candidate",
+                        "bbox": [50, 80, 400, 120],
+                        "replacement_required": True,
+                    },
+                    {
+                        "id": "table-b",
+                        "page": 2,
+                        "order": 1,
+                        "type": "table_candidate",
+                        "bbox": [50, 80, 400, 120],
+                        "continues": "table-a",
+                        "replacement_required": True,
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        detected_markdown = output_dir / "detected.md"
+        detected_markdown.write_text("## Page 1\n\n## Page 2\n", encoding="utf-8")
+        args = argparse.Namespace(
+            pdf_file=pdf_file,
+            manifest_file=manifest_file,
+            detected_markdown=detected_markdown,
+            output_dir=output_dir,
+            provider="gemini",
+            model="gemini-3.5-flash-lite",
+            max_workers=1,
+        )
+        with mock.patch.dict(
+            os.environ, {"GEMINI_API_KEY": "gemini-key"}, clear=True
+        ), mock.patch(f"{MODULE}.render_page", return_value="page"), mock.patch(
+            f"{MODULE}.block_image",
+            side_effect=lambda output_dir, pdf_file, block: f"crop-{block['id']}",
+        ), mock.patch(
+            f"{MODULE}.call_page",
+            side_effect=[(response, {}) for response in responses],
+        ) as call_page_mock:
+            run(args)
+        return output_dir / "layout" / "auto", call_page_mock
+
+    def test_repairs_continued_table_in_one_call(self) -> None:
+        layout, call_page_mock = self._run(
+            [{"results": [{"block_id": "table-a", "action": "replace", "replacement": self.TABLE}]}]
+        )
+
+        call_page_mock.assert_called_once()
+        call = call_page_mock.call_args.kwargs
+        self.assertIn("Every block is a table.", call["prompt"])
+        self.assertEqual(call["images"], ["page", "crop-table-a", "crop-table-b"])
+        [block] = call["payload"]["blocks"]
+        self.assertEqual(block["block_id"], "table-a")
+        self.assertEqual(block["continuation_crop_sequences"], [2])
+        self.assertEqual(
+            [item["crop_sequence"] for item in block["text_layer"]], [1, 2]
+        )
+        self.assertIn("Build B", block["text_layer"][1]["text"])
+        self.assertEqual(
+            (layout / "recovered_blocks" / "table-a.md").read_text(encoding="utf-8").strip(),
+            self.TABLE,
+        )
+        self.assertEqual(
+            json.loads((layout / "evaluations" / "table-b.json").read_text(encoding="utf-8"))[
+                "merged_into"
+            ],
+            "table-a",
+        )
+
+    def test_repairs_each_fragment_when_merged_table_is_rejected(self) -> None:
+        layout, call_page_mock = self._run(
+            [
+                {"results": [{"block_id": "table-a", "action": "replace", "replacement": "broken"}]},
+                {"results": [{"block_id": "table-a", "action": "replace", "replacement": self.TABLE}]},
+                {"results": [{"block_id": "table-b", "action": "replace", "replacement": self.TABLE}]},
+            ]
+        )
+
+        self.assertEqual(call_page_mock.call_count, 3)
+        fallback_calls = call_page_mock.call_args_list[1:]
+        self.assertEqual(
+            [call.kwargs["images"] for call in fallback_calls],
+            [["page", "crop-table-a"], ["page", "crop-table-b"]],
+        )
+        for call in fallback_calls:
+            self.assertNotIn("continuation_crop_sequences", call.kwargs["payload"]["blocks"][0])
+        self.assertTrue((layout / "recovered_blocks" / "table-a.md").exists())
+        self.assertTrue((layout / "recovered_blocks" / "table-b.md").exists())
+        self.assertFalse((layout / "evaluations" / "table-b.json").read_text(encoding="utf-8").count("merged_into"))
 
 
 if __name__ == "__main__":

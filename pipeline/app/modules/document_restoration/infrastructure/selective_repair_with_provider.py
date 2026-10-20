@@ -28,12 +28,8 @@ from app.modules.document_restoration.domain.text_quality import looks_glyph_enc
 from app.modules.model_usage.infrastructure.usage_ledger import SCOPE_ENV, track_call, usage_scope
 
 
-PROMPT_FILE = (
-    Path(__file__).resolve().parents[4]
-    / "prompts"
-    / "document_restoration"
-    / "direct_visual_block_repair.md"
-)
+PROMPT_DIR = Path(__file__).resolve().parents[4] / "prompts" / "document_restoration"
+LANES = {"table_candidate": "table", "equation_candidate": "equation"}
 OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -78,17 +74,36 @@ def select_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def candidate_lane(block: dict[str, Any]) -> str:
-    if block["type"] in {"table_candidate", "equation_candidate"}:
-        return "special"
-    return "text"
+    return LANES.get(block["type"], "text")
+
+
+def lane_prompt(lane: str) -> str:
+    common = (PROMPT_DIR / "block_repair_common.md").read_text(encoding="utf-8")
+    specific = (PROMPT_DIR / f"block_repair_{lane}.md").read_text(encoding="utf-8")
+    return f"{common.strip()}\n\n{specific.strip()}\n"
 
 
 def group_candidates(
     blocks: list[dict[str, Any]],
-) -> dict[tuple[int, str], list[dict[str, Any]]]:
-    grouped: dict[tuple[int, str], list[dict[str, Any]]] = {}
+) -> dict[tuple[int, str, str], list[dict[str, Any]]]:
+    """페이지·종류별로 묶고, 페이지에 걸친 표는 첫 조각 id를 키로 한 그룹에 모은다."""
+    by_id = {block["id"]: block for block in blocks}
+    followers = {
+        block["continues"]: block
+        for block in blocks
+        if block.get("continues") in by_id
+    }
+    grouped: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
     for block in blocks:
-        key = (int(block["page"]), candidate_lane(block))
+        if block.get("continues") in by_id:
+            continue
+        if block["id"] in followers:
+            chain = [block]
+            while chain[-1]["id"] in followers:
+                chain.append(followers[chain[-1]["id"]])
+            grouped[(int(block["page"]), "table", block["id"])] = chain
+            continue
+        key = (int(block["page"]), candidate_lane(block), "")
         grouped.setdefault(key, []).append(block)
     return dict(sorted(grouped.items()))
 
@@ -191,18 +206,53 @@ def render_page(pdf_file: Path, page_number: int) -> str:
     return image_data_url(pixmap.tobytes("png"))
 
 
+def crop_rect(page: fitz.Page, block: dict[str, Any]) -> fitz.Rect:
+    rect = fitz.Rect(*(float(value) for value in block["bbox"]))
+    return fitz.Rect(
+        max(0, rect.x0 - 4),
+        max(0, rect.y0 - 4),
+        min(page.rect.width, rect.x1 + 4),
+        min(page.rect.height, rect.y1 + 4),
+    )
+
+
 def render_crop(pdf_file: Path, block: dict[str, Any]) -> str:
     with fitz.open(pdf_file) as pdf:
         page = pdf[int(block["page"]) - 1]
-        rect = fitz.Rect(*(float(value) for value in block["bbox"]))
-        rect = fitz.Rect(
-            max(0, rect.x0 - 4),
-            max(0, rect.y0 - 4),
-            min(page.rect.width, rect.x1 + 4),
-            min(page.rect.height, rect.y1 + 4),
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(3, 3),
+            clip=crop_rect(page, block),
+            alpha=False,
         )
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=rect, alpha=False)
     return image_data_url(pixmap.tobytes("png"))
+
+
+def table_layout(
+    pdf_file: Path,
+    blocks: list[dict[str, Any]],
+    first_sequence: int,
+) -> dict[str, Any]:
+    """표 crop 안의 PDF 글자와 열 수를 모델에 넘긴다. 글자를 읽지 않고 배치만 정하게 한다."""
+    text_layer = []
+    column_count = 0
+    with fitz.open(pdf_file) as pdf:
+        for sequence, block in enumerate(blocks, first_sequence):
+            page = pdf[int(block["page"]) - 1]
+            clip = crop_rect(page, block)
+            text = page.get_text("text", clip=clip, sort=True).strip()
+            # 스캔본은 글자가 없고, ToUnicode가 없는 글꼴은 깨진 글자가 나온다. 둘 다 이미지로 읽게 둔다.
+            if text and "�" not in text and not looks_glyph_encoded(text):
+                text_layer.append({"crop_sequence": sequence, "text": text})
+            # ponytail: 괘선으로 열을 센다. 괘선 없는 표는 열 수 힌트 없이 이미지로 판단한다.
+            column_count = max(
+                [column_count, *(table.col_count for table in page.find_tables(clip=clip).tables)]
+            )
+    layout: dict[str, Any] = {}
+    if text_layer:
+        layout["text_layer"] = text_layer
+    if column_count:
+        layout["column_count"] = column_count
+    return layout
 
 
 def block_image(
@@ -590,6 +640,30 @@ def save_replacements(
     return counts
 
 
+def save_merged(
+    output_dir: Path,
+    head: dict[str, Any],
+    followers: list[dict[str, Any]],
+    provider: str,
+) -> None:
+    evaluation_dir = output_dir / "layout" / "auto" / "evaluations"
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
+    for block in followers:
+        (evaluation_dir / f"{block['id']}.json").write_text(
+            json.dumps(
+                {
+                    "accepted": True,
+                    "merged_into": head["id"],
+                    "recovery_source": f"{provider}_selective_repair",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+
 def rejected_candidates(
     blocks: list[dict[str, Any]],
     result: dict[str, Any],
@@ -644,17 +718,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     markdown = args.detected_markdown.read_text(encoding="utf-8")
     fragments = markdown_fragments(markdown)
     pages = page_markdown(markdown)
-    prompt = PROMPT_FILE.read_text(encoding="utf-8")
+    prompts = {lane: lane_prompt(lane) for lane in ("text", "table", "equation")}
     grouped = group_candidates(selected)
 
-    def process(key: tuple[int, str]) -> dict[str, Any]:
-        page, lane = key
+    def process(key: tuple[int, str, str]) -> dict[str, Any]:
+        page, lane, chain_head = key
         blocks = grouped[key]
-        page_image = (
-            None
-            if all(block.get("scope") == "page_body" for block in blocks)
-            else render_page(args.pdf_file, page)
-        )
+        body_only = all(block.get("scope") == "page_body" for block in blocks)
+        page_images: dict[int, str] = {}
         block_images = {
             block["id"]: block_image(args.output_dir, args.pdf_file, block)
             for block in blocks
@@ -662,9 +733,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         def request(
             request_blocks: list[dict[str, Any]],
+            *,
+            chained: bool = False,
         ) -> tuple[dict[str, Any], dict[str, Any]]:
-            payload_blocks = [
-                {
+            # 이어진 표는 첫 조각 하나로 묻고, 나머지 조각은 crop만 순서대로 뒤에 붙인다.
+            payload_blocks = []
+            for sequence, block in enumerate(request_blocks[:1] if chained else request_blocks, 1):
+                item = {
                     "block_id": block["id"],
                     "page": block["page"],
                     "order": block["order"],
@@ -675,13 +750,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "required_tokens": block.get("required_tokens", []),
                     "current_markdown": block_markdown(block, fragments),
                 }
-                for sequence, block in enumerate(request_blocks, 1)
-            ]
+                if lane == "table":
+                    item.update(
+                        table_layout(
+                            args.pdf_file,
+                            request_blocks if chained else [block],
+                            sequence,
+                        )
+                    )
+                if chained:
+                    item["continuation_crop_sequences"] = list(range(2, len(request_blocks) + 1))
+                payload_blocks.append(item)
+            request_page = int(request_blocks[0]["page"])
+            if not body_only and request_page not in page_images:
+                page_images[request_page] = render_page(args.pdf_file, request_page)
             return call_page(
                 provider=provider,
                 api_key=api_key,
                 model=model,
-                prompt=prompt,
+                prompt=prompts[lane],
                 payload={
                     "page_context": (
                         ""
@@ -689,12 +776,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                             block.get("scope") == "page_body"
                             for block in request_blocks
                         )
-                        else pages.get(page, "")
+                        else pages.get(request_page, "")
                     ),
                     "blocks": payload_blocks,
                 },
                 images=(
-                    ([] if page_image is None else [page_image])
+                    ([] if body_only else [page_images[request_page]])
                     + [block_images[block["id"]] for block in request_blocks]
                 ),
             )
@@ -703,18 +790,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         usage: dict[str, Any] = {}
         fallback_usage: list[dict[str, Any]] = []
         batch_error: str | None = None
-        try:
-            result, usage = request(blocks)
-            batch_counts = save_replacements(
-                args.output_dir, blocks, result, provider, fragments
-            )
-            for name, count in batch_counts.items():
-                counts[name] += count
-            fallback_blocks = rejected_candidates(blocks, result, fragments)
-            counts["rejected"] -= len(fallback_blocks)
-        except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
-            batch_error = type(exc).__name__
-            fallback_blocks = blocks
+        if chain_head:
+            merged = False
+            try:
+                result, usage = request(blocks, chained=True)
+                merged = save_replacements(
+                    args.output_dir, blocks[:1], result, provider, fragments
+                )["replace"] == 1
+            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+                batch_error = type(exc).__name__
+            if merged:
+                save_merged(args.output_dir, blocks[0], blocks[1:], provider)
+                counts["replace"] += 1
+            # 합친 표가 거부되면 조각마다 따로 복원한다.
+            fallback_blocks = [] if merged else blocks
+        else:
+            try:
+                result, usage = request(blocks)
+                batch_counts = save_replacements(
+                    args.output_dir, blocks, result, provider, fragments
+                )
+                for name, count in batch_counts.items():
+                    counts[name] += count
+                fallback_blocks = rejected_candidates(blocks, result, fragments)
+                counts["rejected"] -= len(fallback_blocks)
+            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+                batch_error = type(exc).__name__
+                fallback_blocks = blocks
 
         for block in fallback_blocks:
             try:
