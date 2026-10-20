@@ -1,15 +1,18 @@
 """승인 화면에서 기본 선택을 정하는 계획 검토(중복 의심 표시).
 
 계획을 적용한 뒤의 위치·이름을 계산해, 같은 폴더에 같은 종류·같은 이름의 항목이 둘 이상 생기면 중복으로 의심한다.
+본문이 거의 같은 문서(content_duplicates)를 대상으로 하는 작업도 중복으로 의심한다.
 실행 내용은 바꾸지 않고 operation의 warning·suggested_selected만 채운다.
 """
 
 from dataclasses import replace
 import unicodedata
 
+from app.modules.agent_run.domain.content_duplicates import ContentDuplicate
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
 
 DUPLICATE_NAME_WARNING = "duplicate_name"
+DUPLICATE_CONTENT_WARNING = "duplicate_content"
 DEPENDS_ON_UNSELECTED_WARNING = "depends_on_unselected"
 
 _NAMING_TOOLS = {
@@ -54,6 +57,35 @@ def review_duplicate_names(plan: AgentPlan, hierarchy: list[dict[str, object]]) 
         for operation_id in operation_ids:
             warnings[operation_id] = {"type": DUPLICATE_NAME_WARNING, "message": message}
 
+    return _apply_warnings(plan, warnings)
+
+
+def review_content_duplicates(plan: AgentPlan, duplicates: dict[str, ContentDuplicate]) -> AgentPlan:
+    """본문이 거의 같은 문서를 대상으로 하는 작업은 warning을 달고 기본 선택에서 뺀다.
+
+    이름 중복 경고가 이미 있는 작업은 그 경고를 둔다. 스킬 규칙이 중복 표시를 요구하지 않아도 단다.
+    """
+    warnings = {
+        operation.id: operation.warning
+        for operation in plan.operations
+        if operation.warning is not None and not operation.suggested_selected
+    }
+    for operation in plan.operations:
+        duplicate = duplicates.get(operation.target_id or "")
+        if duplicate is None or operation.target_type != "document":
+            continue
+        existing = warnings.get(operation.id)
+        if existing is not None and existing.get("type") == DUPLICATE_NAME_WARNING:
+            continue
+        warnings[operation.id] = {
+            "type": DUPLICATE_CONTENT_WARNING,
+            "message": f"'{duplicate.original_name}'와(과) 내용이 거의 같아 중복일 수 있어요.",
+        }
+    return _apply_warnings(plan, warnings)
+
+
+def _apply_warnings(plan: AgentPlan, warnings: dict[str, dict[str, str]]) -> AgentPlan:
+    """경고 작업과, 그 작업에 의존하는 작업을 기본 선택에서 뺀다."""
     unselected = set(warnings)
     for operation in sorted(plan.operations, key=lambda item: item.sequence):
         if operation.id not in unselected and any(dependency in unselected for dependency in operation.depends_on):

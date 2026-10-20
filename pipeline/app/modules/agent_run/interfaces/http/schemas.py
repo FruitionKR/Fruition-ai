@@ -94,7 +94,7 @@ class AgentArtifactResolveResponse(AgentArtifactResponse):
 
 
 class AgentPlanOperationWarningResponse(BaseModel):
-    type: str = Field(..., description="duplicate_name(같은 위치에 같은 이름) 또는 depends_on_unselected")
+    type: str = Field(..., description="duplicate_name(같은 위치에 같은 이름), duplicate_content(본문이 거의 같은 문서) 또는 depends_on_unselected")
     message: str
 
 

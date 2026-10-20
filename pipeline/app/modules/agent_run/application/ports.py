@@ -194,6 +194,30 @@ class AgentToolGatewayPort(Protocol):
         ...
 
 
+class FolderContentDocument(Protocol):
+    document_id: str
+    markdown: str
+
+
+class FolderContentListing(Protocol):
+    total_documents: int
+    documents: tuple[FolderContentDocument, ...]
+
+
+class FolderContentReaderPort(Protocol):
+    """폴더 바로 아래 Markdown 문서 본문을 읽는다(document-svc folder-sources/read). 읽기 권한은 document-svc가 판정한다."""
+
+    def read(
+        self,
+        *,
+        workspace_id: str,
+        user_id: str,
+        folder_id: str,
+        max_documents: int,
+    ) -> FolderContentListing:
+        ...
+
+
 class AgentJobRepositoryPort(Protocol):
     def execution_lock(self, run_id: str) -> AbstractContextManager[None]:
         ...
