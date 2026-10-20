@@ -353,6 +353,7 @@ reason: definition/evidence/relation이 충분함
                 "invalid_relations": [],
                 "promotion_status": "candidate",
                 "promotion_source_refs": ["doc_a", "doc_b"],
+                "promotion_target": "",
         }
     ]
 
@@ -550,6 +551,43 @@ def test_materialize_active_relation_candidates_links_existing_concepts_only() -
             "source_refs": ["doc_a:B0001"],
         }
     ]
+
+
+def test_merge_active_cluster_markdown_replaces_non_candidate_promotion() -> None:
+    existing = """# Active Meaning Clusters
+
+## cluster: back-emf
+
+### Evidence Claims
+- claim_001: 기존 근거 [doc_a:B0001]
+
+### Promotion
+status: needs_review
+source_refs: [doc_a]
+reason: 판단 보류
+"""
+    incoming = """# Active Meaning Clusters
+
+## cluster: back-emf
+
+### Evidence Claims
+- evidence claim 없음
+
+### Promotion
+status: candidate
+source_refs: []
+reason: 다른 문서에서 핵심 개념으로 추출됨
+target: concept:back-electromotive-force
+"""
+
+    merged = merge_active_cluster_markdown(existing, incoming)
+    [cluster] = parse_active_cluster_lint(merged)
+
+    assert merged.count("### Promotion") == 1
+    assert cluster["promotion_status"] == "candidate"
+    assert cluster["promotion_target"] == "back-electromotive-force"
+    assert cluster["promotion_source_refs"] == ["doc_a"]
+    assert "evidence claim 없음" not in merged
 
 
 def test_lint_materialize_keeps_concurrent_ingest_updates(monkeypatch) -> None:

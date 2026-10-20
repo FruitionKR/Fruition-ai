@@ -23,10 +23,12 @@ class MeaningClusterArtifactAssembler:
         cluster_decisions: list[dict[str, Any]] | None = None,
         concept_update_decisions: list[dict[str, Any]] | None = None,
         core_relation_decisions: list[dict[str, Any]] | None = None,
+        promotions: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         concept_update_decisions = concept_update_decisions or []
         core_relation_decisions = core_relation_decisions or []
         clusters = self._clusters(normalized, cluster_decisions or [], concept_update_decisions, core_relation_decisions)
+        self._apply_promotions(clusters, promotions or {})
         invalid_candidates = self.invalid_candidate_claims(normalized)
         active_markdown = self._active_markdown(clusters)
         maintenance_summary = self._maintenance_summary(clusters, invalid_candidates)
@@ -190,6 +192,22 @@ class MeaningClusterArtifactAssembler:
 
         return sorted(clusters.values(), key=lambda item: item["id"])
 
+    def _apply_promotions(self, clusters: list[dict[str, Any]], promotions: dict[str, dict[str, Any]]) -> None:
+        """승격 판정을 받은 클러스터에 승격 표시를 붙인다. 이번 편입이 근거를 더하지 않은 기존 클러스터는 표시만 담는다."""
+        by_id = {cluster["id"]: cluster for cluster in clusters}
+        for cluster_id, promotion in promotions.items():
+            cluster = by_id.get(cluster_id)
+            if cluster is None:
+                cluster = self._cluster(by_id, cluster_id, str(promotion.get("representative") or _title_from_slug(cluster_id)))
+                clusters.append(cluster)
+            cluster["promotion"] = {
+                "status": "candidate",
+                "source_refs": self._source_refs(cluster) or list(promotion.get("source_refs") or []),
+                "reason": promotion.get("reason") or "",
+                "target": promotion.get("target") or "",
+            }
+        clusters.sort(key=lambda item: item["id"])
+
     def _source_candidate(
         self,
         normalized: dict[str, Any],
@@ -214,8 +232,6 @@ class MeaningClusterArtifactAssembler:
             "claim": f"{term} - {context}",
             "refs": refs,
             "candidate_type": candidate_type,
-            "suggested_promotion_status": "none",
-            "suggested_promotion_reason": "",
         }
 
     def _evidence_candidate(self, hint: dict[str, Any], evidence: dict[str, Any] | None, index: int) -> dict[str, Any] | None:
@@ -232,8 +248,6 @@ class MeaningClusterArtifactAssembler:
             "claim": evidence.get("claim") or "",
             "refs": global_refs(evidence.get("source_document_id"), evidence.get("anchor_reference_ids", [])),
             "candidate_type": "evidence",
-            "suggested_promotion_status": "none",
-            "suggested_promotion_reason": "",
         }
 
     def _add_candidate_claim(
@@ -273,13 +287,6 @@ class MeaningClusterArtifactAssembler:
                         "reason": relation_decision.get("reason") or "",
                     }
                 )
-        promotion_status = str(decision.get("promotion_status") or candidate.get("suggested_promotion_status") or "none")
-        if promotion_status in {"candidate", "needs_review"}:
-            cluster["promotion"] = {
-                "status": promotion_status,
-                "source_refs": self._source_refs(cluster),
-                "reason": decision.get("reason") or candidate.get("suggested_promotion_reason") or "LLM cluster judge 판단",
-            }
 
     def _cluster(self, clusters: dict[str, dict[str, Any]], slug: str, representative: str) -> dict[str, Any]:
         cluster = clusters.get(slug)
@@ -351,6 +358,8 @@ class MeaningClusterArtifactAssembler:
                     f"reason: {promotion.get('reason') or '-'}",
                 ]
             )
+            if promotion.get("target"):
+                lines.append(f"target: concept:{promotion['target']}")
         return "\n".join(lines)
 
 def _title_from_slug(slug: str) -> str:

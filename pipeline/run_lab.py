@@ -817,6 +817,16 @@ def _prepare_post_ingest_clusters(
             "evidence_units",
         )
     }
+    # 후속 단계가 이번 문서의 핵심 개념과 같은 클러스터를 찾아 승격 후보로 표시한다.
+    cluster_normalized["core_concepts"] = [
+        {
+            "slug": concept.get("slug"),
+            "title": concept.get("title"),
+            "aliases": list(concept.get("aliases") or []),
+        }
+        for concept in normalized.get("concept_ledger", [])
+        if concept.get("slug")
+    ]
     return (
         {"concept_update_decisions": concept_updates},
         {

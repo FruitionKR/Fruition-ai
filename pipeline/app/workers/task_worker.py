@@ -782,6 +782,9 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 core_relation_decisions=list(
                     command.get("core_relation_decisions") or []
                 ),
+                core_concepts=list(
+                    command["cluster_normalized"].get("core_concepts") or []
+                ),
             )
             database.checkpoint_pipeline_run(run_id, state)
 
