@@ -80,7 +80,8 @@ def _core_concept_promotions(
     core_concepts: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터를 그 개념으로 승격할 후보로 표시한다."""
-    # ponytail: 이름·별칭 일치만 본다. Jev가 켜지면 같은 개념 판정을 Jev로 바꾼다.
+    # ponytail: 이름·별칭이 정확히 같을 때만 같은 개념으로 본다. 표기가 다른 같은 개념은 놓친다.
+    # 놓치는 경우가 잦으면 애매한 점수대만 판정기(Jev)에 묻는 방식을 검토한다.
     concept_by_name: dict[str, dict[str, Any]] = {}
     for concept in core_concepts:
         for name in [concept.get("slug"), concept.get("title"), *(concept.get("aliases") or [])]:
