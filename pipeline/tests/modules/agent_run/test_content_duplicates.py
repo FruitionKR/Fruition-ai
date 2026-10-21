@@ -44,14 +44,15 @@ def test_nearly_identical_documents_are_grouped_under_the_earliest_one() -> None
     ]
     contents = {"doc-a": MEETING, "doc-b": MEETING_SPACED, "doc-c": BUDGET}
 
-    duplicates = find_content_duplicates(documents, contents)
+    review = find_content_duplicates(documents, contents)
 
-    assert duplicates == {"doc-b": ContentDuplicate("doc-b", "주간 회의 1019.md", "doc-a", "주간회의_1019.md")}
+    assert review.unchecked_documents == 0
+    assert review.duplicates == {"doc-b": ContentDuplicate("doc-b", "주간 회의 1019.md", "doc-a", "주간회의_1019.md")}
 
 
 def test_short_or_unread_documents_are_not_compared() -> None:
     documents = [_doc("doc-a", "빈 문서", "1"), _doc("doc-b", "빈 문서 2", "2"), _doc("doc-c", "본문 없음", "3")]
-    assert find_content_duplicates(documents, {"doc-a": "# 메모", "doc-b": "# 메모\n"}) == {}
+    assert find_content_duplicates(documents, {"doc-a": "# 메모", "doc-b": "# 메모\n"}) == ContentReview({})
 
 
 def test_content_duplicate_unselects_operation_and_dependents_but_keeps_name_warning() -> None:
@@ -226,7 +227,7 @@ def test_optimized_detection_matches_all_pairs_comparison() -> None:
             documents.append(_doc(document_id, f"{index}.md", f"2026-10-{rng.randint(10, 28)}T00:00:00Z"))
             contents[document_id] = " ".join(base) + ("." if rng.random() < 0.5 else "")
 
-        assert find_content_duplicates(documents, contents) == _all_pairs_duplicates(documents, contents)
+        assert find_content_duplicates(documents, contents) == ContentReview(_all_pairs_duplicates(documents, contents))
 
 
 def test_identical_documents_are_grouped_even_when_comparison_cap_is_reached() -> None:
@@ -234,7 +235,24 @@ def test_identical_documents_are_grouped_even_when_comparison_cap_is_reached() -
     contents = {"doc-0": MEETING, "doc-1": MEETING_SPACED, "doc-2": MEETING + "  ", "doc-3": BUDGET}
 
     with patch("app.modules.agent_run.domain.content_duplicates.MAX_CONTENT_COMPARISONS", 0):
-        duplicates = find_content_duplicates(documents, contents)
+        review = find_content_duplicates(documents, contents)
 
     # 정규화 본문이 같은 doc-2만 묶이고, Jaccard 비교가 필요한 doc-1은 상한 때문에 비교하지 않는다.
-    assert set(duplicates) == {"doc-2"} and duplicates["doc-2"].original_id == "doc-0"
+    assert set(review.duplicates) == {"doc-2"} and review.duplicates["doc-2"].original_id == "doc-0"
+    # 비교가 남은 doc-0 묶음(doc-0·doc-2)과 doc-1을 확인하지 못한 문서로 센다. 크기 비로 끝나는 doc-3은 확인됐다.
+    assert review.unchecked_documents == 3
+
+
+def test_comparison_cap_is_reported_in_plan_summary() -> None:
+    hierarchy = [
+        {"id": "folder-1", "type": "folder", "name": "회의", "parent_id": None},
+        _doc("doc-a", "주간회의_1019.md", "2026-10-19T01:00:00Z"),
+        _doc("doc-b", "주간 회의 1019.md", "2026-10-19T02:00:00Z"),
+    ]
+    reader = MagicMock()
+    reader.read.return_value = _Listing(2, (_Document("doc-a", MEETING), _Document("doc-b", MEETING_SPACED)))
+
+    with patch("app.modules.agent_run.domain.content_duplicates.MAX_CONTENT_COMPARISONS", 0):
+        _kwargs, saved = _plan_with(reader, hierarchy, _plan(_rename(1, "doc-a")))
+
+    assert saved.summary == "이름을 바꿉니다. 문서 2개는 내용 중복을 확인하지 못했어요."

@@ -17,7 +17,8 @@ CONTENT_DUPLICATE_THRESHOLD = 0.85
 # 정규화한 본문이 이보다 짧으면 비교하지 않는다. 빈 문서·제목만 있는 문서끼리 중복으로 잡지 않게 한다.
 MIN_COMPARABLE_CHARS = 20
 _SHINGLE_SIZE = 3
-# 서로 다른 본문끼리 Jaccard를 계산하는 쌍 수 상한. 넘으면 나머지 쌍은 비교하지 않고 로그만 남긴다.
+# 서로 다른 본문끼리 Jaccard를 계산하는 쌍 수 상한. 넘으면 나머지 쌍은 비교하지 않고, 끝까지 비교하지 못한
+# 문서를 확인하지 못한 문서로 센다.
 MAX_CONTENT_COMPARISONS = 20_000
 _NON_WORD = re.compile(r"[\W_]+")
 # 계획 summary에 덧붙이는 안내. 프론트가 문장을 그대로 찾아 따로 보여 줄 수 있게 형식을 고정한다.
@@ -35,7 +36,8 @@ class ContentDuplicate:
 
 @dataclass(frozen=True)
 class ContentReview:
-    """duplicates는 중복 문서 id별 원본, unchecked_documents는 본문을 읽지 못해 비교하지 못한 문서 수다."""
+    """duplicates는 중복 문서 id별 원본, unchecked_documents는 본문을 읽지 못했거나 비교 상한에 걸려 다른 문서와
+    끝까지 비교하지 못한 문서 수다."""
 
     duplicates: dict[str, ContentDuplicate]
     unchecked_documents: int = 0
@@ -49,11 +51,12 @@ def normalize_content(markdown: str) -> str:
 def find_content_duplicates(
     documents: list[dict[str, object]],
     contents: dict[str, str],
-) -> dict[str, ContentDuplicate]:
+) -> ContentReview:
     """본문이 거의 같은 문서 묶음마다 가장 먼저 만든 문서를 원본으로 두고, 나머지를 중복으로 돌려준다.
 
     documents는 hierarchy 문서 항목(id·name·created_at 등), contents는 문서 id별 Markdown 본문이다.
-    본문이 없는 문서는 비교하지 않는다.
+    본문이 없는 문서는 비교하지 않고 세지도 않는다(읽기 실패는 호출부가 센다). 비교 상한에 걸리면 그때까지 찾은
+    중복과 함께, 다른 문서와 끝까지 비교하지 못한 문서 수를 unchecked_documents로 돌려준다.
     """
     ordered = sorted(
         (item for item in documents if str(item.get("id")) in contents),
@@ -78,9 +81,11 @@ def find_content_duplicates(
 
     # 정규화 본문이 완전히 같은 문서는 비교 없이 먼저 묶고, 묶음마다 대표 하나만 유사도 비교에 쓴다.
     representatives: dict[str, str] = {}
+    group_sizes: dict[str, int] = {}
     for item in candidates:
         document_id = str(item["id"])
         representative = representatives.setdefault(normalized[document_id], document_id)
+        group_sizes[representative] = group_sizes.get(representative, 0) + 1
         union(representative, document_id)
     shingles = {document_id: _shingles(text) for text, document_id in representatives.items()}
     # 3-gram 수가 작은 순으로 비교한다. |A| <= |B|이면 Jaccard <= |A|/|B|라서, 비가 기준보다 작아지면
@@ -96,17 +101,20 @@ def find_content_duplicates(
             if root(left) == root(right):
                 continue
             if comparisons >= MAX_CONTENT_COMPARISONS:
+                # left부터 뒤 문서는 더 큰 문서와의 비교가 남아 있다. 묶음 단위로 확인하지 못한 문서로 센다.
+                unchecked = sum(group_sizes[document_id] for document_id in ordered_ids[index:])
                 logger.warning(
-                    "본문 중복 비교가 상한 %s쌍을 넘어 나머지 비교를 생략함: documents=%s",
+                    "본문 중복 비교가 상한 %s쌍을 넘어 나머지 비교를 생략함: documents=%s unchecked=%s",
                     MAX_CONTENT_COMPARISONS,
                     len(ordered_ids),
+                    unchecked,
                 )
-                return _duplicates(candidates, root)
+                return ContentReview(_duplicates(candidates, root), unchecked)
             comparisons += 1
             if _jaccard(left_shingles, right_shingles) >= CONTENT_DUPLICATE_THRESHOLD:
                 union(left, right)
 
-    return _duplicates(candidates, root)
+    return ContentReview(_duplicates(candidates, root))
 
 
 def _duplicates(candidates: list[dict[str, object]], root: Callable[[str], str]) -> dict[str, ContentDuplicate]:

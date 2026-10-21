@@ -359,7 +359,8 @@ class AgentWorker:
             contents.update({document_id: markdown for document_id, markdown in read.items() if document_id not in oversized})
             # 업로드 원본처럼 Markdown이 아닌 문서는 total_documents에도 없으므로 확인 못 함으로 세지 않는다.
             unchecked += max(listing.total_documents - len(listing.documents), 0) + len(oversized)
-        return ContentReview(find_content_duplicates(documents, contents), unchecked)
+        review = find_content_duplicates(documents, contents)
+        return ContentReview(review.duplicates, unchecked + review.unchecked_documents)
 
     def _inspect_hierarchy(self, context: AgentRunContext) -> list[dict[str, object]]:
         root = self._read_tool(context, "list_root_items", {})
