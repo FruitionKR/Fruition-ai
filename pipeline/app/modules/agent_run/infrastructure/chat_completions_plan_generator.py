@@ -181,6 +181,8 @@ def _place_creates_in_target_folder(value: dict[str, Any], target_folder_id: str
 
 
 MOVE_DESTINATION_KEYS = {"move_folder": "parent_folder_id", "move_document": "folder_id"}
+TARGET_FOLDER_TOOLS = {"rename_folder", "move_folder"}
+TARGET_FOLDER_NOTE = "대상 폴더 자체는 바꿀 수 없어 그 폴더의 이름 변경·이동 작업 {count}개는 계획에서 뺐어요."
 OUT_OF_SCOPE_NOTE = "대상 폴더 밖으로 옮기는 작업 {count}개는 계획에서 뺐어요."
 
 
@@ -190,13 +192,15 @@ def _scope_moves_to_target_folder(
     hierarchy: list[dict[str, object]],
     plan_id: str,
 ) -> dict[str, Any]:
-    """대상 폴더가 있으면 이동 작업의 목적지를 그 폴더 범위로 맞춘다.
+    """대상 폴더가 있으면 작업을 그 폴더 범위로 맞춘다.
 
+    - 대상 폴더 자신의 rename_folder·move_folder는 뺀다. 대상 폴더는 작업 범위 자체라, 옮기면(하위로 옮기는 것
+      포함) 순환이 되고 이름을 바꾸면 범위 밖(부모 폴더)에 보이는 변경이 된다. 목적지 검사보다 먼저 본다.
     - 목적지를 비운(null) 이동은 대상 폴더로 옮기는 것으로 본다(최상위 이동은 범위 밖이라 허용하지 않는다).
     - 같은 계획의 create_folder 결과 참조나 범위 안 폴더 id는 그대로 둔다. 범위 안 폴더는 hierarchy(대상 폴더와
       하위 항목만 담긴 스냅샷)에 있는 폴더다.
-    - 범위 밖 폴더 id로 옮기는 작업은 계획에서 빼고, 그 작업에 기대는 작업도 함께 뺀 뒤 요약에 알린다.
-      남는 작업이 없으면 AgentPlanOutOfScope로 실패시킨다.
+    - 범위 밖 폴더 id로 옮기는 작업은 뺀다.
+    뺀 작업에 기대는 작업도 함께 빼고 사유별로 요약에 알린다. 남는 작업이 없으면 AgentPlanOutOfScope로 실패시킨다.
     """
     raw_operations = value.get("operations")
     if target_folder_id is None or not isinstance(raw_operations, list):
@@ -205,9 +209,14 @@ def _scope_moves_to_target_folder(
         str(item.get("id")) for item in hierarchy if item.get("type") == "folder" and item.get("id") is not None
     }
     placed: list[object] = []
-    dropped: set[int] = set()
+    target_folder_changes: set[int] = set()
+    out_of_scope: set[int] = set()
     for sequence, raw in enumerate(raw_operations, start=1):
         tool_name = raw.get("tool_name") if isinstance(raw, dict) else None
+        if tool_name in TARGET_FOLDER_TOOLS and _targets_folder(raw, target_folder_id):
+            target_folder_changes.add(sequence)
+            placed.append(raw)
+            continue
         key = MOVE_DESTINATION_KEYS.get(tool_name) if isinstance(tool_name, str) else None
         arguments = raw.get("arguments") if key else None
         if key and isinstance(arguments, dict) and key in arguments:
@@ -219,33 +228,58 @@ def _scope_moves_to_target_folder(
                     "destination_parent_id": target_folder_id,
                 }
             elif isinstance(destination, str) and destination not in scope_folder_ids:
-                dropped.add(sequence)
+                out_of_scope.add(sequence)
             elif isinstance(destination, str) and raw.get("destination_parent_id") is None:
                 raw = {**raw, "destination_parent_id": destination}
         placed.append(raw)
-    if not dropped:
+    if not target_folder_changes and not out_of_scope:
         return {**value, "operations": placed}
-    for sequence, raw in enumerate(placed, start=1):
-        if sequence in dropped or not isinstance(raw, dict):
-            continue
-        dependencies = raw.get("depends_on", [])
-        references = _operation_references(raw.get("arguments"))
-        if (isinstance(dependencies, list) and dropped.intersection(dependencies)) or any(
-            f"{plan_id}-op-{index}" in references for index in dropped
-        ):
-            dropped.add(sequence)
+    # 대상 폴더 작업에 기대는 작업은 그 사유로, 범위 밖 이동에만 기대는 작업은 범위 밖 사유로 센다.
+    target_folder_changes = _with_dependents(placed, target_folder_changes, plan_id)
+    out_of_scope = _with_dependents(placed, out_of_scope | target_folder_changes, plan_id) - target_folder_changes
+    dropped = target_folder_changes | out_of_scope
     kept = [(sequence, raw) for sequence, raw in enumerate(placed, start=1) if sequence not in dropped]
     if not kept:
         raise AgentPlanOutOfScope()
     renumbered = {old: new for new, (old, _raw) in enumerate(kept, start=1)}
     operations = [_renumber_operation(raw, renumbered, plan_id) for _sequence, raw in kept]
     summary = value.get("summary")
-    note = OUT_OF_SCOPE_NOTE.format(count=len(dropped))
+    notes = [
+        note.format(count=len(sequences))
+        for note, sequences in ((TARGET_FOLDER_NOTE, target_folder_changes), (OUT_OF_SCOPE_NOTE, out_of_scope))
+        if sequences
+    ]
     return {
         **value,
-        "summary": f"{summary.strip()} {note}" if isinstance(summary, str) and summary.strip() else summary,
+        "summary": (
+            " ".join([summary.strip(), *notes]) if isinstance(summary, str) and summary.strip() else summary
+        ),
         "operations": operations,
     }
+
+
+def _targets_folder(raw: dict[str, Any], folder_id: str) -> bool:
+    """작업 대상이 folder_id인지 본다. target_id와 arguments.folder_id 중 하나라도 같으면 그 폴더를 바꾸는 작업이다."""
+    arguments = raw.get("arguments")
+    argument_id = arguments.get("folder_id") if isinstance(arguments, dict) else None
+    return folder_id in {_optional_text(raw.get("target_id")), _optional_text(argument_id)}
+
+
+def _with_dependents(placed: list[object], seeds: set[int], plan_id: str) -> set[int]:
+    """seeds 작업과, depends_on이나 결과 참조로 그 작업들에 (간접으로라도) 기대는 작업의 순번을 돌려준다."""
+    closure = set(seeds)
+    if not closure:
+        return closure
+    for sequence, raw in enumerate(placed, start=1):
+        if sequence in closure or not isinstance(raw, dict):
+            continue
+        dependencies = raw.get("depends_on", [])
+        references = _operation_references(raw.get("arguments"))
+        if (isinstance(dependencies, list) and closure.intersection(dependencies)) or any(
+            f"{plan_id}-op-{index}" in references for index in closure
+        ):
+            closure.add(sequence)
+    return closure
 
 
 def _renumber_operation(raw: object, renumbered: dict[int, int], plan_id: str) -> object:

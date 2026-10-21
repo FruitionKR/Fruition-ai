@@ -7,7 +7,12 @@ from uuid import uuid4
 from psycopg.types.json import Json
 
 from app.modules.agent_run.domain.entities import AgentJob, AgentRunContext
-from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    NON_RETRYABLE_PLAN_FAILURE_CODES,
+    NOT_SELECTED_ERROR_CODE,
+    AgentPlan,
+    AgentPlanOperation,
+)
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import _row_to_run, _rows_to_plan
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -130,7 +135,7 @@ class PostgresAgentJobRepository:
                 raise ValueError("Agent job lease was lost.")
 
     def fail(self, job: AgentJob, error_code: str) -> None:
-        terminal = job.attempt_count >= 3
+        terminal = job.attempt_count >= 3 or error_code in NON_RETRYABLE_PLAN_FAILURE_CODES
         with database.connect_ai() as conn:
             updated = conn.execute(
                 """

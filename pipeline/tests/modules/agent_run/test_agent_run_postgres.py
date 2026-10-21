@@ -171,3 +171,71 @@ def test_plan_review_metadata_and_rule_summary_round_trip(repositories) -> None:
         tuple(replace(operation, warning=None, suggested_selected=True) for operation in plan.operations),
     )
     assert stripped.operation_hash == plan.operation_hash
+
+
+_TARGET_HIERARCHY = [
+    {"id": "folder-9", "type": "folder", "current_version": 1, "parent_id": None},
+    {"id": "document-1", "type": "document", "current_version": 3, "parent_id": "folder-9"},
+]
+_RENAME_TARGET_FOLDER = {
+    "tool_name": "rename_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
+    "source_parent_id": None, "destination_parent_id": None,
+    "arguments": {"folder_id": "folder-9", "name": "정리됨", "base_version": 1},
+    "reason": "이름을 바꿉니다.", "depends_on": [],
+}
+_RENAME_DOCUMENT = {
+    "tool_name": "rename_document", "target_type": "document", "target_id": "document-1", "base_version": 3,
+    "source_parent_id": None, "destination_parent_id": None,
+    "arguments": {"document_id": "document-1", "display_name": "회의록.md", "base_version": 3},
+    "reason": "이름 형식을 맞춥니다.", "depends_on": [],
+}
+
+
+def _plan_with_target_folder(runs, jobs, operations):
+    """대상 폴더를 고른 정리 run의 planning job을 실제 worker로 한 번 처리하고 모델 호출 수를 돌려준다."""
+    from unittest.mock import MagicMock, patch
+
+    from app.modules.agent_run.infrastructure.agent_worker import AgentWorker
+    from app.modules.agent_run.infrastructure.chat_completions_plan_generator import ChatCompletionsPlanGenerator
+
+    runs.create_with_planning_job(
+        AgentRun(
+            id="run-1", workspace_id="ws", user_id="user", action="folder_organize", skill_version_id=None,
+            status="queued", request_summary="정리", target_folder_id="folder-9",
+        ),
+        "planning-job",
+    )
+    client = MagicMock()
+    client.complete_json.return_value = {"intent_confirmed": True, "summary": "폴더를 정리합니다.", "operations": operations}
+    worker = AgentWorker(jobs, runs, MagicMock(), ChatCompletionsPlanGenerator(client, "system"))
+    job = jobs.claim_next("worker-1")
+    with patch.object(worker, "_inspect_hierarchy", return_value=_TARGET_HIERARCHY):
+        worker.process(job)
+    return client.complete_json.call_count
+
+
+def test_target_folder_change_is_dropped_and_explained_in_saved_plan(repositories) -> None:
+    runs, jobs, _ = repositories
+
+    _plan_with_target_folder(runs, jobs, [_RENAME_TARGET_FOLDER, _RENAME_DOCUMENT])
+
+    run, plan = runs.get_current_plan_for_user("ws", "user", "run-1")
+    assert run.status == "awaiting_approval"
+    assert run.error_code is None
+    assert [operation.tool_name for operation in plan.operations] == ["rename_document"]
+    assert plan.summary == "폴더를 정리합니다. 대상 폴더 자체는 바꿀 수 없어 그 폴더의 이름 변경·이동 작업 1개는 계획에서 뺐어요."
+
+
+def test_target_folder_only_plan_fails_once_with_out_of_scope_code(repositories) -> None:
+    runs, jobs, connect = repositories
+
+    calls = _plan_with_target_folder(runs, jobs, [_RENAME_TARGET_FOLDER])
+
+    # 다시 만들어도 같은 결과라 재시도하지 않는다. 모델은 한 번만 부르고 run은 전용 code로 실패한다.
+    assert calls == 1
+    run = runs.get_for_user("ws", "user", "run-1")
+    assert (run.status, run.error_code) == ("failed", "plan_out_of_scope")
+    with connect() as conn:
+        job = conn.execute("SELECT status, attempt_count FROM agent_jobs WHERE id = 'planning-job'").fetchone()
+    assert (job["status"], job["attempt_count"]) == ("failed", 1)
+    assert jobs.claim_next("worker-2") is None

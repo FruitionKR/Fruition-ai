@@ -39,14 +39,20 @@ class AgentPlanIntentClarificationRequired(ValueError):
 
 
 class AgentPlanOutOfScope(ValueError):
-    """대상 폴더를 고른 실행에서 폴더 밖으로 옮기는 작업을 빼고 나니 남는 작업이 없다.
+    """대상 폴더를 고른 실행에서 범위를 벗어난 작업(폴더 밖으로 옮기기, 대상 폴더 자신의 이름 변경·이동)을 빼고
+    나니 남는 작업이 없다.
 
-    code는 run의 error_code로 저장되어 프론트가 안내 문구를 고르는 데 쓴다."""
+    code는 run의 error_code로 저장되어 프론트가 안내 문구를 고르는 데 쓴다. 같은 계획을 다시 만들어도 결과가
+    같으므로 job을 재시도하지 않는다(NON_RETRYABLE_PLAN_FAILURE_CODES)."""
 
     code = "plan_out_of_scope"
 
     def __init__(self) -> None:
-        super().__init__("Agent plan cannot move items outside the target folder.")
+        super().__init__("Agent plan has no operation left inside the target folder scope.")
+
+
+# 재시도해도 결과가 같은 계획 실패 code. job을 첫 실패에서 끝내고 run을 실패로 닫는다.
+NON_RETRYABLE_PLAN_FAILURE_CODES = frozenset({AgentPlanOutOfScope.code})
 
 
 @dataclass(frozen=True)

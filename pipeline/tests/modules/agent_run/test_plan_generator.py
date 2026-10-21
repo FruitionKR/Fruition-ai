@@ -115,6 +115,25 @@ def _rename(document_id, base_version, *, depends_on=()):
     }
 
 
+def _rename_target_folder():
+    return {
+        "tool_name": "rename_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
+        "source_parent_id": None, "destination_parent_id": None,
+        "arguments": {"folder_id": "folder-9", "name": "정리됨", "base_version": 1},
+        "reason": "이름을 바꿉니다.", "depends_on": [],
+    }
+
+
+def _move_target_folder(parent_folder_id, *, depends_on=()):
+    return {
+        "tool_name": "move_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
+        "source_parent_id": None,
+        "destination_parent_id": parent_folder_id if isinstance(parent_folder_id, str) else None,
+        "arguments": {"folder_id": "folder-9", "parent_folder_id": parent_folder_id, "position": None, "base_version": 1},
+        "reason": "옮깁니다.", "depends_on": list(depends_on),
+    }
+
+
 class PlanGeneratorTest(unittest.TestCase):
     def test_planner_checks_intent_and_builds_plan_in_one_call(self) -> None:
         for action in ("folder_organize", "workspace_workflow"):
@@ -787,26 +806,43 @@ class PlanGeneratorTest(unittest.TestCase):
 
         self.assertEqual(failure_code(raised.exception), "plan_out_of_scope")
 
-    def test_target_folder_itself_cannot_be_renamed_or_moved(self) -> None:
-        rename_target = {
-            "tool_name": "rename_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
-            "source_parent_id": None, "destination_parent_id": None,
-            "arguments": {"folder_id": "folder-9", "name": "정리됨", "base_version": 1},
-            "reason": "이름을 바꿉니다.", "depends_on": [],
-        }
-        move_target = {
-            "tool_name": "move_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
-            "source_parent_id": None, "destination_parent_id": "folder-child",
-            "arguments": {"folder_id": "folder-9", "parent_folder_id": "folder-child", "position": None, "base_version": 1},
-            "reason": "옮깁니다.", "depends_on": [],
-        }
-        for operation in (rename_target, move_target):
+    def test_target_folder_itself_only_plan_fails_with_out_of_scope_code(self) -> None:
+        for operation in (_rename_target_folder(), _move_target_folder("folder-child"), _move_target_folder(None)):
             client = MagicMock()
             client.complete_json.return_value = {
                 "intent_confirmed": True, "summary": "폴더를 정리합니다.", "operations": [operation],
             }
-            with self.subTest(tool=operation["tool_name"]), self.assertRaisesRegex(ValueError, "target folder itself"):
-                ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+            with self.subTest(tool=operation["tool_name"], destination=operation["destination_parent_id"]):
+                with self.assertRaises(AgentPlanOutOfScope) as raised:
+                    ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+                self.assertEqual(failure_code(raised.exception), "plan_out_of_scope")
+
+    def test_target_folder_changes_and_their_dependents_are_dropped_with_note(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True,
+            "summary": "폴더를 정리합니다.",
+            "operations": [
+                _create_folder("보관", "folder-9"),
+                # 대상 폴더를 같은 계획에서 만든 하위 폴더로 옮기는 작업도 목적지 검사보다 먼저 빠진다.
+                _move_target_folder({"$operation_result": "plan-1-op-1", "field": "id"}, depends_on=[1]),
+                _rename_target_folder(),
+                _rename("document-1", 3, depends_on=[3]),
+                _move("document-1", 3, "folder-outside"),
+                _move("document-2", 1, {"$operation_result": "plan-1-op-1", "field": "id"}, depends_on=[1]),
+            ],
+        }
+
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual([operation.tool_name for operation in plan.operations], ["create_folder", "move_document"])
+        self.assertEqual(plan.operations[1].depends_on, ("plan-1-op-1",))
+        self.assertEqual(plan.operations[1].arguments["folder_id"], {"$operation_result": "plan-1-op-1", "field": "id"})
+        self.assertEqual(
+            plan.summary,
+            "폴더를 정리합니다. 대상 폴더 자체는 바꿀 수 없어 그 폴더의 이름 변경·이동 작업 3개는 계획에서 뺐어요. "
+            "대상 폴더 밖으로 옮기는 작업 1개는 계획에서 뺐어요.",
+        )
 
     def test_child_folder_of_target_can_still_be_renamed(self) -> None:
         client = MagicMock()
