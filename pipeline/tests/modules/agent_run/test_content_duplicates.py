@@ -165,3 +165,76 @@ def test_content_check_runs_only_for_folder_organize() -> None:
     _kwargs, saved = _plan_with(reader, hierarchy, _plan(_rename(1, "doc-a")), action="workspace_workflow")
     reader.read.assert_not_called()
     assert saved.summary == "이름을 바꿉니다."
+
+
+def _all_pairs_duplicates(documents: list[dict[str, object]], contents: dict[str, str]) -> dict[str, ContentDuplicate]:
+    """최적화 전 방식(모든 쌍을 합집합으로 비교)을 그대로 옮긴 기준 구현."""
+    from app.modules.agent_run.domain import content_duplicates as module
+
+    ordered = sorted(
+        (item for item in documents if str(item.get("id")) in contents),
+        key=lambda item: (module._created_key(item), str(item.get("name") or ""), str(item.get("id"))),
+    )
+    normalized = {str(item["id"]): module.normalize_content(contents[str(item["id"])]) for item in ordered}
+    candidates = [item for item in ordered if len(normalized[str(item["id"])]) >= module.MIN_COMPARABLE_CHARS]
+    shingles = {str(item["id"]): module._shingles(normalized[str(item["id"])]) for item in candidates}
+    parent = {str(item["id"]): str(item["id"]) for item in candidates}
+    position = {str(item["id"]): index for index, item in enumerate(candidates)}
+
+    def root(document_id: str) -> str:
+        while parent[document_id] != document_id:
+            document_id = parent[document_id]
+        return document_id
+
+    for index, item in enumerate(candidates):
+        left = str(item["id"])
+        for other in candidates[index + 1:]:
+            right = str(other["id"])
+            if root(left) == root(right):
+                continue
+            union = len(shingles[left] | shingles[right])
+            jaccard = len(shingles[left] & shingles[right]) / union if union else 0.0
+            if normalized[left] == normalized[right] or jaccard >= module.CONTENT_DUPLICATE_THRESHOLD:
+                first, second = sorted((root(left), root(right)), key=position.__getitem__)
+                parent[second] = first
+    names = {str(item["id"]): str(item.get("name") or "") for item in candidates}
+    return {
+        str(item["id"]): ContentDuplicate(str(item["id"]), names[str(item["id"])], root(str(item["id"])), names[root(str(item["id"]))])
+        for item in candidates
+        if root(str(item["id"])) != str(item["id"])
+    }
+
+
+def test_optimized_detection_matches_all_pairs_comparison() -> None:
+    import random
+
+    rng = random.Random(20261021)
+    words = ["회의", "예산", "채용", "실적", "계획", "점검", "마케팅", "개발", "공고", "결정", "alpha", "beta", "42"]
+    for _ in range(40):
+        bases = [" ".join(rng.choice(words) for _ in range(rng.randint(4, 40))) for _ in range(4)]
+        documents: list[dict[str, object]] = []
+        contents: dict[str, str] = {}
+        for index in range(rng.randint(2, 30)):
+            base = rng.choice(bases).split()
+            for _ in range(rng.randint(0, 4)):  # 단어 몇 개를 바꾸거나 지워 거의 같은·조금 다른 본문을 만든다.
+                position = rng.randrange(len(base))
+                if rng.random() < 0.5:
+                    base[position] = rng.choice(words)
+                elif len(base) > 1:
+                    del base[position]
+            document_id = f"doc-{index}"
+            documents.append(_doc(document_id, f"{index}.md", f"2026-10-{rng.randint(10, 28)}T00:00:00Z"))
+            contents[document_id] = " ".join(base) + ("." if rng.random() < 0.5 else "")
+
+        assert find_content_duplicates(documents, contents) == _all_pairs_duplicates(documents, contents)
+
+
+def test_identical_documents_are_grouped_even_when_comparison_cap_is_reached() -> None:
+    documents = [_doc(f"doc-{index}", f"{index}.md", f"2026-10-{10 + index}T00:00:00Z") for index in range(4)]
+    contents = {"doc-0": MEETING, "doc-1": MEETING_SPACED, "doc-2": MEETING + "  ", "doc-3": BUDGET}
+
+    with patch("app.modules.agent_run.domain.content_duplicates.MAX_CONTENT_COMPARISONS", 0):
+        duplicates = find_content_duplicates(documents, contents)
+
+    # 정규화 본문이 같은 doc-2만 묶이고, Jaccard 비교가 필요한 doc-1은 상한 때문에 비교하지 않는다.
+    assert set(duplicates) == {"doc-2"} and duplicates["doc-2"].original_id == "doc-0"

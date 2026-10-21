@@ -4,15 +4,21 @@
 LLM 판단에 기대지 않으므로 같은 입력이면 늘 같은 결과가 나온다.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+import logging
 import re
 import unicodedata
+
+logger = logging.getLogger(__name__)
 
 # 정규화한 본문 3-gram Jaccard가 이 값 이상이면 내용이 거의 같은 문서로 본다.
 CONTENT_DUPLICATE_THRESHOLD = 0.85
 # 정규화한 본문이 이보다 짧으면 비교하지 않는다. 빈 문서·제목만 있는 문서끼리 중복으로 잡지 않게 한다.
 MIN_COMPARABLE_CHARS = 20
 _SHINGLE_SIZE = 3
+# 서로 다른 본문끼리 Jaccard를 계산하는 쌍 수 상한. 넘으면 나머지 쌍은 비교하지 않고 로그만 남긴다.
+MAX_CONTENT_COMPARISONS = 20_000
 _NON_WORD = re.compile(r"[\W_]+")
 # 계획 summary에 덧붙이는 안내. 프론트가 문장을 그대로 찾아 따로 보여 줄 수 있게 형식을 고정한다.
 UNPLANNED_DUPLICATE_NOTE = "계획에 없는 문서 중 내용이 거의 같은 문서가 있어요: {pairs}."
@@ -55,7 +61,6 @@ def find_content_duplicates(
     )
     normalized = {str(item["id"]): normalize_content(contents[str(item["id"])]) for item in ordered}
     candidates = [item for item in ordered if len(normalized[str(item["id"])]) >= MIN_COMPARABLE_CHARS]
-    shingles = {str(item["id"]): _shingles(normalized[str(item["id"])]) for item in candidates}
     parent: dict[str, str] = {str(item["id"]): str(item["id"]) for item in candidates}
     position = {str(item["id"]): index for index, item in enumerate(candidates)}
 
@@ -65,17 +70,46 @@ def find_content_duplicates(
             document_id = parent[document_id]
         return document_id
 
-    for index, item in enumerate(candidates):
-        left = str(item["id"])
-        for other in candidates[index + 1:]:
-            right = str(other["id"])
+    def union(left: str, right: str) -> None:
+        # 정렬 순서상 앞선(먼저 만든) 문서가 묶음의 원본이 되도록 뒤 묶음을 앞 묶음 아래에 붙인다.
+        first, second = sorted((root(left), root(right)), key=position.__getitem__)
+        if first != second:
+            parent[second] = first
+
+    # 정규화 본문이 완전히 같은 문서는 비교 없이 먼저 묶고, 묶음마다 대표 하나만 유사도 비교에 쓴다.
+    representatives: dict[str, str] = {}
+    for item in candidates:
+        document_id = str(item["id"])
+        representative = representatives.setdefault(normalized[document_id], document_id)
+        union(representative, document_id)
+    shingles = {document_id: _shingles(text) for text, document_id in representatives.items()}
+    # 3-gram 수가 작은 순으로 비교한다. |A| <= |B|이면 Jaccard <= |A|/|B|라서, 비가 기준보다 작아지면
+    # 그 뒤 문서는 모두 기준을 넘을 수 없어 안쪽 반복을 끝낸다.
+    ordered_ids = sorted(shingles, key=lambda document_id: (len(shingles[document_id]), position[document_id]))
+    comparisons = 0
+    for index, left in enumerate(ordered_ids):
+        left_shingles = shingles[left]
+        for right in ordered_ids[index + 1:]:
+            right_shingles = shingles[right]
+            if len(left_shingles) < CONTENT_DUPLICATE_THRESHOLD * len(right_shingles):
+                break
             if root(left) == root(right):
                 continue
-            if normalized[left] == normalized[right] or _jaccard(shingles[left], shingles[right]) >= CONTENT_DUPLICATE_THRESHOLD:
-                # 정렬 순서상 앞선(먼저 만든) 문서가 묶음의 원본이 되도록 뒤 문서를 앞 문서 아래에 붙인다.
-                first, second = sorted((root(left), root(right)), key=position.__getitem__)
-                parent[second] = first
+            if comparisons >= MAX_CONTENT_COMPARISONS:
+                logger.warning(
+                    "본문 중복 비교가 상한 %s쌍을 넘어 나머지 비교를 생략함: documents=%s",
+                    MAX_CONTENT_COMPARISONS,
+                    len(ordered_ids),
+                )
+                return _duplicates(candidates, root)
+            comparisons += 1
+            if _jaccard(left_shingles, right_shingles) >= CONTENT_DUPLICATE_THRESHOLD:
+                union(left, right)
 
+    return _duplicates(candidates, root)
+
+
+def _duplicates(candidates: list[dict[str, object]], root: Callable[[str], str]) -> dict[str, ContentDuplicate]:
     names = {str(item["id"]): str(item.get("name") or "") for item in candidates}
     duplicates: dict[str, ContentDuplicate] = {}
     for item in candidates:
@@ -116,5 +150,6 @@ def _shingles(text: str) -> frozenset[str]:
 
 
 def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
-    union = len(left | right)
-    return len(left & right) / union if union else 0.0
+    intersection = len(left & right)
+    union = len(left) + len(right) - intersection
+    return intersection / union if union else 0.0
