@@ -96,6 +96,7 @@ team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이�
       },
       "name": "string",
       "result_mode": "auto",
+      "requires_source": false,
       "status": "string",
       "targets": [
         "current_document"
@@ -117,6 +118,7 @@ team Skill의 작성·게시·수정·삭제·켜고 끄기는 워크스페이�
       },
       "name": "string",
       "result_mode": "auto",
+      "requires_source": false,
       "status": "string",
       "targets": [
         "current_document"
@@ -193,6 +195,7 @@ curl -X GET "$PIPELINE/skills?workspace_id=<value>&user_id=<value>" \
       },
       "name": "string",
       "result_mode": "auto",
+      "requires_source": false,
       "status": "string",
       "targets": [
         "current_document"
@@ -214,6 +217,7 @@ curl -X GET "$PIPELINE/skills?workspace_id=<value>&user_id=<value>" \
       },
       "name": "string",
       "result_mode": "auto",
+      "requires_source": false,
       "status": "string",
       "targets": [
         "current_document"
@@ -266,6 +270,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 `payload`는 [공개 Skill API](https://github.com/FruitionKR/Fruition-document/blob/main/docs/api/skills.md)의 해당 body에 backend가 검증한
 `workspace_id`, `user_id`, `provider`, `model`을 넣은 값입니다. envelope와 payload의 actor는 같아야 합니다.
 게시에는 초안의 `capabilities`, `allowed_tools`를 전달하며 서버가 다시 검증합니다.
+`capabilities`(게시 필수, 수정 선택)는 요청 스키마가 문자열 배열로만 받고, 빈 배열·허용 값(`document-create`, `document-edit`, `folder-organize`, `template`) 밖의 값·중복은 LLM 검토 전에 `400 {"detail": {"code": "invalid_capabilities", "message"}}`로 거절합니다(게시·수정 같음). 필드 누락(게시)이나 배열이 아닌 값처럼 타입이 틀리면 지금처럼 `422`입니다.
 게시(`skill_publish`)의 `allowed_tools`는 선택입니다. 생략하거나 `[]`이면 서버가 `capabilities`별 canonical Tool의
 합집합(`policy.canonical_allowed_tools`: 계획 읽기 `list_root_items`·`list_folder_children`을 앞에 두고 나머지는 이름순)으로
 계산해 같은 검증을 거치고, 응답 `allowed_tools`로 돌려줍니다. 값을 보내면 지금처럼 검증만 합니다.
@@ -277,11 +282,31 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | `targets` | `string[]` | `current_document`, `selection` (최대 2개, 중복 불가) | 게시에서 생략하거나 `[]`이면 `["current_document"]`. 수정에서 생략(키 없음)하면 기존 값 유지, `[]`이면 기본값으로 되돌림. 저장 순서는 `current_document`, `selection`으로 고정 |
 | `result_mode` | `string` / `null` | `create`(새 문서), `edit`(현재 문서 수정), `auto`(상황에 맞게) | 게시에서 생략하면 `null`. 수정에서 생략하면 기존 값 유지 |
 
-- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 지침을 다시 분류한 capabilities로 검사).
+- `result_mode`는 `capabilities`와 맞아야 합니다: `create`→`document-create`, `edit`→`document-edit`, `auto`→둘 다. 어긋나면 `400 {"detail": {"code": "invalid_result_mode"}}`이며 LLM 검토 전에 거절합니다(수정은 보낸 `capabilities`, 생략했으면 이전 버전에서 이어받은 capabilities로 검사).
 - 문서 Skill이 아닌데 `targets`나 `result_mode`를 보내거나 `targets`가 중복이면 `400` `invalid_targets`/`invalid_result_mode`입니다.
-- 수정에서 보내지 않아 이어받은 값이 다시 분류된 capabilities와 맞지 않으면 버립니다(`result_mode`는 `null`, 문서 Skill이 아니게 되면 `targets`는 `[]`).
+- 수정(`skill_update`)은 보낸 필드만 바꾸는 부분 수정입니다. 지침(`instructions_markdown`)을 고쳐도 의도를 다시 분류하지 않고 이전 버전의 `capabilities`·`allowed_tools`를 그대로 이어받으므로, 보내지 않은 `targets`·`result_mode`도 그대로 유지됩니다(지침이 바뀌면 안전 검토만 다시 합니다). 의도 분류는 작성(`skill_author`) 초안에서만 합니다.
+- 수정에서 Skill 종류·결과 방식을 바꾸려면 `capabilities`(선택, `string[]`, 1개 이상)를 보냅니다. 값과 검증은 게시와 같습니다(빈 배열·허용 값 밖·중복은 `400` `invalid_capabilities`, LLM 검토 전에 거절). 보내면:
+  - `allowed_tools`는 새 `capabilities`로 다시 계산합니다(`policy.canonical_allowed_tools`).
+  - 문서 Skill이 아니게 되면 `targets`는 `[]`, `result_mode`는 `null`로 저장합니다. 이때 `targets`·`result_mode`를 보내면 게시와 같이 `400` `invalid_targets`/`invalid_result_mode`입니다.
+  - 문서 Skill이면 생략한 `result_mode`는 이전 값 대신 `capabilities`에서 정합니다(`document-edit`→`edit`, `document-create`→`create`, 둘 다→`auto`). 생략한 `targets`는 이전 버전도 문서 Skill이었으면 이어받고, 아니면 `["current_document"]`입니다. 보낸 `result_mode`가 `capabilities`와 맞지 않으면 `400` `invalid_result_mode`입니다.
+  - `requires_source`는 위 규칙과 같습니다(생략하면 이전 값, 새 문서를 만들지 않는 Skill이 되면 `false`).
+  - 예: `["document-edit","folder-organize"]`·`targets: ["current_document"]`로 잘못 저장된 폴더 정리 Skill에 `capabilities: ["folder-organize"]`를 보내면 폴더 정리 Tool 표, `targets: []`, `result_mode: null`로 복구됩니다.
+  - 생략하면 지금처럼 이전 버전 값을 이어받고 다시 분류하지 않습니다.
 - 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 두 필드가 포함됩니다. 컬럼 추가 전에 게시된 문서 Skill은 지금처럼 선택 범위 편집을 유지하도록 `targets: ["current_document", "selection"]`, `result_mode: null`로 읽습니다. 이런 Skill을 수정하면서 `targets`를 생략하면 이 값을 이어받습니다.
-- Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 `edit` Skill은 새 문서를 만들지 않음), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
+- Agent 실행 반영: `targets`가 `["selection"]`뿐이면 에디터 선택 범위(`target.type="selection"`)가 없을 때 편집하지 않고 되묻고, `["current_document"]`뿐이면 선택이 있어도 문서 전체를 편집합니다. `result_mode`가 `create`/`edit`이면 라우터가 고른 문서 동작을 그 방식으로 맞추고(`/slug`만 보낸 실행은 고른 문서·폴더로 동작: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)), `auto`는 문서가 열려 있고 라우터 확신도가 0.7 미만이면 새 문서/수정 중 무엇인지 되묻습니다.
+
+새 문서를 만드는 Skill은 게시·수정 payload에 원문 필요 여부 `requires_source`를 선택으로 담습니다.
+
+| 필드 | 타입 | 값 | 규칙 |
+|---|---|---|---|
+| `requires_source` | `boolean` / `null` | `true`(고른 문서·폴더 본문을 원문으로 읽음), `false`(원문 없이 위치로만 씀) | 보내면 그 값을 저장한다. 생략(`null`)하면 아래 규칙으로 정한다 |
+
+- 정하는 순서: 사용자가 보낸 값 → 지침에 `{문서}` 자리표시자가 있으면 `true` → `template` Skill이면 `false` → 의도 분류 LLM 판단(작성 초안의 `capabilities` 분류와 같은 호출의 `requires_source` 필드) → `false`.
+- 새 문서를 만들지 않는 Skill(결과 방식 `edit`, `document-edit`·`folder-organize`만 있는 Skill)에서는 의미가 없어 보낸 값을 무시하고 `false`로 저장합니다(거절하지 않음).
+- 작성(`skill_author`) 초안 응답의 `requires_source`는 규칙·분류로 판단한 값입니다. 게시는 의도를 다시 분류하지 않으므로, 초안의 판단을 유지하려면 게시 payload에 초안의 `requires_source`(사용자가 바꾼 값)를 그대로 보내야 합니다. 생략하면 `{문서}`·`template` 규칙만 적용되고 그 밖은 `false`입니다.
+- 수정에서 생략하면 지침을 고쳤어도 이전 값을 이어받습니다(이전 버전이 새 문서를 만들지 않던 Skill이면 위 규칙으로 정합니다).
+- 응답(`SkillAuthoringResponse`, `SkillVersionResponse`)에 항상 `boolean`으로 포함됩니다. 컬럼 추가 전에 게시된 Skill(저장값 없음)은 이전 동작(명시한 생성 Skill은 고른 문서를 원문으로 씀)을 지키도록 조회할 때 계산합니다: `template`이 있으면 `false`, `document-create`가 있고 결과 방식이 `edit`가 아니면(`create`·`auto`·`null`) `true`, 그 밖은 `false`. 이 값은 수정에서 `requires_source`를 생략하면 그대로 이어받습니다.
+- Agent 실행 반영: [Agent API](agent.md#할-일-없이-slug만-보낸-턴skill-실행)의 새 문서 원문 규칙을 따릅니다.
 
 #### 5. Response body
 
@@ -300,6 +325,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 |---|---|
 | `intent_ambiguous` | 수행할 작업을 특정할 수 없음(무의미한 문자열 포함) |
 | `intent_unsupported` | Agent가 지원하지 않는 작업(메시지 발송, 외부 서비스 등) |
+| `invalid_capabilities` | 게시·수정의 `capabilities`가 빈 배열이거나 허용 값 밖의 값·중복을 포함 |
 | `invalid_instruction_length` | 지침이 비었거나 최대 길이를 넘음 |
 | `invalid_name` | Skill 이름 형식 오류 |
 | `invalid_reference` | 참조 문서 개수·중복·빈 id, 접근 불가, 빈 본문, 문서별 40,000자·합계 80,000자 초과 |
@@ -788,6 +814,7 @@ Skill 상세 정보를 조회합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -809,6 +836,7 @@ Skill 상세 정보를 조회합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -883,6 +911,7 @@ curl -X GET "$PIPELINE/skills/<value>?workspace_id=<value>&user_id=<value>" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -904,6 +933,7 @@ curl -X GET "$PIPELINE/skills/<value>?workspace_id=<value>&user_id=<value>" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1000,6 +1030,7 @@ Skill을 비활성화합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1021,6 +1052,7 @@ Skill을 비활성화합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1097,6 +1129,7 @@ curl -X POST "$PIPELINE/skills/<value>/disable" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1118,6 +1151,7 @@ curl -X POST "$PIPELINE/skills/<value>/disable" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1214,6 +1248,7 @@ Skill을 활성화합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1235,6 +1270,7 @@ Skill을 활성화합니다.
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1311,6 +1347,7 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"
@@ -1332,6 +1369,7 @@ curl -X POST "$PIPELINE/skills/<value>/enable" \
     },
     "name": "string",
     "result_mode": null,
+    "requires_source": false,
     "status": "string",
     "targets": [
       "current_document"

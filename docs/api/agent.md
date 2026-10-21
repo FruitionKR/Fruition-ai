@@ -7,6 +7,46 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `/agent/runs/**`와 artifact 조회·Tool 인가·상태 조회는 Backend가 내부 HTTP로 호출한다.
 `POST /internal/agent/runs/artifacts/register`는 현재 저장소 안에 운영 호출자가 없다.
 
+`ai.agent.command`의 선택 키 `folder_id`(document-svc가 검증한 폴더 UUID)는 작업 대상 폴더다. 지정하지 않은 턴은
+키를 싣지 않으며 기존처럼 워크스페이스 전체·최상위(루트)를 대상으로 한다. 지정하면 다음과 같이 쓴다.
+
+- 이 턴이 만든 승인형 run(`folder_organize`·`workspace_workflow`)에 `target_folder_id`로 저장하고 `AgentRunResponse`에 돌려준다.
+- 계획 단계는 계층 스냅샷을 그 폴더와 하위 항목으로 줄여 모델에 주고, 모든 작업이 그 안에 머물게 한다. 최상위로 옮기는 작업이 나오면 계획을 거절한다.
+- 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
+- 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
+
+### 할 일 없이 `/slug`만 보낸 턴(Skill 실행)
+
+`message`가 `/slug`뿐이면(사이드바 "실행"처럼 대상만 고른 경우) 라우터를 거치지 않고 Skill 정의와 고른 대상으로 실행한다.
+고른 문서는 `active_markdown_context`(+`document_id`·`base_version`), 고른 폴더는 `folder_id`로 보낸다.
+결과 방식이 없는(이전에 게시한) 문서 Skill은 기능으로 정한다: 생성·편집(또는 `template`)이면 `auto`, 생성만이면 `create`, 편집만이면 `edit`.
+
+| Skill | 문서를 고름 | 폴더만 고름 / 대상 없음 |
+|---|---|---|
+| `result_mode=edit` | Skill 지침으로 편집안(`markdown_edit`). `targets`가 `["selection"]`뿐인데 선택 범위가 없으면 `clarify` | `clarify`(수정할 문서를 열라는 안내) |
+| `result_mode=create`, `requires_source=true` | 그 문서를 원문으로 새 문서 초안(`markdown_create`) | 폴더: 폴더 바로 아래 Markdown 문서들을 원문으로 새 문서 초안. 대상 없음: 입력 없이 새 문서 초안 |
+| `result_mode=create`, `requires_source=false` | 원문 없이 새 문서 초안(문서는 위치로만 쓴다) | 원문 없이 새 문서 초안(폴더는 위치로만 쓴다) |
+| `result_mode=auto` | `clarify`("새 문서로 만들까요, 지금 문서를 수정할까요?", 문서 동작 없음) | 새 문서 초안(`markdown_create`) |
+| 폴더 정리(문서 기능 없음) | 워크스페이스 전체 정리 계획(`folder_organize` run) | `folder_id` 범위(없으면 워크스페이스 전체)의 정리 계획(`folder_organize` run, `target_folder_id`) |
+
+- 원문은 Skill 버전의 `requires_source`([Skill API](skills.md))가 `true`일 때만 쓴다. `false`면 문서·폴더를 골라도 원문 없이
+  새 문서 위치로만 쓴다. 문서를 고른 상태에서 `requires_source=false` Skill을 실행할 때 클라이언트는 그 문서의 부모 폴더를 `folder_id`로 보내며,
+  `active_markdown_context`가 와도 원문이나 `{문서}` 값으로 쓰지 않는다(`{문서}`는 `(현재 문서 없음)`).
+- 문서 원문은 생성 payload의 `reference_context.source_document`(`document_id`, `markdown`)로 싣고, 지침의 `{문서}`는 그 위치를 가리킨다.
+  문서와 `folder_id`가 함께 오면 문서가 원문이다.
+- 폴더 원문(`requires_source=true`, 문서 없이 `folder_id`만)은 document-svc `POST /internal/agent/skill-execution/folder-sources/read`로
+  그 폴더 **바로 아래**(하위 폴더 제외) Markdown 문서 중 사용자가 읽을 수 있는 문서를 읽는다. 최근 수정순 최대 20개, 본문 합계 60,000자까지
+  싣고(상한을 넘는 문서에서 멈추며, 첫 문서 하나가 상한을 넘으면 그 문서 앞부분만), `reference_context.source_documents`
+  (`document_id`, `title`, `updated_at`, `markdown` 배열)로 싣는다. 지침의 `{문서}`는 그 위치를 가리킨다.
+  일부만 읽었으면 결과 `message`에 "폴더 문서 N개 중 최근 수정한 M개만 읽었어요."(본문을 자른 경우 "폴더 문서가 길어 일부 내용만 읽었어요.")를 덧붙인다.
+  폴더를 읽을 수 없거나(403·404) 읽을 문서가 없으면 초안을 만들지 않고 `clarify`로 다른 대상을 고르라고 안내한다.
+- `/slug`만 보낸 턴은 할 일이 없으므로 앞선 대화(`recent_conversation_summary`·`recent_messages`·`reference_context`)를 생성 payload에
+  싣지 않는다. 원문은 명시한 문서·폴더뿐이다(앞 턴 내용이 초안에 섞이지 않게).
+- 할 일을 붙인 턴(`/slug 할 일`)도 명시한 Skill로 새 문서를 만들면 같은 원문 규칙(문서·폴더)을 따른다. 이 턴은 할 일이 대화를 가리킬 수 있어
+  대화 맥락을 함께 싣되, 생성 프롬프트는 명시한 원문을 대화보다 우선한다.
+- 할 일을 붙인 턴은 라우터를 거치며 결과 방식으로 동작을 맞춘다: `create` Skill은 새 문서, `edit` Skill은 라우터가 새 문서를 골라도 문서 편집,
+  `auto` Skill은 문서가 열려 있고 확신도가 0.7 미만이면 위와 같은 `clarify`. 되묻기에는 `/slug 새 문서로 만들어 줘`나 `/slug 지금 문서를 수정해 줘`처럼 답하면 된다.
+
 - API 수: 11
 
 ## API 목차
@@ -79,6 +119,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   "request_summary": "현재 문서에 편집안을 반영해줘",
   "error_code": null,
   "clarification_question": null,
+  "target_folder_id": null,
+  "rule_summary": null,
   "plan": {
     "id": "plan_123",
     "version": 1,
@@ -99,7 +141,9 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
         "reason": "사용자가 확인한 편집안을 반영합니다.",
         "depends_on": [],
         "status": "pending",
-        "error_code": null
+        "error_code": null,
+        "warning": null,
+        "suggested_selected": true
       }
     ]
   }
@@ -111,6 +155,59 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 무엇이 불명확한지, 어떤 정보를 주면 되는지 사용자에게 설명하는 한국어 문장이며, 그대로 화면에 보여 줄 수 있습니다.
 실행 중 Tool 예산 소진처럼 다른 이유의 `clarification_required`와 그 밖의 모든 상태에서는 `null`입니다.
 `revise`로 다시 계획을 요청하면 비워집니다.
+
+`target_folder_id`는 턴에서 지정한 작업 대상 폴더(`ai.agent.command`의 `folder_id`)이며, 지정하지 않았으면 `null`입니다.
+`rule_summary`는 선택한 Skill의 규칙 요약으로, run을 만들 때의 Skill 설명(`skill_versions.description`)을 보존한 값입니다.
+Skill 없이 실행했으면 `null`입니다.
+
+`plan.operations[]`의 `warning`·`suggested_selected`는 승인 화면 안내용 검토 결과이며 실행 내용이 아니라
+`operation_hash`에 포함하지 않습니다. 계획 생성 직후 계층 스냅샷에 계획을 적용한 결과로 판정합니다.
+
+- `warning`: `{"type": string, "message": string}` 또는 `null`. `message`는 그대로 보여 줄 한국어 문장입니다.
+  - `duplicate_name`: 작업 결과 같은 폴더에 같은 종류(폴더·문서)·같은 이름의 항목이 둘 이상 생깁니다(공백·대소문자·NFC·문서의 `.md` 차이는 무시). 기존 항목과 겹치면 그 작업을, 계획이 만든·옮긴 항목끼리 겹치면 나중 작업을 표시합니다. 같은 항목을 바꾸는 이름 변경·이동 작업에 모두 붙습니다.
+  - `depends_on_unselected`: 기본 선택에서 빠진 작업에 의존(`depends_on`)하는 작업입니다.
+- `suggested_selected`: 화면의 기본 선택 여부입니다. `warning`이 있으면 `false`입니다. 기본 선택 그대로 `operation_ids`로 승인해도 의존 작업 누락이 생기지 않습니다.
+
+```json
+{
+  "id": "run_456",
+  "workspace_id": "workspace_123",
+  "action": "folder_organize",
+  "skill_version_id": "skill_version_123",
+  "status": "awaiting_approval",
+  "request_summary": "날짜_분류_제목 형식으로 정리해줘",
+  "error_code": null,
+  "clarification_question": null,
+  "target_folder_id": "44444444-4444-4444-4444-444444444444",
+  "rule_summary": "문서 이름을 날짜_분류_제목 형식으로 바꾸고 분류별 폴더로 옮깁니다.",
+  "plan": {
+    "id": "plan_456",
+    "version": 1,
+    "summary": "아직 바꾸지 않았습니다. 승인하면 아래 작업을 실행합니다.",
+    "operation_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "status": "awaiting_approval",
+    "operations": [
+      {
+        "id": "plan_456-op-1",
+        "sequence": 1,
+        "tool_name": "rename_document",
+        "target_type": "document",
+        "target_id": "doc_1",
+        "base_version": 2,
+        "source_parent_id": "44444444-4444-4444-4444-444444444444",
+        "destination_parent_id": null,
+        "arguments": {"document_id": "doc_1", "display_name": "2026-10-19_회의_주간회의", "base_version": 2},
+        "reason": "규칙에 맞게 이름을 바꿉니다.",
+        "depends_on": [],
+        "status": "pending",
+        "error_code": null,
+        "warning": {"type": "duplicate_name", "message": "같은 위치에 이름이 같은 문서 '2026-10-19_회의_주간회의'이(가) 있어 중복일 수 있어요."},
+        "suggested_selected": false
+      }
+    ]
+  }
+}
+```
 
 ```json
 {
@@ -166,11 +263,11 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. |
-| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash |
+| 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. 고른 작업만 실행하는 부분 승인도 받습니다. |
+| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids` |
 | 출력 | `200` — `status=executing`인 `AgentRunResponse` |
 | 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. |
-| 주요 오류 | `409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
+| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -186,6 +283,12 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 조회한 계획과 같은 version·hash에만 승인을 기록하고 execution job을 등록합니다.
 
+`operation_ids`(1~20개)를 보내면 고른 작업(`plan.operations[].id`)만 실행합니다. 고르지 않은 작업은
+승인 시점에 `status=skipped`, `error_code=not_selected`가 되며 실행·검증·복구 대상이 아닙니다.
+`plan_version`·`operation_hash`는 부분 승인이어도 계획 전체 기준으로 검사합니다. 계획의 모든 작업을 고르면
+생략한 것과 같습니다(전체 실행). 고른 작업만 성공하면 run은 `completed`이며, 고르지 않은 작업은
+`partial_failed` 판정에 포함하지 않습니다. 고른 목록은 `agent_approvals.operation_ids`에 남습니다.
+
 #### 3. Auth 필요 여부
 
 - 필요: `X-Agent-Service-Token`
@@ -197,9 +300,16 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
   "workspace_id": "workspace_123",
   "user_id": "user_123",
   "plan_version": 1,
-  "operation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  "operation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "operation_ids": ["plan_123-op-1", "plan_123-op-3"]
 }
 ```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `plan_version` | `integer` | 예 | 승인할 plan 버전 |
+| `operation_hash` | `string` | 예 | 계획 전체의 operation hash(64자) |
+| `operation_ids` | `string[]` \| `null` | 아니오 | 실행할 작업 ID(1~20개). 생략·`null`이면 계획 전체 |
 
 #### 5. Response body
 
@@ -222,7 +332,8 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 #### 6. Error response
 
-- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 입력 검증 실패, `503` 토큰 미설정
+- `400`: `operation_ids` 빈 배열·20개 초과·중복·계획에 없는 ID·고른 작업이 고르지 않은 작업에 의존(`depends_on`). 빈 배열·20개 초과·중복은 계획 확인보다 먼저 거절합니다.
+- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 그 밖의 입력 검증 실패, `503` 토큰 미설정
 
 #### 7. Pagination / filtering
 

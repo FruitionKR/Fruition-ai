@@ -24,9 +24,13 @@ from app.modules.skill.domain.entities import (
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
+    DOCUMENT_SKILL_CAPABILITIES,
+    RESULT_MODE_CAPABILITIES,
     canonical_allowed_tools,
+    can_create_document,
     effective_targets,
     is_document_skill,
+    resolve_requires_source,
     validate_allowed_tools,
     validate_execution_options,
     validate_skill_name,
@@ -141,6 +145,7 @@ class AuthorSkillUseCase:
                 reference_issues,
             )
 
+        classified_requires_source: bool | None = None
         if preserved_capabilities is None:
             intent = _classify_intent(
                 self._generator,
@@ -155,7 +160,7 @@ class AuthorSkillUseCase:
                         question="이 Skill이 수행할 작업이 문서 작성, 문서 수정, 폴더 정리, 템플릿 중 무엇인지 알려 주세요.",
                     )
                 raise SkillRequestRejectedError("intent_ambiguous", "Skill request could not be classified.")
-            capabilities, reference_mode, allowed_tools = intent
+            capabilities, reference_mode, allowed_tools, classified_requires_source = intent
         else:
             reference_mode = "none"
             allowed_tools = preserved_allowed_tools or ()
@@ -200,7 +205,7 @@ class AuthorSkillUseCase:
                         question="이 Skill이 수행할 작업이 문서 작성, 문서 수정, 폴더 정리, 템플릿 중 무엇인지 알려 주세요.",
                     )
                 raise SkillRequestRejectedError("intent_ambiguous", "Skill request could not be classified.")
-            capabilities, reference_mode, allowed_tools = intent
+            capabilities, reference_mode, allowed_tools, classified_requires_source = intent
             candidate = self._generator.generate(
                 instruction,
                 references,
@@ -261,6 +266,13 @@ class AuthorSkillUseCase:
         if len(instructions) > MAX_INSTRUCTIONS_CHARS:
             raise ValueError(f"Skill instructions support at most {MAX_INSTRUCTIONS_CHARS} characters.")
         validate_allowed_tools(capabilities, allowed_tools)
+        # 초안 단계에는 결과 방식이 없다. 게시·수정 때 결과 방식과 명시값으로 다시 정한다.
+        requires_source = resolve_requires_source(
+            capabilities,
+            None,
+            instructions,
+            classified=classified_requires_source,
+        )
         output_issues = (
             _tag_issues(inspect_skill_instructions(resolved_name), "name")
             + _tag_issues(inspect_skill_instructions(resolved_description), "description")
@@ -283,6 +295,7 @@ class AuthorSkillUseCase:
                 ),
                 capabilities=capabilities,
                 allowed_tools=allowed_tools,
+                requires_source=requires_source,
             )
             return SkillAuthoringResult(
                 status="blocked",
@@ -303,6 +316,7 @@ class AuthorSkillUseCase:
             instructions_markdown=instructions,
             capabilities=capabilities,
             allowed_tools=allowed_tools,
+            requires_source=requires_source,
         )
         return SkillAuthoringResult(status="proposal_ready", proposal=proposal)
 
@@ -319,19 +333,13 @@ class AuthorSkillUseCase:
         expected_allowed_tools: tuple[SkillTool, ...],
         targets: tuple[SkillTarget, ...] | None = None,
         result_mode: SkillResultMode | None = None,
+        requires_source: bool | None = None,
     ) -> SkillAuthoringResult:
-        if not expected_capabilities or any(
-            capability not in CAPABILITY_TOOLS for capability in expected_capabilities
-        ):
-            raise ValueError("Published Skill contains an unsupported capability.")
-        if not expected_allowed_tools:
-            # 초안 없이 바로 게시하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
-            expected_allowed_tools = canonical_allowed_tools(expected_capabilities)
-        if len(set(expected_capabilities)) != len(expected_capabilities) or len(
-            set(expected_allowed_tools)
-        ) != len(expected_allowed_tools):
-            raise ValueError("Published Skill permissions must not contain duplicates.")
-        validate_allowed_tools(expected_capabilities, expected_allowed_tools)
+        """requires_source는 사용자가 명시한 원문 필요 여부다. None이면 규칙(`{문서}`·template)으로 정하고,
+        규칙으로 정할 수 없으면 False다. 게시는 의도를 다시 분류하지 않으므로(아래) 작성 초안의
+        requires_source(LLM 분류 포함)를 그대로 보내야 그 판단이 유지된다.
+        """
+        expected_allowed_tools = _published_allowed_tools(expected_capabilities, expected_allowed_tools)
         # LLM 검토 전에 거절해 비용을 쓰지 않는다.
         targets, result_mode = validate_execution_options(expected_capabilities, targets, result_mode)
         # 이미 검토를 마친 초안이므로 의도를 다시 분류하지 않는다(review_draft와 같다).
@@ -354,7 +362,15 @@ class AuthorSkillUseCase:
         if reviewed.status != "proposal_ready" or reviewed.proposal is None:
             return reviewed
         # 분류를 건너뛰었으므로 검토 결과의 권한은 호출자가 확인한 권한과 같다.
-        proposal = reviewed.proposal
+        proposal = replace(
+            reviewed.proposal,
+            requires_source=resolve_requires_source(
+                expected_capabilities,
+                result_mode,
+                reviewed.proposal.instructions_markdown,
+                explicit=requires_source,
+            ),
+        )
         # 호출자가 포기한 뒤에는 게시하지 않는다.
         ensure_task_active()
         skill = self._skill_manager.create_published(
@@ -369,6 +385,7 @@ class AuthorSkillUseCase:
             allowed_tools=proposal.allowed_tools,
             targets=targets,
             result_mode=result_mode,
+            requires_source=proposal.requires_source,
         )
         return SkillAuthoringResult(status="published", proposal=proposal, skill=skill)
 
@@ -383,17 +400,33 @@ class AuthorSkillUseCase:
         instructions_markdown: str,
         targets: tuple[SkillTarget, ...] | None = None,
         result_mode: SkillResultMode | None = None,
+        requires_source: bool | None = None,
+        capabilities: tuple[SkillCapability, ...] | None = None,
     ) -> SkillAuthoringResult:
-        """targets·result_mode는 None이면 기존 값을 유지한다. targets=()는 기본값으로 되돌린다.
+        """수정은 보낸 필드만 바꾸는 부분 수정이다. targets·result_mode·requires_source는 None이면 기존 값을 유지한다.
+        targets=()는 기본값으로 되돌린다.
 
-        지침이 이전 버전과 같으면 의도를 다시 분류하지 않고 이전 capabilities·allowed_tools를 그대로 쓴다.
-        설명·이름만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 작성 -> 수정)를 바꾸면 안 되기 때문이다.
+        지침을 고쳤어도 의도를 다시 분류하지 않고 이전 capabilities·allowed_tools를 그대로 쓴다.
+        실행 규칙 문장만 고친 수정이 분류기 판단에 따라 Skill 종류(예: 폴더 정리 -> 문서 수정+폴더 정리)와
+        대상·결과 방식을 바꾸면 이후 실행이 엉뚱한 대상을 요구하기 때문이다. 의도 분류는 작성(초안) 경로에서만 한다.
+        지침이 바뀌면 안전 검토(LLM)는 그대로 다시 한다.
+
+        capabilities를 보내면 사용자가 Skill 종류·결과 방식을 직접 바꾼 것이다(잘못 저장된 종류의 복구 포함).
+        게시와 같은 규칙으로 검증하고 allowed_tools를 다시 계산한다. 생략한 result_mode는 이전 값 대신
+        capabilities에서 정해지는 값을 쓴다(_updated_execution_options).
         """
         skill = self._skill_manager.get_manageable(workspace_id, user_id, skill_id)
         previous = skill.latest_version or skill.enabled_version
         preserved_capabilities = None
         preserved_allowed_tools = None
-        if previous is not None and previous.instructions_markdown.strip() == instructions_markdown.strip():
+        if capabilities is not None:
+            # LLM 검토 전에 거절해 비용을 쓰지 않는다(게시와 같다).
+            preserved_allowed_tools = _published_allowed_tools(capabilities, ())
+            preserved_capabilities = capabilities
+            validate_execution_options(
+                capabilities, targets, result_mode or _capability_result_mode(capabilities)
+            )
+        elif previous is not None:
             preserved_capabilities = previous.capabilities
             # 컬럼 추가 전 행처럼 저장된 Tool 표가 비어 있으면 게시와 같이 서버 정책으로 계산한다.
             preserved_allowed_tools = previous.allowed_tools or canonical_allowed_tools(previous.capabilities)
@@ -418,6 +451,11 @@ class AuthorSkillUseCase:
             proposal.capabilities,
             targets,
             result_mode,
+            capabilities_changed=capabilities is not None,
+        )
+        proposal = replace(
+            proposal,
+            requires_source=_updated_requires_source(previous, proposal, result_mode, requires_source),
         )
         ensure_task_active()
         updated = self._skill_manager.update_published(
@@ -431,6 +469,7 @@ class AuthorSkillUseCase:
             allowed_tools=proposal.allowed_tools,
             targets=targets,
             result_mode=result_mode,
+            requires_source=proposal.requires_source,
         )
         return SkillAuthoringResult(status="published", proposal=proposal, skill=updated)
 
@@ -464,18 +503,58 @@ class AuthorSkillUseCase:
         return reviewed
 
 
+def _published_allowed_tools(
+    capabilities: tuple[SkillCapability, ...],
+    allowed_tools: tuple[SkillTool, ...],
+) -> tuple[SkillTool, ...]:
+    """게시·수정에서 사용자가 정한 capabilities를 검증하고 저장할 Tool 표를 돌려준다.
+
+    capabilities는 요청 스키마가 문자열 목록으로만 받으므로(422 대신 거절 code로 구분) 여기서
+    빈 값·허용 밖 값·중복을 invalid_capabilities로 거절한다.
+    """
+    if not capabilities:
+        raise SkillRequestRejectedError("invalid_capabilities", "capabilities must not be empty.")
+    unsupported = sorted({capability for capability in capabilities if capability not in CAPABILITY_TOOLS})
+    if unsupported:
+        raise SkillRequestRejectedError(
+            "invalid_capabilities",
+            f"capabilities contains unsupported values: {unsupported}",
+        )
+    if len(set(capabilities)) != len(capabilities):
+        raise SkillRequestRejectedError("invalid_capabilities", "capabilities must not contain duplicates.")
+    if not allowed_tools:
+        # 초안 없이 바로 게시·수정하는 화면은 Tool 표를 모른다. 서버 정책으로 계산해 아래 검증을 그대로 거친다.
+        allowed_tools = canonical_allowed_tools(capabilities)
+    if len(set(allowed_tools)) != len(allowed_tools):
+        raise ValueError("Published Skill permissions must not contain duplicates.")
+    validate_allowed_tools(capabilities, allowed_tools)
+    return allowed_tools
+
+
+def _capability_result_mode(capabilities: tuple[SkillCapability, ...]) -> SkillResultMode | None:
+    """capabilities의 문서 기능 조합으로 정해지는 결과 방식(edit/create/auto). 문서 Skill이 아니면 None."""
+    document_capabilities = DOCUMENT_SKILL_CAPABILITIES.intersection(capabilities)
+    for mode, required in RESULT_MODE_CAPABILITIES.items():
+        if required == document_capabilities:
+            return mode
+    return None
+
+
 def _updated_execution_options(
     previous: SkillVersion | None,
     capabilities: tuple[SkillCapability, ...],
     targets: tuple[SkillTarget, ...] | None,
     result_mode: SkillResultMode | None,
+    *,
+    capabilities_changed: bool = False,
 ) -> tuple[tuple[SkillTarget, ...], SkillResultMode | None]:
-    """지침을 바꾼 수정은 다시 분류해 capabilities가 바뀔 수 있다.
+    """수정 버전의 targets·result_mode. 보내지 않은 값은 이전 버전에서 이어받는다.
 
-    보낸 값과 이어받은 값을 모두 새 capabilities로 검증해 어긋나면 invalid_result_mode로 거절한다.
-    이어받은 result_mode를 조용히 버리면 사용자가 고르지 않은 결과 방식(null)이 저장되기 때문이다.
-    호출자는 새 capabilities에 맞는 result_mode를 보내 다시 요청하면 된다.
-    새 capabilities가 문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
+    capabilities를 이어받았으면 이어받은 값은 capabilities와 맞는다.
+    capabilities를 새로 보냈으면(capabilities_changed) 생략한 result_mode는 이전 값 대신 capabilities에서 정한다.
+    targets는 이전 버전도 문서 Skill이었을 때만 이어받고, 아니면 기본값(["current_document"])이다.
+    보낸 값이 capabilities와 어긋나면 invalid_result_mode·invalid_targets로 거절한다.
+    문서 Skill이 아니면 targets·result_mode가 의미가 없으므로 이어받지 않는다.
     """
     if targets is None:
         targets = (
@@ -483,9 +562,47 @@ def _updated_execution_options(
             if previous is not None and is_document_skill(capabilities)
             else ()
         )
-    if result_mode is None and previous is not None and is_document_skill(capabilities):
-        result_mode = previous.result_mode
+    if result_mode is None and is_document_skill(capabilities):
+        if capabilities_changed:
+            result_mode = _capability_result_mode(capabilities)
+        elif previous is not None:
+            result_mode = previous.result_mode
     return validate_execution_options(capabilities, targets, result_mode)
+
+
+def _updated_requires_source(
+    previous: SkillVersion | None,
+    proposal: SkillAuthoringProposal,
+    result_mode: SkillResultMode | None,
+    explicit: bool | None,
+) -> bool:
+    """수정 버전의 원문 필요 여부. 사용자가 명시한 값이 가장 앞선다.
+
+    명시값이 없고 Skill 종류(capabilities)·결과 방식이 이전 버전과 같으면 지침을 고쳤어도 이전 값을 이어받는다
+    (지침만 고친 수정은 의도를 다시 정하지 않는다).
+    종류나 결과 방식이 바뀌었으면 이전 값은 다른 종류의 판단이라 명시값으로 쓰지 않고 규칙(`{문서}`·template)으로
+    다시 정한다. 규칙으로 정할 수 없을 때만 이전 값을 분류값 대신 쓴다(수정 경로는 의도를 다시 분류하지 않는다).
+    이전 버전이 새 문서를 만들지 않던 Skill이면(예: 결과 방식 edit -> create) 이어받을 값이 없다.
+    """
+    inherited = (
+        previous.requires_source
+        if previous is not None and can_create_document(previous.capabilities, previous.result_mode)
+        else None
+    )
+    unchanged_kind = (
+        previous is not None
+        and set(previous.capabilities) == set(proposal.capabilities)
+        and previous.result_mode == result_mode
+    )
+    if explicit is None and unchanged_kind:
+        explicit = inherited
+    return resolve_requires_source(
+        proposal.capabilities,
+        result_mode,
+        proposal.instructions_markdown,
+        explicit=explicit,
+        classified=inherited,
+    )
 
 
 def _validate_references(references: tuple[SkillAuthoringReference, ...]) -> tuple[SkillSafetyIssue, ...]:
@@ -645,15 +762,13 @@ def _classify_intent(
     instruction: str,
     references: tuple[SkillAuthoringReference, ...],
     description: str | None,
-) -> tuple[tuple[SkillCapability, ...], str, tuple[SkillTool, ...]] | None:
-    classification = _intent_result(
-        generator.classify(
-            instruction,
-            references,
-            requested_description=description,
-        ),
-        bool(references),
+) -> tuple[tuple[SkillCapability, ...], str, tuple[SkillTool, ...], bool | None] | None:
+    raw_classification = generator.classify(
+        instruction,
+        references,
+        requested_description=description,
     )
+    classification = _intent_result(raw_classification, bool(references))
     if classification[0] == "unsupported":
         raise SkillRequestRejectedError(
             "intent_unsupported",
@@ -672,7 +787,13 @@ def _classify_intent(
             }
         )
     )
-    return capabilities, classification[2], allowed_tools
+    return capabilities, classification[2], allowed_tools, _classified_requires_source(raw_classification)
+
+
+def _classified_requires_source(value: dict[str, object]) -> bool | None:
+    """분류기의 원문 필요 판단. 이전 프롬프트처럼 값이 없거나 bool이 아니면 None(규칙·False로 정한다)."""
+    requires_source = value.get("requires_source")
+    return requires_source if isinstance(requires_source, bool) else None
 
 
 def _intent_result(

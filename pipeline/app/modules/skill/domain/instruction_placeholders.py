@@ -18,6 +18,7 @@ NO_SELECTION = "(선택 없음)"
 NO_DOCUMENT = "(현재 문서 없음)"
 EDIT_PAYLOAD_DOCUMENT_REFERENCE = "[현재 문서: 요청 payload의 markdown 본문]"
 REFERENCE_CONTEXT_DOCUMENT_REFERENCE = "[현재 문서: 요청 payload의 reference_context.source_document 본문]"
+REFERENCE_CONTEXT_FOLDER_REFERENCE = "[고른 폴더의 문서들: 요청 payload의 reference_context.source_documents 본문]"
 MAX_INLINE_DOCUMENT_CHARS = 8_000
 MAX_INLINE_SELECTION_CHARS = 4_000
 MAX_INLINE_REQUEST_CHARS = 2_000

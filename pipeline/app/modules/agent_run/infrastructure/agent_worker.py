@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import threading
+from contextlib import nullcontext
 from typing import Annotated, Any, TypedDict
 from uuid import uuid4
 
@@ -19,6 +21,7 @@ from app.modules.agent_run.application.ports import (
     AgentPlanGeneratorPort,
     AgentPlanRepositoryPort,
     AgentToolGatewayPort,
+    FolderContentReaderPort,
     ToolGatewayError,
 )
 from app.modules.agent_run.domain.entities import (
@@ -27,6 +30,12 @@ from app.modules.agent_run.domain.entities import (
     ContentArtifactReference,
 )
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOperation
+from app.modules.agent_run.domain.content_duplicates import (
+    ContentReview,
+    content_review_summary,
+    find_content_duplicates,
+)
+from app.modules.agent_run.domain.plan_review import review_content_duplicates, review_duplicate_names
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +43,10 @@ logger = logging.getLogger(__name__)
 _MAX_EXECUTION_STEPS = 40
 _GRAPH_RECURSION_LIMIT = 64
 _MAX_FAILURE_DETAIL_LENGTH = 256
+# 폴더 정리 계획의 본문 중복 확인 상한. folder-sources/read는 폴더 바로 아래 문서만 최대 50개 돌려준다.
+_CONTENT_CHECK_MAX_FOLDERS = 10
+_CONTENT_CHECK_MAX_DOCUMENTS_PER_FOLDER = 50
+_CONTENT_CHECK_MAX_DOCUMENT_CHARS = 50_000
 _TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "cancel_requested", "rolling_back", "rollback_failed"}
 )
@@ -62,8 +75,10 @@ class AgentWorker:
         tool_gateway: AgentToolGatewayPort,
         plan_generator: AgentPlanGeneratorPort | None,
         checkpointer: BaseCheckpointSaver[str] | None = None,
+        folder_content_reader: FolderContentReaderPort | None = None,
     ) -> None:
         self._repository = repository
+        self._folder_content_reader = folder_content_reader
         self._run_repository = run_repository
         self._tool_gateway = tool_gateway
         self._plan_generator = plan_generator
@@ -79,7 +94,7 @@ class AgentWorker:
         )
         heartbeat.start()
         try:
-            with self._repository.execution_lock(job.run_id):
+            with self._execution_lock(job):
                 self._run_job(job)
             self._repository.complete(job)
         except Exception as exc:
@@ -96,6 +111,18 @@ class AgentWorker:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
+
+    def _execution_lock(self, job: AgentJob):
+        """실행 중인 run과 같은 run을 동시에 진행하지 않게 잠근다.
+
+        markdown_turn 복구는 상태만 닫는다. 턴의 부수 효과(자식 AgentRun·Skill 게시)는 부모 행 잠금 아래에서
+        status가 executing일 때만 기록되므로, 취소 요청(cancel_requested) 뒤에는 더 늘지 않는다. 그래서 턴 worker가
+        쥔 실행 잠금을 기다리지 않는다. 기다리면 모델 연결에 멈춘 턴 worker가 살아 있는 동안 취소가 끝나지 않고,
+        이 worker의 다른 job까지 함께 멈춘다. 멈춘 턴이 나중에 끝나도 executing이 아니라 결과를 남기지 못한다.
+        """
+        if job.job_type == "rollback" and self._repository.load_context(job.run_id).run.action == "markdown_turn":
+            return nullcontext()
+        return self._repository.execution_lock(job.run_id)
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentRunGraphState)
@@ -244,7 +271,8 @@ class AgentWorker:
             "planning",
         ):
             raise ValueError("AgentRun cannot enter planning.")
-        hierarchy = self._inspect_hierarchy(context)
+        hierarchy = scoped_hierarchy(self._inspect_hierarchy(context), context.run.target_folder_id)
+        content_review = self._review_document_contents(context, hierarchy)
         content_artifacts = self._load_content_artifacts(context)
         plan_id = str(uuid4())
         try:
@@ -254,7 +282,7 @@ class AgentWorker:
                 version=self._repository.next_plan_version(run_id),
                 instruction=context.run.request_summary,
                 routing_action=context.run.action,
-                hierarchy=hierarchy,
+                hierarchy=_with_content_duplicates(hierarchy, content_review),
                 skill_instructions=context.skill_instructions,
                 allowed_tools=(
                     context.allowed_tools
@@ -262,6 +290,7 @@ class AgentWorker:
                     else None
                 ),
                 content_artifacts=content_artifacts,
+                target_folder_id=context.run.target_folder_id,
             )
         except AgentPlanIntentClarificationRequired as exc:
             if not self._repository.request_clarification(run_id, str(exc), exc.question):
@@ -271,7 +300,67 @@ class AgentWorker:
             unsupported = {operation.tool_name for operation in plan.operations} - set(context.allowed_tools)
             if unsupported:
                 raise ValueError("Agent plan contains tools not allowed by the selected Skill.")
-        self._run_repository.save_plan(run_id, plan)
+        reviewed = review_duplicate_names(plan, hierarchy)
+        if content_review is not None:
+            reviewed = replace(
+                review_content_duplicates(reviewed, content_review.duplicates),
+                summary=content_review_summary(
+                    reviewed.summary,
+                    content_review,
+                    {operation.target_id for operation in reviewed.operations if operation.target_id},
+                ),
+            )
+        self._run_repository.save_plan(run_id, reviewed)
+
+    def _review_document_contents(
+        self,
+        context: AgentRunContext,
+        hierarchy: list[dict[str, object]],
+    ) -> ContentReview | None:
+        """폴더 정리 계획에서 본문이 거의 같은 문서를 찾는다. 읽기에 실패해도 계획은 진행하고 확인 못 한 수만 센다."""
+        if self._folder_content_reader is None or context.run.action != "folder_organize":
+            return None
+        documents = [item for item in hierarchy if item.get("type") == "document" and item.get("id") is not None]
+        if len(documents) < 2:
+            return None
+        by_folder: dict[str | None, list[str]] = {}
+        for item in documents:
+            parent_id = item.get("parent_id")
+            by_folder.setdefault(str(parent_id) if parent_id is not None else None, []).append(str(item["id"]))
+        contents: dict[str, str] = {}
+        unchecked = len(by_folder.pop(None, []))  # 최상위 문서는 폴더 단위로만 읽을 수 있어 확인하지 못한다.
+        for index, (folder_id, folder_documents) in enumerate(by_folder.items()):
+            if index >= _CONTENT_CHECK_MAX_FOLDERS:
+                unchecked += len(folder_documents)
+                continue
+            try:
+                listing = self._folder_content_reader.read(
+                    workspace_id=context.run.workspace_id,
+                    user_id=context.run.user_id,
+                    folder_id=folder_id,
+                    max_documents=_CONTENT_CHECK_MAX_DOCUMENTS_PER_FOLDER,
+                )
+            except Exception as exc:  # 중복 확인은 보조 검토라 실패해도 계획을 막지 않는다.
+                logger.warning(
+                    "폴더 문서 본문 읽기 실패로 중복 확인을 건너뜀: run_id=%s folder_id=%s type=%s",
+                    context.run.id,
+                    folder_id,
+                    type(exc).__name__,
+                )
+                unchecked += len(folder_documents)
+                continue
+            expected = set(folder_documents)
+            read = {
+                document.document_id: document.markdown
+                for document in listing.documents
+                if document.document_id in expected and isinstance(document.markdown, str)
+            }
+            oversized = {document_id for document_id, markdown in read.items() if len(markdown) > _CONTENT_CHECK_MAX_DOCUMENT_CHARS}
+            contents.update({document_id: markdown for document_id, markdown in read.items() if document_id not in oversized})
+            # 업로드 원본처럼 Markdown이 아닌 문서는 total_documents에도 없으므로 확인 못 함으로 세지 않는다.
+            unchecked += max(listing.total_documents - len(listing.documents), 0) + len(oversized)
+        review = find_content_duplicates(documents, contents)
+        return ContentReview(review.duplicates, unchecked + review.unchecked_documents)
 
     def _inspect_hierarchy(self, context: AgentRunContext) -> list[dict[str, object]]:
         root = self._read_tool(context, "list_root_items", {})
@@ -655,6 +744,44 @@ class AgentWorker:
             user_id=context.run.user_id,
             arguments=arguments,
         )
+
+def _with_content_duplicates(
+    hierarchy: list[dict[str, object]],
+    review: ContentReview | None,
+) -> list[dict[str, object]]:
+    """계획 생성에 넘기는 hierarchy에 본문 중복 확인 결과(content_duplicate_of: 원본 문서 id)를 싣는다."""
+    if review is None or not review.duplicates:
+        return hierarchy
+    return [
+        {**item, "content_duplicate_of": review.duplicates[str(item.get("id"))].original_id}
+        if item.get("type") == "document" and str(item.get("id")) in review.duplicates
+        else item
+        for item in hierarchy
+    ]
+
+
+def scoped_hierarchy(
+    hierarchy: list[dict[str, object]],
+    target_folder_id: str | None,
+) -> list[dict[str, object]]:
+    """대상 폴더가 있으면 그 폴더와 하위 항목만 남긴다. 계획은 이 범위 밖을 대상으로 삼을 수 없다."""
+    if target_folder_id is None:
+        return hierarchy
+    target = next(
+        (item for item in hierarchy if str(item.get("id")) == target_folder_id and item.get("type") == "folder"),
+        None,
+    )
+    if target is None:
+        raise ValueError("Agent target folder is not in the workspace hierarchy.")
+    in_scope = {target_folder_id}
+    scoped = [target]
+    # 탐색 결과는 부모가 자식보다 먼저 나오므로 한 번 훑어 하위 항목을 모은다.
+    for item in hierarchy:
+        if item.get("parent_id") in in_scope and item is not target:
+            scoped.append(item)
+            in_scope.add(str(item.get("id")))
+    return scoped
+
 
 def _route_job_event(state: AgentRunGraphState) -> str:
     event = state.get("event")

@@ -7,7 +7,12 @@ from uuid import uuid4
 from psycopg.types.json import Json
 
 from app.modules.agent_run.domain.entities import AgentJob, AgentRunContext
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    NON_RETRYABLE_PLAN_FAILURE_CODES,
+    NOT_SELECTED_ERROR_CODE,
+    AgentPlan,
+    AgentPlanOperation,
+)
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import _row_to_run, _rows_to_plan
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -130,7 +135,7 @@ class PostgresAgentJobRepository:
                 raise ValueError("Agent job lease was lost.")
 
     def fail(self, job: AgentJob, error_code: str) -> None:
-        terminal = job.attempt_count >= 3
+        terminal = job.attempt_count >= 3 or error_code in NON_RETRYABLE_PLAN_FAILURE_CODES
         with database.connect_ai() as conn:
             updated = conn.execute(
                 """
@@ -490,14 +495,17 @@ class PostgresAgentJobRepository:
 
     def finish_run_from_operations(self, run_id: str) -> None:
         with database.connect_ai() as conn:
+            # 부분 승인에서 고르지 않은 작업(skipped·not_selected)은 실패가 아니므로 세지 않는다.
             counts = conn.execute(
                 """
                 SELECT operation.status, count(*) AS count
                 FROM agent_plan_operations operation
                 JOIN agent_runs run ON run.current_plan_id = operation.plan_id
-                WHERE run.id = %s GROUP BY operation.status
+                WHERE run.id = %s
+                  AND NOT (operation.status = 'skipped' AND operation.error_code IS NOT DISTINCT FROM %s)
+                GROUP BY operation.status
                 """,
-                (run_id,),
+                (run_id, NOT_SELECTED_ERROR_CODE),
             ).fetchall()
             values = {row["status"]: row["count"] for row in counts}
             if values.get("conflicted", 0):

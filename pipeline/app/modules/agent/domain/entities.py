@@ -63,6 +63,8 @@ class PendingSkillProposal:
     instructions_markdown: str
     capabilities: tuple[SkillCapability, ...]
     allowed_tools: tuple[SkillTool, ...]
+    # 작성 초안의 원문 필요 여부(skill_authoring.requires_source). 없으면 게시 때 규칙으로 정한다.
+    requires_source: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,8 @@ class AgentTurnRequest:
     provider: str | None = None
     model: str | None = None
     mode: AgentTurnMode | None = None
+    # 작업 대상 폴더(document-svc가 검증한 폴더 UUID). 폴더 정리 범위·새 문서 위치. None이면 루트·전체다.
+    folder_id: str | None = None
 
 
 @dataclass(frozen=True)

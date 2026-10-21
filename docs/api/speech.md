@@ -112,9 +112,15 @@ Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. `d
   "provider":"openai",
   "model":"gpt-6-luna",
   "display_name":"출시 회의",
+  "meeting_date":"2026-10-19",
+  "attendees":["김민수","이지은"],
   "segments":[{"id":"item_1","text":"출시는 다음 주 금요일로 확정하겠습니다."}]
 }
 ```
+
+`meeting_date`(1~40자 문자열)·`attendees`(최대 50명, 이름 1~100자)는 선택이다. 회의록 머리의 날짜·참석자로 쓴다.
+`meeting_date`가 없으면 날짜는 "확인되지 않음"이다. 참석자는 `attendees`를 먼저 두고 전사에서 이름이 확인된 사람을
+중복 없이 덧붙이며, 둘 다 없으면 "확인되지 않음"이다.
 
 `provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 지원하지 않는
 provider/model이거나 빠지면 `MEETING_NOTES_INPUT_REJECTED`, 해당 provider의 API 키가 없으면 `MEETING_NOTES_UNAVAILABLE`로 실패한다.
@@ -135,11 +141,52 @@ command hash, 상태, `error_code`, `run_id`만 남는다. 같은 command가 재
 ```json
 {"event_id":"meeting_notes:<run_id>:succeeded","run_id":"<run_id>","kind":"meeting_notes","status":"succeeded",
  "workspace_id":"...","user_id":"...","operation_id":null,
- "payload":{"display_name":"...","markdown":"...","summary":[],"decisions":[],"action_items":[],"open_questions":[]},
+ "payload":{"display_name":"...","markdown":"...","meeting_date":"2026-10-19","attendees":["김민수"],
+            "summary":[],"discussion":[],"decisions":[],"action_items":[],"next_schedule":[],"open_questions":[]},
  "error":null}
 ```
 
-payload의 네 배열 항목은 text와 source_segment_ids를 가진다. 실패하면 `status: "failed"`, `payload: null`,
+| payload 필드 | 내용 |
+|---|---|
+| `markdown` | Figma 시안 구성의 회의록 본문(아래 형식). 근거 구간 ID는 본문에 싣지 않는다 |
+| `meeting_date` | command의 `meeting_date` 또는 `null` |
+| `attendees` | 참석자 이름 배열 |
+| `summary`·`decisions`·`next_schedule`·`open_questions` | `{text, source_segment_ids}` 배열. `summary`는 비어 있지 않다 |
+| `discussion` | `{topic, items: [{text, source_segment_ids}]}` 배열(주요 논의의 주제별 묶음) |
+| `action_items` | `{text, owner, due, source_segment_ids}` 배열. `owner`·`due`는 발언으로 확인된 경우만 문자열, 아니면 `null` |
+
+`summary`·`decisions`·`action_items`·`open_questions` 네 배열과 각 항목의 `text`·`source_segment_ids`는 이전 계약과 같다.
+`open_questions`(미결 사항)는 시안 본문에는 싣지 않지만 배열로는 계속 돌려준다. `markdown` 형식은 다음과 같다.
+비어 있는 절은 `- 확인된 내용 없음`, 확인되지 않은 담당자·기한은 `담당자 미정`·`기한 미정`이다.
+
+```markdown
+# 출시 회의
+
+- 날짜: 2026-10-19
+- 참석자: 김민수, 이지은
+
+### 회의 요약
+- 10월 출시 준비 상황을 점검했다.
+
+### 주요 논의
+#### 출시 일정
+- QA 기간을 1주 늘리자는 의견이 나왔다.
+
+#### 가격 정책
+- 초기 할인 여부를 검토했다.
+
+### 결정 사항
+- 출시일은 10월 30일로 확정했다.
+
+### 해야 할 일
+- [ ] QA 일정표 공유 · 이지은 · 10월 22일
+- [ ] 할인안 초안 작성 · 담당자 미정 · 기한 미정
+
+### 다음 일정
+- 10월 26일 출시 점검 회의
+```
+
+각 배열 항목은 text와 source_segment_ids를 가진다. 실패하면 `status: "failed"`, `payload: null`,
 `error`에 아래 코드 하나를 싣는다(journal이 failed로 닫으므로 재전달돼도 같은 코드로 재생된다).
 
 | error | 사유 |

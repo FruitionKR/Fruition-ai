@@ -45,7 +45,10 @@ Return `ambiguous` when the supported effect cannot be determined without guessi
 {
   "decision": "supported | unsupported | ambiguous",
   "skill_kinds": ["document-create | document-edit | folder-organize | template"],
-  "reference_mode": "none | structure-reference | fixed-template"
+  "reference_mode": "none | structure-reference | fixed-template",
+  "requires_source": true
 }
 
-For `unsupported` or `ambiguous`, return an empty `skill_kinds` array. Tool permissions are assigned by the server from every selected Skill kind; do not return tool names.
+For `unsupported` or `ambiguous`, return an empty `skill_kinds` array.
+
+Set `requires_source` to whether the finished Skill, when it creates a new document, must read the content of a document or folder the user picks at run time as its source material. Return `true` when the new document is derived from existing material, such as summarizing, reorganizing, converting, translating, or compiling selected documents into a new document ("선택한 문서를 새 문서로 정리해줘", "이 폴더 문서들로 주간 보고서를 만들어줘"). Return `false` when the new document is written from the request alone or from a fixed structure, such as a blank meeting-notes form or a new plan drafted from a topic ("회의 주제를 받아 매주 새 회의록을 작성하는 규칙을 저장해줘"). Return `false` when the Skill does not create a new document. Tool permissions are assigned by the server from every selected Skill kind; do not return tool names.

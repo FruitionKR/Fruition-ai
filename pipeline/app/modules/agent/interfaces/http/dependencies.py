@@ -1,6 +1,9 @@
 import os
 
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
+from app.modules.agent.infrastructure.backend_folder_source_reader import (
+    build_folder_source_reader,
+)
 from app.modules.agent.infrastructure.chat_completions_conversation_replier import (
     build_conversation_replier,
 )
@@ -36,6 +39,10 @@ from app.modules.skill.interfaces.http.dependencies import (
 )
 
 
+def agent_skills_enabled() -> bool:
+    return os.environ.get("AGENT_SKILLS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+
+
 def build_handle_agent_turn_use_case(
     *,
     provider: str,
@@ -50,7 +57,7 @@ def build_handle_agent_turn_use_case(
     query_use_case = build_answer_query_use_case(
         provider=provider, model=model, event_publisher=event_publisher
     )
-    feature_enabled = os.environ.get("AGENT_SKILLS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    feature_enabled = agent_skills_enabled()
     agent_run_repository = PostgresAgentRunRepository(parent_run_id=parent_run_id)
     return HandleAgentTurnUseCase(
         event_publisher=event_publisher,
@@ -76,4 +83,5 @@ def build_handle_agent_turn_use_case(
         conversation_replier=build_conversation_replier(
             provider=provider, model=model
         ),
+        folder_source_reader=build_folder_source_reader() if feature_enabled else None,
     )

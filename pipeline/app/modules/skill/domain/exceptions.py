@@ -32,6 +32,7 @@ SKILL_REJECTION_CODES = frozenset(
     {
         "intent_ambiguous",
         "intent_unsupported",
+        "invalid_capabilities",
         "invalid_instruction_length",
         "invalid_name",
         "invalid_reference",

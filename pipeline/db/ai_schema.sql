@@ -265,6 +265,8 @@ CREATE TABLE IF NOT EXISTS skill_versions (
 -- 문서 Skill의 실행 대상·결과 방식(#115). 기존 행은 빈 대상이며 읽을 때 문서 Skill이면 ["current_document", "selection"](제한 없음)으로 본다.
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS targets text[] NOT NULL DEFAULT ARRAY[]::text[];
 ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS result_mode text;
+-- 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는 Skill인지. 기존 행(NULL)은 읽을 때 이전 동작대로 계산한다(template은 false, 새 문서를 만드는 document-create Skill은 true).
+ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS requires_source boolean;
 
 DO $$
 BEGIN
@@ -318,6 +320,10 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS provider text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS model text;
 -- 계획 단계에서 의도를 확정하지 못했을 때 사용자에게 보여 줄 질문. clarification_required에서만 의미가 있다.
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
+-- 턴에서 지정한 작업 대상 폴더(document-svc 폴더 UUID). 폴더 정리 범위이자 새 문서 위치다. NULL이면 워크스페이스 전체·루트.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS target_folder_id text;
+-- 선택한 Skill의 규칙 요약(실행 시점 Skill 설명). 승인 화면 안내용이며 Skill 없이 실행하면 NULL.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS rule_summary text;
 
 -- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs
@@ -377,6 +383,11 @@ CREATE TABLE IF NOT EXISTS agent_plan_operations (
     CONSTRAINT agent_plan_operations_unique_sequence UNIQUE (plan_id, sequence)
 );
 
+-- 승인 화면 안내용 검토 결과. 실행 내용이 아니므로 operation_hash에 포함하지 않는다.
+-- warning은 {"type", "message"}(중복 의심 등), suggested_selected는 화면의 기본 선택 여부다.
+ALTER TABLE agent_plan_operations ADD COLUMN IF NOT EXISTS warning jsonb;
+ALTER TABLE agent_plan_operations ADD COLUMN IF NOT EXISTS suggested_selected boolean NOT NULL DEFAULT true;
+
 CREATE TABLE IF NOT EXISTS agent_approvals (
     id text PRIMARY KEY,
     run_id text NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -387,6 +398,9 @@ CREATE TABLE IF NOT EXISTS agent_approvals (
     decision text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- 부분 승인으로 고른 작업 ID. NULL이면 계획 전체를 승인했다. 나머지 작업은 skipped(not_selected)가 된다.
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS operation_ids text[];
 
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id text PRIMARY KEY,

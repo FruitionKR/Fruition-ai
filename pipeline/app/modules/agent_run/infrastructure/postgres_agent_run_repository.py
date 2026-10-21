@@ -14,7 +14,7 @@ from app.modules.agent_run.application.ports import (
     AgentRunRepositoryPort,
 )
 from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
     read_text_object,
@@ -87,8 +87,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     """
                     INSERT INTO agent_runs (
                         id, workspace_id, user_id, action, skill_version_id, status, request_summary,
-                        provider, model
-                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s)
+                        provider, model, target_folder_id, rule_summary
+                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (
@@ -100,6 +100,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         run.request_summary,
                         run.provider,
                         run.model,
+                        run.target_folder_id,
+                        run.rule_summary,
                     ),
                 ).fetchone()
                 if artifact is not None:
@@ -424,8 +426,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     """
                     INSERT INTO agent_plan_operations (
                         id, plan_id, sequence, tool_name, target_type, target_id, base_version,
-                        source_parent_id, destination_parent_id, arguments, reason, depends_on, status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                        source_parent_id, destination_parent_id, arguments, reason, depends_on, status,
+                        warning, suggested_selected
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
                     """,
                     (
                         operation.id,
@@ -440,6 +443,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         Json(operation.arguments),
                         operation.reason,
                         list(operation.depends_on),
+                        Json(operation.warning) if operation.warning is not None else None,
+                        operation.suggested_selected,
                     ),
                 )
             conn.execute(
@@ -458,6 +463,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         plan: AgentPlan,
         approval_id: str,
         job_id: str,
+        selected_operation_ids: tuple[str, ...] | None = None,
     ) -> AgentRun:
         with database.connect_ai() as conn:
             locked = conn.execute(
@@ -481,12 +487,30 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
-                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved')
+                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision, operation_ids
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved', %s)
                 """,
-                (approval_id, run.id, plan.id, plan.version, plan.operation_hash, run.user_id),
+                (
+                    approval_id,
+                    run.id,
+                    plan.id,
+                    plan.version,
+                    plan.operation_hash,
+                    run.user_id,
+                    list(selected_operation_ids) if selected_operation_ids is not None else None,
+                ),
             )
             conn.execute("UPDATE agent_plans SET status = 'approved' WHERE id = %s", (plan.id,))
+            if selected_operation_ids is not None:
+                # 고르지 않은 작업은 실행하지 않는다. 실패와 구별되도록 not_selected로 남긴다.
+                conn.execute(
+                    """
+                    UPDATE agent_plan_operations
+                    SET status = 'skipped', error_code = %s, updated_at = now()
+                    WHERE plan_id = %s AND status = 'pending' AND NOT (id = ANY(%s))
+                    """,
+                    (NOT_SELECTED_ERROR_CODE, plan.id, list(selected_operation_ids)),
+                )
             updated = conn.execute(
                 """
                 UPDATE agent_runs SET status = 'executing', updated_at = now()
@@ -600,6 +624,8 @@ def _row_to_run(row: dict[str, Any]) -> AgentRun:
         request_summary=row["request_summary"],
         provider=row.get("provider"),
         model=row.get("model"),
+        target_folder_id=row.get("target_folder_id"),
+        rule_summary=row.get("rule_summary"),
         current_plan_id=row["current_plan_id"],
         error_code=row["error_code"],
         clarification_question=row.get("clarification_question"),
@@ -632,6 +658,8 @@ def _rows_to_plan(plan_row: dict[str, Any], operation_rows: list[dict[str, Any]]
                 depends_on=tuple(row["depends_on"] or ()),
                 status=row["status"],
                 error_code=row["error_code"],
+                warning=row.get("warning"),
+                suggested_selected=row.get("suggested_selected", True) is not False,
             )
             for row in operation_rows
         ),

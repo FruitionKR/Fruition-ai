@@ -22,6 +22,16 @@ class MeetingNotesCommand(SpeechScope):
     model: str = Field(..., min_length=1)
     display_name: str = Field(default="회의록", min_length=1, max_length=200)
     segments: list[MeetingSegment] = Field(min_length=1, max_length=1000)
+    # 회의록 머리의 날짜·참석자. document가 알고 있으면 보낸다. 없으면 날짜는 "확인되지 않음",
+    # 참석자는 전사에서 이름이 확인된 사람만 쓴다.
+    meeting_date: str | None = Field(default=None, min_length=1, max_length=40)
+    attendees: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_attendees(self):
+        if any(not name.strip() or len(name) > 100 for name in self.attendees):
+            raise ValueError("참석자 이름은 1~100자로 보내주세요.")
+        return self
 
     @model_validator(mode="after")
     def validate_transcript(self):
@@ -39,10 +49,27 @@ class MeetingNoteItem(BaseModel):
     source_segment_ids: list[str]
 
 
+class MeetingActionItem(MeetingNoteItem):
+    # 발언으로 확인된 경우에만 채운다.
+    owner: str | None = None
+    due: str | None = None
+
+
+class MeetingDiscussionTopic(BaseModel):
+    topic: str
+    items: list[MeetingNoteItem]
+
+
 class MeetingNotesResponse(BaseModel):
     display_name: str
+    # Figma 시안 구성의 본문: 날짜·참석자, 회의 요약, 주요 논의(주제별), 결정 사항, 해야 할 일, 다음 일정.
     markdown: str
+    meeting_date: str | None = None
+    attendees: list[str] = []
     summary: list[MeetingNoteItem]
+    discussion: list[MeetingDiscussionTopic] = []
     decisions: list[MeetingNoteItem]
-    action_items: list[MeetingNoteItem]
+    action_items: list[MeetingActionItem]
+    next_schedule: list[MeetingNoteItem] = []
+    # 본문에는 싣지 않지만 기존 소비자를 위해 배열은 유지한다.
     open_questions: list[MeetingNoteItem]

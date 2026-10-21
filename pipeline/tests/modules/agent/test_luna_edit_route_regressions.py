@@ -15,7 +15,11 @@ from app.modules.markdown_edit.domain.entities import (
 )
 from app.modules.skill.application.select_skill import SelectSkillUseCase
 from app.modules.skill.domain.entities import Skill, SkillVersion
-from app.modules.skill.domain.instruction_placeholders import EDIT_PAYLOAD_DOCUMENT_REFERENCE, NO_SELECTION
+from app.modules.skill.domain.instruction_placeholders import (
+    EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    NO_SELECTION,
+    REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
+)
 from tests.modules.agent.test_chat_completions_turn_router import SequenceJsonClient
 from tests.modules.agent.test_handle_agent_turn import (
     FakeQueryUseCase,
@@ -122,6 +126,8 @@ def tag_skill() -> Skill:
                 "TAG[{요청}] DOC[{문서}] SEL[{선택한 부분}] KEEP[{이름}]"
             ),
             capabilities=("document-create", "document-edit"),
+            # 지침에 `{문서}`가 있어 저장소가 원문 필요(requires_source)로 읽는 Skill이다.
+            requires_source=True,
             status="published",
         ),
     )
@@ -219,7 +225,7 @@ class SkillPlaceholderAgentTurnTest(unittest.TestCase):
             editor.requests[0].skill_instructions or "",
         )
 
-    def test_create_inlines_active_document_that_is_not_in_create_payload(self) -> None:
+    def test_create_carries_active_document_as_source_and_references_it(self) -> None:
         use_case, editor = self._use_case(
             AgentTurnRoute(
                 action="markdown_create",
@@ -241,6 +247,10 @@ class SkillPlaceholderAgentTurnTest(unittest.TestCase):
             )
         )
 
-        instructions = editor.create_requests[0].skill_instructions or ""
-        self.assertIn(f"DOC[{DOCUMENT}]", instructions)
+        # 명시한 Skill의 새 문서는 열린 문서를 원문(reference_context.source_document)으로 한 번만 싣는다.
+        create_request = editor.create_requests[0]
+        instructions = create_request.skill_instructions or ""
+        self.assertEqual(create_request.reference_context["source_document"]["markdown"], DOCUMENT)  # type: ignore[index]
+        self.assertIn(f"DOC[{REFERENCE_CONTEXT_DOCUMENT_REFERENCE}]", instructions)
+        self.assertNotIn("배액률", instructions)
         self.assertIn("TAG[새 문서로 만들어 줘]", instructions)

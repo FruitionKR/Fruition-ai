@@ -544,15 +544,14 @@ def test_unstarted_or_definitively_rejected_step_still_restores_previous_steps(f
     assert workspace.state() == before
 
 
-@pytest.mark.parametrize("crash", [False, True], ids=["before-delivery", "worker-killed"])
+@pytest.mark.parametrize("crash", [False, True], ids=["before-delivery", "worker-hung"])
 def test_postgres_turn_cancellation_through_worker_main(monkeypatch, crash):
-    """실제 진입점에서 모델 없는 취소와 실행 프로세스 종료 후 복구를 검증한다."""
+    """실제 진입점에서 모델 없는 취소와, 턴 worker가 멈춘 채 살아 있어도 끝나는 복구를 검증한다."""
     import os
     import select
     import json
     import subprocess
     import sys
-    import time
     from concurrent.futures import ThreadPoolExecutor
     from pathlib import Path
     from uuid import uuid4
@@ -629,25 +628,16 @@ task_worker._handle_controlled(json.loads(os.environ["TEST_TURN_COMMAND"]))
         monkeypatch.setattr(agent_worker, "build_backend_tool_gateway", lambda: gateway)
         monkeypatch.setattr(agent_worker, "build_plan_generator", builder)
         future = executor.submit(agent_worker.main)
-        if crash:
-            # 실제 잠금 대기를 확인한 뒤 SIGKILL로 연결과 실행 잠금을 해제한다.
-            deadline = time.monotonic() + 10
-            waiting = False
-            while time.monotonic() < deadline and not future.done():
-                with connect() as conn:
-                    waiting = conn.execute(
-                        "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
-                        "AND objid = (hashtextextended('agent:turn', 0) & 4294967295)::oid"
-                    ).fetchone() is not None
-                if waiting:
-                    break
-                time.sleep(0.02)
-            assert waiting, "살아 있는 턴과 복구가 실행 잠금을 공유해야 합니다."
-            assert runs.get_for_user("ws", "user", "turn").status == "cancel_requested"
-            process.kill()
-            process.wait(timeout=5)
+        # 모델 연결에 멈춘 턴 worker가 실행 잠금을 쥔 채 살아 있어도 복구는 잠금을 기다리지 않고 취소를 확정한다.
         with pytest.raises(KeyboardInterrupt):
             future.result(timeout=10)
+        if crash:
+            assert process.poll() is None, "멈춘 턴 worker가 살아 있는 동안 확정해야 합니다."
+            with connect() as conn:
+                assert conn.execute(
+                    "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                    "AND objid = (hashtextextended('agent:turn', 0) & 4294967295)::oid"
+                ).fetchone() is not None, "턴 worker가 실행 잠금을 쥐고 있어야 합니다."
         final = runs.get_for_user("ws", "user", "turn")
         assert final.status == "cancelled", final.error_code
         builder.assert_not_called()
@@ -709,6 +699,32 @@ def test_retryable_rollback_error_goes_to_job_backoff_and_recovers_on_retry():
     assert journal.run.status == "rolling_back"
     worker.process(job)
     assert journal.job_outcomes[-1] == ("completed", None)
+    assert journal.run.status == "cancelled"
+
+
+def test_markdown_turn_rollback_does_not_wait_for_hung_turn_execution_lock():
+    """모델 연결에 멈춘 턴 worker가 실행 잠금을 쥐고 있어도 턴 취소는 확정된다."""
+    journal = JobJournal(organization())
+    journal.run = replace(journal.run, action="markdown_turn", status="cancel_requested")
+    journal.execution_lock = MagicMock(side_effect=AssertionError("멈춘 턴의 실행 잠금을 기다리면 안 됩니다."))
+    journal.parent_rollback_error = lambda run_id: None
+    worker = AgentWorker(journal, MagicMock(), Workspace(), MagicMock())
+
+    worker.process(SimpleNamespace(id="job", run_id="run", job_type="rollback"))
+
+    assert journal.job_outcomes == [("completed", None)]
+    assert journal.run.status == "cancelled"
+    journal.execution_lock.assert_not_called()
+
+
+def test_autonomous_run_rollback_still_takes_execution_lock():
+    workspace, journal = Workspace(), JobJournal(organization())
+    worker = _cancelled_folder_run(journal, workspace)
+    journal.execution_lock = MagicMock(return_value=nullcontext())
+
+    worker.process(SimpleNamespace(id="job", run_id="run", job_type="rollback"))
+
+    journal.execution_lock.assert_called_once_with("run")
     assert journal.run.status == "cancelled"
 
 
