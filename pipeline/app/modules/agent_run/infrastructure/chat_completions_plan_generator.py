@@ -120,7 +120,7 @@ class ChatCompletionsPlanGenerator:
         plan = normalize_plan_candidate(run_id, plan_id, version, candidate)
         if any(operation.tool_name not in allowed_plan_tools for operation in plan.operations):
             raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
-        _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts)
+        _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts, target_folder_id)
         return plan
 
 
@@ -368,8 +368,16 @@ def _validate_plan_against_hierarchy(
     plan: AgentPlan,
     hierarchy: list[dict[str, object]],
     content_artifacts: tuple[ContentArtifactReference, ...],
+    target_folder_id: str | None = None,
 ) -> None:
     items = {str(item.get("id")): item for item in hierarchy if item.get("id") is not None}
+    # 대상 폴더는 작업 범위 자체다. 옮기면 자기 하위로 들어가는 순환이 되고, 이름을 바꾸면 범위 밖(부모 폴더)에
+    # 보이는 변경이 되는데 형제 항목은 스냅샷에 없어 이름 중복도 확인할 수 없다. 삭제 도구는 계획에 없다.
+    if target_folder_id is not None and any(
+        operation.tool_name in {"rename_folder", "move_folder"} and operation.target_id == target_folder_id
+        for operation in plan.operations
+    ):
+        raise ValueError("Agent plan cannot move or rename the target folder itself.")
     operations = {operation.id: operation for operation in plan.operations}
     operation_ids = {operation.id for operation in plan.operations}
     required_arguments = {

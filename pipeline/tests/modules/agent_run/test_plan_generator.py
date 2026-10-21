@@ -787,6 +787,43 @@ class PlanGeneratorTest(unittest.TestCase):
 
         self.assertEqual(failure_code(raised.exception), "plan_out_of_scope")
 
+    def test_target_folder_itself_cannot_be_renamed_or_moved(self) -> None:
+        rename_target = {
+            "tool_name": "rename_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
+            "source_parent_id": None, "destination_parent_id": None,
+            "arguments": {"folder_id": "folder-9", "name": "정리됨", "base_version": 1},
+            "reason": "이름을 바꿉니다.", "depends_on": [],
+        }
+        move_target = {
+            "tool_name": "move_folder", "target_type": "folder", "target_id": "folder-9", "base_version": 1,
+            "source_parent_id": None, "destination_parent_id": "folder-child",
+            "arguments": {"folder_id": "folder-9", "parent_folder_id": "folder-child", "position": None, "base_version": 1},
+            "reason": "옮깁니다.", "depends_on": [],
+        }
+        for operation in (rename_target, move_target):
+            client = MagicMock()
+            client.complete_json.return_value = {
+                "intent_confirmed": True, "summary": "폴더를 정리합니다.", "operations": [operation],
+            }
+            with self.subTest(tool=operation["tool_name"]), self.assertRaisesRegex(ValueError, "target folder itself"):
+                ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+    def test_child_folder_of_target_can_still_be_renamed(self) -> None:
+        client = MagicMock()
+        client.complete_json.return_value = {
+            "intent_confirmed": True, "summary": "하위 폴더 이름을 바꿉니다.",
+            "operations": [{
+                "tool_name": "rename_folder", "target_type": "folder", "target_id": "folder-child", "base_version": 1,
+                "source_parent_id": None, "destination_parent_id": None,
+                "arguments": {"folder_id": "folder-child", "name": "회의록", "base_version": 1},
+                "reason": "이름을 바꿉니다.", "depends_on": [],
+            }],
+        }
+
+        plan = ChatCompletionsPlanGenerator(client, "system").generate(**_scoped_request(target_folder_id="folder-9"))
+
+        self.assertEqual(plan.operations[0].target_id, "folder-child")
+
     def test_move_destination_reference_must_point_to_created_folder(self) -> None:
         client = MagicMock()
         client.complete_json.return_value = {
@@ -805,6 +842,7 @@ class PlanGeneratorTest(unittest.TestCase):
         prompt = DEFAULT_PLAN_PROMPT.read_text(encoding="utf-8")
         self.assertIn("When payload.target_folder_id is not null", prompt)
         self.assertIn("never move items to the top level (null)", prompt)
+        self.assertIn("Never rename or move the target folder itself", prompt)
         self.assertIn("first create each new folder with create_folder inside payload.target_folder_id", prompt)
 
     def test_create_document_requires_consistent_destination_metadata(self) -> None:
