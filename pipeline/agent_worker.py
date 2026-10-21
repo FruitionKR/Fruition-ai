@@ -8,7 +8,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from app.modules.agent.infrastructure.backend_folder_source_reader import BackendFolderSourceReader
 from app.modules.agent_run.infrastructure.agent_worker import AgentWorker
-from app.modules.agent_run.infrastructure.backend_tool_gateway import build_backend_tool_gateway
+from app.modules.agent_run.infrastructure.backend_tool_gateway import agent_backend_url, build_backend_tool_gateway
 from app.modules.agent_run.infrastructure.chat_completions_plan_generator import build_plan_generator
 from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
@@ -38,12 +38,13 @@ def _cleanup_expired_runs_if_due(
 
 
 def _build_folder_content_reader() -> BackendFolderSourceReader:
-    """폴더 정리 계획의 본문 중복 확인용. tool gateway와 같은 document-svc·서비스 토큰을 쓴다.
+    """폴더 정리 계획의 본문 중복 확인용. tool gateway와 같은 document-svc 주소(agent_backend_url)·서비스 토큰을 쓴다.
 
-    토큰이 있는지는 build_backend_tool_gateway가 먼저 확인한다.
+    로컬 compose처럼 이 프로세스에 DOCUMENT_INTERNAL_BASE_URL을 두지 않는 배포가 있어
+    task worker의 build_folder_source_reader를 쓰지 않는다. 토큰이 있는지는 build_backend_tool_gateway가 먼저 확인한다.
     """
     return BackendFolderSourceReader(
-        os.environ.get("AGENT_BACKEND_URL", "http://document-svc:8080"),
+        agent_backend_url(),
         os.environ.get("AGENT_INTERNAL_TOKEN", ""),
         int(os.environ.get("AGENT_TOOL_TIMEOUT_SECONDS", "30")),
     )

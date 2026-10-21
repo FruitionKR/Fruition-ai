@@ -1980,3 +1980,24 @@ def test_post_ingest_client_retries_invalid_json_once(monkeypatch):
     client = task_worker._post_ingest_client({"provider": "gemini", "model": "gemini-3.5-flash-lite"})
 
     assert isinstance(client, RetryOnceJsonCompletion)
+
+
+def test_agent_command_startup_requires_folder_source_config_when_skills_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(task_worker.database, "verify_agent_schema", lambda: None)
+    monkeypatch.setenv("AGENT_SKILLS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "token")
+    monkeypatch.delenv("DOCUMENT_INTERNAL_BASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="DOCUMENT_INTERNAL_BASE_URL"):
+        task_worker._verify_agent_command_config()
+
+    monkeypatch.setenv("DOCUMENT_INTERNAL_BASE_URL", "http://document-svc:8080")
+    task_worker._verify_agent_command_config()
+
+
+def test_agent_command_startup_skips_folder_source_config_when_skills_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(task_worker.database, "verify_agent_schema", lambda: None)
+    monkeypatch.setenv("AGENT_SKILLS_ENABLED", "false")
+    monkeypatch.delenv("DOCUMENT_INTERNAL_BASE_URL", raising=False)
+
+    task_worker._verify_agent_command_config()

@@ -31,7 +31,8 @@ from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
     AgentTurnRouteContractError,
 )
-from app.modules.agent.interfaces.http.dependencies import build_handle_agent_turn_use_case
+from app.modules.agent.infrastructure.backend_folder_source_reader import build_folder_source_reader
+from app.modules.agent.interfaces.http.dependencies import agent_skills_enabled, build_handle_agent_turn_use_case
 from app.modules.agent.interfaces.http.responses import _to_response as agent_to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
@@ -1202,10 +1203,20 @@ def _run_blocking(executor: ThreadPoolExecutor, function, *args):
     return asyncio.get_running_loop().run_in_executor(executor, copy_context().run, function, *args)
 
 
+def _verify_agent_command_config() -> None:
+    """Agent turn마다 만드는 폴더 원문 reader 설정(DOCUMENT_INTERNAL_BASE_URL·AGENT_INTERNAL_TOKEN)을 기동 시 확인한다.
+
+    이 프로세스의 document-svc 주소는 DOCUMENT_INTERNAL_BASE_URL이다. agent_worker 프로세스는 AGENT_BACKEND_URL을 쓴다.
+    """
+    database.verify_agent_schema()
+    if agent_skills_enabled():
+        build_folder_source_reader()
+
+
 async def consume() -> None:
     database.ensure_ai_schema()
     if COMMAND_TOPIC.endswith("agent.command"):
-        database.verify_agent_schema()
+        _verify_agent_command_config()
     if COMMAND_TOPIC.endswith("maintenance.command"):
         get_wiki_embedding_job().start("pending-recovery", [])
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal

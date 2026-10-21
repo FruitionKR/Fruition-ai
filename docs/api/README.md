@@ -82,6 +82,8 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`) | `GET /internal/documents/{document_id}/pipeline-source` | `app/modules/wiki_ingestion/infrastructure/backend_document_reader.py`:19 |
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`) | `POST /internal/wiki/contributions` | 같은 파일 52 |
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`) | `POST /internal/agent/skill-authoring/references/read` | `app/modules/skill/infrastructure/backend_skill_reference_reader.py`:27 |
+| document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (Agent turn의 폴더 원문 Skill) | `app/modules/agent/infrastructure/backend_folder_source_reader.py` |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (agent_worker의 폴더 정리 본문 중복 확인) | `pipeline/agent_worker.py`의 `_build_folder_content_reader` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}` | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:27,51 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
@@ -92,6 +94,9 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 `DOCUMENT_INTERNAL_BASE_URL`·`AGENT_BACKEND_URL`·`ACCESS_INTERNAL_BASE_URL`은 서로 다른
 설정이다. `AGENT_BACKEND_URL`만 기본값(`http://document-svc:8080`)이 있고 나머지는
 미설정이면 해당 기능이 `RuntimeError`로 실패한다.
+같은 document-svc라도 프로세스마다 읽는 변수가 다르다. API·task worker는 `DOCUMENT_INTERNAL_BASE_URL`,
+agent_worker(`pipeline/agent_worker.py`)는 `AGENT_BACKEND_URL`을 쓴다. agent command를 받는 task worker는
+`AGENT_SKILLS_ENABLED`가 켜져 있으면 기동 시 `DOCUMENT_INTERNAL_BASE_URL`·`AGENT_INTERNAL_TOKEN`이 있는지 확인하고, 없으면 기동하지 않는다.
 
 ### Kafka
 

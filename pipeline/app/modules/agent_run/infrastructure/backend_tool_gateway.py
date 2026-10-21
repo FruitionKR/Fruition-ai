@@ -84,12 +84,17 @@ class BackendToolGateway:
         return value
 
 
+def agent_backend_url() -> str:
+    """agent_worker 프로세스가 document-svc를 부를 때 쓰는 주소. tool gateway와 폴더 본문 읽기가 함께 쓴다."""
+    return os.environ.get("AGENT_BACKEND_URL", "http://document-svc:8080")
+
+
 def build_backend_tool_gateway() -> BackendToolGateway:
     token = os.environ.get("AGENT_INTERNAL_TOKEN")
     if not token:
         raise RuntimeError("Set AGENT_INTERNAL_TOKEN for the Agent worker.")
     return BackendToolGateway(
-        os.environ.get("AGENT_BACKEND_URL", "http://document-svc:8080"),
+        agent_backend_url(),
         token,
         int(os.environ.get("AGENT_TOOL_TIMEOUT_SECONDS", "30")),
     )
