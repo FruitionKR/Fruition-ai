@@ -7,6 +7,7 @@ from app.modules.agent_run.domain.content_duplicates import (
     ContentReview,
     content_review_summary,
     find_content_duplicates,
+    normalize_content,
 )
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
 from app.modules.agent_run.domain.plan_review import review_content_duplicates
@@ -234,7 +235,7 @@ def test_identical_documents_are_grouped_even_when_comparison_cap_is_reached() -
     documents = [_doc(f"doc-{index}", f"{index}.md", f"2026-10-{10 + index}T00:00:00Z") for index in range(4)]
     contents = {"doc-0": MEETING, "doc-1": MEETING_SPACED, "doc-2": MEETING + "  ", "doc-3": BUDGET}
 
-    with patch("app.modules.agent_run.domain.content_duplicates.MAX_CONTENT_COMPARISONS", 0):
+    with patch("app.modules.agent_run.domain.content_duplicates.MAX_COMPARISON_WORK", 0):
         review = find_content_duplicates(documents, contents)
 
     # 정규화 본문이 같은 doc-2만 묶이고, Jaccard 비교가 필요한 doc-1은 상한 때문에 비교하지 않는다.
@@ -252,7 +253,23 @@ def test_comparison_cap_is_reported_in_plan_summary() -> None:
     reader = MagicMock()
     reader.read.return_value = _Listing(2, (_Document("doc-a", MEETING), _Document("doc-b", MEETING_SPACED)))
 
-    with patch("app.modules.agent_run.domain.content_duplicates.MAX_CONTENT_COMPARISONS", 0):
+    with patch("app.modules.agent_run.domain.content_duplicates.MAX_COMPARISON_WORK", 0):
         _kwargs, saved = _plan_with(reader, hierarchy, _plan(_rename(1, "doc-a")))
 
     assert saved.summary == "이름을 바꿉니다. 문서 2개는 내용 중복을 확인하지 못했어요."
+
+
+def test_shingle_budget_skips_longest_documents_but_keeps_exact_groups() -> None:
+    documents = [_doc(f"doc-{index}", f"{index}.md", f"2026-10-{10 + index}T00:00:00Z") for index in range(4)]
+    long_text = MEETING * 3
+    contents = {"doc-0": BUDGET, "doc-1": BUDGET + " 추가", "doc-2": long_text, "doc-3": long_text + " "}
+    budget_size = len(normalize_content(BUDGET + "추가"))
+
+    # 짧은 두 문서(doc-0·doc-1)만 집합을 만들 수 있는 상한이다.
+    with patch("app.modules.agent_run.domain.content_duplicates.MAX_TOTAL_SHINGLES", 2 * budget_size):
+        review = find_content_duplicates(documents, contents)
+
+    # 짧은 문서끼리는 비교해 묶고, 상한 밖 긴 문서도 완전 일치(doc-3 → doc-2)는 해시로 묶는다.
+    assert {key: value.original_id for key, value in review.duplicates.items()} == {"doc-1": "doc-0", "doc-3": "doc-2"}
+    # 상한 밖 묶음(doc-2·doc-3)은 다른 문서와 비교하지 못했다.
+    assert review.unchecked_documents == 2
