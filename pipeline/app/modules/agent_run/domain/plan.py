@@ -116,10 +116,24 @@ def build_agent_plan(
 
 # 부분 승인에서 고르지 않은 작업의 상태 코드. 실패가 아니므로 run 결과 판정에서 뺀다.
 NOT_SELECTED_ERROR_CODE = "not_selected"
+# 한 번에 부분 승인할 수 있는 작업 수 상한(계약: operation_ids 1~20개).
+MAX_SELECTED_OPERATIONS = 20
 
 
 class AgentPlanSelectionInvalid(ValueError):
     """부분 승인으로 고른 작업 목록이 현재 계획과 맞지 않는다."""
+
+
+def validate_operation_ids_format(operation_ids: list[str] | None) -> None:
+    """계획과 무관한 형식 검사(빈 배열·개수 상한·중복). 계획을 읽기 전에 400으로 거절할 수 있게 따로 둔다."""
+    if operation_ids is None:
+        return
+    if not operation_ids:
+        raise AgentPlanSelectionInvalid("operation_ids must not be empty.")
+    if len(operation_ids) > MAX_SELECTED_OPERATIONS:
+        raise AgentPlanSelectionInvalid(f"operation_ids must contain at most {MAX_SELECTED_OPERATIONS} items.")
+    if len(set(operation_ids)) != len(operation_ids):
+        raise AgentPlanSelectionInvalid("operation_ids must not contain duplicates.")
 
 
 def selected_operation_ids(plan: AgentPlan, operation_ids: list[str] | None) -> tuple[str, ...] | None:
@@ -130,10 +144,7 @@ def selected_operation_ids(plan: AgentPlan, operation_ids: list[str] | None) -> 
     """
     if operation_ids is None:
         return None
-    if not operation_ids:
-        raise AgentPlanSelectionInvalid("operation_ids must not be empty.")
-    if len(set(operation_ids)) != len(operation_ids):
-        raise AgentPlanSelectionInvalid("operation_ids must not contain duplicates.")
+    validate_operation_ids_format(operation_ids)
     planned = {operation.id: operation for operation in plan.operations}
     unknown = [operation_id for operation_id in operation_ids if operation_id not in planned]
     if unknown:

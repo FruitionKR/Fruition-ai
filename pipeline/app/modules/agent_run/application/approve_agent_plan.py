@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from app.modules.agent_run.application.ports import AgentApprovalRepositoryPort
 from app.modules.agent_run.domain.entities import AgentRun
-from app.modules.agent_run.domain.plan import selected_operation_ids
+from app.modules.agent_run.domain.plan import selected_operation_ids, validate_operation_ids_format
 
 
 class ApproveAgentPlanUseCase:
@@ -19,6 +19,7 @@ class ApproveAgentPlanUseCase:
         operation_hash: str,
         operation_ids: list[str] | None = None,
     ) -> AgentRun:
+        validate_operation_ids_format(operation_ids)
         current = self._repository.get_current_plan_for_user(workspace_id, user_id, run_id)
         if current is None:
             raise ValueError("AgentRun or current plan not found.")

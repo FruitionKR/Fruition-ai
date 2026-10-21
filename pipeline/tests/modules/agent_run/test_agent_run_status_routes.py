@@ -303,13 +303,20 @@ def test_approve_route_rejects_invalid_operation_selection_with_400() -> None:
     assert repository.selected == ("op-1", "op-2")
 
 
-def test_approve_request_rejects_empty_operation_ids() -> None:
-    from pydantic import ValidationError
-
+def test_approve_route_rejects_empty_or_oversized_operation_ids_with_400_before_plan_checks() -> None:
+    from app.modules.agent_run.application.approve_agent_plan import ApproveAgentPlanUseCase
+    from app.modules.agent_run.interfaces.http.routes import approve_agent_run
     from app.modules.agent_run.interfaces.http.schemas import ApproveAgentPlanRequest
+    from tests.modules.agent_run.test_approve_agent_plan import _three_operation_repository
 
-    with pytest.raises(ValidationError):
-        ApproveAgentPlanRequest(
+    use_case = ApproveAgentPlanUseCase(_three_operation_repository())  # type: ignore[arg-type]
+
+    for operation_ids in ([], [f"op-{index}" for index in range(21)]):
+        # pydantic 검증(422)을 통과해 route까지 와야 계약의 400 경로를 탄다. 해시가 달라도(409 사유) 형식 오류가 먼저다.
+        payload = ApproveAgentPlanRequest(
             workspace_id="workspace-1", user_id="user-1", plan_version=1,
-            operation_hash="a" * 64, operation_ids=[],
+            operation_hash="b" * 64, operation_ids=operation_ids,
         )
+        with pytest.raises(HTTPException) as rejected:
+            approve_agent_run("run-1", payload, use_case)
+        assert rejected.value.status_code == 400

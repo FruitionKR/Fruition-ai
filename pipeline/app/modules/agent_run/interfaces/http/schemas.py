@@ -23,13 +23,12 @@ class MarkdownAgentRunStatusResponse(BaseModel):
 class ApproveAgentPlanRequest(AgentRunActorRequest):
     plan_version: int = Field(..., ge=1)
     operation_hash: str = Field(..., min_length=64, max_length=64)
+    # 빈 배열·20개 초과도 계약대로 400으로 거절하도록 길이 검사는 pydantic(422)이 아니라 도메인에서 한다.
     operation_ids: list[str] | None = Field(
         default=None,
-        min_length=1,
-        max_length=20,
         description=(
-            "실행할 작업(plan.operations[].id). 생략하면 계획 전체를 실행한다. 고르지 않은 작업은 "
-            "skipped(error_code=not_selected)가 된다. 중복·계획에 없는 ID·의존 작업 누락은 400으로 거절한다."
+            "실행할 작업(plan.operations[].id) 1~20개. 생략하면 계획 전체를 실행한다. 고르지 않은 작업은 "
+            "skipped(error_code=not_selected)가 된다. 빈 배열·20개 초과·중복·계획에 없는 ID·의존 작업 누락은 400으로 거절한다."
         ),
     )
 

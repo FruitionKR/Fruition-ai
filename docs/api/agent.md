@@ -332,8 +332,8 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 #### 6. Error response
 
-- `400`: `operation_ids` 중복·계획에 없는 ID·고른 작업이 고르지 않은 작업에 의존(`depends_on`)
-- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 입력 검증 실패(빈 배열·20개 초과 포함), `503` 토큰 미설정
+- `400`: `operation_ids` 빈 배열·20개 초과·중복·계획에 없는 ID·고른 작업이 고르지 않은 작업에 의존(`depends_on`). 빈 배열·20개 초과·중복은 계획 확인보다 먼저 거절합니다.
+- `401` 토큰 불일치, `409` 현재 계획·상태 불일치, `422` 그 밖의 입력 검증 실패, `503` 토큰 미설정
 
 #### 7. Pagination / filtering
 
