@@ -11,6 +11,11 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 `wiki/{workspace_id}/` 아래에 있다: 페이지 본문 `sources/{document_id}.md`·`concepts/{slug}.md`, 의미 클러스터
 `clusters/active.md`·`clusters/archived.md`, 편입·lint 로그 `logs/{날짜}.md`, 페이지 이력 `pages/{page_id}/ops/`.
 
+편입은 개념으로 바로 확정하지 않은 후보의 근거를 `clusters/active.md`의 의미 클러스터에 쌓는다. 승격 후보
+(`Promotion.status: candidate`)는 근거를 덧붙인 뒤 두 경로로만 정한다. 이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터는
+그 개념(`target: concept:{slug}`)으로, 근거가 덧붙은 클러스터는 클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격
+후보를 개념 페이지로 승격하거나 `target`·같은 slug의 개념에 병합하고, 클러스터를 `archived.md`로 옮긴다([ADR 0037](../adr/0037-meaning-cluster-promotion.md)).
+
 - API 수: 11
 
 ## API 목차
