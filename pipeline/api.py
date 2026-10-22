@@ -10,6 +10,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
+from app.core.analytics import analytics_lifespan
+
 from app.modules.task_cancellation.interfaces.http.routes import router as task_cancellation_router
 from app.modules.data_purge.interfaces.http.routes import router as data_purge_router
 from app.modules.speech.interfaces.http.routes import router as speech_router
@@ -80,7 +82,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("[startup] ai_db Agent 스키마 확인 실패")
             raise
-    yield
+    async with analytics_lifespan():
+        yield
 
 
 app = FastAPI(title="Fruition Pipeline Lab API", version="0.1.0", lifespan=lifespan)

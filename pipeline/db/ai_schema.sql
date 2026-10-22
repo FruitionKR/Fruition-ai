@@ -661,3 +661,16 @@ BEGIN
 END $$;
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_finished ON ai_model_usage (finished_at);
 CREATE INDEX IF NOT EXISTS idx_ai_model_usage_started ON ai_model_usage (started_at) WHERE status = 'started';
+
+-- AI skill creation analytics. No product FK: deletion must not erase pending delivery.
+CREATE TABLE IF NOT EXISTS analytics_outbox (
+    event_id uuid PRIMARY KEY,
+    payload jsonb NOT NULL,
+    state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sent', 'dead')),
+    attempts integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    sent_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_outbox_pending
+    ON analytics_outbox (next_attempt_at) WHERE state = 'pending';

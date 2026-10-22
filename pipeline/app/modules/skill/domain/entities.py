@@ -62,6 +62,7 @@ class Skill:
     latest_version: SkillVersion | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    created_by: str | None = None
 
 
 @dataclass(frozen=True)
