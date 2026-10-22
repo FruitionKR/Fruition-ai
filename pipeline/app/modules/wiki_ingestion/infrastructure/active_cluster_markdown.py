@@ -30,6 +30,7 @@ def parse_active_cluster_lint(markdown: str) -> list[dict[str, Any]]:
             "invalid_relations": invalid_relations,
             "promotion_status": cluster_promotion_status(section),
             "promotion_source_refs": cluster_promotion_source_refs(section),
+            "promotion_target": cluster_promotion_target(section),
         }
         clusters.append(cluster)
     return clusters
@@ -224,6 +225,21 @@ def cluster_promotion_status(section: str) -> str:
     return ""
 
 
+def cluster_promotion_target(section: str) -> str:
+    """핵심 개념과 같아 승격 후보가 된 클러스터가 병합될 개념 slug. 없으면 빈 문자열이다."""
+    in_promotion = False
+    for line in section.splitlines():
+        stripped = line.strip()
+        if stripped == "### Promotion":
+            in_promotion = True
+            continue
+        if in_promotion and stripped.startswith("### "):
+            break
+        if in_promotion and stripped.startswith("target:"):
+            return stripped.split(":", 1)[1].strip().removeprefix("concept:").strip()
+    return ""
+
+
 def cluster_promotion_source_refs(section: str) -> list[str]:
     in_promotion = False
     for line in section.splitlines():
@@ -276,12 +292,16 @@ def merge_cluster_section(existing: str, incoming: str) -> str:
         existing_claims.add(claim.strip())
 
     merge_relation_candidate_section(merged_lines, incoming_lines)
-    if "### Promotion" not in existing and "### Promotion" in incoming:
-        promotion = section_from_heading(incoming_lines, "### Promotion")
-        if promotion:
-            if merged_lines and merged_lines[-1].strip():
-                merged_lines.append("")
-            merged_lines.extend(promotion)
+    promotion = section_from_heading(incoming_lines, "### Promotion")
+    # 이미 승격 후보인 클러스터는 그대로 두고, 그 밖의 승격 상태는 새 판정으로 바꾼다.
+    if promotion and cluster_promotion_status(existing) != "candidate":
+        existing_promotion = section_from_heading(merged_lines, "### Promotion")
+        if existing_promotion:
+            start = next(index for index, line in enumerate(merged_lines) if line.strip() == "### Promotion")
+            del merged_lines[start : start + len(existing_promotion)]
+        if merged_lines and merged_lines[-1].strip():
+            merged_lines.append("")
+        merged_lines.extend(promotion)
     if "### Promotion" in merged_lines:
         source_refs = _unique_keep_order(
             ref.split(":", 1)[0]

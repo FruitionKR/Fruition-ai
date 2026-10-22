@@ -7,6 +7,7 @@ from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
     AgentToolAuthorizationRepositoryPort,
 )
+from app.modules.agent_run.domain.plan import AgentPlanSelectionInvalid
 from app.modules.agent_run.interfaces.http.dependencies import (
     get_agent_run_repository,
     get_approve_agent_plan_use_case,
@@ -158,7 +159,10 @@ def approve_agent_run(
             run_id=run_id,
             plan_version=payload.plan_version,
             operation_hash=payload.operation_hash,
+            operation_ids=payload.operation_ids,
         )
+    except AgentPlanSelectionInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return AgentRunResponse.from_domain(run)

@@ -75,6 +75,7 @@ class SkillAuthoringRequest(SkillLlmRequest):
 class SkillAuthoringResponse(BaseModel):
     status: Literal["clarification_required", "blocked", "proposal_ready", "published"]
     question: str | None = None
+    created_by: str | None = None
     skill_id: str | None = None
     version_id: str | None = None
     scope_type: Literal["personal", "team"] | None = None
@@ -86,6 +87,9 @@ class SkillAuthoringResponse(BaseModel):
     allowed_tools: list[ToolValue] = Field(default_factory=list)
     targets: list[TargetValue] = Field(default_factory=list)
     result_mode: ResultModeValue | None = None
+    # 새 문서를 만들 때 고른 문서·폴더 본문을 원문으로 읽는 Skill인지. 초안은 규칙·분류로 판단한 값이다.
+    # null은 아직 정하지 않은 초안이다(게시 때 규칙으로 정한다).
+    requires_source: bool | None = False
     issues: list[dict[str, object]] = Field(default_factory=list)
 
     @classmethod
@@ -98,6 +102,7 @@ class SkillAuthoringResponse(BaseModel):
             return cls(
                 status=result.status,
                 skill_id=skill.id if skill else None,
+                created_by=skill.created_by if skill else None,
                 version_id=version.id if version else None,
                 scope_type=proposal.scope_type,
                 name=proposal.name,
@@ -113,6 +118,7 @@ class SkillAuthoringResponse(BaseModel):
                 # 실행 대상·결과 방식은 게시된 버전에만 있다(초안 단계는 빈 값).
                 targets=list(stored.targets) if stored else [],
                 result_mode=stored.result_mode if stored else None,
+                requires_source=stored.requires_source if stored else proposal.requires_source,
                 issues=[issue.__dict__ for issue in result.issues],
             )
         if result.skill is None:
@@ -127,6 +133,7 @@ class SkillAuthoringResponse(BaseModel):
         return cls(
             status=result.status,
             skill_id=result.skill.id,
+            created_by=result.skill.created_by,
             version_id=version.id,
             scope_type=result.skill.scope_type,
             name=version.name,
@@ -137,6 +144,7 @@ class SkillAuthoringResponse(BaseModel):
             allowed_tools=list(version.allowed_tools),
             targets=list(version.targets),
             result_mode=version.result_mode,
+            requires_source=version.requires_source,
         )
 
 
@@ -149,12 +157,16 @@ class PublishAuthoredSkillRequest(SkillLlmRequest):
     name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     description: str = Field(..., min_length=1, max_length=500)
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
-    capabilities: list[CapabilityValue] = Field(..., min_length=1)
+    # 값 목록·빈 값·중복은 422가 아니라 400 invalid_capabilities로 거절하도록 문자열로 받고 use case에서 검증한다.
+    capabilities: list[str]
     # 생략하거나 비우면 서버가 capabilities로 계산한다(policy.canonical_allowed_tools).
     allowed_tools: list[ToolValue] = Field(default_factory=list)
     # 문서 Skill의 실행 대상·결과 방식. 생략하면 targets는 기본값(["current_document"]), result_mode는 null이다.
     targets: list[TargetValue] | None = Field(default=None, max_length=2)
     result_mode: ResultModeValue | None = None
+    # 원문 필요 여부를 사용자가 정한 값. 생략(null)하면 지침의 `{문서}`·template 규칙으로 정하고, 정할 수 없으면 false다.
+    # 새 문서를 만들지 않는 Skill(결과 방식 edit, 폴더 정리 등)에서는 무시하고 false로 저장한다.
+    requires_source: bool | None = None
 
 
 class UpdateSkillRequest(SkillLlmRequest):
@@ -168,6 +180,12 @@ class UpdateSkillRequest(SkillLlmRequest):
     # 생략(null)하면 기존 값을 유지한다. targets=[]는 기본값(["current_document"])으로 되돌린다.
     targets: list[TargetValue] | None = Field(default=None, max_length=2)
     result_mode: ResultModeValue | None = None
+    # 생략(null)하면 지침을 고쳤어도 이전 값을 유지한다(capabilities도 다시 분류하지 않는다). 생성 Skill이 아니면 무시한다.
+    requires_source: bool | None = None
+    # Skill 종류·결과 방식을 바꿀 때 보낸다. 게시와 같은 값·검증을 쓰고 allowed_tools를 다시 계산한다.
+    # 생략(null)하면 이전 버전 값을 유지한다(다시 분류하지 않는다). 보내면 생략한 result_mode는 capabilities에서 정한다.
+    # 게시와 같이 문자열로 받아 빈 값·허용 밖 값·중복을 400 invalid_capabilities로 거절한다.
+    capabilities: list[str] | None = None
 
 
 class SkillActorRequest(BaseModel):
@@ -185,6 +203,7 @@ class SkillVersionResponse(BaseModel):
     allowed_tools: list[str]
     targets: list[str]
     result_mode: str | None
+    requires_source: bool
     lint_result: dict[str, object]
     status: str
 
@@ -200,12 +219,14 @@ class SkillVersionResponse(BaseModel):
             allowed_tools=list(version.allowed_tools),
             targets=list(version.targets),
             result_mode=version.result_mode,
+            requires_source=version.requires_source,
             lint_result=version.lint_result or {},
             status=version.status,
         )
 
 
 class SkillResponse(BaseModel):
+    created_by: str | None = None
     id: str
     workspace_id: str | None
     scope_type: str
@@ -219,6 +240,7 @@ class SkillResponse(BaseModel):
     def from_domain(cls, skill: Skill) -> "SkillResponse":
         return cls(
             id=skill.id,
+            created_by=skill.created_by,
             workspace_id=skill.workspace_id,
             scope_type=skill.scope_type,
             owner_user_id=skill.owner_user_id,

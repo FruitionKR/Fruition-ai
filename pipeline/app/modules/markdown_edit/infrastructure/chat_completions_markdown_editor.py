@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -69,6 +70,8 @@ DEFAULT_MARKDOWN_CREATE_PROMPT = Path(__file__).resolve().parents[4] / "prompts"
 DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_source_edit.system.md"
 DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_edit_evaluator.system.md"
 JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
+LLM_EVALUATION_PREFIX = "LLM evaluation:"
+logger = logging.getLogger(__name__)
 
 
 class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
@@ -138,6 +141,9 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             result = None
         if result is not None and not result[1]:
             return result[0]
+        _log_contract_failures(
+            "edit", 1, request, result[1] if result is not None else [JSON_OBJECT_CONTRACT_FAILURE],
+        )
 
         publish_query_event(
             self._event_publisher, "agent.retrying",
@@ -160,8 +166,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
                 is_retry=True,
             )
         except JsonParseError as exc:
+            _log_contract_failures("edit", 2, request, [JSON_OBJECT_CONTRACT_FAILURE])
             raise MarkdownOutputContractError([JSON_OBJECT_CONTRACT_FAILURE], "") from exc
         if retried[1]:
+            _log_contract_failures("edit", 2, request, retried[1])
             raise MarkdownOutputContractError(retried[1], retried[0].edit.replacement_markdown)
         return retried[0]
 
@@ -205,6 +213,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             raw = None
         if result is not None and not failures:
             return result
+        _log_contract_failures("source_range_edit", 1, request, failures)
 
         publish_query_event(
             self._event_publisher, "agent.retrying",
@@ -222,8 +231,10 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         try:
             retried, retry_failures, _ = self._complete_source_range_edit(system_prompt, retry_payload, request, plan)
         except JsonParseError as exc:
+            _log_contract_failures("source_range_edit", 2, request, [JSON_OBJECT_CONTRACT_FAILURE])
             raise MarkdownOutputContractError([JSON_OBJECT_CONTRACT_FAILURE], "") from exc
         if retry_failures:
+            _log_contract_failures("source_range_edit", 2, request, retry_failures)
             raise MarkdownOutputContractError(retry_failures, retried.edit.replacement_markdown)
         return retried
 
@@ -334,7 +345,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             "edit_destination": request.edit_destination,
             "original_markdown": request.markdown,
             "proposal": asdict(result.edit),
-            "replacement_lines": result.edit.replacement_markdown.splitlines(),
+            "replacement_lines": _evaluated_replacement_lines(request, result),
         }
         if surrounding_context and any(surrounding_context.values()):
             payload["surrounding_context"] = surrounding_context
@@ -359,7 +370,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             return invalid
         if raw["passed"] != (not failures):
             return invalid
-        return [f"LLM evaluation: {item.strip()}" for item in failures]
+        return [f"{LLM_EVALUATION_PREFIX} {item.strip()}" for item in failures]
 
     def generate_markdown(self, request: MarkdownCreateRequest) -> MarkdownCreateResult:
         payload = {
@@ -473,6 +484,47 @@ def build_markdown_editor(
         schema_prompt_provider=get_active_schema_prompt,
         event_publisher=event_publisher,
     )
+
+
+def _evaluated_replacement_lines(request: MarkdownEditRequest, result: MarkdownEditResult) -> list[str]:
+    """평가 모델에 보낼 결과 줄. insert_after 앞뒤 빈 줄은 문단 구분용 배치라 내용 판단에서 뺀다."""
+    lines = result.edit.replacement_markdown.splitlines()
+    if request.edit_operation != "insert_after":
+        return lines
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _log_contract_failures(
+    stage: str,
+    attempt: int,
+    request: MarkdownEditRequest,
+    failures: list[str],
+) -> None:
+    """계약 위반을 코드·위치로만 남긴다. 문서 본문·모델 출력·평가 문장은 로그에 넣지 않는다."""
+    logger.warning(
+        "[Markdown 편집 계약 실패] stage=%s attempt=%d operation=%s destination=%s goal=%s "
+        "target=%s:%d-%d failures=%s",
+        stage,
+        attempt,
+        request.edit_operation,
+        request.edit_destination,
+        request.edit_goal,
+        request.target.type,
+        request.target.start_line,
+        request.target.end_line,
+        [contract_failure_code(failure) for failure in failures],
+    )
+
+
+def contract_failure_code(failure: str) -> str:
+    """로그용 실패 코드. LLM 평가 문장과 `:` 뒤에 붙는 모델 출력 값(세그먼트 id 등)은 버린다."""
+    if failure.startswith(LLM_EVALUATION_PREFIX):
+        return "llm_evaluation_rejected"
+    return failure.split(": ", 1)[0][:120]
 
 
 def _read_only_context_payload(scope: MarkdownTargetScope) -> dict[str, object]:

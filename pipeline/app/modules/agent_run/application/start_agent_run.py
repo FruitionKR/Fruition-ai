@@ -28,6 +28,8 @@ class StartAgentRunUseCase(AgentRunStarterPort):
             request_summary=request.instruction.strip(),
             provider=provider,
             model=model,
+            target_folder_id=request.target_folder_id,
+            rule_summary=(request.rule_summary or "").strip() or None,
         )
         artifact = None
         if request.content is not None:

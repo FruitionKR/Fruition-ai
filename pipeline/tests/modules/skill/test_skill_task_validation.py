@@ -11,7 +11,7 @@ from app.modules.task_cancellation.infrastructure import postgres_task_journal a
 @pytest.mark.parametrize("kind,invalid,field", [
     ("skill_author", {"instruction": ""}, "instruction"),
     ("skill_publish", {"allowed_tools": ["not_a_tool"]}, "allowed_tools"),
-    ("skill_publish", {"capabilities": ["not_a_capability"]}, "capabilities"),
+    ("skill_publish", {"capabilities": "document-create"}, "capabilities"),
     ("skill_update", {"instructions_markdown": ""}, "instructions_markdown"),
 ])
 def test_invalid_skill_payload_is_422_before_task_execution(monkeypatch, kind, invalid, field):
@@ -70,6 +70,36 @@ def test_publish_result_mode_mismatch_is_400_with_code_before_llm(monkeypatch):
 
     assert response.status_code == 400, response.text
     assert response.json()["detail"]["code"] == "invalid_result_mode"
+    generator.classify.assert_not_called()
+    generator.generate.assert_not_called()
+
+
+@pytest.mark.parametrize("capabilities", [
+    ["not_a_capability"],
+    [],
+    ["document-edit", "document-edit"],
+])
+def test_publish_invalid_capabilities_is_400_with_code_before_llm(monkeypatch, capabilities):
+    from app.modules.skill.application.author_skill import AuthorSkillUseCase
+    from app.modules.skill.application.manage_skill import ManageSkillUseCase
+
+    generator = MagicMock()
+    use_case = AuthorSkillUseCase(generator, MagicMock(), ManageSkillUseCase(MagicMock()))
+    monkeypatch.setattr(routes, "get_author_skill_use_case", lambda **_: use_case)
+    monkeypatch.setattr(journal, "execute", MagicMock(side_effect=lambda command, handle: handle()))
+    app = FastAPI()
+    app.include_router(routes.router)
+    payload = dict(workspace_id="ws", user_id="user", provider="openai", model="gpt-5-nano", scope_type="personal",
+                   name="example", description="설명", instructions_markdown="문서를 고친다",
+                   capabilities=capabilities)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/skills/tasks", json=dict(
+            run_id="capabilities-test", kind="skill_publish", workspace_id="ws", user_id="user", payload=payload,
+        ))
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "invalid_capabilities"
+    assert response.json()["detail"]["message"]
     generator.classify.assert_not_called()
     generator.generate.assert_not_called()
 

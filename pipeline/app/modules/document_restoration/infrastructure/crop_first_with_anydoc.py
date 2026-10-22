@@ -90,6 +90,60 @@ def run_heron(
     return parse_heron_regions(result.stdout), result.stderr
 
 
+def body_words(page: fitz.Page, top: float, bottom: float, margin_ratio: float) -> list[Any]:
+    # ponytail: 위아래 margin 띠는 머리말·쪽번호로 보고 무시한다. 띠 안에 놓인 본문은 놓친다.
+    margin = page.rect.height * margin_ratio
+    return [
+        word
+        for word in page.get_text("words")
+        if max(top, margin) <= word[1] and word[3] <= min(bottom, page.rect.height - margin)
+    ]
+
+
+def link_continuations(
+    document: fitz.Document,
+    regions: list[dict[str, Any]],
+    margin_ratio: float = 0.07,
+    x_tolerance: float = 10.0,
+) -> None:
+    """페이지 끝 표와 다음 페이지 첫 표가 한 표이면 뒤 조각에 `continues`를 남긴다."""
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for region in regions:
+        by_page.setdefault(int(region["page"]), []).append(region)
+    for page_number, page_regions in by_page.items():
+        next_regions = by_page.get(page_number + 1, [])
+        tables = [region for region in page_regions if region["type"] == "table_candidate"]
+        next_tables = [region for region in next_regions if region["type"] == "table_candidate"]
+        if not tables or not next_tables:
+            continue
+        last = max(tables, key=lambda region: region["bbox"][3])
+        first = min(next_tables, key=lambda region: region["bbox"][1])
+        # Heron은 색칠된 표를 같은 자리의 그림으로도 잡는다. 겹친 영역은 두고, 따로 놓인 영역만 막는다.
+        if any(region["bbox"][1] >= last["bbox"][3] for region in page_regions):
+            continue
+        if any(region["bbox"][3] <= first["bbox"][1] for region in next_regions):
+            continue
+        if (
+            abs(last["bbox"][0] - first["bbox"][0]) > x_tolerance
+            or abs(last["bbox"][2] - first["bbox"][2]) > x_tolerance
+        ):
+            continue
+        page, next_page = document[page_number - 1], document[page_number]
+        # 다음 쪽으로 넘어가는 마지막 행은 아래 테두리가 없어 검출 영역 밖에 남는다. 붙은 줄은 표로 넓힌다.
+        # ponytail: 12pt 간격 기준이다. 표 바로 밑에 붙여 쓴 본문도 표로 들어간다.
+        bottom = last["bbox"][3]
+        candidates = body_words(page, bottom, page.rect.height, margin_ratio)
+        for word in sorted(candidates, key=lambda word: word[1]):
+            if last["bbox"][0] <= word[0] <= last["bbox"][2] and 0 <= word[1] - bottom < 12:
+                bottom = max(bottom, word[3])
+        if body_words(page, bottom, page.rect.height, margin_ratio):
+            continue
+        if body_words(next_page, 0.0, first["bbox"][1], margin_ratio):
+            continue
+        last["bbox"] = [*last["bbox"][:3], bottom]
+        first["continues"] = last["id"]
+
+
 def missing_unicode_maps(document: fitz.Document, page_number: int) -> list[str]:
     missing = set()
     for font in document[page_number - 1].get_fonts(full=True):
@@ -237,6 +291,11 @@ def recovered_text(output_dir: Path, block: dict[str, Any]) -> str | None:
     return value or None
 
 
+def merged_into_previous(output_dir: Path, block: dict[str, Any]) -> bool:
+    path = output_dir / "layout" / "auto" / "evaluations" / f"{block['id']}.json"
+    return path.exists() and bool(json.loads(path.read_text(encoding="utf-8")).get("merged_into"))
+
+
 def region_markdown(
     output_dir: Path,
     output_file: Path,
@@ -245,6 +304,9 @@ def region_markdown(
     asset = relative_asset(output_file, output_dir, str(region["asset"]))
     if region["type"] == "figure_candidate":
         return f"![figure]({asset})"
+    if merged_into_previous(output_dir, region):
+        # 앞 페이지 조각이 이어진 표 전체를 담았다.
+        return ""
     recovered = recovered_text(output_dir, region)
     if recovered:
         return recovered
@@ -273,7 +335,9 @@ def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:
         for region in regions:
             token = str(region["token"])
             replacement = region_markdown(output_dir, output_file, region)
-            if token in content:
+            if not replacement:
+                content = content.replace(token, "")
+            elif token in content:
                 before, after = content.split(token, 1)
                 # 문장 중간 마커도 독립 블록으로 넣어야 `$$`·표가 본문 줄에 붙지 않는다.
                 content = f"{before.rstrip()}\n\n{replacement}\n\n{after.replace(token, '').lstrip()}"
@@ -307,6 +371,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     (directories["logs"] / "heron.log").write_text(heron_log, encoding="utf-8")
     bodies = []
     with fitz.open(args.pdf_file) as document:
+        link_continuations(document, regions)
         for region in regions:
             target = directories[
                 "figures" if region["type"] == "figure_candidate" else "specials"

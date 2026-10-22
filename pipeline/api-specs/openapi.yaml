@@ -245,6 +245,10 @@ components:
         status:
           title: Status
           type: string
+        suggested_selected:
+          default: true
+          title: Suggested Selected
+          type: boolean
         target_id:
           anyOf:
           - type: string
@@ -256,6 +260,10 @@ components:
         tool_name:
           title: Tool Name
           type: string
+        warning:
+          anyOf:
+          - $ref: '#/components/schemas/AgentPlanOperationWarningResponse'
+          - type: 'null'
       required:
       - id
       - sequence
@@ -271,6 +279,20 @@ components:
       - status
       - error_code
       title: AgentPlanOperationResponse
+      type: object
+    AgentPlanOperationWarningResponse:
+      properties:
+        message:
+          title: Message
+          type: string
+        type:
+          description: duplicate_name(같은 위치에 같은 이름), duplicate_content(본문이 거의 같은 문서) 또는 depends_on_unselected
+          title: Type
+          type: string
+      required:
+      - type
+      - message
+      title: AgentPlanOperationWarningResponse
       type: object
     AgentPlanResponse:
       properties:
@@ -343,6 +365,11 @@ components:
         request_summary:
           title: Request Summary
           type: string
+        rule_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rule Summary
         skill_version_id:
           anyOf:
           - type: string
@@ -351,6 +378,11 @@ components:
         status:
           title: Status
           type: string
+        target_folder_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Folder Id
         workspace_id:
           title: Workspace Id
           type: string
@@ -442,6 +474,14 @@ components:
           minLength: 64
           title: Operation Hash
           type: string
+        operation_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          description: 실행할 작업(plan.operations[].id) 1~20개. 생략하면 계획 전체를 실행한다. 고르지 않은 작업은 skipped(error_code=not_selected)가 된다. 빈 배열·20개 초과·중복·계획에 없는 ID·의존 작업 누락은 400으로 거절한다.
+          title: Operation Ids
         plan_version:
           minimum: 1.0
           title: Plan Version
@@ -1541,6 +1581,11 @@ components:
             type: string
           title: Capabilities
           type: array
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
         description:
           anyOf:
           - type: string
@@ -1567,6 +1612,12 @@ components:
           - type: string
           - type: 'null'
           title: Question
+        requires_source:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          title: Requires Source
         result_mode:
           anyOf:
           - enum:
@@ -1802,6 +1853,11 @@ components:
       type: object
     SkillResponse:
       properties:
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
         enabled_version:
           anyOf:
           - $ref: '#/components/schemas/SkillVersionResponse'
@@ -2086,6 +2142,9 @@ components:
         name:
           title: Name
           type: string
+        requires_source:
+          title: Requires Source
+          type: boolean
         result_mode:
           anyOf:
           - type: string
@@ -2112,6 +2171,7 @@ components:
       - allowed_tools
       - targets
       - result_mode
+      - requires_source
       - lint_result
       - status
       title: SkillVersionResponse

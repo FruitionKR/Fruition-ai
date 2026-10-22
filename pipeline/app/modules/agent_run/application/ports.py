@@ -49,7 +49,9 @@ class AgentApprovalRepositoryPort(Protocol):
         plan: AgentPlan,
         approval_id: str,
         job_id: str,
+        selected_operation_ids: tuple[str, ...] | None = None,
     ) -> AgentRun:
+        """selected_operation_ids가 있으면 나머지 작업을 not_selected로 건너뛴다. None이면 전체 실행이다."""
         ...
 
 
@@ -158,6 +160,7 @@ class AgentPlanGeneratorPort(Protocol):
         skill_instructions: str | None,
         allowed_tools: tuple[str, ...] | None,
         content_artifacts: tuple[ContentArtifactReference, ...] = (),
+        target_folder_id: str | None = None,
     ) -> AgentPlan:
         ...
 
@@ -188,6 +191,30 @@ class AgentToolGatewayPort(Protocol):
         idempotency_key: str,
         arguments: dict[str, object],
     ) -> dict[str, object]:
+        ...
+
+
+class FolderContentDocument(Protocol):
+    document_id: str
+    markdown: str
+
+
+class FolderContentListing(Protocol):
+    total_documents: int
+    documents: tuple[FolderContentDocument, ...]
+
+
+class FolderContentReaderPort(Protocol):
+    """폴더 바로 아래 Markdown 문서 본문을 읽는다(document-svc folder-sources/read). 읽기 권한은 document-svc가 판정한다."""
+
+    def read(
+        self,
+        *,
+        workspace_id: str,
+        user_id: str,
+        folder_id: str,
+        max_documents: int,
+    ) -> FolderContentListing:
         ...
 
 

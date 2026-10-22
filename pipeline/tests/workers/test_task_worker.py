@@ -414,17 +414,36 @@ def test_meeting_notes_command_returns_draft_payload() -> None:
     with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
         payload = task_worker._handle(_meeting_command())
 
-    assert set(payload) == {"display_name", "markdown", "summary", "decisions", "action_items", "open_questions"}
+    # 기존 네 배열은 그대로 두고 시안 구성용 필드를 더한다. document는 네 배열만 읽어도 깨지지 않는다.
+    assert set(payload) == {
+        "display_name", "markdown", "summary", "decisions", "action_items", "open_questions",
+        "meeting_date", "attendees", "discussion", "next_schedule",
+    }
     assert payload["display_name"] == "출시 회의"
     assert payload["markdown"].startswith("# 출시 회의\n")
     event = task_worker._event(_meeting_command(), "succeeded", payload=payload, with_request=False)
     assert "request" not in event and event["payload"] == payload
 
 
+def test_meeting_notes_command_passes_date_and_attendees_to_header() -> None:
+    notes = {
+        "attendees": ["박지훈"],
+        "summary": [{"text": "출시 일정을 논의했다.", "source_segment_ids": ["s1"]}],
+    }
+    command = {**_meeting_command(), "meeting_date": "2026-10-19", "attendees": ["김민수", "박지훈"]}
+    with patch.object(task_worker, "build_meeting_notes", return_value=_meeting_generator(notes)):
+        payload = task_worker._handle(command)
+
+    assert payload["meeting_date"] == "2026-10-19"
+    assert payload["attendees"] == ["김민수", "박지훈"]
+    assert "- 날짜: 2026-10-19\n- 참석자: 김민수, 박지훈" in payload["markdown"]
+
+
 @pytest.mark.parametrize(
     ("overrides", "code"),
     [
         ({"segments": [{"id": "s1", "text": "a"}, {"id": "s1", "text": "b"}]}, "MEETING_NOTES_INPUT_REJECTED"),
+        ({"attendees": [" "]}, "MEETING_NOTES_INPUT_REJECTED"),
         ({"model": "unknown-model"}, "MEETING_NOTES_INPUT_REJECTED"),
         ({"title": "이전 필드"}, "MEETING_NOTES_INPUT_REJECTED"),
     ],
@@ -1161,6 +1180,76 @@ def test_agent_command_passes_web_search_flag_to_request_body() -> None:
     assert use_case.execute.call_args.args[0].allow_web_search is True
 
 
+def _run_agent_command(command: dict[str, object]) -> MagicMock:
+    use_case = MagicMock()
+    response = MagicMock()
+    response.model_dump.return_value = {"ok": True}
+    context = MagicMock()
+    context.__enter__.return_value = MagicMock()
+    with (
+        patch.object(task_worker, "_register_agent_command", return_value=("execute", None)),
+        patch.object(task_worker, "build_handle_agent_turn_use_case", return_value=use_case),
+        patch.object(task_worker, "agent_to_response", return_value=response),
+        patch.object(task_worker.database, "connect_ai", return_value=context),
+    ):
+        task_worker._handle_agent(command)
+    return use_case
+
+
+def test_agent_command_passes_task_mode_to_request_body() -> None:
+    """작업 탭 턴은 document 서버가 mode=task를 실어 보낸다. 문서 없이도 요청까지 그대로 닿아야 한다."""
+    use_case = _run_agent_command({
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "회의록 폴더를 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "mode": "task",
+    })
+
+    request = use_case.execute.call_args.args[0]
+    assert request.mode == "task"
+    assert request.document_id is None
+    assert request.active_markdown_context is None
+
+
+def test_agent_command_without_mode_keeps_legacy_mode() -> None:
+    use_case = _run_agent_command({
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "질문",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    })
+
+    assert use_case.execute.call_args.args[0].mode is None
+
+
+def test_agent_command_passes_target_folder_to_request_body() -> None:
+    """document-svc는 작업 대상 폴더를 folder_id로 싣고, 지정하지 않으면 키를 싣지 않는다."""
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "이 폴더 문서를 주제별로 정리해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "mode": "task",
+    }
+
+    with_folder = _run_agent_command({**command, "folder_id": "44444444-4444-4444-4444-444444444444"})
+    without_folder = _run_agent_command(command)
+
+    assert with_folder.execute.call_args.args[0].folder_id == "44444444-4444-4444-4444-444444444444"
+    assert with_folder.execute.call_args.args[0].document_id is None
+    assert without_folder.execute.call_args.args[0].folder_id is None
+
+
 def test_agent_command_rejects_auto_skill_id() -> None:
     command = {
         "run_id": "agent_0123456789abcdef0123456789abcdef",
@@ -1780,7 +1869,7 @@ def _consumer_stub():
     )
 
 
-def _run_consume(handled: list, kind: str = "query"):
+def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
@@ -1789,7 +1878,7 @@ def _run_consume(handled: list, kind: str = "query"):
         consumer = _consumer_stub()
         consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
-        message = SimpleNamespace(topic="t", partition=3, offset=42, value={"kind": kind, "run_id": "run-1"})
+        message = SimpleNamespace(topic="t", partition=3, offset=42, value=command or {"kind": kind, "run_id": "run-1"})
         delivered = []
 
         async def getmany(**kwargs):
@@ -1803,10 +1892,14 @@ def _run_consume(handled: list, kind: str = "query"):
 
         async def send(topic, event, **kwargs):
             events.append(event["status"])
+            if emitted is not None:
+                emitted.append(event)
 
         async def to_thread(function, *args):
             if function is task_worker._handle_controlled:
                 outcome = handled.pop(0)
+                if callable(outcome):
+                    return outcome(*args)
                 if isinstance(outcome, Exception):
                     raise outcome
                 return outcome
@@ -1891,3 +1984,24 @@ def test_post_ingest_client_retries_invalid_json_once(monkeypatch):
     client = task_worker._post_ingest_client({"provider": "gemini", "model": "gemini-3.5-flash-lite"})
 
     assert isinstance(client, RetryOnceJsonCompletion)
+
+
+def test_agent_command_startup_requires_folder_source_config_when_skills_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(task_worker.database, "verify_agent_schema", lambda: None)
+    monkeypatch.setenv("AGENT_SKILLS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "token")
+    monkeypatch.delenv("DOCUMENT_INTERNAL_BASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="DOCUMENT_INTERNAL_BASE_URL"):
+        task_worker._verify_agent_command_config()
+
+    monkeypatch.setenv("DOCUMENT_INTERNAL_BASE_URL", "http://document-svc:8080")
+    task_worker._verify_agent_command_config()
+
+
+def test_agent_command_startup_skips_folder_source_config_when_skills_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(task_worker.database, "verify_agent_schema", lambda: None)
+    monkeypatch.setenv("AGENT_SKILLS_ENABLED", "false")
+    monkeypatch.delenv("DOCUMENT_INTERNAL_BASE_URL", raising=False)
+
+    task_worker._verify_agent_command_config()

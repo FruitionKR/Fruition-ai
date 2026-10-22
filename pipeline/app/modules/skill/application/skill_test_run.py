@@ -8,10 +8,19 @@ from app.modules.markdown_edit.domain.entities import (
     MarkdownEditRequest,
     MarkdownEditTarget,
 )
-from app.modules.markdown_edit.domain.markdown_target_scope import apply_markdown_edit, markdown_line_count
+from app.modules.markdown_edit.domain.markdown_target_scope import (
+    apply_markdown_edit,
+    markdown_line_count,
+    markdown_line_range,
+)
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.exceptions import SkillTestRunUnsupportedError
+from app.modules.skill.domain.instruction_placeholders import (
+    EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
+    render_skill_instructions,
+)
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS, canonical_allowed_tools
 from app.modules.skill.domain.section_changes import SectionChange, section_changes
 
@@ -86,12 +95,25 @@ class SkillTestRunUseCase:
         target: MarkdownEditTarget | None,
     ) -> SkillTestRunResult:
         line_count = markdown_line_count(markdown)
+        selection = (
+            markdown_line_range(markdown, target.start_line, target.end_line)
+            if target is not None and target.type == "selection"
+            else None
+        )
         if target is None or target.type == "whole_document":
             target = MarkdownEditTarget(type="whole_document", start_line=1, end_line=line_count)
+        instruction = f"'{name}' Skill의 지침을 이 문서에 적용해 주세요."
+        # 문서 본문은 편집 payload에 이미 있으므로 `{문서}`는 그 위치를 가리키게 한다.
+        instructions = render_skill_instructions(
+            instructions,
+            request=instruction,
+            selection=selection,
+            document_reference=EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+        )
         # Agent markdown_edit와 같은 use case에 초안 지침을 넣어 실제 실행 결과와 같게 만든다.
         edit = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
-                instruction=f"'{name}' Skill의 지침을 이 문서에 적용해 주세요.",
+                instruction=instruction,
                 markdown=markdown,
                 target=target,
                 workspace_id=workspace_id,
@@ -121,9 +143,15 @@ class SkillTestRunUseCase:
         markdown: str,
     ) -> SkillTestRunResult:
         # 문서 생성형 Skill은 고른 문서를 참고 자료로 새 문서를 만든다. 만들 문서 본문만 돌려준다.
+        instruction = f"'{name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요."
+        instructions = render_skill_instructions(
+            instructions,
+            request=instruction,
+            document_reference=REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
+        )
         document = self._markdown_create_use_case.execute(
             MarkdownCreateRequest(
-                instruction=f"'{name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요.",
+                instruction=instruction,
                 workspace_id=workspace_id,
                 user_id=user_id,
                 reference_context={"source_document": {"document_id": document_id, "markdown": markdown}},

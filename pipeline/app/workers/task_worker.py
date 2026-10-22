@@ -31,7 +31,8 @@ from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
     AgentTurnRouteContractError,
 )
-from app.modules.agent.interfaces.http.dependencies import build_handle_agent_turn_use_case
+from app.modules.agent.infrastructure.backend_folder_source_reader import build_folder_source_reader
+from app.modules.agent.interfaces.http.dependencies import agent_skills_enabled, build_handle_agent_turn_use_case
 from app.modules.agent.interfaces.http.responses import _to_response as agent_to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
@@ -182,6 +183,7 @@ def _handle_agent(
 ) -> dict[str, Any]:
     # 문서를 열지 않은 턴은 편집 대상이 없어 document_id·base_version·apply_operation_id·
     # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·clarify·reject만 낸다.
+    # 작업 탭 턴(mode=task)은 문서 없이도 폴더 정리·워크플로를 낼 수 있고, 문서 편집이면 clarify로 되묻는다.
     _required(command, "run_id", "workspace_id", "user_id", "message")
     run_id = str(command["run_id"])
     state, replay = _register_agent_command(command)
@@ -207,6 +209,10 @@ def _handle_agent(
             "skill_draft_user_directives": command.get("skill_draft_user_directives", []),
             "skill_draft_excluded_literals": command.get("skill_draft_excluded_literals", []),
             "skill_scope_type": command.get("skill_scope_type"),
+            # 작업 탭 턴은 "task"다. 이 값이 없으면 기존 동작이다.
+            "mode": command.get("mode"),
+            # 작업 대상 폴더. document-svc는 지정하지 않은 턴에 키를 싣지 않는다.
+            "folder_id": command.get("folder_id"),
         })
         result = agent_to_response(
             build_handle_agent_turn_use_case(
@@ -214,6 +220,7 @@ def _handle_agent(
                 model=payload.model,
                 event_publisher=event_publisher,
                 parent_run_id=run_id,
+                on_chat_answer=lambda: _record_agent_chat_answer(run_id),
             ).execute(payload.to_domain())
         ).model_dump(mode="json")
     except Exception as exc:
@@ -264,6 +271,38 @@ def _handle_agent(
     if updated is None:
         raise PipelineRunCancelledError("Agent run no longer accepts a result.")
     return result
+
+
+def _record_agent_chat_answer(run_id: str) -> None:
+    # Optional analytics metadata must not prevent the query or product journal writes.
+    # Persist before the query starts so Kafka redelivery retains its classification.
+    try:
+        with database.connect_ai() as conn:
+            conn.execute(
+                "UPDATE agent_runs SET result = COALESCE(result, '{}'::jsonb) || "
+                "'{\"action\": \"chat_answer\"}'::jsonb, updated_at = now() "
+                "WHERE id = %s AND status = 'executing' AND action = 'markdown_turn'",
+                (run_id,),
+            )
+    except Exception:
+        logger.warning("analytics_agent_classification_write_failed")
+
+
+def _agent_failed_payload(command: dict[str, Any]) -> dict[str, str] | None:
+    # Publication only needs the durable failure; unavailable classification stays omitted.
+    try:
+        with database.connect_ai() as conn:
+            row = conn.execute(
+                "SELECT result FROM agent_runs WHERE id = %s AND status = 'failed' "
+                "AND action = 'markdown_turn' AND command_envelope_hash = %s",
+                (command["run_id"], _agent_command_hash(command)),
+            ).fetchone()
+    except Exception:
+        logger.warning("analytics_agent_classification_read_failed")
+        return None
+    if row and isinstance(row["result"], dict) and row["result"].get("action") == "chat_answer":
+        return {"action": "chat_answer"}
+    return None
 
 
 def _agent_failure_code(error: Exception) -> str:
@@ -476,6 +515,8 @@ def _handle_meeting_notes(command: dict[str, Any]) -> dict[str, Any]:
         result = use_case.execute(
             request.display_name,
             [TranscriptSegment(s.id, s.text) for s in request.segments],
+            meeting_date=request.meeting_date,
+            attendees=tuple(request.attendees),
         )
     except PipelineRunCancelledError:
         raise
@@ -778,6 +819,9 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 ),
                 core_relation_decisions=list(
                     command.get("core_relation_decisions") or []
+                ),
+                core_concepts=list(
+                    command["cluster_normalized"].get("core_concepts") or []
                 ),
             )
             database.checkpoint_pipeline_run(run_id, state)
@@ -1195,10 +1239,20 @@ def _run_blocking(executor: ThreadPoolExecutor, function, *args):
     return asyncio.get_running_loop().run_in_executor(executor, copy_context().run, function, *args)
 
 
+def _verify_agent_command_config() -> None:
+    """Agent turn마다 만드는 폴더 원문 reader 설정(DOCUMENT_INTERNAL_BASE_URL·AGENT_INTERNAL_TOKEN)을 기동 시 확인한다.
+
+    이 프로세스의 document-svc 주소는 DOCUMENT_INTERNAL_BASE_URL이다. agent_worker 프로세스는 AGENT_BACKEND_URL을 쓴다.
+    """
+    database.verify_agent_schema()
+    if agent_skills_enabled():
+        build_folder_source_reader()
+
+
 async def consume() -> None:
     database.ensure_ai_schema()
     if COMMAND_TOPIC.endswith("agent.command"):
-        database.verify_agent_schema()
+        _verify_agent_command_config()
     if COMMAND_TOPIC.endswith("maintenance.command"):
         get_wiki_embedding_job().start("pending-recovery", [])
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
@@ -1296,6 +1350,9 @@ async def consume() -> None:
             event = _event(
                 command,
                 "failed",
+                payload=(_agent_failed_payload(command)
+                         if command.get("kind") == "agent" and not malformed
+                         and not isinstance(exc, (ScopePurgedError, PipelineRunCancelledError)) else None),
                 error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )

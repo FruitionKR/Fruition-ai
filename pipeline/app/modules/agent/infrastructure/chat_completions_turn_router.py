@@ -23,6 +23,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
+from app.modules.agent.domain.task_mode import TASK_MODE_EXCLUDED_ACTIONS, task_mode_route
 from app.modules.markdown_edit.domain.entities import EditDestination, EditOperationType
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
@@ -89,6 +90,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 
         payload = route_payload(request)
         route, failures = self._complete_route(payload)
+        route = task_mode_route(repair_insert_after_without_section(route, request), request)
         failures.extend(_route_failures(route, request))
         if failures:
             logger.warning("[Agent route 재시도] contractFailures=%s", failures)
@@ -101,6 +103,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
                 retry_payload,
                 trusted_contract_failures=failures,
             )
+            route = task_mode_route(repair_insert_after_without_section(route, request), request)
             failures.extend(_route_failures(route, request))
             if failures:
                 raise AgentTurnRouteContractError(failures)
@@ -131,6 +134,14 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 
 def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     """라우터 모델에 보낼 사용자 요청 상태다. Jev 라우터도 같은 상태를 쓴다."""
+    payload = _route_state(request)
+    # 기존 턴의 상태는 그대로 두고, 작업 탭 턴에만 mode를 싣는다.
+    if request.mode is not None:
+        payload["mode"] = request.mode
+    return payload
+
+
+def _route_state(request: AgentTurnRequest) -> dict[str, object]:
     return {
         "message": request.message,
         "conversation_summary": (
@@ -260,12 +271,61 @@ def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:
     return None
 
 
+def repair_insert_after_without_section(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
+    """현재 섹션이 없는데 target 뒤 삽입(insert_after+target)을 고른 route를 대상 재작성(replace)으로 바꾼다.
+
+    "첫 문단 끝에 문장 추가"처럼 문서 안 특정 위치에 덧붙이는 요청은 섹션 경계가 없어도 수행할 수 있다.
+    대상(문서 전체나 선택 범위)을 추가 내용을 포함해 다시 쓰면 위치를 지키면서 기존 내용도 보존된다
+    (편집 프롬프트의 additive preservation 규칙). 섹션 앵커 없는 insert_after는 편집 단계가 실행할 수 없어
+    계약 실패로 끝나므로 재시도 대신 여기서 고친다. Markdown 문서가 없으면 고치지 않고 기존 안내를 따른다.
+    """
+    target = request.active_markdown_context.target if request.active_markdown_context else None
+    if (
+        route.edit_operation != "insert_after"
+        or route.edit_destination != "target"
+        or (target is not None and target.type == "current_section")
+        or request.active_markdown_context is None
+        or not request.active_markdown_context.markdown.strip()
+    ):
+        return route
+    if route.action in {"markdown_edit", "workspace_workflow"}:
+        repaired = replace(route, edit_operation="replace")
+    elif (
+        route.action == "clarify"
+        and route.edit_goal not in {None, "create_from_chat", "template_transform"}
+        and not route.skill_candidates
+    ):
+        # 섹션 선택만 요구하던 clarify는 대상 재작성으로 바로 수행한다.
+        repaired = replace(
+            route,
+            action="markdown_edit",
+            edit_operation="replace",
+            document_operation="edit",
+            retrieval_source="none",
+            persist=False,
+            required_capabilities=("document-edit",),
+        )
+    else:
+        return route
+    logger.info(
+        "[Agent route 보정] insert_after target without current_section -> replace action=%s",
+        repaired.action,
+    )
+    return repaired
+
+
 def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     failures: list[str] = []
+    if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
+        failures.append(
+            f"task mode does not allow {route.action}; use clarify with document_operation none "
+            "for questions or conversation"
+        )
     if (
         route.action == "clarify"
         and route.edit_goal is None
         and not route.skill_candidates
+        and request.mode != "task"
     ):
         failures.append(
             "clarify requires a supported Markdown target reason or ambiguous Skill candidates; "

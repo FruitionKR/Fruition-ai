@@ -1932,7 +1932,8 @@ def _materialize_promotion_candidates(
         if not cluster.get("promotion_source_refs"):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
-        if not claims or cluster_id in existing_concept_ids:
+        # 핵심 개념과 같아 승격 후보가 된 클러스터는 그 개념(target)에 병합한다.
+        if not claims or (cluster.get("promotion_target") or cluster_id) in existing_concept_ids:
             continue
         source_refs = _unique_keep_order(ref for claim in claims for ref in claim.get("refs", []))
         prepared_pages[cluster_id] = promotion_page_generator(
@@ -1998,12 +1999,13 @@ def _materialize_promotion_candidates(
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         if not claims:
             continue
-        if cluster_id in existing_concept_ids:
+        target_slug = cluster.get("promotion_target") or cluster_id
+        if target_slug in existing_concept_ids:
             merged_page = _merge_promotion_into_existing_concept(
                 conn,
                 user_id,
                 workspace_id,
-                cluster_id,
+                target_slug,
                 claims,
                 operation_id=operation_id,
             )
@@ -2011,15 +2013,15 @@ def _materialize_promotion_candidates(
                 merged_promotions.append(
                     {
                         "cluster_id": cluster_id,
-                        "concept_slug": cluster_id,
-                        "page_id": existing_concept_ids[cluster_id],
+                        "concept_slug": target_slug,
+                        "page_id": existing_concept_ids[target_slug],
                     }
                 )
                 page_changes.append(merged_page)
                 section = active_sections.pop(cluster_id, "")
                 if section:
                     archived_sections.append(
-                        f"{section}\n\n### Archived\nmerged_to: concept:{cluster_id}\nmerged_at: {_today_iso()}"
+                        f"{section}\n\n### Archived\nmerged_to: concept:{target_slug}\nmerged_at: {_today_iso()}"
                     )
             continue
         page = prepared_pages.get(cluster_id)

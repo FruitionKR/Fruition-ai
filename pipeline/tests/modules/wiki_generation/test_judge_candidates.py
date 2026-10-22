@@ -4,6 +4,8 @@ import json
 import unittest
 
 from app.modules.wiki_generation.application.judge_candidates import (
+    PROMOTION_BATCH_CHARS,
+    judge_cluster_promotions,
     judge_concept_update_candidates,
     judge_meaning_cluster_candidates,
     normalize_concept_update_decisions,
@@ -43,25 +45,75 @@ class JudgeCandidatesTest(unittest.TestCase):
                         "decision": "same_cluster",
                         "target_cluster_id": "back-emf",
                         "representative": "Back EMF",
-                        "promotion_status": "candidate",
-                        "reason": "기존 근거가 충분함",
+                        "reason": "같은 개념의 다른 표기",
                     },
                     {"candidate_id": "unknown", "decision": "new_cluster"},
                 ]
             }
         )
 
+        existing = "# Active\n\n## cluster: back-emf\n\n### Evidence Claims\n- claim_001: 역기전력 [doc:B0001]"
         result = judge_meaning_cluster_candidates(
             completion=completion,
-            existing_active_markdown="# Active",
+            existing_active_markdown=existing,
             candidates=[candidate()],
         )
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["decision"], "same_cluster")
-        self.assertEqual(result[0]["promotion_status"], "candidate")
-        self.assertEqual(completion.payload["existing_active_clusters"], "# Active")
+        self.assertNotIn("promotion_status", result[0])
+        self.assertEqual(completion.payload["existing_active_clusters"], existing)
         self.assertIn("MeaningClusterJudge", completion.system_prompt)
+
+    def test_judges_promotion_per_cluster_in_one_call_when_small(self) -> None:
+        completion = FakeCompletion(
+            {
+                "decisions": [
+                    {"cluster_id": "back-emf", "promotion_status": "candidate", "reason": "여러 문서에서 쌓임"},
+                    {"cluster_id": "cogging", "promotion_status": "none"},
+                    {"cluster_id": "unknown", "promotion_status": "candidate"},
+                ]
+            }
+        )
+
+        promoted = judge_cluster_promotions(
+            completion=completion,
+            clusters=[
+                {"cluster_id": "back-emf", "section": "## cluster: back-emf"},
+                {"cluster_id": "cogging", "section": "## cluster: cogging"},
+            ],
+        )
+
+        self.assertEqual(promoted, {"back-emf": "여러 문서에서 쌓임"})
+        self.assertEqual(
+            [item["cluster_id"] for item in completion.payload["clusters"]],
+            ["back-emf", "cogging"],
+        )
+        self.assertIn("independently", completion.system_prompt)
+
+    def test_splits_promotion_calls_by_size_and_retries_missing_clusters_one_by_one(self) -> None:
+        calls: list[list[str]] = []
+
+        class SplittingCompletion:
+            def complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, object]:
+                ids = [item["cluster_id"] for item in json.loads(user_prompt)["clusters"]]
+                calls.append(ids)
+                if len(ids) > 1:
+                    raise ValueError("broken JSON")
+                return {"decisions": [{"cluster_id": ids[0], "promotion_status": "candidate", "reason": ids[0]}]}
+
+        big = "x" * (PROMOTION_BATCH_CHARS - 1)
+        promoted = judge_cluster_promotions(
+            completion=SplittingCompletion(),
+            clusters=[
+                {"cluster_id": "a", "section": "a"},
+                {"cluster_id": "b", "section": "b"},
+                {"cluster_id": "c", "section": big},
+            ],
+        )
+
+        self.assertEqual(calls, [["a", "b"], ["a"], ["b"], ["c"]])
+        self.assertEqual(promoted, {"a": "a", "b": "b", "c": "c"})
 
     def test_concept_update_prompt_excludes_related_subtopics_from_same_concept(self) -> None:
         completion = FakeCompletion({"decisions": []})

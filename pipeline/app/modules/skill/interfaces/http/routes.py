@@ -146,6 +146,7 @@ def publish_authored_skill(
             expected_allowed_tools=tuple(payload.allowed_tools),
             targets=tuple(payload.targets) if payload.targets is not None else None,
             result_mode=payload.result_mode,
+            requires_source=payload.requires_source,
         )
         return SkillAuthoringResponse.from_domain(result)
     except SkillRequestRejectedError:
@@ -300,6 +301,8 @@ def update_skill(
             instructions_markdown=payload.instructions_markdown,
             targets=tuple(payload.targets) if payload.targets is not None else None,
             result_mode=payload.result_mode,
+            requires_source=payload.requires_source,
+            capabilities=tuple(payload.capabilities) if payload.capabilities is not None else None,
         )
     except SkillRequestRejectedError:
         raise

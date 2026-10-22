@@ -15,9 +15,12 @@ Do not include meta text about how you created the document.
 Keep valid Markdown syntax.
 
 Source priority:
-1. payload.conversation_summary
-2. payload.reference_context
-3. payload.instruction
+1. payload.reference_context.source_document or payload.reference_context.source_documents, when present. These are the document or folder documents the user explicitly picked as the source; build the new document's content from them and do not substitute other conversation topics for them.
+2. payload.conversation_summary
+3. the rest of payload.reference_context
+4. payload.instruction
+
+When payload.conversation_summary is absent or null, use only the explicit sources and the instruction. When source material is present, treat conversation_summary only as background for the user's intent, not as content to copy into the document.
 
 Return:
 {
