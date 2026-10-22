@@ -1,4 +1,5 @@
 """Real route -> durable PostgreSQL state -> Kafka failure/redelivery contract."""
+from contextlib import contextmanager
 from unittest.mock import Mock
 
 import psycopg
@@ -117,3 +118,82 @@ def test_interrupted_query_restores_marker_on_redelivery(connection, command):
     event = consume(command)
     assert event["status"] == "failed" and event["payload"] == {"action": "chat_answer"}
     assert consume(command)["payload"] == {"action": "chat_answer"}
+
+
+@pytest.fixture
+def reject_optional_write(connection):
+    # Fail the actual metadata UPDATE in PostgreSQL; product journal writes still work.
+    with connection() as conn:
+        conn.execute("""
+            CREATE FUNCTION reject_analytics_marker() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.status = 'executing' AND NEW.result->>'action' = 'chat_answer' THEN
+                    RAISE EXCEPTION 'private metadata write details';
+                END IF;
+                RETURN NEW;
+            END $$;
+            CREATE TRIGGER reject_analytics_marker BEFORE UPDATE ON agent_runs
+            FOR EACH ROW EXECUTE FUNCTION reject_analytics_marker();
+        """)
+
+
+def test_optional_write_failure_keeps_successful_query(
+    connection, reject_optional_write, monkeypatch, command, caplog,
+):
+    from tests.modules.agent.test_handle_agent_turn import FakeQueryUseCase
+    query = install_use_case(monkeypatch)
+    query.execute.side_effect = FakeQueryUseCase().execute
+    events = []
+    consumer, statuses, _ = _run_consume(
+        [lambda command, publisher: task_worker._handle_agent(command)],
+        "agent", command=command, emitted=events,
+    )
+    assert statuses[0] == "succeeded"
+    assert events[0]["payload"]["action"] == "chat_answer"
+    query.execute.assert_called_once()
+    consumer.commit.assert_awaited_once()
+    with connection() as conn:
+        assert conn.execute("SELECT status FROM agent_runs WHERE id = 'turn'").fetchone()["status"] == "completed"
+    assert "analytics_agent_classification_write_failed" in caplog.text
+    assert "private metadata write details" not in caplog.text
+
+
+def test_optional_write_failure_never_fabricates_failed_chat_marker(
+    connection, reject_optional_write, monkeypatch, command, caplog,
+):
+    query = install_use_case(monkeypatch)
+    assert consume(command)["payload"] is None
+    assert consume(command)["payload"] is None
+    query.execute.assert_called_once()
+    assert "analytics_agent_classification_write_failed" in caplog.text
+    assert "private metadata write details" not in caplog.text
+
+
+def test_optional_read_failure_still_publishes_generic_failed_envelope(
+    connection, monkeypatch, command, caplog,
+):
+    query = install_use_case(monkeypatch)
+
+    class MetadataReadFailure:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, *args, **kwargs):
+            if sql.startswith("SELECT result FROM agent_runs"):
+                raise psycopg.OperationalError("private classification read details")
+            return self.conn.execute(sql, *args, **kwargs)
+
+    @contextmanager
+    def connect():
+        with connection() as conn:
+            yield MetadataReadFailure(conn)
+
+    monkeypatch.setattr(task_worker.database, "connect_ai", connect)
+    for expected_error in ("agent_turn_failed", "invalid_agent_turn_request"):
+        event = consume(command)
+        assert event["status"] == "failed" and event["payload"] is None
+        assert event["run_id"] == "turn" and event["request"] == command
+        assert event["error"] == expected_error
+    query.execute.assert_called_once()
+    assert "analytics_agent_classification_read_failed" in caplog.text
+    assert "private classification read details" not in caplog.text

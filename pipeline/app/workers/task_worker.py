@@ -274,23 +274,32 @@ def _handle_agent(
 
 
 def _record_agent_chat_answer(run_id: str) -> None:
+    # Optional analytics metadata must not prevent the query or product journal writes.
     # Persist before the query starts so Kafka redelivery retains its classification.
-    with database.connect_ai() as conn:
-        conn.execute(
-            "UPDATE agent_runs SET result = COALESCE(result, '{}'::jsonb) || "
-            "'{\"action\": \"chat_answer\"}'::jsonb, updated_at = now() "
-            "WHERE id = %s AND status = 'executing' AND action = 'markdown_turn'",
-            (run_id,),
-        )
+    try:
+        with database.connect_ai() as conn:
+            conn.execute(
+                "UPDATE agent_runs SET result = COALESCE(result, '{}'::jsonb) || "
+                "'{\"action\": \"chat_answer\"}'::jsonb, updated_at = now() "
+                "WHERE id = %s AND status = 'executing' AND action = 'markdown_turn'",
+                (run_id,),
+            )
+    except Exception:
+        logger.warning("analytics_agent_classification_write_failed")
 
 
 def _agent_failed_payload(command: dict[str, Any]) -> dict[str, str] | None:
-    with database.connect_ai() as conn:
-        row = conn.execute(
-            "SELECT result FROM agent_runs WHERE id = %s AND status = 'failed' "
-            "AND action = 'markdown_turn' AND command_envelope_hash = %s",
-            (command["run_id"], _agent_command_hash(command)),
-        ).fetchone()
+    # Publication only needs the durable failure; unavailable classification stays omitted.
+    try:
+        with database.connect_ai() as conn:
+            row = conn.execute(
+                "SELECT result FROM agent_runs WHERE id = %s AND status = 'failed' "
+                "AND action = 'markdown_turn' AND command_envelope_hash = %s",
+                (command["run_id"], _agent_command_hash(command)),
+            ).fetchone()
+    except Exception:
+        logger.warning("analytics_agent_classification_read_failed")
+        return None
     if row and isinstance(row["result"], dict) and row["result"].get("action") == "chat_answer":
         return {"action": "chat_answer"}
     return None
