@@ -5,6 +5,7 @@ from typing import Any
 
 from psycopg.types.json import Json
 
+from app.core.analytics import record_skill_created
 from app.core.pipeline_control import PipelineRunCancelledError
 
 from app.modules.skill.application.ports import ManageSkillRepositoryPort, SkillRepositoryPort
@@ -17,6 +18,8 @@ from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_re
 SKILL_SELECT = """
     SELECT
         s.*,
+        (SELECT created_by FROM skill_versions first_version
+         WHERE first_version.skill_id = s.id ORDER BY version LIMIT 1) AS original_created_by,
         ev.id AS ev_id,
         ev.skill_id AS ev_skill_id,
         ev.version AS ev_version,
@@ -173,6 +176,7 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
                 (version.id, skill.id),
             )
             self._record_publication(conn, skill.id, version.id, None)
+            record_skill_created(conn, skill, version.created_by or "")
         saved = self.get_manageable(skill.workspace_id, version.created_by or "", skill.id)
         if saved is None:
             raise ValueError("Published Skill could not be loaded.")
@@ -401,6 +405,7 @@ def _row_to_skill(row: dict[str, Any]) -> Skill:
         latest_version=_row_to_version(row, "lv"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        created_by=row.get("original_created_by"),
     )
 
 

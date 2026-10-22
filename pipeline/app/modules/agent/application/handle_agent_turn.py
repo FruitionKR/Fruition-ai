@@ -139,7 +139,9 @@ class HandleAgentTurnUseCase:
         markdown_turn_repository: AgentRunManagementRepositoryPort | None = None,
         event_publisher: QueryEventPublisherPort | None = None,
         folder_source_reader: FolderSourceReaderPort | None = None,
+        on_chat_answer: Callable[[], None] | None = None,
     ) -> None:
+        self._on_chat_answer = on_chat_answer
         self._event_publisher = event_publisher
         self._router = router
         self._query_use_case = query_use_case
@@ -561,6 +563,9 @@ class HandleAgentTurnUseCase:
         request: AgentTurnRequest,
         route: AgentTurnRoute,
     ) -> AgentTurnResult:
+        # Record the actual branch before retrieval/generation can fail or be interrupted.
+        if self._on_chat_answer is not None:
+            self._on_chat_answer()
         return AgentTurnResult(
             action="chat_answer",
             route=route,

@@ -220,6 +220,7 @@ def _handle_agent(
                 model=payload.model,
                 event_publisher=event_publisher,
                 parent_run_id=run_id,
+                on_chat_answer=lambda: _record_agent_chat_answer(run_id),
             ).execute(payload.to_domain())
         ).model_dump(mode="json")
     except Exception as exc:
@@ -270,6 +271,38 @@ def _handle_agent(
     if updated is None:
         raise PipelineRunCancelledError("Agent run no longer accepts a result.")
     return result
+
+
+def _record_agent_chat_answer(run_id: str) -> None:
+    # Optional analytics metadata must not prevent the query or product journal writes.
+    # Persist before the query starts so Kafka redelivery retains its classification.
+    try:
+        with database.connect_ai() as conn:
+            conn.execute(
+                "UPDATE agent_runs SET result = COALESCE(result, '{}'::jsonb) || "
+                "'{\"action\": \"chat_answer\"}'::jsonb, updated_at = now() "
+                "WHERE id = %s AND status = 'executing' AND action = 'markdown_turn'",
+                (run_id,),
+            )
+    except Exception:
+        logger.warning("analytics_agent_classification_write_failed")
+
+
+def _agent_failed_payload(command: dict[str, Any]) -> dict[str, str] | None:
+    # Publication only needs the durable failure; unavailable classification stays omitted.
+    try:
+        with database.connect_ai() as conn:
+            row = conn.execute(
+                "SELECT result FROM agent_runs WHERE id = %s AND status = 'failed' "
+                "AND action = 'markdown_turn' AND command_envelope_hash = %s",
+                (command["run_id"], _agent_command_hash(command)),
+            ).fetchone()
+    except Exception:
+        logger.warning("analytics_agent_classification_read_failed")
+        return None
+    if row and isinstance(row["result"], dict) and row["result"].get("action") == "chat_answer":
+        return {"action": "chat_answer"}
+    return None
 
 
 def _agent_failure_code(error: Exception) -> str:
@@ -1317,6 +1350,9 @@ async def consume() -> None:
             event = _event(
                 command,
                 "failed",
+                payload=(_agent_failed_payload(command)
+                         if command.get("kind") == "agent" and not malformed
+                         and not isinstance(exc, (ScopePurgedError, PipelineRunCancelledError)) else None),
                 error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )

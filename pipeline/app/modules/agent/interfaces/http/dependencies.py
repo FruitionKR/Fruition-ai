@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable
 
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
 from app.modules.agent.infrastructure.backend_folder_source_reader import (
@@ -49,6 +50,7 @@ def build_handle_agent_turn_use_case(
     model: str,
     event_publisher: QueryEventPublisherPort | None = None,
     parent_run_id: str | None = None,
+    on_chat_answer: Callable[[], None] | None = None,
 ) -> HandleAgentTurnUseCase:
     """Agent 처리 단계와 질의 진행 단계를 같은 publisher로 전달한다."""
     markdown_editor = build_markdown_editor(
@@ -60,6 +62,7 @@ def build_handle_agent_turn_use_case(
     feature_enabled = agent_skills_enabled()
     agent_run_repository = PostgresAgentRunRepository(parent_run_id=parent_run_id)
     return HandleAgentTurnUseCase(
+        on_chat_answer=on_chat_answer,
         event_publisher=event_publisher,
         router=with_jev_routing(build_agent_turn_router(provider=provider, model=model)),
         query_use_case=query_use_case,

@@ -1581,6 +1581,11 @@ components:
             type: string
           title: Capabilities
           type: array
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
         description:
           anyOf:
           - type: string
@@ -1848,6 +1853,11 @@ components:
       type: object
     SkillResponse:
       properties:
+        created_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By
         enabled_version:
           anyOf:
           - $ref: '#/components/schemas/SkillVersionResponse'

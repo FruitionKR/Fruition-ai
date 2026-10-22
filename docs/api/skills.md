@@ -1476,3 +1476,13 @@ PostgreSQL 권한·삭제 검증: `SKILL_TEST_DSN`을 지정하고
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/skill/repository/PipelineSkillRequester.java`:85-93 (`app.skill.endpoint`, `X-Agent-Service-Token`).
 - 아웃바운드 호출: 없음(AI DB 삭제).
 - 미연동 표시: 없음.
+
+
+### 분석용 생성자 계약
+
+스킬 조회·목록의 `SkillResponse`와 게시의 `SkillAuthoringResponse`에 `created_by`가 추가됩니다.
+이 값은 **최초 버전의 작성자 user_id**이며 최신 버전을 편집한 사람으로 바뀌지 않습니다.
+기존 `scope_type`은 `personal` 또는 `team`입니다. Document의 `skill_run`은 요청 사용자와
+`created_by`를 비교해 `is_creator`를 계산합니다. 아직 게시되지 않은 제안은 `created_by=null`입니다.
+
+`skill_created`는 AI가 최초 스킬 게시 트랜잭션에서만 기록합니다. Document 프록시에서 중복 기록하지 않습니다.

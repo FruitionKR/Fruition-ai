@@ -75,6 +75,7 @@ class SkillAuthoringRequest(SkillLlmRequest):
 class SkillAuthoringResponse(BaseModel):
     status: Literal["clarification_required", "blocked", "proposal_ready", "published"]
     question: str | None = None
+    created_by: str | None = None
     skill_id: str | None = None
     version_id: str | None = None
     scope_type: Literal["personal", "team"] | None = None
@@ -101,6 +102,7 @@ class SkillAuthoringResponse(BaseModel):
             return cls(
                 status=result.status,
                 skill_id=skill.id if skill else None,
+                created_by=skill.created_by if skill else None,
                 version_id=version.id if version else None,
                 scope_type=proposal.scope_type,
                 name=proposal.name,
@@ -131,6 +133,7 @@ class SkillAuthoringResponse(BaseModel):
         return cls(
             status=result.status,
             skill_id=result.skill.id,
+            created_by=result.skill.created_by,
             version_id=version.id,
             scope_type=result.skill.scope_type,
             name=version.name,
@@ -223,6 +226,7 @@ class SkillVersionResponse(BaseModel):
 
 
 class SkillResponse(BaseModel):
+    created_by: str | None = None
     id: str
     workspace_id: str | None
     scope_type: str
@@ -236,6 +240,7 @@ class SkillResponse(BaseModel):
     def from_domain(cls, skill: Skill) -> "SkillResponse":
         return cls(
             id=skill.id,
+            created_by=skill.created_by,
             workspace_id=skill.workspace_id,
             scope_type=skill.scope_type,
             owner_user_id=skill.owner_user_id,
