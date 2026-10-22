@@ -1869,7 +1869,7 @@ def _consumer_stub():
     )
 
 
-def _run_consume(handled: list, kind: str = "query"):
+def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
@@ -1878,7 +1878,7 @@ def _run_consume(handled: list, kind: str = "query"):
         consumer = _consumer_stub()
         consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
-        message = SimpleNamespace(topic="t", partition=3, offset=42, value={"kind": kind, "run_id": "run-1"})
+        message = SimpleNamespace(topic="t", partition=3, offset=42, value=command or {"kind": kind, "run_id": "run-1"})
         delivered = []
 
         async def getmany(**kwargs):
@@ -1892,10 +1892,14 @@ def _run_consume(handled: list, kind: str = "query"):
 
         async def send(topic, event, **kwargs):
             events.append(event["status"])
+            if emitted is not None:
+                emitted.append(event)
 
         async def to_thread(function, *args):
             if function is task_worker._handle_controlled:
                 outcome = handled.pop(0)
+                if callable(outcome):
+                    return outcome(*args)
                 if isinstance(outcome, Exception):
                     raise outcome
                 return outcome

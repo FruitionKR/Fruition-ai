@@ -262,7 +262,7 @@ def long_segments(count, chars=10000):
 
 
 def test_long_transcript_is_split_into_multiple_batches():
-    # 묶음 예산을 넘는 전사는 한 번에 보내지 않고 순서를 지켜 나눠 보낸다.
+    # 병렬 호출 시작 순서는 보장하지 않는다. 묶음 안의 전사 순서와 최종 출력 순서는 보장한다.
     segments = long_segments((2 * chat_meeting_notes.BATCH_CHAR_BUDGET) // 10000 + 1)
     client = Mock()
     client.complete_json.side_effect = lambda system, data, **kwargs: {
@@ -277,8 +277,10 @@ def test_long_transcript_is_split_into_multiple_batches():
 
     calls = client.complete_json.call_args_list
     assert len(calls) > 1
-    assert [i for call in calls for i in batch_segment_ids(call)] == [
-        s.id for s in segments
+    expected_batches = [["s0", "s1"], ["s2", "s3"], ["s4", "s5"]]
+    assert sorted(batch_segment_ids(call) for call in calls) == expected_batches
+    assert [item["source_segment_ids"] for item in result["summary"]] == [
+        [batch[0]] for batch in expected_batches
     ]
     for call in calls:
         assert sum(len(s.text) for s in segments if s.id in batch_segment_ids(call)) <= (

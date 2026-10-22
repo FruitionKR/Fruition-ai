@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 import os
+import re
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -28,14 +30,40 @@ class Settings:
     app_version: str = ""
     host: str = "https://us.i.posthog.com"
 
+    @property
+    def relay_enabled(self) -> bool:
+        return (self.enabled and self.environment in {"local", "staging", "production"}
+                and bool(re.fullmatch(r"phc_[A-Za-z0-9_-]+", self.token))
+                and _valid_host(self.host, self.environment))
+
     @classmethod
     def load(cls):
         environment = os.getenv("ANALYTICS_ENVIRONMENT", "local")
-        if environment not in {"local", "staging", "production"}:
-            raise ValueError("Invalid ANALYTICS_ENVIRONMENT")
-        return cls(os.getenv("ANALYTICS_ENABLED", "false").lower() == "true",
-                   os.getenv("POSTHOG_PROJECT_TOKEN", "").strip(), environment,
-                   os.getenv("APP_VERSION", ""), os.getenv("POSTHOG_HOST", "https://us.i.posthog.com"))
+        enabled = os.getenv("ANALYTICS_ENABLED", "false").lower()
+        if environment not in {"local", "staging", "production"} or enabled not in {"true", "false"}:
+            logger.warning("analytics_config_invalid recording_disabled")
+            return cls()
+        settings = cls(enabled == "true", os.getenv("POSTHOG_PROJECT_TOKEN", "").strip(),
+                       environment, os.getenv("APP_VERSION", ""),
+                       os.getenv("POSTHOG_HOST", "https://us.i.posthog.com"))
+        if settings.enabled and settings.token and not settings.relay_enabled:
+            logger.warning("analytics_config_invalid relay_disabled")
+        return settings
+
+
+def _valid_host(host: str, environment: str) -> bool:
+    try:
+        url = urlsplit(host)
+        local_mock = (environment == "local" and url.scheme == "http"
+                      and url.hostname in {"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+        secure_origin = url.scheme == "https" and url.port in {None, 443}
+        # Accessing port also validates malformed/non-numeric port values.
+        _ = url.port
+        return ((local_mock or secure_origin) and bool(url.hostname) and not url.username
+                and not url.password and not url.query and not url.fragment
+                and url.path in {"", "/"})
+    except ValueError:
+        return False
 
 
 def skill_created(*, skill_id: str, user_id: str, scope: str,
@@ -50,7 +78,8 @@ def skill_created(*, skill_id: str, user_id: str, scope: str,
     properties = {"event_id": event_id, "schema_version": 1, "event_source": "worker",
                   "environment": settings.environment, "app_version": settings.app_version,
                   "skill_id": skill_id, "scope": scope, "user_id": user_id}
-    if workspace_id:
+    if scope == "team":
+        properties["workspace_id"] = workspace_id
         properties["$groups"] = {"workspace": workspace_id}
     return {"event": "skill_created", "uuid": event_id, "distinct_id": user_id,
             "timestamp": occurred_at.astimezone(timezone.utc).isoformat(), "properties": properties}
@@ -74,6 +103,8 @@ def record_skill_created(conn, skill, user_id: str) -> None:
 
 
 async def relay_once(settings: Settings, client: httpx.AsyncClient) -> bool:
+    if not settings.relay_enabled:
+        return False
     async with await psycopg.AsyncConnection.connect(ai_database_url(), row_factory=dict_row,
                                                     connect_timeout=5) as conn:
         await conn.execute("SET LOCAL statement_timeout = '5s'")
@@ -115,7 +146,7 @@ async def relay_loop(settings: Settings, client: httpx.AsyncClient) -> None:
 @asynccontextmanager
 async def analytics_lifespan():
     settings = Settings.load()
-    if not settings.enabled or not settings.token:
+    if not settings.relay_enabled:
         yield
         return
     async with httpx.AsyncClient() as client:

@@ -25,9 +25,10 @@ def test_envelope_allowlist_uuid_time_and_identity():
     assert payload["timestamp"] == "2026-10-22T03:00:00+00:00"
     assert payload["distinct_id"] == "actor"
     assert payload["properties"]["$groups"] == {"workspace": "original-workspace"}
+    assert payload["properties"]["workspace_id"] == "original-workspace"
     assert set(payload) == {"uuid", "event", "distinct_id", "timestamp", "properties"}
     assert set(payload["properties"]) == {"event_id", "schema_version", "event_source", "environment",
-                                          "app_version", "skill_id", "scope", "user_id", "$groups"}
+                                          "app_version", "skill_id", "scope", "user_id", "workspace_id", "$groups"}
     assert payload["properties"]["event_source"] == "worker"
     with pytest.raises(TypeError):
         analytics.skill_created(question="private")
@@ -113,6 +114,7 @@ def test_real_creation_and_original_creator_contract(db, monkeypatch, scope):
         payload = conn.execute("SELECT payload FROM analytics_outbox").fetchone()["payload"]
         assert payload["distinct_id"] == "actor"
         assert ("$groups" in payload["properties"]) == (scope == "team")
+        assert ("workspace_id" in payload["properties"]) == (scope == "team")
         analytics.record_skill_created(conn, skill, "editor")
     with psycopg.connect(db, row_factory=dict_row) as conn:
         assert conn.execute("SELECT payload FROM analytics_outbox").fetchone()["payload"] == payload
@@ -154,7 +156,7 @@ def test_retry_timeout_dead_state_and_lifecycle(db, monkeypatch, caplog):
         if len(attempts) == 2:
             return httpx.Response(503)
         return httpx.Response(200, json={"status": 1})
-    settings = analytics.Settings(True, "test-public-token")
+    settings = analytics.Settings(True, "phc_test_public_token")
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             assert await analytics.relay_once(settings, client)
@@ -174,7 +176,7 @@ def test_retry_timeout_dead_state_and_lifecycle(db, monkeypatch, caplog):
     # Real lifecycle with mock HTTP; exit cancels polling and closes its client.
     with psycopg.connect(db) as conn:
         conn.execute("UPDATE analytics_outbox SET state = 'pending', next_attempt_at = now()")
-    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "test-public-token")
+    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_test_public_token")
     real_client = httpx.AsyncClient
     clients = []
     def factory():
@@ -205,7 +207,7 @@ def test_uncommitted_rows_are_not_relayed_and_cancelled_send_retries(db):
         import json
         payloads.append(json.loads(request.content)["batch"][0])
         return httpx.Response(200)
-    settings = analytics.Settings(True, "test-public-token")
+    settings = analytics.Settings(True, "phc_test_public_token")
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(success)) as client:
             with psycopg.connect(db) as conn:
@@ -241,3 +243,62 @@ def test_api_lifespan_enters_and_exits_relay(monkeypatch):
             assert calls == ["start"]
     asyncio.run(run())
     assert calls == ["start", "stop"]
+
+
+@pytest.mark.parametrize("workspace", [None, "must-not-leak"])
+def test_personal_scope_omits_workspace_even_if_supplied(workspace):
+    payload = analytics.skill_created(skill_id="s", user_id="u", scope="personal",
+                                     workspace_id=workspace, occurred_at=datetime.now(timezone.utc),
+                                     settings=analytics.Settings())
+    assert "workspace_id" not in payload["properties"]
+    assert "$groups" not in payload["properties"]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("ANALYTICS_ENVIRONMENT", "private-invalid-environment"),
+    ("ANALYTICS_ENABLED", "private-invalid-boolean"),
+    ("POSTHOG_PROJECT_TOKEN", "phx_private_test_fixture"),
+    ("POSTHOG_PROJECT_TOKEN", "phc_"),
+    ("POSTHOG_PROJECT_TOKEN", "phc_test secret"),
+    ("POSTHOG_HOST", "https://private:secret@example.test"),
+    ("POSTHOG_HOST", "https://[invalid"),
+])
+def test_invalid_config_keeps_real_fastapi_lifespan_and_product_write(db, monkeypatch, caplog, key, value):
+    import api
+    from fastapi.testclient import TestClient
+    from app.modules.skill.infrastructure.postgres_skill_repository import PostgresSkillRepository
+    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_test_public_token")
+    monkeypatch.setenv(key, value)
+    monkeypatch.setattr(api.database, "ensure_ai_schema", lambda: None)
+    monkeypatch.setattr(api, "AGENT_SKILLS_ENABLED", False)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid config must not create HTTP client or access relay DB")
+    monkeypatch.setattr(analytics.httpx, "AsyncClient", forbidden)
+    with TestClient(api.app):
+        assert PostgresSkillRepository().create_published(*sample()).id == "skill-1"
+        assert counts(db)[0] == 1
+    assert "analytics_config_invalid" in caplog.text
+    assert value not in caplog.text
+    assert "phc_test_public_token" not in repr(analytics.Settings.load())
+
+
+@pytest.mark.parametrize("token", ["", "phx_private_test_fixture", "test-token", "phc_", "phc_a b"])
+def test_direct_relay_rejects_nonpublic_tokens_before_database(monkeypatch, token):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid token must not access DB or HTTP")
+    monkeypatch.setattr(analytics.psycopg.AsyncConnection, "connect", forbidden)
+    assert not asyncio.run(analytics.relay_once(analytics.Settings(True, token), None))
+
+
+@pytest.mark.parametrize("host", ["http://localhost:18080", "http://127.0.0.1:18080",
+                                 "http://[::1]:18080", "http://host.docker.internal:18080"])
+def test_local_mock_host_gate(host):
+    assert analytics.Settings(True, "phc_test_public_token", host=host).relay_enabled
+    assert not analytics.Settings(True, "phc_test_public_token", environment="production", host=host).relay_enabled
+
+
+@pytest.mark.parametrize("host", ["http://example.test:18080", "http://host.docker.internal.evil.test:18080",
+                                 "http://localhost:invalid", "http://user:pass@localhost:18080",
+                                 "http://localhost:18080/path", "http://localhost:18080/?secret=x"])
+def test_local_mock_host_rejects_unsafe_origins(host):
+    assert not analytics.Settings(True, "phc_test_public_token", host=host).relay_enabled
