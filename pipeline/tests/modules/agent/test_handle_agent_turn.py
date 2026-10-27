@@ -3036,3 +3036,74 @@ class BareSkillCommandTargetTest(unittest.TestCase):
 
         self.assertEqual(result.action, "folder_organize")
         self.assertEqual(starter.requests[0].target_folder_id, "folder-9")  # type: ignore[attr-defined]
+
+
+class ActiveDocumentLimitTest(unittest.TestCase):
+    """열린 문서는 MAX_ACTIVE_DOCUMENT_CHARS까지만 LLM에 싣는다."""
+
+    SMALL = "# 회의록\n\n출시일은 11월 3일로 정했다."
+    LARGE = "# 긴 문서\n\n" + "가" * 30_001
+
+    def _use_case(self, route: AgentTurnRoute) -> tuple[HandleAgentTurnUseCase, RecordingMarkdownEditor]:
+        editor = RecordingMarkdownEditor(
+            MarkdownEditResult(
+                edit=MarkdownEditOperation(
+                    operation="replace",
+                    target=MarkdownEditTarget(type="selection", start_line=1, end_line=1),
+                    summary="제목을 바꿨습니다.",
+                    replacement_markdown="# 새 제목",
+                )
+            )
+        )
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(route),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+        )
+        return use_case, editor
+
+    def _request(self, markdown: str, target: MarkdownEditTarget | None = None) -> AgentTurnRequest:
+        return AgentTurnRequest(
+            message="이 회의록을 바탕으로 출시 공지 문서를 만들어줘",
+            document_id="document-1",
+            active_markdown_context=ActiveMarkdownContext(markdown=markdown, target=target),
+        )
+
+    def test_create_without_skill_uses_open_document_as_reference(self) -> None:
+        use_case, editor = self._use_case(replace(CREATE_ROUTE, selected_skill_id=None))
+
+        result = use_case.execute(self._request(self.SMALL))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertEqual(
+            editor.create_requests[0].reference_context["active_document"],  # type: ignore[index]
+            {"document_id": "document-1", "markdown": self.SMALL},
+        )
+
+    def test_create_without_skill_skips_long_open_document_with_wiki_notice(self) -> None:
+        use_case, editor = self._use_case(replace(CREATE_ROUTE, selected_skill_id=None))
+
+        result = use_case.execute(self._request(self.LARGE))
+
+        self.assertEqual(result.action, "markdown_create")
+        self.assertNotIn("active_document", editor.create_requests[0].reference_context or {})
+        self.assertIn("위키에 올린 뒤", result.message or "")
+
+    def test_whole_document_edit_over_limit_asks_for_smaller_scope(self) -> None:
+        use_case, editor = self._use_case(replace(EDIT_ROUTE, selected_skill_id=None))
+
+        result = use_case.execute(self._request(self.LARGE))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIn("한 번에 편집할 수 없어요", result.message or "")
+        self.assertEqual(editor.requests, [])
+
+    def test_selection_edit_in_long_document_still_edits(self) -> None:
+        use_case, editor = self._use_case(replace(EDIT_ROUTE, selected_skill_id=None))
+        selection = MarkdownEditTarget(type="selection", start_line=1, end_line=1)
+
+        result = use_case.execute(self._request(self.LARGE, selection))
+
+        self.assertEqual(result.action, "markdown_edit")
+        self.assertEqual(len(editor.requests), 1)
