@@ -615,6 +615,16 @@ def _normalize_actual_target(
     )
 
 
+def _nonblank_range(lines: list[str], target: MarkdownEditTarget) -> tuple[int, int]:
+    """요청 범위에서 앞뒤 빈 줄을 뺀 범위. 현재 섹션은 다음 제목 앞 빈 줄까지 오므로 모델이 그 줄을 빼도 내용은 다 덮는다."""
+    start, end = target.start_line, target.end_line
+    while start < end and not lines[start - 1].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return start, end
+
+
 def _actual_target_request(
     request: MarkdownEditRequest,
     actual_target: MarkdownEditTarget,
@@ -638,11 +648,12 @@ def _actual_target_request(
         failures.append("actual_target.end_line must be greater than or equal to actual_target.start_line")
     if actual_target.end_line > len(lines):
         failures.append("actual_target.end_line must not exceed the Markdown line count")
+    required_start, required_end = _nonblank_range(lines, request.target)
     if (
         not appends_to_document
         and (
-            actual_target.start_line > request.target.start_line
-            or actual_target.end_line < request.target.end_line
+            actual_target.start_line > required_start
+            or actual_target.end_line < required_end
         )
     ):
         failures.append("actual_target must contain requested_target")

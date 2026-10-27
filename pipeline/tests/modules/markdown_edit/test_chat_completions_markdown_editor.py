@@ -845,6 +845,29 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         retry_failures = json.loads(client.calls[1][1])["contract_failures"]
         self.assertIn("actual_target must contain requested_target", retry_failures)
 
+    def test_accepts_actual_target_that_drops_only_trailing_blank_line_of_section(self) -> None:
+        # 프론트는 현재 섹션을 다음 제목 앞 빈 줄까지 보낸다. 모델이 그 빈 줄을 빼도 내용은 다 덮는다.
+        client = SequenceJsonClient(
+            [
+                response(
+                    "## 롤백\n오류율이 오르면 롤백한다.\n`kubectl rollout undo`로 이전 버전으로 되돌린다.",
+                    actual_target={"type": "current_section", "start_line": 3, "end_line": 4},
+                )
+            ]
+        )
+        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
+        request = MarkdownEditRequest(
+            instruction="롤백 섹션을 보강해줘.",
+            markdown="# 런북\n\n## 롤백\n오류율이 오르면 롤백한다.\n\n## 연락처\n온콜에게 호출한다.",
+            target=MarkdownEditTarget(type="current_section", start_line=3, end_line=5),
+            edit_goal="other",
+        )
+
+        result = editor.generate_edit(request)
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn("kubectl rollout undo", result.edit.replacement_markdown)
+
     def test_retries_partial_whole_document_actual_target(self) -> None:
         client = SequenceJsonClient(
             [

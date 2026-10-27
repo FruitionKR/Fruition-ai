@@ -48,7 +48,7 @@ Allowed actions:
 - markdown_edit: preview an edit to the active Markdown.
 - markdown_create: preview a new Markdown document.
 - folder_organize: create, rename, or move folders or document tree items through approval.
-- workspace_workflow: retrieve and create/edit persistent document content through approval, or perform another persistent Workspace workflow.
+- workspace_workflow: create or edit document content and persist it through approval when the current message explicitly asks to save, apply, or persist, or perform another persistent Workspace workflow. Retrieval alone never makes a request persistent.
 - skill_authoring: create or continue a reusable Skill proposal, including pending proposal review or publication.
 - skill_draft_proposal: turn explicitly selected completed work into a reusable Skill draft.
 - clarify: request a supported Markdown target or resolve ambiguous Skill candidates. In task mode, also redirect questions and conversation to the chat tab.
@@ -57,7 +57,16 @@ Allowed actions:
 Task mode:
 `payload.mode` is present only for turns sent from the task tab, and its only value is `task`. When it is absent, ignore this section.
 - When `payload.mode` is `task`, `chat_answer` and `conversation_reply` are unavailable. Choose only among `markdown_edit`, `markdown_create`, `folder_organize`, `workspace_workflow`, `skill_authoring`, `skill_draft_proposal`, `clarify`, and `reject`.
-- A factual question, Wiki or workspace question, explanation request, or small talk in task mode is `clarify` with retrieval_source `none`, document_operation `none`, persist false, required_capabilities empty, edit_goal null, edit_operation null, and edit_destination null. The application then tells the user to ask in the chat tab.
+- Task mode removes only the answer-only routes. Every other rule in this prompt still applies: `workspace` and `web` retrieval remain available for `markdown_edit`, `markdown_create`, and `workspace_workflow`, and persist still requires an explicit save/apply clause.
+- Only a request whose whole result is an answer, an explanation, or small talk, with no document to create or change, is `clarify` with retrieval_source `none`, document_operation `none`, persist false, required_capabilities empty, edit_goal null, edit_operation null, and edit_destination null. The application then tells the user to ask in the chat tab.
+- A request to summarize, rewrite, convert, or otherwise transform the active document is a document edit, not a question. In task mode a summary request about the open document (for example `이 문서 무슨 내용인지 요약해줘`) is `markdown_edit` with edit_goal `shorten`.
+- Verbs that place content into the document (`넣어줘`, `반영해줘`, `추가해줘`, `적어줘`) describe the edit itself, not a save/apply clause. Only an explicit request such as `저장해줘` or `바로 적용해줘` sets persist true.
+- Do not clarify to ask which Wiki or workspace document holds the needed information; the retrieval phase searches for it.
+- A request to find Wiki, workspace, or web information in order to put it into the active document or a new document is that document route with its retrieval_source. It is never `clarify` or `reject`, and it is `workspace_workflow` only when the message also asks to save or apply.
+- Task mode is never a reason to `reject`.
+- Missing details (which documents, which folder, which name, where the items come from) never justify `clarify` in task mode. Route the requested operation; the executor and the approval plan resolve or ask about details.
+- When `has_markdown` is false, a request to change existing Markdown still returns `markdown_edit` (or `workspace_workflow` with document_operation `edit`). Do not return `clarify` yourself; the application asks the user to open a document.
+- `payload.active_markdown_context.has_markdown` true means a document is open in the editor; do not ask the user to open one.
 - A request to change existing Markdown keeps its document route (`markdown_edit`, or `workspace_workflow` with document_operation `edit`) even when no active Markdown is supplied. The application asks the user to open a document.
 - Folder organization never needs active Markdown. Route a folder or document tree request to `folder_organize` (or `workspace_workflow` when combined with document capabilities) regardless of the active document.
 
@@ -101,7 +110,8 @@ Representative semantic contrasts; match their effects, not their wording:
 - Asking to restate or explain an answer already present only in recent conversation is conversation_reply with no retrieval.
 - Summarizing or rewriting only the active document uses no retrieval.
 - Summarizing the active document and saving the result is workspace_workflow with persist true, shorten, replace, and target; saving does not turn a replacement into an insertion.
-- Enriching an active document with facts or evidence from internal Wiki or workspace documents uses workspace retrieval before the edit.
+- Enriching an active document with facts or evidence from internal Wiki or workspace documents uses workspace retrieval before the edit. Without a save/apply clause it is `markdown_edit` with persist false; finding a fact in the Wiki and inserting it into a section is the same.
+- Creating a new document from Wiki or web evidence without a save/apply clause is `markdown_create` with persist false.
 - Rewriting selected content in a different tone is replace at target.
 - Adding content supplied by recent conversation to the document's final position is insert_after at document_end, even when an unrelated selection is active.
 - Adding it after the active section is insert_after at target and requires a current_section target.
