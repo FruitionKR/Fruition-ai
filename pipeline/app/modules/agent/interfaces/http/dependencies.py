@@ -5,6 +5,7 @@ from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCa
 from app.modules.agent.infrastructure.backend_folder_source_reader import (
     build_folder_source_reader,
 )
+from app.modules.agent.infrastructure.backend_folder_tree_reader import build_folder_tree_reader
 from app.modules.agent.infrastructure.chat_completions_conversation_replier import (
     build_conversation_replier,
 )
@@ -87,4 +88,5 @@ def build_handle_agent_turn_use_case(
             provider=provider, model=model
         ),
         folder_source_reader=build_folder_source_reader() if feature_enabled else None,
+        folder_tree_reader=build_folder_tree_reader(),
     )

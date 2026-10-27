@@ -15,6 +15,20 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 폴더 내용 조회(`folder_lookup`)
+
+작업 탭에서 "회의록 폴더에 뭐가 있어?"처럼 폴더 내용을 물으면 라우터가 `folder_lookup`(retrieval·문서 동작 없음, persist false, 기능 없음)을 고른다.
+읽기 전용이라 run을 만들지 않고 결과 `message`로만 답한다.
+
+- 트리는 document-svc `POST /internal/agent/folder-lookup/tree`로 읽는다(사이드바 트리와 같은 범위, `X-Agent-Service-Token`).
+- 메시지에 이름이 나온 폴더를 찾는다(공백 무시, 대소문자 무시). 그 이름을 포함하는 더 긴 이름도 메시지에 함께 적혀 있으면
+  긴 이름을 고른다(`2026 회의록 폴더` → `2026 회의록`, `회의록 폴더` → `회의록`).
+  이름이 나온 폴더가 없으면 `folder_id`(사이드바에서 고른 폴더)를 쓴다.
+- 하나면 바로 아래 하위 폴더·문서 이름을 최대 50개 보여 주고 문서 내용은 채팅 탭에서 물으라고 안내한다. 여러 개면 경로를 보여 주고 되묻는다.
+  없으면 폴더 이름을 정확히 적거나 폴더를 고르라고 안내한다. 문서 본문은 읽지 않는다.
+- 트리를 읽지 못하면 "폴더 목록을 읽지 못했어요." 안내를 `message`로 돌려준다.
+- `DOCUMENT_INTERNAL_BASE_URL`·`AGENT_INTERNAL_TOKEN`은 이제 `AGENT_SKILLS_ENABLED`와 무관하게 agent command worker 기동 시 확인한다.
+
 ### 할 일 없이 `/slug`만 보낸 턴(Skill 실행)
 
 `message`가 `/slug`뿐이면(사이드바 "실행"처럼 대상만 고른 경우) 라우터를 거치지 않고 Skill 정의와 고른 대상으로 실행한다.
