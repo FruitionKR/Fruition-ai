@@ -11,7 +11,33 @@ from app.modules.markdown_edit.domain.markdown_output_contract import (
 TARGET = MarkdownEditTarget(type="whole_document", start_line=1, end_line=20)
 
 
+RUNBOOK = "# 배포 런북\n\n## 배포 전 확인\n테스트를 통과했는지 확인한다.\n\n## 롤백\n오류율이 오르면 롤백한다."
+
+
 class MarkdownOutputContractTest(unittest.TestCase):
+    def test_whole_document_list_conversion_keeps_source_headings(self) -> None:
+        cases = {
+            "checklist": ("- [ ] ", "checklist items must all start with `- [ ] `"),
+            "bullet_list": ("- ", "bullet list items must use plain bullet markers"),
+        }
+        for goal, (marker, failure) in cases.items():
+            with self.subTest(goal=goal):
+                request = MarkdownEditRequest(
+                    instruction="이 문서를 목록으로 바꿔줘",
+                    markdown=RUNBOOK,
+                    target=TARGET,
+                    edit_goal=goal,
+                )
+                converted = (
+                    f"# 배포 런북\n\n## 배포 전 확인\n{marker}테스트를 통과했는지 확인한다.\n\n"
+                    f"## 롤백\n{marker}오류율이 오르면 롤백한다."
+                )
+
+                self.assertNotIn(failure, validate_markdown_output(request, converted))
+                # 원문에 없던 제목이나 제목만 남은 출력은 여전히 목록이 아니다.
+                self.assertIn(failure, validate_markdown_output(request, converted + "\n\n## 새 제목"))
+                self.assertIn(failure, validate_markdown_output(request, "# 배포 런북\n\n## 롤백"))
+
     def test_rejects_insert_after_output_that_repeats_current_section_heading(self) -> None:
         request = MarkdownEditRequest(
             instruction="이 섹션 아래에 문제 해결 절을 추가해줘.",

@@ -155,17 +155,20 @@ def _edit_goal_shape_failures(
     nonempty_lines: list[str],
 ) -> list[str]:
     failures: list[str] = []
+    # 문서 전체를 목록으로 바꿀 때 원문 제목은 그대로 둔다. 목록 형식은 제목을 뺀 줄에만 요구한다.
+    source_headings = set(_atx_heading_lines(request.markdown))
+    item_lines = [line for line in nonempty_lines if line.strip() not in source_headings]
     if request.edit_goal == "checklist":
-        if not nonempty_lines or not all(re.match(r"^- \[ \] ", line) for line in nonempty_lines):
+        if not item_lines or not all(re.match(r"^- \[ \] ", line) for line in item_lines):
             failures.append("checklist items must all start with `- [ ] `")
     if request.edit_operation == "insert_after":
         source_heading = next(iter(_atx_heading_lines(request.markdown)), "")
         if source_heading and source_heading in _atx_heading_lines(replacement):
             failures.append("insert_after output must not repeat the current section heading")
     if request.edit_goal == "bullet_list":
-        if not nonempty_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in nonempty_lines):
+        if not item_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in item_lines):
             failures.append("bullet list items must use plain bullet markers")
-        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in nonempty_lines):
+        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in item_lines):
             failures.append("plain bullet list must not contain checkboxes")
     return failures
 
