@@ -17,13 +17,16 @@ RUNBOOK = "# 배포 런북\n\n## 배포 전 확인\n테스트를 통과했는지
 class MarkdownOutputContractTest(unittest.TestCase):
     def test_whole_document_list_conversion_keeps_source_headings(self) -> None:
         cases = {
-            "checklist": ("- [ ] ", "checklist items must all start with `- [ ] `"),
-            "bullet_list": ("- ", "bullet list items must use plain bullet markers"),
+            "checklist": ("이 문서를 목록으로 바꿔줘", "- [ ] ", "checklist items must all start with `- [ ] `"),
+            "bullet_list": ("이 문서를 목록으로 바꿔줘", "- ", "bullet list items must use plain bullet markers"),
+            "convert_format": (
+                "이 문서를 번호 목록으로 바꿔줘", "1. ", "numbered list items must start directly with `1.`, `2.`, and so on",
+            ),
         }
-        for goal, (marker, failure) in cases.items():
+        for goal, (instruction, marker, failure) in cases.items():
             with self.subTest(goal=goal):
                 request = MarkdownEditRequest(
-                    instruction="이 문서를 목록으로 바꿔줘",
+                    instruction=instruction,
                     markdown=RUNBOOK,
                     target=TARGET,
                     edit_goal=goal,
