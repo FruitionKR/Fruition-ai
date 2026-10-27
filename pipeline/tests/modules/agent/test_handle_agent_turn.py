@@ -3107,3 +3107,87 @@ class ActiveDocumentLimitTest(unittest.TestCase):
 
         self.assertEqual(result.action, "markdown_edit")
         self.assertEqual(len(editor.requests), 1)
+
+    def test_open_document_at_exact_limit_is_still_referenced(self) -> None:
+        use_case, editor = self._use_case(replace(CREATE_ROUTE, selected_skill_id=None))
+        markdown = "가" * 30_000
+
+        use_case.execute(self._request(markdown))
+
+        self.assertEqual(
+            editor.create_requests[0].reference_context["active_document"]["markdown"],  # type: ignore[index]
+            markdown,
+        )
+
+    def test_workflow_create_carries_long_document_notice(self) -> None:
+        starter = RecordingAgentRunStarter()
+        editor = RecordingMarkdownEditor(MarkdownEditResult(edit=None))  # type: ignore[arg-type]
+        route = replace(CREATE_ROUTE, action="workspace_workflow", selected_skill_id=None, persist=True)
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(route),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            agent_run_starter=starter,  # type: ignore[arg-type]
+        )
+
+        result = use_case.execute(replace(self._request(self.LARGE), workspace_id="workspace-1", user_id="user-1"))
+
+        self.assertEqual(result.action, "workspace_workflow")
+        self.assertEqual(len(starter.requests), 1)
+        self.assertNotIn("active_document", editor.create_requests[0].reference_context or {})
+        self.assertIn("위키에 올린 뒤", result.message or "")
+
+    def test_saving_existing_preview_of_long_document_is_not_blocked(self) -> None:
+        # 선택 영역으로 만든 미리보기를 선택 없이 저장하면 대상이 문서 전체가 되지만, LLM을 다시 부르지 않으므로 막지 않는다.
+        before = self.LARGE
+        after = before.replace("# 긴 문서", "# 새 제목")
+        starter = RecordingAgentRunStarter()
+        editor = RecordingMarkdownEditor(MarkdownEditResult(edit=None))  # type: ignore[arg-type]
+        route = AgentTurnRoute(
+            action="workspace_workflow", confidence=0.99, reason="save preview", edit_goal="other",
+            edit_operation="replace", edit_destination="target", document_operation="edit", persist=True,
+        )
+        repository = FixedMarkdownTurnRepository({
+            "document_id": "document-1",
+            "base_version": 3,
+            "status": "completed",
+            "result": {
+                "action": "markdown_edit",
+                "source_markdown_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                "edit": {
+                    "operation": "replace",
+                    "actual_target": {"type": "selection", "start_line": 1, "end_line": 1},
+                    "requested_target": {"type": "selection", "start_line": 1, "end_line": 1},
+                    "changed": True,
+                    "summary": "제목 변경",
+                    "replacement_markdown": "# 새 제목",
+                },
+            },
+        })
+        use_case = HandleAgentTurnUseCase(
+            router=FixedRouter(route),
+            query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+            markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+            markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+            agent_run_starter=starter,  # type: ignore[arg-type]
+            markdown_turn_repository=repository,  # type: ignore[arg-type]
+        )
+
+        result = use_case.execute(AgentTurnRequest(
+            message="이대로 저장해줘",
+            workspace_id="workspace-1",
+            user_id="user-1",
+            document_id="document-1",
+            base_version=3,
+            conversation_context=AgentConversationContext(recent_messages=(
+                ConversationMessage(role="user", content="제목 바꿔줘"),
+                ConversationMessage(role="assistant", content="편집안을 만들었습니다.", action="markdown_edit",
+                                    run_id="agent-preview-1"),
+            )),
+            active_markdown_context=ActiveMarkdownContext(markdown=before),
+        ))
+
+        self.assertEqual(result.action, "workspace_workflow")
+        self.assertEqual(editor.requests, [])
+        self.assertEqual(getattr(getattr(starter.requests[0], "content"), "markdown"), after)

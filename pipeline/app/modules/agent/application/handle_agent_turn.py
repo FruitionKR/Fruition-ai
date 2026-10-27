@@ -358,6 +358,7 @@ class HandleAgentTurnUseCase:
                 else None
             )
             content = None
+            source_notice = None
             if route.action == "workspace_workflow" and route.document_operation == "create":
                 creation_markdown = (
                     self._confirmed_preview_markdown(request, preview_run_id)
@@ -368,7 +369,7 @@ class HandleAgentTurnUseCase:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if creation_markdown is None:
                     try:
-                        create_request, _ = self._markdown_create_request(request, route, selected_skill)
+                        create_request, source_notice = self._markdown_create_request(request, route, selected_skill)
                     except FolderSourceUnavailableError as exc:
                         return _clarify_document_change(route, str(exc))
                     creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
@@ -399,8 +400,6 @@ class HandleAgentTurnUseCase:
                         route,
                         CLARIFY_INSERT_AFTER_TARGET_MESSAGE,
                     )
-                if _edit_scope_too_long(markdown_context.markdown, target):
-                    return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
                 edit = (
                     self._confirmed_preview_edit(request, preview_run_id)
                     if reuses_edit_preview
@@ -409,6 +408,9 @@ class HandleAgentTurnUseCase:
                 if reuses_edit_preview and edit is None:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if edit is None:
+                    # 이미 만든 미리보기를 저장할 때는 LLM을 부르지 않으므로 크기 상한을 보지 않는다.
+                    if _edit_scope_too_long(markdown_context.markdown, target):
+                        return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
                     reference_context = self._resolve_reference_context(request, route)
                     edit = self._markdown_edit_use_case.execute(
                         MarkdownEditRequest(
@@ -465,6 +467,8 @@ class HandleAgentTurnUseCase:
                 route=route,
                 run_id=run_id,
                 run_status=run_status,
+                # 원문 안내가 있을 때만 싣는다. 없으면 document-svc가 기본 문구를 채운다.
+                message=f"작업 계획을 만들었어요. 미리보기에서 확인해 주세요.\n\n{source_notice}" if source_notice else None,
             )
 
         if route.action == "markdown_edit":
