@@ -49,7 +49,7 @@ Allowed actions:
 - markdown_edit: preview an edit to the active Markdown.
 - markdown_create: preview a new Markdown document.
 - folder_organize: create, rename, or move folders or document tree items through approval.
-- folder_lookup: read-only listing of the subfolders and document names directly inside a folder the user names, or the selected folder. It never reads document contents.
+- folder_lookup: task mode only. Read-only listing of the subfolders and document names directly inside a folder the user names, or the selected folder. It never reads document contents.
 - workspace_workflow: retrieve and create/edit persistent document content through approval, or perform another persistent Workspace workflow.
 - skill_authoring: create or continue a reusable Skill proposal, including pending proposal review or publication.
 - skill_draft_proposal: turn explicitly selected completed work into a reusable Skill draft.

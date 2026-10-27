@@ -58,6 +58,36 @@ class FolderLookupDomainTest(unittest.TestCase):
         self.assertEqual(folder_lookup_message(matches).splitlines()[0],
                          "'2026 회의록' 폴더(회의록 / 2026 회의록)에 하위 폴더 0개, 문서 1개가 있어요.")
 
+    def test_selected_folder_wins_over_incidental_folder_word(self) -> None:
+        entries = folder_entries([*TREE, folder("f-docs", "문서")])
+
+        matches = find_folders(entries, "이 폴더에 문서 뭐 있어?", "f-2026")
+
+        self.assertEqual([entry.id for entry in matches], ["f-2026"])
+
+    def test_explicit_folder_mention_overrides_selection(self) -> None:
+        entries = folder_entries(TREE)
+
+        self.assertEqual([e.id for e in find_folders(entries, "'보관' 폴더 보여줘", "f-2026")], ["f-empty"])
+        self.assertEqual([e.id for e in find_folders(entries, "보관 폴더에 뭐 있어?", "f-2026")], ["f-empty"])
+
+    def test_selected_folder_resolves_duplicate_names(self) -> None:
+        matches = find_folders(folder_entries(TREE), "회의록 폴더에 뭐가 있어?", "f-plan-minutes")
+
+        self.assertEqual([entry.id for entry in matches], ["f-plan-minutes"])
+
+    def test_name_must_be_a_whole_word(self) -> None:
+        entries = folder_entries([folder("f-plan", "기획")])
+
+        self.assertEqual(find_folders(entries, "기획서 폴더 보여줘", None), [])
+        self.assertEqual(find_folders(entries, "기획도구에 뭐 있어?", None), [])
+        self.assertEqual([e.id for e in find_folders(entries, "기획에는 뭐 있어?", None)], ["f-plan"])
+
+    def test_spacing_variants_of_one_name_both_match(self) -> None:
+        entries = folder_entries([folder("f-a", "회의록"), folder("f-b", "회의 록")])
+
+        self.assertEqual({e.id for e in find_folders(entries, "회의록 폴더에 뭐 있어?", None)}, {"f-a", "f-b"})
+
     def test_not_found_and_empty_folder_messages(self) -> None:
         entries = folder_entries(TREE)
 
@@ -118,6 +148,27 @@ class FolderLookupTurnTest(unittest.TestCase):
         self.assertEqual(result.message, FOLDER_LOOKUP_READ_FAILED_MESSAGE)
 
 
+class FolderTreeReaderTest(unittest.TestCase):
+    def test_permission_errors_and_dropped_connections_become_messages(self) -> None:
+        from http.client import RemoteDisconnected
+        from unittest.mock import patch
+        from urllib.error import HTTPError
+
+        from app.modules.agent.domain.folder_lookup import FOLDER_LOOKUP_FORBIDDEN_MESSAGE
+        from app.modules.agent.infrastructure import backend_folder_tree_reader as module
+
+        reader = module.BackendFolderTreeReader("http://document-svc", "token")
+        cases = [
+            (HTTPError("http://document-svc", 404, "not found", {}, None), FOLDER_LOOKUP_FORBIDDEN_MESSAGE),
+            (RemoteDisconnected("closed"), FOLDER_LOOKUP_READ_FAILED_MESSAGE),
+        ]
+        for error, expected in cases:
+            with self.subTest(error=type(error).__name__), patch.object(module, "urlopen", side_effect=error):
+                with self.assertRaises(FolderLookupUnavailableError) as raised:
+                    reader.read(workspace_id="ws-1", user_id="user-1")
+                self.assertEqual(str(raised.exception), expected)
+
+
 class FolderLookupRouteContractTest(unittest.TestCase):
     def test_route_contract_accepts_folder_lookup_and_jev_offers_it_in_task_mode(self) -> None:
         request = AgentTurnRequest(message="회의록 폴더에 뭐가 있어?", mode="task")
@@ -138,3 +189,8 @@ class FolderLookupRouteContractTest(unittest.TestCase):
 
         self.assertEqual(failures + _route_failures(route, request), [])
         self.assertIn("folder_lookup", {option["action"] for option in route_options(request)})
+
+        # 채팅 탭 등 작업 탭이 아닌 턴에서는 쓰지 않는다.
+        chat_request = AgentTurnRequest(message=request.message)
+        self.assertIn("folder_lookup is available only in task mode", _route_failures(route, chat_request))
+        self.assertNotIn("folder_lookup", {option["action"] for option in route_options(chat_request)})

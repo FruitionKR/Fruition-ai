@@ -3,10 +3,12 @@
 문서 본문은 읽지 않는다. 폴더 트리는 document-svc가 사이드바와 같은 기준으로 돌려준다.
 """
 
+import re
 from dataclasses import dataclass
 
 MAX_LISTED_ITEMS = 50
 FOLDER_LOOKUP_READ_FAILED_MESSAGE = "폴더 목록을 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+FOLDER_LOOKUP_FORBIDDEN_MESSAGE = "이 워크스페이스의 폴더 목록을 읽을 수 없어요."
 FOLDER_NOT_FOUND_MESSAGE = "어느 폴더인지 찾지 못했어요. 폴더 이름을 정확히 적거나 사이드바에서 폴더를 고른 뒤 다시 요청해 주세요."
 CONTENT_QUESTION_HINT = "문서 내용이 궁금하면 채팅 탭에서 질문해 주세요."
 
@@ -45,19 +47,47 @@ def folder_entries(items: list[object], path: tuple[str, ...] = ()) -> list[Fold
 
 
 def find_folders(entries: list[FolderEntry], message: str, selected_folder_id: str | None) -> list[FolderEntry]:
-    """메시지에 이름이 나온 폴더. 더 긴 이름에 포함되는 짧은 이름('회의록' ⊂ '2026 회의록')은 뺀다.
+    """메시지가 가리키는 폴더. 더 긴 이름에 포함되는 짧은 이름('회의록' ⊂ '2026 회의록')은 뺀다.
 
-    이름이 나온 폴더가 없으면 사이드바에서 고른 폴더를 쓴다.
+    사이드바에서 폴더를 골랐으면 그 폴더가 기본이다. 메시지가 '○○ 폴더'나 따옴표로 다른 폴더를 분명히
+    가리킬 때만 바꾼다(질문에 흔히 나오는 '문서'·'자료' 같은 폴더 이름이 가로채지 않게).
     """
-    text = _normalized(message)
-    named = [entry for entry in entries if entry.name.strip() and _normalized(entry.name) in text]
-    longest = [
+    selected = [entry for entry in entries if entry.id == selected_folder_id]
+    named = _longest([entry for entry in entries if _mentions(message, entry.name, explicit=bool(selected))])
+    if selected and (not named or selected[0] in named):
+        return selected
+    return named
+
+
+def _longest(named: list[FolderEntry]) -> list[FolderEntry]:
+    return [
         entry for entry in named
-        if not any(_normalized(entry.name) in _normalized(other.name) and len(other.name) > len(entry.name) for other in named)
+        if not any(
+            _normalized(entry.name) in _normalized(other.name)
+            and len(_normalized(other.name)) > len(_normalized(entry.name))
+            for other in named
+        )
     ]
-    if longest:
-        return longest
-    return [entry for entry in entries if entry.id == selected_folder_id]
+
+
+# 이름 바로 뒤에 올 수 있는 말. 그 밖의 글자가 붙으면 다른 단어다('기획서'는 '기획' 폴더가 아니다).
+# ponytail: 자주 쓰는 조사만 둔다. '회의록안에'처럼 목록에 없는 말이 붙으면 못 찾으니 필요하면 늘린다.
+_FOLLOWERS = r"(?:폴더|에서|으로|이랑|은|는|이|가|을|를|에|의|도|로|만|과|와|랑)"
+
+
+def _mentions(message: str, name: str, *, explicit: bool) -> bool:
+    """name이 단어로 나오는지. explicit이면 '○○ 폴더'나 따옴표로 감싼 경우만 센다."""
+    chars = [re.escape(ch) for ch in name if not ch.isspace()]
+    if not chars:
+        return False
+    body = r"\s*".join(chars)
+    start = r"(?<![0-9A-Za-z가-힣])"
+    end = r"(?![0-9A-Za-z가-힣])"
+    if explicit:
+        pattern = rf"['\"‘“]\s*{body}\s*['\"’”]|{start}{body}\s*폴더"
+    else:
+        pattern = rf"{start}{body}(?:\s*{_FOLLOWERS}){{0,3}}{end}"
+    return re.search(pattern, message, re.IGNORECASE) is not None
 
 
 def folder_lookup_message(matches: list[FolderEntry]) -> str:

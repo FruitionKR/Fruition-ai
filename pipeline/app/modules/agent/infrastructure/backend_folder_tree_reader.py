@@ -1,9 +1,11 @@
+import http.client
 import json
 import os
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from app.modules.agent.domain.folder_lookup import (
+    FOLDER_LOOKUP_FORBIDDEN_MESSAGE,
     FOLDER_LOOKUP_READ_FAILED_MESSAGE,
     FolderEntry,
     FolderLookupUnavailableError,
@@ -34,7 +36,12 @@ class BackendFolderTreeReader:
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
                 value = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except HTTPError as exc:
+            if exc.code in {400, 403, 404}:
+                raise FolderLookupUnavailableError(FOLDER_LOOKUP_FORBIDDEN_MESSAGE) from exc
+            raise FolderLookupUnavailableError(FOLDER_LOOKUP_READ_FAILED_MESSAGE) from exc
+        # 연결·타임아웃(OSError), 본문 도중 끊김(HTTPException), 잘못된 본문은 다시 시도할 수 있는 실패로 본다.
+        except (OSError, http.client.HTTPException, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise FolderLookupUnavailableError(FOLDER_LOOKUP_READ_FAILED_MESSAGE) from exc
         if not isinstance(value, dict) or not isinstance(value.get("items"), list):
             raise FolderLookupUnavailableError(FOLDER_LOOKUP_READ_FAILED_MESSAGE)
