@@ -468,7 +468,7 @@ class HandleAgentTurnUseCase:
                 run_id=run_id,
                 run_status=run_status,
                 # 원문 안내가 있을 때만 싣는다. 없으면 document-svc가 기본 문구를 채운다.
-                message=f"작업 계획을 만들었어요. 미리보기에서 확인해 주세요.\n\n{source_notice}" if source_notice else None,
+                message=f"작업 계획을 만들었습니다. 미리보기에서 확인해 주세요.\n\n{source_notice}" if source_notice else None,
             )
 
         if route.action == "markdown_edit":
