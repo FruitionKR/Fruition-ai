@@ -6,11 +6,14 @@ from app.modules.agent.domain.folder_lookup import (
     FOLDER_LOOKUP_READ_FAILED_MESSAGE,
     FOLDER_NOT_FOUND_MESSAGE,
     MAX_LISTED_ITEMS,
+    FOLDER_REFERENCE_FAILED_MESSAGE,
+    MAX_FOLDER_CANDIDATES,
     FolderLookupUnavailableError,
-    find_folders,
     folder_entries,
     folder_lookup_message,
+    pick_folders,
 )
+from app.modules.agent.infrastructure.chat_completions_folder_resolver import ChatCompletionsFolderResolver
 from app.modules.agent.infrastructure.chat_completions_turn_router import _normalize_route, _route_failures
 from app.modules.agent.infrastructure.jev_turn_router import route_options
 
@@ -39,65 +42,36 @@ class FolderLookupDomainTest(unittest.TestCase):
         # 문서는 파일명이 아니라 사람이 붙인 이름으로 보여 준다.
         self.assertEqual(entries["f-minutes"].child_documents, ("킥오프",))
 
-    def test_longer_name_wins_over_contained_shorter_name(self) -> None:
-        matches = find_folders(folder_entries(TREE), "2026 회의록 폴더에 뭐 있어?", None)
+    def test_referenced_folder_wins_over_selected_folder(self) -> None:
+        entries = folder_entries(TREE)
 
-        self.assertEqual([entry.id for entry in matches], ["f-2026"])
+        self.assertEqual([e.id for e in pick_folders(entries, ["f-empty"], "f-2026")], ["f-empty"])
 
-    def test_same_name_in_two_places_asks_for_path(self) -> None:
-        matches = find_folders(folder_entries(TREE), "회의록 폴더에 뭐가 있어?", None)
+    def test_selected_folder_is_used_only_without_a_reference(self) -> None:
+        entries = folder_entries(TREE)
 
-        self.assertEqual({entry.id for entry in matches}, {"f-minutes", "f-plan-minutes"})
-        message = folder_lookup_message(matches)
+        self.assertEqual([e.id for e in pick_folders(entries, [], "f-2026")], ["f-2026"])
+        self.assertEqual(pick_folders(entries, [], None), [])
+
+    def test_two_referenced_folders_ask_with_paths(self) -> None:
+        message = folder_lookup_message(pick_folders(folder_entries(TREE), ["f-minutes", "f-plan-minutes"], None))
+
         self.assertIn("여러 개", message)
         self.assertIn("기획 / 회의록", message)
 
-    def test_uses_selected_folder_when_message_names_none(self) -> None:
-        matches = find_folders(folder_entries(TREE), "이 폴더에 뭐 있어?", "f-2026")
-
-        self.assertEqual(folder_lookup_message(matches).splitlines()[0],
-                         "'2026 회의록' 폴더(회의록 / 2026 회의록)에 하위 폴더 0개, 문서 1개가 있어요.")
-
-    def test_selected_folder_wins_over_incidental_folder_word(self) -> None:
-        entries = folder_entries([*TREE, folder("f-docs", "문서")])
-
-        matches = find_folders(entries, "이 폴더에 문서 뭐 있어?", "f-2026")
-
-        self.assertEqual([entry.id for entry in matches], ["f-2026"])
-
-    def test_explicit_folder_mention_overrides_selection(self) -> None:
-        entries = folder_entries(TREE)
-
-        self.assertEqual([e.id for e in find_folders(entries, "'보관' 폴더 보여줘", "f-2026")], ["f-empty"])
-        self.assertEqual([e.id for e in find_folders(entries, "보관 폴더에 뭐 있어?", "f-2026")], ["f-empty"])
-
-    def test_selected_folder_resolves_duplicate_names(self) -> None:
-        matches = find_folders(folder_entries(TREE), "회의록 폴더에 뭐가 있어?", "f-plan-minutes")
-
-        self.assertEqual([entry.id for entry in matches], ["f-plan-minutes"])
-
-    def test_name_must_be_a_whole_word(self) -> None:
-        entries = folder_entries([folder("f-plan", "기획")])
-
-        self.assertEqual(find_folders(entries, "기획서 폴더 보여줘", None), [])
-        self.assertEqual(find_folders(entries, "기획도구에 뭐 있어?", None), [])
-        self.assertEqual([e.id for e in find_folders(entries, "기획에는 뭐 있어?", None)], ["f-plan"])
-
-    def test_spacing_variants_of_one_name_both_match(self) -> None:
-        entries = folder_entries([folder("f-a", "회의록"), folder("f-b", "회의 록")])
-
-        self.assertEqual({e.id for e in find_folders(entries, "회의록 폴더에 뭐 있어?", None)}, {"f-a", "f-b"})
+    def test_unknown_referenced_id_is_ignored(self) -> None:
+        self.assertEqual(pick_folders(folder_entries(TREE), ["missing"], None), [])
 
     def test_not_found_and_empty_folder_messages(self) -> None:
         entries = folder_entries(TREE)
 
-        self.assertEqual(folder_lookup_message(find_folders(entries, "없는 폴더에 뭐 있어?", None)), FOLDER_NOT_FOUND_MESSAGE)
-        self.assertEqual(folder_lookup_message(find_folders(entries, "보관 폴더 보여줘", None)), "'보관' 폴더는 비어 있어요.")
+        self.assertEqual(folder_lookup_message(pick_folders(entries, [], None)), FOLDER_NOT_FOUND_MESSAGE)
+        self.assertEqual(folder_lookup_message(pick_folders(entries, ["f-empty"], None)), "'보관' 폴더는 비어 있어요.")
 
     def test_caps_listed_items(self) -> None:
         big = folder("f-big", "자료", *(document(f"문서{index}") for index in range(MAX_LISTED_ITEMS + 3)))
 
-        message = folder_lookup_message(find_folders(folder_entries([big]), "자료 폴더", None))
+        message = folder_lookup_message(pick_folders(folder_entries([big]), ["f-big"], None))
 
         self.assertIn(f"- 문서{MAX_LISTED_ITEMS - 1}", message)
         self.assertNotIn(f"- 문서{MAX_LISTED_ITEMS}\n", message)
@@ -122,18 +96,41 @@ class FakeTreeReader:
         return folder_entries(self.result)
 
 
+class FakeResolver:
+    def __init__(self, ids: list[str] | Exception) -> None:
+        self.ids = ids
+        self.calls: list[tuple[str, int]] = []
+
+    def resolve(self, request: AgentTurnRequest, folders):
+        self.calls.append((request.message, len(folders)))
+        if isinstance(self.ids, Exception):
+            raise self.ids
+        return self.ids
+
+
 class FolderLookupTurnTest(unittest.TestCase):
-    def _execute(self, reader: FakeTreeReader):
+    def _execute(self, reader: FakeTreeReader, resolver: FakeResolver | None = None, folder_id: str | None = None):
         use_case = HandleAgentTurnUseCase(
             router=FixedRouter(),
             query_use_case=None,  # type: ignore[arg-type]
             markdown_edit_use_case=None,  # type: ignore[arg-type]
             markdown_create_use_case=None,  # type: ignore[arg-type]
             folder_tree_reader=reader,
+            folder_reference_resolver=resolver or FakeResolver(["f-2026"]),
         )
         return use_case.execute(AgentTurnRequest(
-            message="2026 회의록 폴더에 뭐가 있어?", workspace_id="ws-1", user_id="user-1", mode="task",
+            message="2026 회의록 폴더에 뭐가 있어?", workspace_id="ws-1", user_id="user-1", mode="task", folder_id=folder_id,
         ))
+
+    def test_resolver_failure_returns_message(self) -> None:
+        result = self._execute(FakeTreeReader(TREE), FakeResolver(FolderLookupUnavailableError(FOLDER_REFERENCE_FAILED_MESSAGE)))
+
+        self.assertEqual(result.message, FOLDER_REFERENCE_FAILED_MESSAGE)
+
+    def test_falls_back_to_selected_folder_when_nothing_is_referenced(self) -> None:
+        result = self._execute(FakeTreeReader(TREE), FakeResolver([]), folder_id="f-empty")
+
+        self.assertEqual(result.message, "'보관' 폴더는 비어 있어요.")
 
     def test_lists_named_folder_contents(self) -> None:
         result = self._execute(FakeTreeReader(TREE))
@@ -146,6 +143,48 @@ class FolderLookupTurnTest(unittest.TestCase):
 
         self.assertEqual(result.action, "folder_lookup")
         self.assertEqual(result.message, FOLDER_LOOKUP_READ_FAILED_MESSAGE)
+
+
+class StubJsonClient:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.payloads: list[dict] = []
+
+    def complete_json(self, system_prompt: str, user_prompt: str):
+        import json
+
+        self.payloads.append(json.loads(user_prompt))
+        return self.response
+
+
+class ChatCompletionsFolderResolverTest(unittest.TestCase):
+    def test_maps_short_keys_back_to_folder_ids_and_drops_unknown_keys(self) -> None:
+        client = StubJsonClient({"folders": ["f2", "f99", 3]})
+        resolver = ChatCompletionsFolderResolver(client, "system")  # type: ignore[arg-type]
+        entries = folder_entries(TREE)
+
+        ids = resolver.resolve(AgentTurnRequest(message="2026 회의록 폴더에 뭐 있어?"), entries)
+
+        self.assertEqual(ids, [entries[1].id])
+        sent = client.payloads[0]["folders"]
+        self.assertEqual(sent[1], {"key": "f2", "name": entries[1].name, "path": " / ".join(entries[1].path)})
+        # 실제 폴더 id는 모델에 보내지 않는다.
+        self.assertNotIn(entries[1].id, json_text(client.payloads[0]))
+
+    def test_caps_candidates_and_rejects_malformed_output(self) -> None:
+        many = folder_entries([folder(f"id-{i}", f"폴더{i}") for i in range(MAX_FOLDER_CANDIDATES + 5)])
+        client = StubJsonClient({"folders": "f1"})
+        resolver = ChatCompletionsFolderResolver(client, "system")  # type: ignore[arg-type]
+
+        with self.assertRaises(FolderLookupUnavailableError):
+            resolver.resolve(AgentTurnRequest(message="폴더1에 뭐 있어?"), many)
+        self.assertEqual(len(client.payloads[0]["folders"]), MAX_FOLDER_CANDIDATES)
+
+
+def json_text(value: object) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False)
 
 
 class FolderTreeReaderTest(unittest.TestCase):

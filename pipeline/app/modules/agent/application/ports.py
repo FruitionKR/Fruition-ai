@@ -35,3 +35,12 @@ class FolderTreeReaderPort(Protocol):
     def read(self, *, workspace_id: str, user_id: str) -> list[FolderEntry]:
         """사용자 기준 워크스페이스 폴더 목록(바로 아래 항목 이름 포함). 읽을 수 없으면 FolderLookupUnavailableError를 낸다."""
         ...
+
+
+class FolderReferenceResolverPort(Protocol):
+    def resolve(self, request: AgentTurnRequest, folders: list[FolderEntry]) -> list[str]:
+        """메시지(와 최근 대화)가 지목한 폴더 id 목록. 지목이 없으면 빈 목록.
+
+        판단하지 못하면 FolderLookupUnavailableError를 낸다.
+        """
+        ...
