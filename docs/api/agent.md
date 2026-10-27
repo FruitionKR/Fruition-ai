@@ -21,7 +21,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 작업 탭(`mode=task`) 턴에서만 쓴다. 읽기 전용이라 run을 만들지 않고 결과 `message`로만 답한다.
 
 - 트리는 document-svc `POST /internal/agent/folder-lookup/tree`로 읽는다(사이드바 트리와 같은 범위, `X-Agent-Service-Token`).
-- 메시지가 어느 폴더를 지목했는지는 이번 턴의 LLM이 판단한다(`prompts/agent_folder_lookup.system.md`). 폴더 이름·경로 목록
+- 메시지가 어느 폴더를 지목했는지는 `JEV_FOLDER_LOOKUP_ENABLED`가 켜져 있으면 Jev가, 아니면(또는 Jev 실패·선택지 255개 초과 시) 이번 턴의 LLM이
+  판단한다(`prompts/agent_folder_lookup.system.md`, [ADR-0027](../adr/0027-jev-selective-judge.md)). LLM 판단은 폴더 이름·경로 목록
   (최대 500개, 폴더 id 대신 `f1` 같은 짧은 키)과 메시지·최근 대화 6개를 보내고 지목한 폴더 키를 받는다. 조사·따옴표·띄어쓰기와
   상관없이 뜻으로 판단하고, 질문 속 일반 단어(`회의록 폴더에 문서 뭐 있어?`의 `문서`)나 문서 이름(`기획서`)은 폴더로 보지 않는다.
   목록에 없는 키는 버린다.

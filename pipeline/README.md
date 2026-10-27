@@ -48,13 +48,14 @@ QUERY_EVALUATOR_MODE=web
 QUERY_EVALUATOR_MAX_ATTEMPTS=2
 ```
 
-라우팅·RAG 근거 선택·개념 병합은 TypeSafe Jev를 선택적으로 쓸 수 있습니다([ADR-0027](../docs/adr/0027-jev-selective-judge.md)). 기능별 설정을 켜고 `TYPESAFE_API_KEY`가 있을 때만 Jev를 호출하며, 꺼져 있거나 키가 없거나 호출이 실패하면 기존 경로로 처리합니다. 크레딧 소진(402)·인증 오류(401/403)를 받으면 `JEV_BLOCK_SECONDS` 동안 Jev 호출을 건너뜁니다.
+라우팅·RAG 근거 선택·개념 병합·폴더 지목은 TypeSafe Jev를 선택적으로 쓸 수 있습니다([ADR-0027](../docs/adr/0027-jev-selective-judge.md)). 기능별 설정을 켜고 `TYPESAFE_API_KEY`가 있을 때만 Jev를 호출하며, 꺼져 있거나 키가 없거나 호출이 실패하면 기존 경로로 처리합니다. 크레딧 소진(402)·인증 오류(401/403)를 받으면 `JEV_BLOCK_SECONDS` 동안 Jev 호출을 건너뜁니다.
 
 ```env
 TYPESAFE_API_KEY=
 JEV_ROUTING_ENABLED=false
 JEV_EVIDENCE_ENABLED=false
 JEV_CONCEPT_MERGE_ENABLED=false
+JEV_FOLDER_LOOKUP_ENABLED=false
 JEV_TIMEOUT_SECONDS=30
 JEV_BLOCK_SECONDS=600
 ```

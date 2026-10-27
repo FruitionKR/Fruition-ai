@@ -233,3 +233,57 @@ class FolderLookupRouteContractTest(unittest.TestCase):
         chat_request = AgentTurnRequest(message=request.message)
         self.assertIn("folder_lookup is available only in task mode", _route_failures(route, chat_request))
         self.assertNotIn("folder_lookup", {option["action"] for option in route_options(chat_request)})
+
+
+class FakeJevClient:
+    def __init__(self, pick) -> None:
+        self.pick = pick
+        self.questions: list[dict] = []
+
+    def choose(self, state: str, questions: dict) -> dict:
+        from app.core.jev_client import JevUnavailable
+
+        self.questions.append(questions)
+        if isinstance(self.pick, Exception):
+            raise self.pick
+        criteria = questions["folder"]["criteria"]
+        key = next(k for k, text in criteria.items() if self.pick(k, text))
+        return {"folder": {"choice": key, "confidence": 0.9}}
+
+
+class JevFolderResolverTest(unittest.TestCase):
+    def _resolver(self, client: FakeJevClient, fallback_ids: list[str] | None = None):
+        from app.modules.agent.infrastructure.jev_folder_resolver import JevFolderResolver
+
+        fallback = FakeResolver(fallback_ids or ["fallback"])
+        return JevFolderResolver(client, fallback), fallback  # type: ignore[arg-type]
+
+    def test_offers_each_folder_a_same_name_group_and_no_reference(self) -> None:
+        from app.modules.agent.infrastructure.jev_folder_resolver import folder_choices
+
+        choices = folder_choices(folder_entries(TREE))
+
+        self.assertEqual(choices["none"][1], ())
+        groups = [ids for text, ids in choices.values() if "2곳 전부" in text]
+        self.assertEqual(groups, [("f-minutes", "f-plan-minutes")])
+        self.assertEqual(len(choices), 1 + len(folder_entries(TREE)) + 1)
+
+    def test_group_choice_returns_every_same_name_folder_and_none_returns_empty(self) -> None:
+        group, _ = self._resolver(FakeJevClient(lambda key, text: "2곳 전부" in text))
+        nothing, _ = self._resolver(FakeJevClient(lambda key, text: key == "none"))
+        request = AgentTurnRequest(message="회의록 폴더에 뭐 있어?")
+
+        self.assertEqual(group.resolve(request, folder_entries(TREE)), ["f-minutes", "f-plan-minutes"])
+        self.assertEqual(nothing.resolve(request, folder_entries(TREE)), [])
+
+    def test_falls_back_to_llm_when_jev_fails_or_choices_exceed_limit(self) -> None:
+        from app.core.jev_client import JevUnavailable
+
+        failing, fallback = self._resolver(FakeJevClient(JevUnavailable("down")))
+        self.assertEqual(failing.resolve(AgentTurnRequest(message="회의록"), folder_entries(TREE)), ["fallback"])
+
+        client = FakeJevClient(lambda key, text: True)
+        many, fallback = self._resolver(client)
+        entries = folder_entries([folder(f"id-{i}", f"폴더{i}") for i in range(300)])
+        self.assertEqual(many.resolve(AgentTurnRequest(message="폴더1"), entries), ["fallback"])
+        self.assertEqual(client.questions, [])
