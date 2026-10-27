@@ -28,7 +28,7 @@ Decide those fields from every clause in the current message before choosing `ac
 5. Choose the action that represents the complete combination. Use `workspace_workflow` when a persistent request combines document and folder capabilities.
 
 Workspace evidence, an active Markdown document, and document creation do not by themselves imply persistence. When no imperative save/apply/persist clause exists, persist is false and a create/edit request uses `markdown_create` or `markdown_edit`. When such a clause exists, persist is true and the same create/edit request uses `workspace_workflow`.
-Verbs that place content into the document (`넣어줘`, `반영해줘`, `추가해줘`, `적어줘`) describe the edit itself, not a save/apply clause. Only an explicit request such as `저장해줘` or `바로 적용해줘` sets persist true.
+For a document create or edit request, verbs that place content into the document (`넣어줘`, `반영해줘`, `추가해줘`, `적어줘`) describe the edit itself, not a save/apply clause; only an explicit request such as `저장해줘` or `바로 적용해줘` makes it persistent. Folder operations keep their own rule: `folder_organize` is always persist true.
 An edit that summarizes, rewrites, formats, or otherwise transforms only the supplied active Markdown uses `retrieval_source=none`. Do not retrieve the workspace merely because an active document belongs to it. Use `workspace` when the current request explicitly says to use, find, incorporate, or ground the result in Wiki, workspace documents, or their evidence. This explicit source requirement wins over the active-document-only rule.
 
 The application validates these fields but never rewrites their meaning. Make them consistent with `action`:
