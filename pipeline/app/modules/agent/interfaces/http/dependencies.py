@@ -8,6 +8,7 @@ from app.modules.agent.infrastructure.backend_folder_source_reader import (
 from app.modules.agent.infrastructure.chat_completions_conversation_replier import (
     build_conversation_replier,
 )
+from app.modules.agent.infrastructure.chat_completions_task_clarifier import build_task_clarifier
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
     build_agent_turn_router,
 )
@@ -87,4 +88,5 @@ def build_handle_agent_turn_use_case(
             provider=provider, model=model
         ),
         folder_source_reader=build_folder_source_reader() if feature_enabled else None,
+        task_clarifier=build_task_clarifier(provider=provider, model=model),
     )

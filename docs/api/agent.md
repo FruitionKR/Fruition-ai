@@ -15,6 +15,22 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 작업 탭 안내 종류(`notice_kind`)
+
+라우트의 선택 항목 `notice_kind`는 사용자에게 무엇을 알릴지 정한다. 없으면(`null`) 기존 문구를 쓴다.
+
+| action | notice_kind | 결과 `message` |
+|---|---|---|
+| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(답변·잡담) |
+| | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
+| | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
+| `reject` | `sensitive_data`·`unsupported`·`policy` | 민감한 값·워크스페이스 밖 작업·규칙 우회별 거절 이유 |
+| `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
+
+- 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
+- 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 3종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
+
 ### 할 일 없이 `/slug`만 보낸 턴(Skill 실행)
 
 `message`가 `/slug`뿐이면(사이드바 "실행"처럼 대상만 고른 경우) 라우터를 거치지 않고 Skill 정의와 고른 대상으로 실행한다.

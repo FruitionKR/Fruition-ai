@@ -6,6 +6,7 @@ from dataclasses import replace
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
+    TaskClarifierPort,
     FolderSourceReaderPort,
 )
 from app.modules.agent.domain.entities import (
@@ -87,6 +88,17 @@ CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
     "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
+CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
+CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
+REJECT_MESSAGES = {
+    "sensitive_data": "비밀번호·개인정보 같은 민감한 값은 문서에 넣어 드릴 수 없어요. 꼭 필요하면 직접 입력해 주세요.",
+    "unsupported": "메일 발송처럼 워크스페이스 밖에서 일어나는 작업은 아직 지원하지 않아요.",
+    "policy": "규칙을 우회하거나 권한을 바꾸는 요청은 처리할 수 없어요.",
+}
+REJECT_DEFAULT_MESSAGE = "요청한 작업은 현재 지원 범위에서 처리할 수 없습니다."
+SKILL_OFF_NOTICE = "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."
+# 문서 작업 결과에 메시지가 없을 때 document-svc가 채우는 기본 문구와 같다.
+WORKFLOW_DEFAULT_MESSAGE = "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요."
 DEFERRED_TEMPLATE_MESSAGE = "template 기반 전체 문서 재구성은 이후 단계에서 다루겠습니다. 현재는 선택 영역, 현재 섹션, 또는 문서 전체의 일반 편집만 지원합니다."
 CLARIFY_INSERT_AFTER_TARGET_MESSAGE = "내용을 추가할 현재 섹션을 선택한 뒤 다시 요청해 주세요."
 CLARIFY_SKILL_MESSAGE = "이 요청에 적용할 Skill을 선택하거나 Skill 없이 계속해 주세요."
@@ -140,7 +152,9 @@ class HandleAgentTurnUseCase:
         event_publisher: QueryEventPublisherPort | None = None,
         folder_source_reader: FolderSourceReaderPort | None = None,
         on_chat_answer: Callable[[], None] | None = None,
+        task_clarifier: TaskClarifierPort | None = None,
     ) -> None:
+        self._task_clarifier = task_clarifier
         self._on_chat_answer = on_chat_answer
         self._event_publisher = event_publisher
         self._router = router
@@ -162,7 +176,7 @@ class HandleAgentTurnUseCase:
             raise ValueError("message is required.")
 
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
-        result = self._execute(request)
+        result = _with_skill_off_notice(self._execute(request))
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
@@ -459,7 +473,15 @@ class HandleAgentTurnUseCase:
             return self._execute_markdown_edit(request, route, selected_skill)
 
         if route.action == "clarify":
-            if is_task_mode(request) and route.edit_goal is None:
+            if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
+                message = (
+                    self._task_clarifier.ask(request, route)
+                    if self._task_clarifier is not None
+                    else CLARIFY_DETAILS_FALLBACK_MESSAGE
+                )
+            elif is_task_mode(request) and route.edit_goal is None and route.notice_kind == "web_disabled":
+                message = CLARIFY_WEB_DISABLED_MESSAGE
+            elif is_task_mode(request) and route.edit_goal is None:
                 message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
             elif is_task_mode(request) and not _has_active_markdown(request):
                 message = CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
@@ -475,7 +497,7 @@ class HandleAgentTurnUseCase:
             return AgentTurnResult(
                 action="reject",
                 route=route,
-                message="요청한 작업은 현재 지원 범위에서 처리할 수 없습니다.",
+                message=REJECT_MESSAGES.get(route.notice_kind or "", REJECT_DEFAULT_MESSAGE),
             )
 
         if route.action == "conversation_reply":
@@ -1332,6 +1354,18 @@ def _is_ambiguous_auto(route: AgentTurnRoute, skill: Skill | None) -> bool:
         and version.result_mode == "auto"
         and route.confidence < AUTO_RESULT_MODE_MIN_CONFIDENCE
     )
+
+
+def _with_skill_off_notice(result: AgentTurnResult) -> AgentTurnResult:
+    """Skill 사용이 꺼져 있어 Skill 없이 처리한 문서 작업이면 결과 메시지 끝에 알린다."""
+    if result.route.notice_kind != "skill_off" or result.action not in {
+        "markdown_edit",
+        "markdown_create",
+        "workspace_workflow",
+    }:
+        return result
+    base = result.message or (WORKFLOW_DEFAULT_MESSAGE if result.action == "workspace_workflow" else "")
+    return replace(result, message=f"{base}\n\n{SKILL_OFF_NOTICE}" if base else SKILL_OFF_NOTICE)
 
 
 def _has_active_markdown(request: AgentTurnRequest) -> bool:

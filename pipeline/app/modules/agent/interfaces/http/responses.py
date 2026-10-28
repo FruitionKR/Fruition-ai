@@ -28,6 +28,7 @@ def _to_response(result: AgentTurnResult) -> AgentTurnResponse:
             document_operation=result.route.document_operation,
             persist=result.route.persist,
             required_capabilities=list(result.route.required_capabilities),
+            notice_kind=result.route.notice_kind,
         ),
         message=result.message,
         chat=query_to_response(result.query_answer) if result.query_answer else None,
