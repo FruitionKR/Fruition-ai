@@ -24,7 +24,8 @@ from app.modules.query.infrastructure.query_event_publisher import NoOpQueryEven
 from app.modules.query.infrastructure.rule_based_query_rewriter import RuleBasedQueryRewriter
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.query.infrastructure.web_search import build_web_search
-from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
+from app.modules.wiki_embedding.infrastructure.embedding_model import embedding_model_from_env
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS
 
 
 def build_answer_query_use_case(
@@ -124,13 +125,11 @@ def _build_embedding_search(text_search: Bm25Searcher):
 
 @lru_cache(maxsize=1)
 def _stored_embedding_search() -> StoredWikiPageEmbeddingSearch:
-    if os.environ.get("EMBEDDING_SERVICE_URL"):
-        # 임베딩 서버는 짧은 텍스트만 받는다. 저장 벡터가 없는 긴 문서는 질문 시점에 임베딩하지 않는다.
-        return StoredWikiPageEmbeddingSearch(
-            embedding_model=RemoteEmbeddingModel.from_env(),
-            online_text_limit=MAX_TEXT_CHARS,
-        )
-    return StoredWikiPageEmbeddingSearch()
+    # 임베딩 서버는 짧은 텍스트만 받는다. 저장 벡터가 없는 긴 문서는 질문 시점에 임베딩하지 않는다.
+    return StoredWikiPageEmbeddingSearch(
+        embedding_model=embedding_model_from_env(),
+        online_text_limit=MAX_TEXT_CHARS if os.environ.get("EMBEDDING_SERVICE_URL") else None,
+    )
 
 
 def _float_env(name: str, default: float) -> float:

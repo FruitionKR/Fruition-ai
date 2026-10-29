@@ -343,8 +343,10 @@ class LinkBuilder:
             if resolution.get("decision") != "link_to":
                 continue
             source = resolution.get("incoming_slug")
-            for target in resolution.get("link_targets", []):
-                target = slug_map.get(target, target)
+            # 대상별 확신도(Jev 판정)는 병합 반영 전 대상 slug로 찾고, 없으면 판정 전체 확신도를 쓴다.
+            confidences = resolution.get("link_confidences") or {}
+            for original in resolution.get("link_targets", []):
+                target = slug_map.get(original, original)
                 key = frozenset((source, target))
                 if not source or not target or source == target or key in seen:
                     continue
@@ -354,7 +356,7 @@ class LinkBuilder:
                         "source": f"concept:{source}",
                         "target": f"concept:{target}",
                         "relation": "concept_related_to",
-                        "confidence": resolution.get("confidence"),
+                        "confidence": confidences.get(original, resolution.get("confidence")),
                         "decided_by": "concept_resolution",
                     }
                 )

@@ -485,6 +485,38 @@ def test_link_to_resolution_keeps_the_concept_and_links_it_through_the_ingest_st
     }
 
 
+def test_link_confidences_of_validated_targets_reach_concept_links() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트", "aliases": []}],
+        "evidence_units": [],
+    }
+    existing = [
+        {"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."},
+        {"slug": "replica-set", "title": "ReplicaSet", "definition": "파드 복제본 수를 유지한다."},
+    ]
+    raw = {"resolutions": [{
+        "incoming_slug": "rolling-update",
+        "decision": "link_to",
+        "canonical_slug": "deployment",
+        "link_targets": ["deployment", "replica-set", "missing"],
+        "link_confidences": {"deployment": 0.8, "replica-set": 0.6, "missing": 0.9},
+    }]}
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    links = LinkBuilder().build(apply_concept_resolutions(normalized, resolutions, existing))
+
+    assert resolutions[0]["link_confidences"] == {"deployment": 0.8, "replica-set": 0.6}
+    assert {
+        link["target"]: link["confidence"] for link in links if link["relation"] == "concept_related_to"
+    } == {"concept:deployment": 0.8, "concept:replica-set": 0.6}
+
+
 def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
     from app.modules.wiki_generation.infrastructure.concept_resolution import (
         apply_concept_resolutions,

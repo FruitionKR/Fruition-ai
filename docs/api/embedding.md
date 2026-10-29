@@ -15,6 +15,6 @@
 
 ## 연동
 
-- 인바운드 호출자: ai-svc Query·Agent(`RemoteEmbeddingModel`, `EMBEDDING_SERVICE_URL`이 설정된 경우). 요청당 64개를 넘으면 나눠 보내고, 서버 오류(5xx)와 연결 실패만 한 번 재시도하며(타임아웃 제외), 응답 `model`이 저장 벡터의 모델 이름과 다르면 실패시킵니다. 요청 타임아웃은 호출자 환경변수 `EMBEDDING_TIMEOUT_SECONDS`(기본 10초, 0 이하·숫자 아님은 기동 실패)입니다.
+- 인바운드 호출자: ai-svc Query·Agent, ingest Jev 개념 병합의 후보 추림(`RemoteEmbeddingModel`, `EMBEDDING_SERVICE_URL`이 설정된 경우). 요청당 64개를 넘으면 나눠 보내고, 서버 오류(5xx)와 연결 실패만 한 번 재시도하며(타임아웃 제외), 응답 `model`이 저장 벡터의 모델 이름과 다르면 실패시킵니다. 요청 타임아웃은 호출자 환경변수 `EMBEDDING_TIMEOUT_SECONDS`(기본 10초, 0 이하·숫자 아님은 기동 실패)입니다.
 - 아웃바운드 호출: 없음.
 - 미연동 표시: 배포 매니페스트(Fruition-flatform)와 `EMBEDDING_SERVICE_URL` 설정 전에는 호출자가 없습니다.

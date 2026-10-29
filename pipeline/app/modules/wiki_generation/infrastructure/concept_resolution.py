@@ -65,6 +65,12 @@ def normalize_resolution_output(
             canonical_slug = incoming_slug
         if decision != "merge_into" and canonical_slug != incoming_slug:
             canonical_slug = incoming_slug
+        # 연결 대상별 확신도(Jev P(related))는 검증을 통과한 연결 대상의 것만 남긴다.
+        link_confidences = {
+            slugify(str(target)): _float_or_zero(value)
+            for target, value in (item.get("link_confidences") or {}).items()
+        }
+        link_confidences = {target: link_confidences[target] for target in link_targets if target in link_confidences}
 
         normalized.append(
             {
@@ -73,6 +79,7 @@ def normalize_resolution_output(
                 "canonical_slug": canonical_slug,
                 "alias_to_add": item.get("alias_to_add"),
                 "link_targets": link_targets,
+                "link_confidences": link_confidences,
                 "confidence": _float_or_zero(item.get("confidence")),
                 "reason": item.get("reason", ""),
             }

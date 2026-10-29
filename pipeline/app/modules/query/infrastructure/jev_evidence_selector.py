@@ -17,12 +17,10 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
-import tiktoken
-
-from app.core.jev_client import JEV_MODEL, JevClient, JevUnavailable, choice_probability
+from app.core.jev_batches import MAX_BATCH_TOKENS, token_batches
+from app.core.jev_client import JevClient, JevUnavailable, choice_probability
 from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.query.application.ports import (
     EmbeddingSearchPort,
@@ -44,9 +42,6 @@ EVIDENCE_POLICY = """질문에 답하는 데 직접 필요한 근거를 선택�
 EVIDENCE_CRITERIA = {"include": "질문에 직접 필요한 근거", "exclude": "필요한 근거가 아님"}
 # 평가 후보 점수(prepare_jev_controlled.common_candidates)의 BGE-M3 비중이다.
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
-# Jev는 state와 가장 긴 질문 합계에 32k 제한이 있어 tokenizer 차이 여유를 둔다.
-MAX_BATCH_TOKENS = 28_000
-BATCH_TOKEN_MARGIN = 64
 logger = logging.getLogger(__name__)
 
 
@@ -172,21 +167,12 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         ]
 
     def _batches(self, question: str, candidates: list[_Candidate]) -> list[list[_Candidate]]:
-        """평가 실행기(run_jev_controlled.batches)와 같이 요청 토큰을 추정해 묶는다."""
-        header = _tokens(_request(question, [])) + BATCH_TOKEN_MARGIN
-        batches: list[list[_Candidate]] = []
-        current: list[_Candidate] = []
-        estimate = header
-        for candidate in candidates:
-            size = _tokens(_request(question, [candidate])) + BATCH_TOKEN_MARGIN
-            if current and (len(current) >= self._max_batch_candidates or estimate + size > self._max_batch_tokens):
-                batches.append(current)
-                current, estimate = [], header
-            current.append(candidate)
-            estimate += size
-        if current:
-            batches.append(current)
-        return batches
+        return token_batches(
+            candidates,
+            lambda batch: _request(question, batch),
+            max_tokens=self._max_batch_tokens,
+            max_items=self._max_batch_candidates,
+        )
 
     def _judge_batch(self, question: str, batch: list[_Candidate]) -> dict[str, float]:
         request = _request(question, batch)
@@ -215,21 +201,6 @@ def _request(question: str, batch: list[_Candidate]) -> dict[str, Any]:
             for candidate in batch
         },
     }
-
-
-def _tokens(request: dict[str, Any]) -> int:
-    """평가 실행기와 같이 model을 포함한 요청 본문 전체를 cl100k_base로 센다."""
-    try:
-        encoding = _encoding()
-    except Exception as exc:  # tokenizer 파일을 못 읽으면 크기를 알 수 없어 Jev를 쓰지 않는다.
-        raise JevUnavailable(f"tokenizer를 불러오지 못했습니다: {type(exc).__name__}") from None
-    body = {"model": JEV_MODEL, **request}
-    return len(encoding.encode(json.dumps(body, ensure_ascii=False, sort_keys=True)))
-
-
-@lru_cache(maxsize=1)
-def _encoding() -> tiktoken.Encoding:
-    return tiktoken.get_encoding("cl100k_base")
 
 
 def _snippet(rank: int, unit: WikiEmbeddingUnit) -> EvidenceSnippet:
