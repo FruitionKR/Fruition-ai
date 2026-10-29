@@ -36,6 +36,9 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
   - 정의가 없는 개념은 보내지 않는다.
   - 병합 대상이 다시 병합되는 연쇄는 버린다.
   - missing hint가 있으면 기존 LLM 결과의 `hint_resolutions`만 쓴다.
+- **Skill 의도 분류(추가):** Skill을 만들 때 지원 여부·Skill 종류·참고 방식·원문 필요 여부를 고른다. 설정은 `JEV_SKILL_INTENT_ENABLED`(기본 `false`)이고 대체 경로는 기존 LLM 분류(`prompts/skill_intent_classifier.system.md`)다. Skill 본문 작성은 계속 LLM이 한다.
+  - 선택지는 분류 결과 계약(`author_skill._intent_result`)을 통과하는 조합이다. 참고 문서가 없으면 21개, 1개면 48개, 2개 이상이면 40개다(고정 양식은 참고 문서가 정확히 1개일 때만 연다). 원문 필요 여부는 규칙(`inferred_requires_source`)으로 정해지지 않는 `document-create`일 때만 true를 둔다. `template`은 규칙이 정해 분류값을 쓰지 않는다. 라우팅과 같이 고정 무작위 순서로 섞고 응답 예산은 15초다.
+  - 개발 중 실측(2026-10-27, 문장마다 1회): 프롬프트 예시 12문장 LLM(Claude Haiku 4.5) 12/12·Jev 12/12, 예시 밖 5문장 LLM 5/5·Jev 4/5. Jev 오답은 표 변환 Skill에 `template`을 더한 건이다.
 
 ## Alternatives
 - **Jev로 완전히 교체:** 크레딧이 없거나 장애가 나면 라우팅·질의·ingest가 함께 멈춘다. clarify와 hint 판정은 Jev가 대체하지 못한다.
