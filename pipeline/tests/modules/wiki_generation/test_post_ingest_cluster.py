@@ -114,3 +114,90 @@ reason: 이미 쌓임
     assert clusters["cogging-torque"]["promotion"]["reason"] == "여러 근거가 쌓임"
     assert clusters["slot-opening"].get("promotion") is None
     assert "target: concept:back-electromotive-force" in artifact["active_markdown"]
+
+
+class FakeConceptJudge:
+    def __init__(self, resolutions) -> None:
+        self.resolutions = resolutions
+        self.calls = []
+
+    def judge_concepts(self, concepts, pool):
+        self.calls.append((concepts, pool))
+        return self.resolutions
+
+
+def test_post_ingest_marks_cluster_judged_same_as_core_concept() -> None:
+    existing = """# Active Meaning Clusters
+
+## cluster: back-emf
+
+type: term_cluster
+representative: Back EMF
+
+### Evidence Claims
+- claim_a_001: Back EMF는 속도에 비례한다. [doc-a:B0001]
+
+## cluster: gegen-emk
+
+type: term_cluster
+representative: Gegen-EMK
+
+### Evidence Claims
+- claim_a_002: Gegen-EMK는 회전 속도에 비례하는 전압이다. [doc-a:B0002]
+"""
+    normalized = {
+        "document": {"document_id": "doc-b"},
+        "section_candidates": [],
+        "mentions": [],
+        "unresolved_related_concept_hints": [],
+        "evidence_units": [],
+    }
+    core_concepts = [
+        {"slug": "back-emf", "title": "Back EMF", "aliases": [], "definition": "속도에 비례하는 전압"},
+        {"slug": "back-electromotive-force", "title": "역기전력", "aliases": [], "definition": "회전자가 만드는 전압"},
+        {"slug": "torque", "title": "토크", "aliases": [], "definition": ""},
+    ]
+    # 판정은 핵심 개념(incoming)별로 나오고 병합 대상(canonical_slug)이 클러스터다.
+    judge = FakeConceptJudge(
+        {
+            "back-electromotive-force": {
+                "incoming_slug": "back-electromotive-force",
+                "decision": "merge_into",
+                "canonical_slug": "gegen-emk",
+            }
+        }
+    )
+
+    with patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_meaning_cluster_candidates",
+        return_value=[],
+    ), patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_cluster_promotions",
+        return_value={},
+    ):
+        artifact = build_post_ingest_cluster_artifact(
+            completion=MagicMock(),
+            normalized=normalized,
+            existing_active_markdown=existing,
+            user_id="user-1",
+            workspace_id="workspace-1",
+            concept_update_decisions=[],
+            core_relation_decisions=[],
+            core_concepts=core_concepts,
+            concept_judge=judge,
+        )
+
+    # 이름이 일치한 핵심 개념·클러스터와 정의 없는 핵심 개념은 판정하지 않는다.
+    [(concepts, pool)] = judge.calls
+    assert [concept["slug"] for concept in concepts] == ["back-electromotive-force"]
+    assert pool == [
+        {
+            "slug": "gegen-emk",
+            "title": "Gegen-EMK",
+            "aliases": [],
+            "definition": "Gegen-EMK Gegen-EMK는 회전 속도에 비례하는 전압이다.",
+        }
+    ]
+    clusters = {cluster["id"]: cluster for cluster in artifact["clusters"]}
+    assert clusters["back-emf"]["promotion"]["target"] == "back-emf"
+    assert clusters["gegen-emk"]["promotion"]["target"] == "back-electromotive-force"

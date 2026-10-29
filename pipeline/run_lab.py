@@ -823,6 +823,7 @@ def _prepare_post_ingest_clusters(
             "slug": concept.get("slug"),
             "title": concept.get("title"),
             "aliases": list(concept.get("aliases") or []),
+            "definition": concept.get("definition") or "",
         }
         for concept in normalized.get("concept_ledger", [])
         if concept.get("slug")

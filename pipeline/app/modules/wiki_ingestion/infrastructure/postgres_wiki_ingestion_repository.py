@@ -8,13 +8,14 @@ import re
 from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import psycopg
 from psycopg.types.json import Json
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.core.ai_database import connect_ai
+from app.core.jev_client import JevUnavailable
 from app.core.pipeline_control import PipelineRunCancelledError
 from app.core.error_text import truncate_error
 from app.modules.wiki_generation.domain.text_utils import slugify
@@ -94,6 +95,9 @@ def _today_iso() -> str:
 
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver
 
 
 def connect() -> psycopg.Connection:
@@ -1456,6 +1460,7 @@ def lint_wiki_workspace(
     *,
     materialize_promotions: bool = False,
     promotion_page_generator: PromotionPageGenerator | None = None,
+    concept_judge: JevConceptResolver | None = None,
     apply_reconciliation: bool = False,
     operation_id: str | None = None,
     write_log: bool = True,
@@ -1612,6 +1617,7 @@ def lint_wiki_workspace(
                 ],
                 active_markdown,
                 promotion_page_generator,
+                concept_judge=concept_judge,
                 operation_id=operation_id,
                 apply_reconciliation=apply_reconciliation,
             )
@@ -1915,6 +1921,7 @@ def _materialize_promotion_candidates(
     active_markdown: str,
     promotion_page_generator: PromotionPageGenerator,
     *,
+    concept_judge: JevConceptResolver | None = None,
     operation_id: str | None = None,
     apply_reconciliation: bool = False,
 ) -> dict[str, Any]:
@@ -1922,6 +1929,7 @@ def _materialize_promotion_candidates(
     materialized_promotions: list[dict[str, Any]] = []
     merged_promotions: list[dict[str, Any]] = []
     page_changes: list[dict[str, Any]] = []
+    judged_links: list[dict[str, Any]] = []
     existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     eligible_cluster_ids = {cluster["id"] for cluster in clusters}
     prepared_pages: dict[str, dict[str, Any]] = {}
@@ -1943,6 +1951,8 @@ def _materialize_promotion_candidates(
                 "source_blocks": _source_blocks_for_refs(conn, source_refs),
             }
         )
+    # 판정은 외부 호출이라 페이지 생성처럼 잠금 전에 끝낸다.
+    judgments = _judge_promoted_concepts(concept_judge, workspace_id, prepared_pages) if concept_judge else {}
 
     _lock_concept_persistence(conn, workspace_id)
     applied_reconciliations: list[dict[str, Any]] = []
@@ -2000,6 +2010,9 @@ def _materialize_promotion_candidates(
         if not claims:
             continue
         target_slug = cluster.get("promotion_target") or cluster_id
+        judgment = judgments.get(cluster_id) or {}
+        if target_slug not in existing_concept_ids and judgment.get("decision") == "merge_into":
+            target_slug = judgment["canonical_slug"]
         if target_slug in existing_concept_ids:
             merged_page = _merge_promotion_into_existing_concept(
                 conn,
@@ -2070,11 +2083,23 @@ def _materialize_promotion_candidates(
                 "claims": claims,
             }
         )
+        if judgment.get("decision") == "link_to":
+            for target in judgment["link_targets"]:
+                target_id = existing_concept_ids.get(target)
+                if not target_id or target_id == page_id:
+                    continue
+                confidence = judgment["link_confidences"].get(target)
+                _upsert_wiki_page_link(conn, page_id, target_id, "concept_related_to", None, confidence, workspace_id)
+                judged_links.append({"from": slug, "to": target, "relation": "concept_related_to", "confidence": confidence})
         section = active_sections.pop(cluster_id, "")
         if section:
             archived_sections.append(f"{section}\n\n### Archived\npromoted_to: concept:{slug}\npromoted_at: {_today_iso()}")
     # 관계 재료화는 promotion이 모두 끝나 existing_concept_ids가 완성된 뒤 한 곳에서만 수행한다(근거 검증·dedup 포함).
-    materialized_relations = _materialize_active_relation_candidates(conn, clusters, existing_concept_ids, workspace_id)
+    # 판정 링크도 같은 목록에 담아 lint 기록(added_links)과 복원 대상에 들어가게 한다.
+    materialized_relations = [
+        *_materialize_active_relation_candidates(conn, clusters, existing_concept_ids, workspace_id),
+        *judged_links,
+    ]
     active_markdown_update = latest_active_markdown if active_markdown_changed else None
     if materialized_promotions or merged_promotions:
         lines = ["# Active Meaning Clusters"]
@@ -2092,6 +2117,35 @@ def _materialize_promotion_candidates(
         "removed_claims": removed_claims,
         "removed_relations": removed_relations,
     }
+
+
+def _judge_promoted_concepts(
+    concept_judge: JevConceptResolver,
+    workspace_id: str,
+    prepared_pages: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """승격할 개념을 기존 개념과 쌍 판정해 클러스터 id별 병합(merge_into)·연결(link_to) 판정을 돌려준다."""
+    concepts = []
+    for cluster_id, page in prepared_pages.items():
+        markdown = str(page.get("markdown") or "")
+        definition = _markdown_section(markdown, "Definition")
+        if definition:
+            concepts.append(
+                {
+                    "slug": cluster_id,
+                    "title": page.get("title") or cluster_id,
+                    "aliases": _markdown_list_section(markdown, "Aliases"),
+                    "definition": definition,
+                }
+            )
+    if not concepts:
+        return {}
+    pool = [concept for concept in list_active_concept_index(workspace_id) if concept.get("definition")]
+    try:
+        return concept_judge.judge_concepts(concepts, pool)
+    except JevUnavailable as exc:
+        logger.warning("[lint 승격 개념 판정 생략] %s", exc)
+        return {}
 
 
 def _merge_promotion_into_existing_concept(

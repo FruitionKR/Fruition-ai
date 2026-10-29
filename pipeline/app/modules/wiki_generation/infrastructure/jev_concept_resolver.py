@@ -65,19 +65,27 @@ logger = logging.getLogger(__name__)
 
 def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
     """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다."""
+    return jev_concept_judge(resolver) or resolver
+
+
+def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptResolver | None:
+    """Jev 개념 판정기를 만든다. 쓸 수 없으면 None이다.
+
+    `judge_concepts`만 쓰는 호출자(후속 편입·lint 승격)는 fallback 없이 만든다.
+    """
     client = build_jev_client(JEV_CONCEPT_MERGE_ENABLED_ENV)
     if client is None:
-        return resolver
-    # 편입 워커는 BGE-M3를 직접 올리지 않는다(ADR-0026). 임베딩 서버가 없으면 후보를 거를 수 없어 기존 판정기를 쓴다.
+        return None
+    # 편입 워커는 BGE-M3를 직접 올리지 않는다(ADR-0026). 임베딩 서버가 없으면 후보를 거를 수 없어 Jev를 쓰지 않는다.
     if not os.environ.get("EMBEDDING_SERVICE_URL"):
-        logger.warning("[Jev concept merge 꺼짐] EMBEDDING_SERVICE_URL이 없어 기존 개념 병합을 씁니다.")
-        return resolver
+        logger.warning("[Jev concept merge 꺼짐] EMBEDDING_SERVICE_URL이 없어 Jev 개념 판정을 쓰지 않습니다.")
+        return None
     try:
         embedding_model = _remote_embedding_model()
     except RuntimeError as exc:
         logger.warning("[Jev concept merge 꺼짐] 임베딩 서버 설정 오류: %s", exc)
-        return resolver
-    return JevConceptResolver(client, resolver, embedding_model)
+        return None
+    return JevConceptResolver(client, fallback, embedding_model)
 
 
 @lru_cache(maxsize=1)
@@ -86,7 +94,9 @@ def _remote_embedding_model() -> RemoteEmbeddingModel:
 
 
 class JevConceptResolver(ConceptResolver):
-    def __init__(self, client: JevClient, fallback: ConceptResolver, embedding_model: EmbeddingModelPort) -> None:
+    def __init__(
+        self, client: JevClient, fallback: ConceptResolver | None, embedding_model: EmbeddingModelPort
+    ) -> None:
         self._client = client
         self._fallback = fallback
         self._embedding_model = embedding_model
