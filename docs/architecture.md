@@ -31,7 +31,7 @@ Query·Agent·maintenance worker는 `AI_TASK_CONCURRENCY`(기본 1)건을 한 �
 
 ## 선택적 Jev 판단
 
-Agent 라우팅, Query 근거 선택, ingest 개념 병합, 폴더 내용 조회의 폴더 지목은 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`·`JEV_FOLDER_LOOKUP_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.
+Agent 라우팅, Query 근거 선택, ingest 개념 병합, Skill 의도 분류, 폴더 내용 조회의 폴더 지목은 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`·`JEV_SKILL_INTENT_ENABLED`·`JEV_FOLDER_LOOKUP_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.
 
 ## 모델 사용량 책임
 

@@ -114,6 +114,16 @@ EDIT_CAPABILITIES = frozenset({"template", "document-edit"})
 EMPTY_FOLDER_SOURCE_MESSAGE = (
     "이 폴더 바로 아래에 읽을 수 있는 Markdown 문서가 없어요. 문서가 있는 폴더나 문서를 골라 다시 실행해 주세요."
 )
+# 열린 문서를 LLM payload에 싣는 상한. 편집은 편집 범위, 새 문서는 참고로 싣는 열린 문서 전체에 적용한다.
+MAX_ACTIVE_DOCUMENT_CHARS = 30_000
+CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = (
+    f"편집할 범위가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 한 번에 편집할 수 없어요. "
+    "수정할 부분을 선택하거나 현재 섹션을 고른 뒤 다시 요청해 주세요."
+)
+ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
+    "열린 문서가 길어 초안에 참고하지 않았어요. "
+    "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+)
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
 BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
@@ -360,6 +370,7 @@ class HandleAgentTurnUseCase:
                 else None
             )
             content = None
+            source_notice = None
             if route.action == "workspace_workflow" and route.document_operation == "create":
                 creation_markdown = (
                     self._confirmed_preview_markdown(request, preview_run_id)
@@ -370,7 +381,7 @@ class HandleAgentTurnUseCase:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if creation_markdown is None:
                     try:
-                        create_request, _ = self._markdown_create_request(request, route, selected_skill)
+                        create_request, source_notice = self._markdown_create_request(request, route, selected_skill)
                     except FolderSourceUnavailableError as exc:
                         return _clarify_document_change(route, str(exc))
                     creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
@@ -409,6 +420,9 @@ class HandleAgentTurnUseCase:
                 if reuses_edit_preview and edit is None:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if edit is None:
+                    # 이미 만든 미리보기를 저장할 때는 LLM을 부르지 않으므로 크기 상한을 보지 않는다.
+                    if _edit_scope_too_long(markdown_context.markdown, target):
+                        return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
                     reference_context = self._resolve_reference_context(request, route)
                     edit = self._markdown_edit_use_case.execute(
                         MarkdownEditRequest(
@@ -465,6 +479,8 @@ class HandleAgentTurnUseCase:
                 route=route,
                 run_id=run_id,
                 run_status=run_status,
+                # 원문 안내가 있을 때만 싣는다. 없으면 document-svc가 기본 문구를 채운다.
+                message=f"작업 계획을 만들었습니다. 미리보기에서 확인해 주세요.\n\n{source_notice}" if source_notice else None,
             )
 
         if route.action == "markdown_edit":
@@ -643,6 +659,8 @@ class HandleAgentTurnUseCase:
                 route,
                 CLARIFY_INSERT_AFTER_TARGET_MESSAGE,
             )
+        if _edit_scope_too_long(markdown_context.markdown, target):
+            return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
         reference_context = self._resolve_reference_context(request, route)
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
         result = self._markdown_edit_use_case.execute(
@@ -792,6 +810,8 @@ class HandleAgentTurnUseCase:
         명시한 Skill이 원문을 필요로 하면(requires_source) 고른 문서를 source_document로, 문서 없이 폴더를 골랐으면
         폴더 바로 아래 Markdown 문서들을 source_documents로 싣는다. 원문이 필요 없는 Skill은 고른 문서가 있어도
         원문으로 쓰지 않는다(새 문서 위치로만 쓴다).
+        Skill 없는 요청은 열린 문서를 active_document로 싣고, 요청이 그 문서를 가리킬 때만 쓰는지는 생성 LLM이 판단한다.
+        열린 문서가 MAX_ACTIVE_DOCUMENT_CHARS를 넘으면 싣지 않고 위키를 거치라고 안내한다.
         `/slug`만 보낸 실행(bare)은 앞선 대화를 원문처럼 섞지 않도록 대화 맥락을 싣지 않는다.
 
         폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError를 낸다.
@@ -817,6 +837,13 @@ class HandleAgentTurnUseCase:
                 for document in sources.documents
             ]
             notice = folder_source_notice(sources)
+        elif selected_skill is None and not bare and _has_active_markdown(request):
+            assert request.active_markdown_context is not None
+            markdown = request.active_markdown_context.markdown
+            if len(markdown) <= MAX_ACTIVE_DOCUMENT_CHARS:
+                reference_context["active_document"] = {"document_id": request.document_id, "markdown": markdown}
+            else:
+                notice = ACTIVE_DOCUMENT_TOO_LONG_NOTICE
         return (
             MarkdownCreateRequest(
                 instruction=request.message,
@@ -1363,6 +1390,16 @@ def _is_ambiguous_auto(route: AgentTurnRoute, skill: Skill | None) -> bool:
         and version.result_mode == "auto"
         and route.confidence < AUTO_RESULT_MODE_MIN_CONFIDENCE
     )
+
+
+def _edit_scope_too_long(markdown: str, target: MarkdownEditTarget) -> bool:
+    """편집기는 편집 범위(+앞뒤 몇 줄)만 LLM에 보낸다. 문서 전체 편집이면 범위가 문서 전체다."""
+    scope = (
+        markdown
+        if target.type == "whole_document"
+        else markdown_line_range(markdown, target.start_line, target.end_line)
+    )
+    return len(scope) > MAX_ACTIVE_DOCUMENT_CHARS
 
 
 def _has_active_markdown(request: AgentTurnRequest) -> bool:

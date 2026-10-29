@@ -1,7 +1,7 @@
 """들어온 개념마다 후보 3개를 추리고 Jev가 같은 개념인지 판정하는 개념 병합기.
 
 평가(output/reports/09_concept-merge-jev-vs-llm-final.md)와 같이 요청 하나에 판정 하나만 담고,
-정의만 근거로 후보 3개와 keep_new 중 하나를 고른다. 정의가 없는 개념은 이름만으로 병합하는 오류가
+정의만 근거로 후보 3개마다 '병합'과 '따로 두고 연결', 그리고 keep_new 중 하나를 고른다. 정의가 없는 개념은 이름만으로 병합하는 오류가
 관찰돼 Jev에 보내지 않고 새 개념으로 둔다. Jev는 missing hint를 판정하지 않으므로 hint가 있으면
 기존 LLM 결과의 hint_resolutions만 쓴다. Jev를 쓸 수 없으면 기존 LLM 결과를 그대로 쓴다.
 """
@@ -21,11 +21,15 @@ from app.modules.wiki_generation.application.ports import ConceptResolver, JsonD
 
 CONCEPT_MERGE_RULE = (
     "Resolve concept identity using only the supplied definitions. Merge only synonyms without losing "
-    "distinct meaning or scope. A related, broader, narrower, composite or insufficiently defined concept "
-    "stays keep_new. Compare each task only to its own candidates. A listed candidate may be existing or "
-    "incoming. Choose one allowed option. Return no explanation."
+    "distinct meaning or scope. A broader, narrower, part, stage, method, variant, same-kind sibling under "
+    "the same broader concept, or directly dependent concept keeps its own page and is linked to that "
+    "candidate. Sharing only a domain or a source is not a link. An insufficiently defined or unrelated "
+    "concept stays keep_new. Compare each task only to its own candidates. A listed candidate may be "
+    "existing or incoming. Choose one allowed option. Return no explanation."
 )
 KEEP_NEW = "keep_new"
+MERGE_PREFIX = "merge:"
+LINK_PREFIX = "link:"
 CANDIDATE_LIMIT = 3
 MAX_WORKERS = 4
 logger = logging.getLogger(__name__)
@@ -81,13 +85,19 @@ class JevConceptResolver(ConceptResolver):
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = [executor.submit(copy_context().run, self._judge, concept, candidates) for concept, candidates in tasks]
             choices = {concept["slug"]: future.result() for (concept, _), future in zip(tasks, futures, strict=True)}
-        merges = {slug: target for slug, target in choices.items() if target != KEEP_NEW}
+        merges = {slug: choice.removeprefix(MERGE_PREFIX) for slug, choice in choices.items() if choice.startswith(MERGE_PREFIX)}
+        links = {slug: choice.removeprefix(LINK_PREFIX) for slug, choice in choices.items() if choice.startswith(LINK_PREFIX)}
         # 병합 대상인 incoming 개념이 다시 다른 개념으로 병합되면 연쇄·순환이 생기므로 그 병합은 하지 않는다.
-        return [
+        resolutions = [
             {"incoming_slug": slug, "decision": "merge_into", "canonical_slug": target, "alias_to_add": None}
             for slug, target in merges.items()
             if target not in merges
         ]
+        resolutions.extend(
+            {"incoming_slug": slug, "decision": "link_to", "canonical_slug": target, "alias_to_add": None}
+            for slug, target in links.items()
+        )
+        return resolutions
 
     def _candidates(self, concept: JsonDict, pool: list[JsonDict]) -> list[JsonDict]:
         others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
@@ -123,7 +133,11 @@ class JevConceptResolver(ConceptResolver):
                 ],
             }
         }
-        options = [candidate["slug"] for candidate in candidates] + [KEEP_NEW]
+        options = [
+            option
+            for candidate in candidates
+            for option in (MERGE_PREFIX + candidate["slug"], LINK_PREFIX + candidate["slug"])
+        ] + [KEEP_NEW]
         offset = rng.randrange(len(options))
         options = options[offset:] + options[:offset]
         answers = self._client.choose(
@@ -133,13 +147,21 @@ class JevConceptResolver(ConceptResolver):
                     "type": "choice",
                     "instructions": f"{CONCEPT_MERGE_RULE} Evaluate task q0 only.",
                     "criteria": {
-                        option: "Keep incoming separate" if option == KEEP_NEW else f"Merge into candidate {option}"
+                        option: _option_text(option)
                         for option in options
                     },
                 }
             },
         )
         return answers["q0"]["choice"]
+
+
+def _option_text(option: str) -> str:
+    if option == KEEP_NEW:
+        return "Keep incoming separate without a link"
+    if option.startswith(MERGE_PREFIX):
+        return f"Merge into candidate {option.removeprefix(MERGE_PREFIX)}"
+    return f"Keep incoming separate and link it to candidate {option.removeprefix(LINK_PREFIX)}"
 
 
 def _concept_text(concept: JsonDict, definition: object) -> str:

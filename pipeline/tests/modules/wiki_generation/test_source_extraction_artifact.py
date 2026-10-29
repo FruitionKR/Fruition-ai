@@ -436,3 +436,87 @@ def test_link_builder_does_not_materialize_weak_concept_edges() -> None:
     links = LinkBuilder().build(normalized)
 
     assert {link["relation"] for link in links} == {"source_mentions_concept"}
+
+
+def test_link_builder_links_concepts_judged_link_to_including_existing_ones() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_page_sections import concept_related_lines
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트"}],
+        "existing_concept_index": [{"slug": "deployment", "title": "Deployment"}],
+        "concept_resolutions": [
+            {"incoming_slug": "rolling-update", "decision": "link_to", "canonical_slug": "rolling-update",
+             "link_targets": ["deployment"], "confidence": 0.0},
+        ],
+    }
+
+    links = LinkBuilder().build(normalized)
+
+    concept_links = [link for link in links if link["relation"] == "concept_related_to"]
+    assert [(link["source"], link["target"]) for link in concept_links] == [("concept:rolling-update", "concept:deployment")]
+    # 다른 문서의 기존 개념도 본문 Related Concepts에 제목과 함께 적는다.
+    assert concept_related_lines("rolling-update", normalized, {"rolling-update": normalized["concept_ledger"][0]}) == [
+        "- [[deployment|Deployment]]"
+    ]
+
+
+def test_link_to_resolution_keeps_the_concept_and_links_it_through_the_ingest_steps() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트", "aliases": []}],
+        "evidence_units": [],
+    }
+    existing = [{"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."}]
+    raw = {"resolutions": [{"incoming_slug": "rolling-update", "decision": "link_to", "canonical_slug": "deployment"}]}
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    resolved = apply_concept_resolutions(normalized, resolutions, existing)
+    links = LinkBuilder().build(resolved)
+
+    assert [c["slug"] for c in resolved["concept_ledger"]] == ["rolling-update"]
+    assert ("concept:rolling-update", "concept:deployment") in {
+        (link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"
+    }
+
+
+def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [
+            {"slug": "weighted-mean", "title": "가중 평균", "aliases": []},
+            {"slug": "average", "title": "평균", "aliases": []},
+        ],
+        "evidence_units": [],
+    }
+    existing = [{"slug": "mean", "title": "Mean", "definition": "합을 개수로 나눈 값이다."}]
+    raw = {
+        "resolutions": [
+            {"incoming_slug": "weighted-mean", "decision": "link_to", "canonical_slug": "average"},
+            {"incoming_slug": "average", "decision": "merge_into", "canonical_slug": "mean"},
+        ]
+    }
+
+    from app.modules.wiki_generation.infrastructure.concept_page_sections import concept_related_lines
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    resolved = apply_concept_resolutions(normalized, resolutions, existing)
+    resolved["existing_concept_index"] = existing
+    links = LinkBuilder().build(resolved)
+
+    assert [(link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"] == [
+        ("concept:weighted-mean", "concept:mean")
+    ]
+    # 본문 Related Concepts도 병합된 개념을 적는다.
+    ledger_by_slug = {c["slug"]: c for c in resolved["concept_ledger"]}
+    assert concept_related_lines("weighted-mean", resolved, ledger_by_slug) == ["- [[mean|Mean]]"]
