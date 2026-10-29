@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from app.modules.wiki_generation.domain.entities import SourceBlock
-from app.modules.wiki_generation.domain.text_utils import slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, slugify, unique_keep_order
 
 
 def active_source_artifact(
@@ -235,6 +235,12 @@ def _merge_term_items(existing: list[dict[str, Any]], incoming: list[dict[str, A
             target["anchor_reference_ids"] = unique_keep_order(target.get("anchor_reference_ids", []) + item.get("anchor_reference_ids", []))
             target["display_reference_ids"] = unique_keep_order(target.get("display_reference_ids", []) + item.get("display_reference_ids", []))
             target["aliases"] = unique_keep_order(target.get("aliases", []) + item.get("aliases", []))
+            if target.get("tags") or item.get("tags"):
+                target["tags"] = clean_concept_tags(
+                    target.get("tags", []) + item.get("tags", []),
+                    target.get(title_field) or target.get("term"),
+                    target["aliases"],
+                )
             continue
         copied = copy.deepcopy(item)
         by_slug[slug] = copied
@@ -350,6 +356,7 @@ def _artifact_core_concept(item: dict[str, Any], source_artifact: dict[str, Any]
         "definition": item.get("context") or "",
         "why_page_worthy": "기존 source page context",
         "aliases": unique_keep_order(item.get("aliases", []) + [term]),
+        "tags": item.get("tags", []),
         "display_reference_ids": refs,
         "anchor_reference_ids": refs,
         "mention_reference_ids": refs,
