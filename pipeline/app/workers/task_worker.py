@@ -32,6 +32,7 @@ from app.modules.agent.domain.exceptions import (
     AgentTurnRouteContractError,
 )
 from app.modules.agent.infrastructure.backend_folder_source_reader import build_folder_source_reader
+from app.modules.agent.infrastructure.backend_folder_tree_reader import build_folder_tree_reader
 from app.modules.agent.interfaces.http.dependencies import agent_skills_enabled, build_handle_agent_turn_use_case
 from app.modules.agent.interfaces.http.responses import _to_response as agent_to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
@@ -1240,11 +1241,12 @@ def _run_blocking(executor: ThreadPoolExecutor, function, *args):
 
 
 def _verify_agent_command_config() -> None:
-    """Agent turn마다 만드는 폴더 원문 reader 설정(DOCUMENT_INTERNAL_BASE_URL·AGENT_INTERNAL_TOKEN)을 기동 시 확인한다.
+    """Agent turn마다 만드는 폴더 원문·트리 reader 설정(DOCUMENT_INTERNAL_BASE_URL·AGENT_INTERNAL_TOKEN)을 기동 시 확인한다.
 
     이 프로세스의 document-svc 주소는 DOCUMENT_INTERNAL_BASE_URL이다. agent_worker 프로세스는 AGENT_BACKEND_URL을 쓴다.
     """
     database.verify_agent_schema()
+    build_folder_tree_reader()
     if agent_skills_enabled():
         build_folder_source_reader()
 

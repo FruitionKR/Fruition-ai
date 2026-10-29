@@ -29,6 +29,7 @@ AgentAction = Literal[
     "markdown_edit",
     "markdown_create",
     "folder_organize",
+    "folder_lookup",
     "workspace_workflow",
     "skill_authoring",
     "skill_draft_proposal",

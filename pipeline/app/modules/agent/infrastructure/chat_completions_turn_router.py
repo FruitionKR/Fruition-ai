@@ -55,6 +55,7 @@ ALLOWED_ACTIONS = {
     "markdown_edit",
     "markdown_create",
     "folder_organize",
+    "folder_lookup",
     "workspace_workflow",
     "skill_authoring",
     "skill_draft_proposal",
@@ -321,6 +322,8 @@ def repair_insert_after_without_section(route: AgentTurnRoute, request: AgentTur
 def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     failures: list[str] = []
     failures.extend(_notice_failures(route, request))
+    if route.action == "folder_lookup" and request.mode != "task":
+        failures.append("folder_lookup is available only in task mode")
     if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
         failures.append(
             f"task mode does not allow {route.action}; use clarify with document_operation none "

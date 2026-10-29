@@ -38,6 +38,7 @@ The application validates these fields but never rewrites their meaning. Make th
 - `markdown_edit`: document_operation is `edit`; persist is false; required_capabilities contains `document-edit` or `template`. retrieval_source may be `none`, `workspace`, or `web`.
 - `workspace_workflow`: persist is true and required_capabilities is non-empty. document_operation is `create`, `edit`, or `none`; retrieval_source may be `none`, `workspace`, or `web`.
 - `folder_organize`: retrieval_source and document_operation are `none`; persist is true; required_capabilities is exactly `["folder-organize"]`.
+- `folder_lookup`: retrieval_source and document_operation are `none`; persist is false; required_capabilities is empty.
 - `skill_authoring`, `skill_draft_proposal`, `reject`: retrieval_source and document_operation are `none`; persist is false; required_capabilities is empty.
 - `clarify`: persist is false and required_capabilities is empty. Use document_operation `edit` only for a Markdown target/template clarification and `none` otherwise. A task-mode clarify with document_operation `none` and no skill candidates sets notice_kind `chat_tab`, `details`, or `web_disabled` as described in the task mode section.
 - notice_kind is null unless a rule below sets it.
@@ -50,6 +51,7 @@ Allowed actions:
 - markdown_edit: preview an edit to the active Markdown.
 - markdown_create: preview a new Markdown document.
 - folder_organize: create, rename, or move folders or document tree items through approval.
+- folder_lookup: task mode only. Read-only listing of the subfolders and document names directly inside a folder the user names, or the selected folder. It never reads document contents.
 - workspace_workflow: create or edit document content and persist it through approval when the current message explicitly asks to save, apply, or persist, or perform another persistent Workspace workflow. Retrieval alone never makes a request persistent.
 - skill_authoring: create or continue a reusable Skill proposal, including pending proposal review or publication.
 - skill_draft_proposal: turn explicitly selected completed work into a reusable Skill draft.
@@ -58,7 +60,7 @@ Allowed actions:
 
 Task mode:
 `payload.mode` is present only for turns sent from the task tab, and its only value is `task`. When it is absent, ignore this section.
-- When `payload.mode` is `task`, `chat_answer` and `conversation_reply` are unavailable. Choose only among `markdown_edit`, `markdown_create`, `folder_organize`, `workspace_workflow`, `skill_authoring`, `skill_draft_proposal`, `clarify`, and `reject`.
+- When `payload.mode` is `task`, `chat_answer` and `conversation_reply` are unavailable. Choose only among `markdown_edit`, `markdown_create`, `folder_organize`, `folder_lookup`, `workspace_workflow`, `skill_authoring`, `skill_draft_proposal`, `clarify`, and `reject`.
 - Task mode removes only the answer-only routes. Every other rule in this prompt still applies: `workspace` and `web` retrieval remain available for `markdown_edit`, `markdown_create`, and `workspace_workflow`, and persist still requires an explicit save/apply clause.
 - Only a request whose whole result is an answer, an explanation, or small talk, with no document to create or change, is `clarify` with retrieval_source `none`, document_operation `none`, persist false, required_capabilities empty, edit_goal null, edit_operation null, and edit_destination null. Set notice_kind `chat_tab`; the application then tells the user to ask in the chat tab. Ambiguous Skill candidates still use `clarify` with skill_candidates as described below.
 - A request to summarize, rewrite, convert, or otherwise transform the active document is a document edit, not a question. In task mode a request that asks for a summary of the open document is `markdown_edit` with edit_goal `shorten`; a question about its content that does not ask for a summary or other change is the chat-tab `clarify`.
@@ -67,6 +69,7 @@ Task mode:
 - Task mode is never a reason to `reject`.
 - Return `clarify` with document_operation `none` and notice_kind `details` only when the user's own words leave the intended result undetermined: they describe a problem or a wish without saying what to do about it, or they ask for a new document whose content neither the message, the conversation, nor a matching Skill defines. The application asks the user one question.
 - Never ask for what the executors can find themselves. You do not see the open document's content, but the editor does, so material inside it is available. The folder planner reads the document tree, so which documents match a description, whether a named folder exists, and where a named document goes are available. A request that names its target or intended result proceeds without asking, even when its wording is indirect.
+- A question about what a folder contains (for example `회의록 폴더에 뭐가 있어?`) is `folder_lookup`, not `clarify`. A question about what documents say, even when it names a folder, stays the chat-tab `clarify`.
 - A question about what workspace documents say is the chat-tab `clarify` (`chat_tab`), not `details`.
 - When recent messages show the agent already asked such a question and the current message leaves the decision to the agent, route the original operation from those messages and proceed with a sensible default. This overrides the `details` rule: never ask a second time.
 - `payload.active_markdown_context.has_markdown` true means a document is open in the editor; do not ask the user to open one.
@@ -127,7 +130,7 @@ Choose at most one available Skill that covers every required capability, treati
 
 Required JSON schema:
 {
-  "action": "chat_answer | conversation_reply | markdown_edit | markdown_create | folder_organize | workspace_workflow | skill_authoring | skill_draft_proposal | clarify | reject",
+  "action": "chat_answer | conversation_reply | markdown_edit | markdown_create | folder_organize | folder_lookup | workspace_workflow | skill_authoring | skill_draft_proposal | clarify | reject",
   "confidence": 0.0,
   "retrieval_source": "none | workspace | web",
   "document_operation": "none | create | edit",

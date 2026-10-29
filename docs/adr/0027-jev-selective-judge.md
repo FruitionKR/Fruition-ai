@@ -42,6 +42,10 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
 - **Skill 의도 분류(추가):** Skill을 만들 때 지원 여부·Skill 종류·참고 방식·원문 필요 여부를 고른다. 설정은 `JEV_SKILL_INTENT_ENABLED`(기본 `false`)이고 대체 경로는 기존 LLM 분류(`prompts/skill_intent_classifier.system.md`)다. Skill 본문 작성은 계속 LLM이 한다.
   - 선택지는 분류 결과 계약(`author_skill._intent_result`)을 통과하는 조합이다. 참고 문서가 없으면 21개, 1개면 48개, 2개 이상이면 40개다(고정 양식은 참고 문서가 정확히 1개일 때만 연다). 원문 필요 여부는 규칙(`inferred_requires_source`)으로 정해지지 않는 `document-create`일 때만 true를 둔다. `template`은 규칙이 정해 분류값을 쓰지 않는다. 라우팅과 같이 고정 무작위 순서로 섞고 응답 예산은 15초다.
   - 개발 중 실측(2026-10-27, 문장마다 1회): 프롬프트 예시 12문장 LLM(Claude Haiku 4.5) 12/12·Jev 12/12, 예시 밖 5문장 LLM 5/5·Jev 4/5. Jev 오답은 표 변환 Skill에 `template`을 더한 건이다.
+- **폴더 지목(추가):** 작업 탭 폴더 내용 조회(`folder_lookup`)에서 메시지가 지목한 폴더를 고른다. 설정은 `JEV_FOLDER_LOOKUP_ENABLED`(기본 `false`)이고 대체 경로는 LLM 판단(`prompts/agent_folder_lookup.system.md`)이다.
+  - 선택지는 폴더 경로마다 하나, 이름이 같은 폴더가 여러 곳이면 그 이름 전부를 뜻하는 묶음 하나, `지목 없음`이다. Jev는 하나만 고르므로 같은 이름을 가릴 단서가 없으면 묶음을 골라 되묻게 한다. 라우팅과 같이 고정 무작위 순서로 섞는다.
+  - 선택지가 255개를 넘으면 LLM 판단을 쓴다. 응답 예산은 라우팅과 같은 15초다.
+  - 개발 중 12문장 실측(2026-10-27, 문장마다 1회): Jev 11/12, LLM(Claude Haiku 4.5) 12/12. Jev 오답은 `최상위 회의록 폴더`에서 묶음을 고른 건이다.
 
 ## Alternatives
 - **Jev로 완전히 교체:** 크레딧이 없거나 장애가 나면 라우팅·질의·ingest가 함께 멈춘다. clarify와 hint 판정은 Jev가 대체하지 못한다.
