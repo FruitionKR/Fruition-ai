@@ -6,6 +6,7 @@ Jev는 기능별 설정을 켜고 `TYPESAFE_API_KEY`가 있을 때만 쓴다. �
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -18,7 +19,7 @@ from typing import Any
 import httpx
 
 from app.core.llm_env import first_env, float_env
-from app.core.llm_prompt import redact_numeric_personal_data, with_llm_security_boundary
+from app.core.llm_prompt import LLM_SECURITY_BOUNDARY, redact_numeric_personal_data
 from app.core.pipeline_control import ensure_task_active
 from app.modules.model_usage.infrastructure.usage_ledger import track_call
 
@@ -90,11 +91,8 @@ class JevClient:
         ensure_task_active()
         payload = {
             "model": JEV_MODEL,
-            "state": redact_numeric_personal_data(state),
-            "questions": {
-                key: {**question, "instructions": with_llm_security_boundary(question["instructions"])}
-                for key, question in questions.items()
-            },
+            "state": redact_numeric_personal_data(with_security_boundary(state)),
+            "questions": questions,
         }
         with track_call(JEV_PROVIDER, JEV_MODEL) as receipt:
             data = self._post(payload)
@@ -156,6 +154,20 @@ class JevClient:
         if remaining <= 0:
             raise JevUnavailable("Jev 응답 예산을 넘었습니다.")
         return remaining
+
+
+def with_security_boundary(state: str) -> str:
+    """보안 경계를 요청 state(JSON 객체)에 한 번만 넣는다.
+
+    질문마다 붙이면 후보 수만큼 반복돼 요청 토큰 대부분을 차지한다. 질문마다 붙일 때와 요청당 한 번 넣을 때
+    인젝션을 따르는지 비교해(개념 쌍 판정 20건·근거 선택 10건, 각 3회) 차이가 없어 한 번만 둔다.
+    """
+    data = json.loads(state)
+    if not isinstance(data, dict):
+        raise ValueError("Jev state must be a JSON object.")
+    if "security_boundary" in data:
+        raise ValueError("Jev state must not define security_boundary.")
+    return json.dumps({"security_boundary": LLM_SECURITY_BOUNDARY, **data}, ensure_ascii=False)
 
 
 def _validated_answers(

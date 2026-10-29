@@ -15,7 +15,6 @@ import random
 from typing import Any
 
 from app.core.jev_client import JEV_ROUTING_ENABLED_ENV, JevClient, JevUnavailable, build_jev_client
-from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.agent.application.ports import AgentTurnRouterPort
 from app.modules.agent.domain.entities import REJECT_NOTICE_KINDS, AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
@@ -120,7 +119,7 @@ class JevTurnRouter(AgentTurnRouterPort):
             {
                 "route": {
                     "type": "choice",
-                    "instructions": with_llm_security_boundary(self._system_prompt)
+                    "instructions": self._system_prompt
                     + (
                         "\n\n허용된 완전한 편집 조합 중 사용자 요청과 맞는 하나를 고르세요."
                         if detail
