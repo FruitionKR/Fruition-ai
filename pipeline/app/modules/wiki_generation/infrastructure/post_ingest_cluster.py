@@ -4,6 +4,8 @@ import logging
 from typing import Any
 
 from app.core.jev_client import JevUnavailable
+from app.modules.query.domain.scoring import hybrid_score
+from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_generation.application.judge_candidates import (
     judge_cluster_promotions,
     judge_meaning_cluster_candidates,
@@ -13,7 +15,13 @@ from app.modules.wiki_generation.domain.text_utils import slugify, unique_keep_o
 from app.modules.wiki_generation.infrastructure.assemble import (
     MeaningClusterArtifactAssembler,
 )
-from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+    CANDIDATE_EMBEDDING_WEIGHT,
+    JevConceptResolver,
+    cached_embeddings,
+    embedding_server_model,
+    vector_similarity,
+)
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     cluster_claims,
     cluster_promotion_status,
@@ -26,6 +34,8 @@ from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
 # 임베딩 캐시를 다시 쓰고, 개수·길이를 고정해 후보 100개가 판정 요청 몇 개에 들어가게 한다.
 CLUSTER_DEFINITION_CLAIMS = 3
 CLUSTER_DEFINITION_CHARS = 500
+# 클러스터 판정 LLM에 보내는 기존 클러스터 분량. 넘치면 이번 후보와 가까운 클러스터부터 채운다.
+ACTIVE_CLUSTER_CONTEXT_CHARS = 24000
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +65,7 @@ def build_post_ingest_cluster_artifact(
     ]
     cluster_decisions = judge_meaning_cluster_candidates(
         completion=completion,
-        existing_active_markdown=existing_active_markdown,
+        existing_active_markdown=_relevant_active_clusters(existing_active_markdown, cluster_candidates),
         candidates=cluster_candidates,
     )
     build_args = {
@@ -152,6 +162,51 @@ def _judged_core_concept_promotions(
             target=concept_slug,
         )
     return judged
+
+
+def _relevant_active_clusters(markdown: str, candidates: list[dict[str, Any]]) -> str:
+    """기존 클러스터를 후보와 가까운 순서로 예산만큼 고른다. 섹션은 통째로 넣고, 예산보다 큰 섹션만 자른다.
+
+    점수는 후보마다 임베딩 0.75 + BM25 0.25를 매겨 클러스터별 최고점을 쓴다. 임베딩 서버를 쓸 수 없으면
+    BM25만 쓴다. 단어가 다른 동의어는 놓치지만 꼬리만 보내 앞쪽 클러스터를 아예 못 보는 것보다 낫다.
+    """
+    if len(markdown) <= ACTIVE_CLUSTER_CONTEXT_CHARS:
+        return markdown
+    sections = list(cluster_sections_by_id(markdown).items())
+    documents = [f"{cluster_id} {_cluster_concept(cluster_id, section)['definition']}" for cluster_id, section in sections]
+    queries = [f"{item['term']} {item['claim']}" for item in candidates]
+    vectors = _embeddings([*queries, *documents])
+    text_search = Bm25Searcher()
+    best = [0.0] * len(documents)
+    for query in queries:
+        for index, lexical in enumerate(text_search.score(query, documents)):
+            score = lexical
+            if vectors:
+                semantic = vector_similarity(vectors[query], vectors[documents[index]])
+                score = hybrid_score(semantic, lexical, CANDIDATE_EMBEDDING_WEIGHT)
+            best[index] = max(best[index], score)
+    selected = ["# Active Meaning Clusters"]
+    used = len(selected[0])
+    for index in sorted(range(len(documents)), key=lambda index: -best[index]):
+        remaining = ACTIVE_CLUSTER_CONTEXT_CHARS - used - 2
+        section = sections[index][1]
+        if len(section) > ACTIVE_CLUSTER_CONTEXT_CHARS:
+            section = section[:remaining]
+        if 0 < len(section) <= remaining:
+            selected.append(section)
+            used += len(section) + 2
+    return "\n\n".join(selected)
+
+
+def _embeddings(texts: list[str]) -> dict[str, Any]:
+    model = embedding_server_model()
+    if model is None:
+        return {}
+    try:
+        return cached_embeddings(model, texts)
+    except Exception as exc:  # 임베딩이 실패해도 클러스터 판정은 BM25 순위로 이어간다.
+        logger.warning("[클러스터 판정 문맥] 임베딩 실패로 BM25만 씁니다: %s", type(exc).__name__)
+        return {}
 
 
 def _cluster_concept(cluster_id: str, section: str) -> dict[str, Any]:

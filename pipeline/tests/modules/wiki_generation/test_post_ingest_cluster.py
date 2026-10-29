@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from app.modules.wiki_generation.infrastructure.post_ingest_cluster import (
     build_post_ingest_cluster_artifact,
 )
+from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import cluster_sections_by_id
 
 
 def test_post_ingest_cluster_judges_only_non_concept_updates() -> None:
@@ -201,3 +202,85 @@ representative: Gegen-EMK
     clusters = {cluster["id"]: cluster for cluster in artifact["clusters"]}
     assert clusters["back-emf"]["promotion"]["target"] == "back-emf"
     assert clusters["gegen-emk"]["promotion"]["target"] == "back-electromotive-force"
+
+
+def _large_active_markdown() -> str:
+    # 정렬상 맨 앞의 오래된 관련 클러스터와 뒤쪽의 무관한 클러스터로 24,000자를 넘긴다.
+    sections = [
+        "## cluster: back-emf\n\ntype: term_cluster\nrepresentative: Back EMF\n\n"
+        "### Evidence Claims\n- claim_a_001: Back EMF는 회전 속도에 비례한다. [doc-a:B0001]"
+    ]
+    for index in range(60):
+        claims = "\n".join(
+            f"- claim_z{index:02d}_{line:03d}: 재고 보고 항목 {index}-{line}을 집계한다. [doc-z:B{line + 1:04d}]"
+            for line in range(12)
+        )
+        sections.append(
+            f"## cluster: zz-inventory-{index:02d}\n\ntype: term_cluster\nrepresentative: 재고 {index}\n\n"
+            f"### Evidence Claims\n{claims}"
+        )
+    return "\n\n".join(["# Active Meaning Clusters", *sections]) + "\n"
+
+
+def _judged_active_markdown(existing: str) -> str:
+    normalized = {
+        "document": {"document_id": "doc-b"},
+        "section_candidates": [
+            {"term": "Back EMF", "context": "Back EMF는 회전 속도에 비례하는 전압이다.", "anchor_reference_ids": ["B0001"]}
+        ],
+        "mentions": [],
+        "unresolved_related_concept_hints": [],
+        "evidence_units": [],
+    }
+    with patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_meaning_cluster_candidates",
+        return_value=[],
+    ) as judge, patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_cluster_promotions",
+        return_value={},
+    ):
+        build_post_ingest_cluster_artifact(
+            completion=MagicMock(),
+            normalized=normalized,
+            existing_active_markdown=existing,
+            user_id="user-1",
+            workspace_id="workspace-1",
+            concept_update_decisions=[],
+            core_relation_decisions=[],
+        )
+    return judge.call_args.kwargs["existing_active_markdown"]
+
+
+def test_cluster_judge_sees_relevant_old_cluster_beyond_tail_budget_with_bm25_only() -> None:
+    existing = _large_active_markdown()
+    assert len(existing) > 24000
+
+    # 임베딩 서버가 없으면 BM25만으로 고른다.
+    with patch.dict("os.environ", {"EMBEDDING_SERVICE_URL": ""}):
+        sent = _judged_active_markdown(existing)
+
+    assert len(sent) <= 24000
+    assert sent.startswith("# Active Meaning Clusters")
+    assert "## cluster: back-emf\n" in sent
+    assert "## cluster: zz-inventory-59" not in sent
+    # 섹션은 중간에서 자르지 않는다.
+    assert set(cluster_sections_by_id(sent).values()) <= set(cluster_sections_by_id(existing).values())
+
+
+class KeywordEmbedder:
+    model_name = "keyword-test"
+
+    def embed(self, texts):
+        # 후보와 맨 뒤 클러스터만 같은 방향이다.
+        return [[1.0, 0.0] if "Back EMF" in text or "재고 59 " in text else [0.0, 1.0] for text in texts]
+
+
+def test_cluster_judge_ranks_sections_with_embedding_server() -> None:
+    # 단어가 겹치지 않아도 임베딩 점수가 높은 맨 뒤 클러스터를 고른다.
+    with patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.embedding_server_model",
+        return_value=KeywordEmbedder(),
+    ):
+        sent = _judged_active_markdown(_large_active_markdown())
+
+    assert list(cluster_sections_by_id(sent))[:2] == ["back-emf", "zz-inventory-59"]
