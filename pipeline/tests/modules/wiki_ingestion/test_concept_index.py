@@ -1231,3 +1231,77 @@ def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:
         assert [item["concept_slug"] for item in result["promotions"]] == ["orchid-lease"]
         assert result["merged_promotions"] == []
         assert links == []
+
+
+def test_lint_restore_returns_archived_cluster_to_active(monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    from app.modules.wiki_ingestion.application.models import LintOperationRestoreCommand
+    from app.modules.wiki_ingestion.application.restore_wiki_pages import RestoreWikiPagesUseCase
+    from app.modules.wiki_ingestion.infrastructure.wiki_page_restore import ObjectStorageWikiPageRestore
+
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge)
+    objects = {"wiki/ws/clusters/active.md": result["active_markdown"]}
+    monkeypatch.setattr(
+        repository,
+        "write_text_object",
+        lambda key, text, content_type="": objects.__setitem__(key, text) or key,
+    )
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "concept_write_lock", lambda *_args: nullcontext())
+    repository.persist_lint_operation_result("ws", "lint-op-1", {"_lint_page_changes": result["page_changes"]})
+    repository.apply_lint_object_changes(
+        {
+            "workspace_id": "ws",
+            "_lint_object_changes": {
+                "active_path": "wiki/ws/clusters/active.md",
+                "active_markdown": result["active_markdown"],
+                "archived_sections": result["archived_sections"],
+            },
+        }
+    )
+    # 이후 다른 클러스터가 보관돼도 그 항목은 남긴다.
+    objects["wiki/ws/clusters/archived.md"] += "\n## cluster: other\n\n### Archived\nmerged_to: concept:x\n"
+    assert "orchid-lease" not in objects["wiki/ws/clusters/active.md"]
+
+    use_case = RestoreWikiPagesUseCase(
+        ObjectStorageWikiPageRestore(
+            objects.__getitem__,
+            lambda key, text, content_type: objects.__setitem__(key, text) or key,
+            lambda *_args: [],
+            repository.restore_archived_clusters,
+        )
+    )
+
+    def restore(operation_id: str) -> dict:
+        return use_case.execute_lint(
+            LintOperationRestoreCommand(
+                operation_id=operation_id,
+                target_operation_id="lint-op-1",
+                workspace_id="ws",
+                rebuild_pages=(),
+                deleted_pages=("page-supply",),
+            )
+        )
+
+    assert restore("restore-1")["cluster_changes"] == {
+        "written_object_keys": ["wiki/ws/clusters/active.md", "wiki/ws/clusters/archived.md"],
+        "restored_cluster_ids": ["orchid-lease"],
+        "skipped_cluster_ids": [],
+    }
+    assert parse_active_cluster_lint(objects["wiki/ws/clusters/active.md"])[0]["promotion_status"] == "candidate"
+    assert "orchid-lease" not in objects["wiki/ws/clusters/archived.md"]
+    assert "## cluster: other" in objects["wiki/ws/clusters/archived.md"]
+
+    # 같은 id의 클러스터가 다시 생겼으면 덮어쓰지 않고 건너뛴 id를 알린다.
+    objects["wiki/ws/clusters/archived.md"] += "\n\n" + result["archived_sections"][0] + "\n"
+    objects["wiki/ws/clusters/active.md"] = "# Active Meaning Clusters\n\n## cluster: orchid-lease\n\nrepresentative: 새 클러스터\n"
+    assert restore("restore-2")["cluster_changes"] == {
+        "written_object_keys": [],
+        "restored_cluster_ids": [],
+        "skipped_cluster_ids": ["orchid-lease"],
+    }
+    assert "새 클러스터" in objects["wiki/ws/clusters/active.md"]

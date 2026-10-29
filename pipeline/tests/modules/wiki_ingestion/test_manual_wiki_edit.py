@@ -177,7 +177,7 @@ def test_restoring_source_snapshot_stops_when_contribution_cannot_be_read() -> N
             return "not json"
         raise S3Error(None, "SlowDown", "", "", "", "")
 
-    restore = ObjectStorageWikiPageRestore(read_text, lambda *_args: "", Mock())
+    restore = ObjectStorageWikiPageRestore(read_text, lambda *_args: "", Mock(), Mock())
     source = SourceSnapshotRestoreCommand("S1", "doc-1")
 
     # 오판하면 수동 스냅샷의 이름·요약을 본문으로 덮어쓰므로 일시 오류·깨진 JSON에서 멈춘다.
@@ -193,7 +193,7 @@ def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> N
         "wiki/ws/pages/S1/ops/M.json": json.dumps(_manual("M")),
         "wiki/ws/pages/S1/ops/A.md": "# AI 제목\n\n## Summary\nAI 요약\n",
     }
-    restore = ObjectStorageWikiPageRestore(objects.__getitem__, lambda *_args: "", Mock())
+    restore = ObjectStorageWikiPageRestore(objects.__getitem__, lambda *_args: "", Mock(), Mock())
     source = SourceSnapshotRestoreCommand("S1", "doc-1")
 
     manual = restore.restore_source_page("R1", "M", "ws", source)

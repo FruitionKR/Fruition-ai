@@ -143,6 +143,8 @@ def _lint_payload(
         ],
         "added_links": added_links,
         "removed_links": removed_links,
+        # 이 페이지로 승격·병합하며 archived.md로 옮긴 클러스터. lint 복원이 active.md로 되돌린다.
+        "archived_clusters": _dict_items(change.get("archived_clusters", [])),
     }
 
 
