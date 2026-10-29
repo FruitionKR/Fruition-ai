@@ -113,6 +113,14 @@ class WikiPageRestorePort(Protocol):
         supported_links: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]: ...
 
+    def restore_lint_clusters(
+        self,
+        operation_id: str,
+        target_operation_id: str,
+        workspace_id: str,
+        affected_page_ids: list[str],
+    ) -> dict[str, list[str]]: ...
+
 
 class PipelineSourceReaderPort(Protocol):
     def read_text(self, object_uri: str) -> str: ...

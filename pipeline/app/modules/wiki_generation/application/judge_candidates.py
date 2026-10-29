@@ -40,7 +40,7 @@ Schema:
 }
 """
     payload = {
-        "existing_active_clusters": existing_active_markdown[-24000:],
+        "existing_active_clusters": existing_active_markdown,
         "incoming_candidates": [
             {
                 "candidate_id": item["candidate_id"],

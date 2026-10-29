@@ -31,6 +31,7 @@ from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     parse_active_cluster_lint as _parse_active_cluster_lint,
     reconcile_active_cluster_invalidations as _reconcile_active_cluster_invalidations,
     refs_in_text as _refs_in_text,
+    restore_archived_cluster_sections as _restore_archived_cluster_sections,
 )
 from app.modules.wiki_ingestion.infrastructure.concept_evidence import append_concept_evidence
 from app.modules.wiki_ingestion.infrastructure.embedding_units import clean_unit_text as _clean_unit_text
@@ -1954,7 +1955,8 @@ def _materialize_promotion_candidates(
                 "source_blocks": _source_blocks_for_refs(conn, source_refs),
             }
         )
-    # 판정은 외부 호출이라 페이지 생성처럼 잠금 전에 끝낸다.
+    # 판정은 외부 호출이라 페이지 생성처럼 DB 잠금(_lock_concept_persistence) 전에 끝낸다. 워크스페이스 개념 잠금
+    # (concept_write_lock)은 wiki_maintenance가 lint 전체에 걸쳐 쥐고 있어, 그동안 편입·post-ingest는 기다린다.
     judgments = _judge_promoted_concepts(concept_judge, workspace_id, prepared_pages) if concept_judge else {}
 
     _lock_concept_persistence(conn, workspace_id)
@@ -2016,6 +2018,11 @@ def _materialize_promotion_candidates(
         judgment = judgments.get(cluster_id) or {}
         if target_slug not in existing_concept_ids and judgment.get("decision") == "merge_into":
             target_slug = judgment["canonical_slug"]
+        page = prepared_pages.get(cluster_id)
+        generated_slug = slugify(str(page.get("slug") or cluster_id)) if page else ""
+        # 생성한 페이지의 slug가 기존 개념이면 같은 페이지 id를 받아 그 개념을 덮어쓰므로 근거만 병합한다.
+        if target_slug not in existing_concept_ids and generated_slug in existing_concept_ids:
+            target_slug = generated_slug
         if target_slug in existing_concept_ids:
             merged_page = _merge_promotion_into_existing_concept(
                 conn,
@@ -2023,6 +2030,7 @@ def _materialize_promotion_candidates(
                 workspace_id,
                 target_slug,
                 claims,
+                aliases=[cluster.get("representative") or "", cluster_id],
                 operation_id=operation_id,
             )
             if merged_page is not None:
@@ -2036,11 +2044,14 @@ def _materialize_promotion_candidates(
                 page_changes.append(merged_page)
                 section = active_sections.pop(cluster_id, "")
                 if section:
-                    archived_sections.append(
-                        f"{section}\n\n### Archived\nmerged_to: concept:{target_slug}\nmerged_at: {_today_iso()}"
+                    _archive_cluster(
+                        merged_page,
+                        archived_sections,
+                        cluster_id,
+                        section,
+                        f"merged_to: concept:{target_slug}\nmerged_at: {_today_iso()}",
                     )
             continue
-        page = prepared_pages.get(cluster_id)
         if page is None:
             continue
         source_refs = _unique_keep_order(ref for claim in claims for ref in claim.get("refs", []))
@@ -2057,7 +2068,7 @@ def _materialize_promotion_candidates(
         ).strip()
         markdown = sanitize_ai_markdown(markdown)
         title = str(page.get("title") or cluster_id).strip()
-        slug = slugify(str(page.get("slug") or cluster_id))
+        slug = generated_slug
         if not markdown or not slug or slug == "untitled":
             continue
         page_id = _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug)
@@ -2075,17 +2086,16 @@ def _materialize_promotion_candidates(
         _persist_embedding_units(conn, page_id, first_document_id, markdown)
         existing_concept_ids[slug] = page_id
         materialized_promotions.append({"cluster_id": cluster_id, "concept_slug": slug, "page_id": page_id})
-        page_changes.append(
-            {
-                "page_id": page_id,
-                "slug": slug,
-                "title": title,
-                "definition": _markdown_section(markdown, "Definition"),
-                "markdown": markdown + "\n",
-                "content_action": "create",
-                "claims": claims,
-            }
-        )
+        created_page = {
+            "page_id": page_id,
+            "slug": slug,
+            "title": title,
+            "definition": _markdown_section(markdown, "Definition"),
+            "markdown": markdown + "\n",
+            "content_action": "create",
+            "claims": claims,
+        }
+        page_changes.append(created_page)
         if judgment.get("decision") == "link_to":
             for target in judgment["link_targets"]:
                 target_id = existing_concept_ids.get(target)
@@ -2096,7 +2106,13 @@ def _materialize_promotion_candidates(
                 judged_links.append({"from": slug, "to": target, "relation": "concept_related_to", "confidence": confidence})
         section = active_sections.pop(cluster_id, "")
         if section:
-            archived_sections.append(f"{section}\n\n### Archived\npromoted_to: concept:{slug}\npromoted_at: {_today_iso()}")
+            _archive_cluster(
+                created_page,
+                archived_sections,
+                cluster_id,
+                section,
+                f"promoted_to: concept:{slug}\npromoted_at: {_today_iso()}",
+            )
     # 관계 재료화는 promotion이 모두 끝나 existing_concept_ids가 완성된 뒤 한 곳에서만 수행한다(근거 검증·dedup 포함).
     # 판정 링크도 같은 목록에 담아 lint 기록(added_links)과 복원 대상에 들어가게 한다.
     materialized_relations = [
@@ -2120,6 +2136,21 @@ def _materialize_promotion_candidates(
         "removed_claims": removed_claims,
         "removed_relations": removed_relations,
     }
+
+
+def _archive_cluster(
+    page_change: dict[str, Any],
+    archived_sections: list[str],
+    cluster_id: str,
+    section: str,
+    archived_lines: str,
+) -> None:
+    """보관할 섹션을 모으고, lint 복원이 되돌릴 수 있게 원래 섹션과 보관 항목을 그 페이지의 기록에 남긴다."""
+    archived_section = f"{section}\n\n### Archived\n{archived_lines}"
+    archived_sections.append(archived_section)
+    page_change.setdefault("archived_clusters", []).append(
+        {"cluster_id": cluster_id, "section": section, "archived_section": archived_section}
+    )
 
 
 def _judge_promoted_concepts(
@@ -2158,6 +2189,7 @@ def _merge_promotion_into_existing_concept(
     concept_slug: str,
     claims: list[dict[str, Any]],
     *,
+    aliases: list[str],
     operation_id: str | None = None,
 ) -> dict[str, Any] | None:
     row = conn.execute(
@@ -2184,7 +2216,10 @@ def _merge_promotion_into_existing_concept(
         }
         for claim in claims
     ]
-    updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
+    # 병합한 클러스터의 이름을 별칭으로 남겨, 다음 편입이 그 이름으로 이 개념을 찾게 한다.
+    title = str(row.get("title") or concept_slug)
+    with_aliases, added_aliases = _add_aliases(markdown, title, aliases)
+    updated_markdown = sanitize_ai_markdown(append_concept_evidence(with_aliases, updates))
     if operation_id:
         current_markdown_uri = storage_uri(
             f"wiki/{workspace_id}/pages/{row['id']}/ops/{operation_id}.md"
@@ -2201,7 +2236,7 @@ def _merge_promotion_into_existing_concept(
         conn,
         str(row["id"]),
         "concept",
-        str(row.get("title") or concept_slug),
+        title,
         concept_slug,
         str(row.get("summary") or ""),
         current_markdown_uri,
@@ -2218,12 +2253,42 @@ def _merge_promotion_into_existing_concept(
     return {
         "page_id": str(row["id"]),
         "slug": concept_slug,
-        "title": str(row.get("title") or concept_slug),
+        "title": title,
         "definition": str(row.get("summary") or ""),
         "markdown": updated_markdown,
         "content_action": "append_evidence",
         "claims": claims,
+        "aliases": added_aliases,
     }
+
+
+def _add_aliases(markdown: str, title: str, names: list[str]) -> tuple[str, list[str]]:
+    """`## Aliases` 줄에 새 이름을 쉼표로 덧붙인다. 제목·기존 별칭과 대소문자·하이픈만 다르면 건너뛴다."""
+    lines = markdown.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip().casefold() == "## aliases"), None)
+    if start is None:
+        return markdown, []
+    end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
+    current = [
+        item.strip()
+        for line in lines[start + 1 : end]
+        for item in line.strip().removeprefix("- ").split(",")
+        if item.strip() not in {"", "-"}
+    ]
+
+    def key(name: str) -> str:
+        return " ".join(name.casefold().replace("-", " ").split())
+
+    seen = {key(name) for name in [title, *current]}
+    added: list[str] = []
+    for name in names:
+        if name.strip() and key(name) not in seen:
+            seen.add(key(name))
+            added.append(name.strip())
+    if not added:
+        return markdown, []
+    lines[start + 1 : end] = [", ".join([*current, *added]), ""]
+    return "\n".join(lines) + ("\n" if markdown.endswith("\n") else ""), added
 
 
 def _materialize_active_relation_candidates(
@@ -2306,6 +2371,28 @@ def _source_blocks_for_refs(conn: psycopg.Connection, refs: list[str]) -> list[d
         for row in rows:
             rows_out.append({"ref": f"{document_id}:{row['block_id']}", "text": row["text"]})
     return rows_out
+
+
+def restore_archived_clusters(
+    operation_id: str,
+    workspace_id: str,
+    entries: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """lint가 보관한 클러스터를 active.md로 되돌린다. 편입과 같은 공유 객체라 개념 잠금 아래서 쓴다."""
+    active_path = f"wiki/{workspace_id}/clusters/active.md"
+    archive_path = f"wiki/{workspace_id}/clusters/archived.md"
+    with concept_write_lock(workspace_id, operation_id):
+        active, archived, restored, skipped = _restore_archived_cluster_sections(
+            _read_optional_text_object(active_path),
+            _read_optional_text_object(archive_path),
+            entries,
+        )
+        written: list[str] = []
+        if restored:
+            write_text_object(active_path, active)
+            write_text_object(archive_path, archived)
+            written = [active_path, archive_path]
+    return {"written_object_keys": written, "restored_cluster_ids": restored, "skipped_cluster_ids": skipped}
 
 
 def _append_archived_clusters(

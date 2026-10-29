@@ -74,6 +74,10 @@ class RestoreWikiPagesUseCase:
         command: LintOperationRestoreCommand,
     ) -> dict[str, Any]:
         changed_pages = self._rebuild_pages(command)
+        affected_page_ids = [
+            *[page.page_id for page in command.rebuild_pages],
+            *command.deleted_pages,
+        ]
         supported_links = [
             link
             for page in changed_pages
@@ -82,10 +86,7 @@ class RestoreWikiPagesUseCase:
         link_changes = self._page_restore.calculate_lint_action_changes(
             command.target_operation_id,
             command.workspace_id,
-            [
-                *[page.page_id for page in command.rebuild_pages],
-                *command.deleted_pages,
-            ],
+            affected_page_ids,
             supported_links,
         )
         skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
@@ -96,6 +97,14 @@ class RestoreWikiPagesUseCase:
             False,
             list(command.deleted_pages),
         )
+        # lint가 승격·병합하며 archived.md로 옮긴 클러스터를 active.md로 되돌린다.
+        # 되돌리지 않으면 지운 페이지의 클러스터가 보관된 채로 남아 다시 승격되지 않는다.
+        cluster_changes = self._page_restore.restore_lint_clusters(
+            command.operation_id,
+            command.target_operation_id,
+            command.workspace_id,
+            affected_page_ids,
+        )
         changed_pages = _without_pages(changed_pages, skipped_page_ids)
         result = self._result(
             operation_id=command.operation_id,
@@ -104,6 +113,7 @@ class RestoreWikiPagesUseCase:
             changed_pages=changed_pages,
             deleted_pages=list(command.deleted_pages),
             link_changes=link_changes,
+            cluster_changes=cluster_changes,
             failed_actions=[],
         )
         self._start_embeddings(command.operation_id, changed_pages)

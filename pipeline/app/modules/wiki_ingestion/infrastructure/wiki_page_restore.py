@@ -39,10 +39,15 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             ],
             list[str],
         ],
+        restore_archived_clusters: Callable[
+            [str, str, list[dict[str, Any]]],
+            dict[str, list[str]],
+        ],
     ) -> None:
         self._read_text = read_text
         self._write_text = write_text
         self._apply_current_state_and_cleanup = apply_current_state_and_cleanup
+        self._restore_archived_clusters = restore_archived_clusters
 
     def apply_current_state_and_cleanup(
         self,
@@ -176,6 +181,31 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
         affected_page_ids: list[str],
         supported_links: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]:
+        contributions = self._lint_contributions(target_operation_id, workspace_id, affected_page_ids)
+        return calculate_lint_link_changes(contributions, supported_links)
+
+    def restore_lint_clusters(
+        self,
+        operation_id: str,
+        target_operation_id: str,
+        workspace_id: str,
+        affected_page_ids: list[str],
+    ) -> dict[str, list[str]]:
+        entries = [
+            entry
+            for contribution in self._lint_contributions(target_operation_id, workspace_id, affected_page_ids)
+            for entry in contribution.get("archived_clusters", [])
+        ]
+        if not entries:
+            return {"written_object_keys": [], "restored_cluster_ids": [], "skipped_cluster_ids": []}
+        return self._restore_archived_clusters(operation_id, workspace_id, entries)
+
+    def _lint_contributions(
+        self,
+        target_operation_id: str,
+        workspace_id: str,
+        affected_page_ids: list[str],
+    ) -> list[dict[str, Any]]:
         contributions = []
         try:
             for page_id in dict.fromkeys(affected_page_ids):
@@ -195,4 +225,4 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             raise PageRebuildError(
                 f"failed to restore lint actions:{target_operation_id}"
             ) from exc
-        return calculate_lint_link_changes(contributions, supported_links)
+        return contributions

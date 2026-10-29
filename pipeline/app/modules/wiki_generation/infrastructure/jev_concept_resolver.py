@@ -76,16 +76,23 @@ def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptReso
     client = build_jev_client(JEV_CONCEPT_MERGE_ENABLED_ENV)
     if client is None:
         return None
-    # 편입 워커는 BGE-M3를 직접 올리지 않는다(ADR-0026). 임베딩 서버가 없으면 후보를 거를 수 없어 Jev를 쓰지 않는다.
-    if not os.environ.get("EMBEDDING_SERVICE_URL"):
-        logger.warning("[Jev concept merge 꺼짐] EMBEDDING_SERVICE_URL이 없어 Jev 개념 판정을 쓰지 않습니다.")
-        return None
-    try:
-        embedding_model = _remote_embedding_model()
-    except RuntimeError as exc:
-        logger.warning("[Jev concept merge 꺼짐] 임베딩 서버 설정 오류: %s", exc)
+    # 임베딩 서버가 없으면 후보를 거를 수 없어 Jev를 쓰지 않는다.
+    embedding_model = embedding_server_model()
+    if embedding_model is None:
+        logger.warning("[Jev concept merge 꺼짐] 임베딩 서버를 쓸 수 없어 Jev 개념 판정을 쓰지 않습니다.")
         return None
     return JevConceptResolver(client, fallback, embedding_model)
+
+
+def embedding_server_model() -> RemoteEmbeddingModel | None:
+    """임베딩 서버 모델. 편입 워커는 BGE-M3를 직접 올리지 않으므로(ADR-0026) 서버가 없거나 설정이 잘못되면 None이다."""
+    if not os.environ.get("EMBEDDING_SERVICE_URL"):
+        return None
+    try:
+        return _remote_embedding_model()
+    except RuntimeError as exc:
+        logger.warning("[임베딩 서버 꺼짐] 설정 오류: %s", exc)
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -194,33 +201,37 @@ class JevConceptResolver(ConceptResolver):
         query = _concept_text(concept)
         texts = [_concept_text(candidate) for candidate in others]
         scores = [
-            hybrid_score(_dot(vectors[query], vectors[text]), lexical, CANDIDATE_EMBEDDING_WEIGHT)
+            hybrid_score(vector_similarity(vectors[query], vectors[text]), lexical, CANDIDATE_EMBEDDING_WEIGHT)
             for text, lexical in zip(texts, self._text_search.score(query, texts), strict=True)
         ]
         ranked = sorted(zip(scores, others, strict=True), key=lambda row: (-row[0], row[1]["slug"]))
         return [candidate for _, candidate in ranked[:CANDIDATE_LIMIT]]
 
     def _embed(self, texts: list[str]) -> dict[str, array]:
-        """개념 텍스트 벡터를 돌려준다. 기존 개념은 편입마다 다시 오므로 (모델, 텍스트 해시)로 캐시한다."""
-        model_name = self._embedding_model.model_name
-        keys = {text: (model_name, hashlib.sha256(text.encode("utf-8")).hexdigest()) for text in texts}
+        try:
+            return cached_embeddings(self._embedding_model, texts)
+        except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
+            raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+
+
+def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, array]:
+    """텍스트 벡터를 돌려준다. 기존 개념·클러스터는 편입마다 다시 오므로 (모델, 텍스트 해시)로 캐시한다."""
+    model_name = model.model_name
+    keys = {text: (model_name, hashlib.sha256(text.encode("utf-8")).hexdigest()) for text in texts}
+    with _embedding_cache_lock:
+        found = {text: _embedding_cache[key] for text, key in keys.items() if key in _embedding_cache}
+    missing = [text for text in keys if text not in found]
+    if missing:
+        # 임베딩 서버는 텍스트당 MAX_TEXT_CHARS까지만 받는다. 개념 텍스트는 보통 그보다 훨씬 짧다.
+        vectors = model.embed([text[:MAX_TEXT_CHARS] for text in missing])
+        for text, vector in zip(missing, vectors, strict=True):
+            found[text] = array("f", vector)
+        # 결과는 위에서 모은 found로 돌려준다. 캐시를 비워도 이번 결과에는 영향이 없다.
         with _embedding_cache_lock:
-            found = {text: _embedding_cache[key] for text, key in keys.items() if key in _embedding_cache}
-        missing = [text for text in keys if text not in found]
-        if missing:
-            try:
-                # 임베딩 서버는 텍스트당 MAX_TEXT_CHARS까지만 받는다. 개념 텍스트는 보통 그보다 훨씬 짧다.
-                vectors = self._embedding_model.embed([text[:MAX_TEXT_CHARS] for text in missing])
-            except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
-                raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
-            for text, vector in zip(missing, vectors, strict=True):
-                found[text] = array("f", vector)
-            # 결과는 위에서 모은 found로 돌려준다. 캐시를 비워도 이번 결과에는 영향이 없다.
-            with _embedding_cache_lock:
-                if len(_embedding_cache) + len(missing) > EMBEDDING_CACHE_LIMIT:
-                    _embedding_cache.clear()
-                _embedding_cache.update({keys[text]: found[text] for text in missing})
-        return found
+            if len(_embedding_cache) + len(missing) > EMBEDDING_CACHE_LIMIT:
+                _embedding_cache.clear()
+            _embedding_cache.update({keys[text]: found[text] for text in missing})
+    return found
 
 
 def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_slugs: set[str]) -> str | None:
@@ -326,7 +337,7 @@ def _top_probabilities(answers: dict[str, JsonDict], limit: int = 3) -> str:
     )
 
 
-def _dot(left: array, right: array) -> float:
+def vector_similarity(left: array, right: array) -> float:
     return max(0.0, min(1.0, float(sum(a * b for a, b in zip(left, right, strict=True)))))
 
 

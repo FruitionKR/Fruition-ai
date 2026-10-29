@@ -121,6 +121,9 @@ class ArtifactStore:
             self.cleaned_pages.append((workspace_id, deleted_page_ids))
         return self.skipped_page_ids
 
+    def restore_archived_clusters(self, operation_id: str, workspace_id: str, entries: list[dict]) -> dict:
+        raise AssertionError("보관한 클러스터가 없는 lint 복원은 클러스터 파일을 건드리지 않는다.")
+
 
 class EmbeddingJob:
     def __init__(self) -> None:
@@ -139,6 +142,7 @@ def _restore(store: ArtifactStore) -> ObjectStorageWikiPageRestore:
         store.read_text,
         store.write_text,
         store.apply_current_state_and_cleanup,
+        store.restore_archived_clusters,
     )
 
 
