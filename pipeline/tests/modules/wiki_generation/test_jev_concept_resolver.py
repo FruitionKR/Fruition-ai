@@ -59,7 +59,7 @@ EXISTING = [
 
 class JevConceptResolverTest(unittest.TestCase):
     def test_merges_chosen_candidate_and_skips_concepts_without_definition(self) -> None:
-        jev = MappingJev({"memoization-new": "memoization"})
+        jev = MappingJev({"memoization-new": "merge:memoization"})
         fallback = RecordingResolver()
 
         result = JevConceptResolver(jev, fallback).resolve(INCOMING, EXISTING, [])
@@ -102,12 +102,37 @@ class JevConceptResolverTest(unittest.TestCase):
             {"slug": "a", "title": "평균", "definition": "합을 개수로 나눈 값이다."},
             {"slug": "b", "title": "산술평균", "definition": "합을 개수로 나눈 값이다."},
         ]
-        jev = MappingJev({"a": "b", "b": "mean"})
+        jev = MappingJev({"a": "merge:b", "b": "merge:mean"})
         existing = [{"slug": "mean", "title": "mean", "aliases": [], "summary": "합을 개수로 나눈 값이다."}]
 
         result = JevConceptResolver(jev, RecordingResolver()).resolve(incoming, existing)
 
         self.assertEqual([item["incoming_slug"] for item in result["resolutions"]], ["b"])
+
+
+    def test_link_choice_keeps_concept_new_and_links_it(self) -> None:
+        jev = MappingJev({"memoization-new": "link:cache"})
+
+        result = JevConceptResolver(jev, RecordingResolver()).resolve(INCOMING, EXISTING, [])
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memoization-new", "decision": "link_to", "canonical_slug": "cache", "alias_to_add": None}],
+        )
+
+    def test_link_to_a_merged_incoming_concept_is_left_to_the_slug_map(self) -> None:
+        # 병합을 따라가는 처리는 실제로 적용된 병합(concept_slug_map)을 보는 LinkBuilder가 맡는다.
+        incoming = [
+            {"slug": "a", "title": "평균", "definition": "합을 개수로 나눈 값이다."},
+            {"slug": "b", "title": "가중 평균", "definition": "가중치를 곱한 합을 가중치 합으로 나눈 값이다."},
+        ]
+        existing = [{"slug": "mean", "title": "mean", "aliases": [], "summary": "합을 개수로 나눈 값이다."}]
+        jev = MappingJev({"a": "merge:mean", "b": "link:a"})
+
+        result = JevConceptResolver(jev, RecordingResolver()).resolve(incoming, existing)
+
+        self.assertIn({"incoming_slug": "b", "decision": "link_to", "canonical_slug": "a", "alias_to_add": None},
+                      result["resolutions"])
 
 
 class WithJevConceptMergeTest(unittest.TestCase):

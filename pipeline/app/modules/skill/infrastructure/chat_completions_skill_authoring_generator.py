@@ -31,6 +31,10 @@ class ChatCompletionsSkillAuthoringGenerator:
         self._system_prompt = system_prompt
         self._classifier_prompt = classifier_prompt
 
+    @property
+    def classifier_prompt(self) -> str:
+        return self._classifier_prompt
+
     def classify(
         self,
         instruction: str,
@@ -87,18 +91,7 @@ class ChatCompletionsSkillAuthoringGenerator:
     ) -> dict[str, object]:
         return self._client.complete_json(
             system_prompt,
-            json.dumps(
-                {
-                    "instruction": instruction,
-                    "requested_description": requested_description,
-                    "references": [
-                        {"markdown_structure": extract_markdown_structure(reference.markdown)}
-                        for reference in references
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(intent_payload(instruction, references, requested_description), ensure_ascii=False, indent=2),
         )
 
     def _complete(self, payload: dict[str, object]) -> dict[str, object]:
@@ -106,6 +99,21 @@ class ChatCompletionsSkillAuthoringGenerator:
             self._system_prompt,
             json.dumps(payload, ensure_ascii=False, indent=2),
         )
+
+
+def intent_payload(
+    instruction: str,
+    references: tuple[SkillAuthoringReference, ...],
+    requested_description: str | None,
+) -> dict[str, object]:
+    """의도 분류 입력. Jev 분류기도 같은 상태를 쓴다."""
+    return {
+        "instruction": instruction,
+        "requested_description": requested_description,
+        "references": [
+            {"markdown_structure": extract_markdown_structure(reference.markdown)} for reference in references
+        ],
+    }
 
 
 def build_skill_authoring_generator(

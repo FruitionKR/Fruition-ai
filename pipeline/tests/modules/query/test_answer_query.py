@@ -1908,6 +1908,7 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
         relation_types = [
             "source_mentions_concept",
             "concept_related_to",
+            "related_to",
             "part_of",
             "child_of",
             "uses_or_depends_on",
@@ -1954,7 +1955,7 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
         )
         self.assertEqual(
             {item.page.id for item in graph_context.nodes},
-            {"source:seed", *(f"concept:{index}" for index in range(1, 8))},
+            {"source:seed", *(f"concept:{index}" for index in range(1, 9))},
         )
         self.assertFalse(
             any(
