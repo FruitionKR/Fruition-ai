@@ -268,6 +268,21 @@ class JevFolderResolverTest(unittest.TestCase):
         self.assertEqual(groups, [("f-minutes", "f-plan-minutes")])
         self.assertEqual(len(choices), 1 + len(folder_entries(TREE)) + 1)
 
+    def test_names_differing_only_in_spacing_or_case_form_one_group(self) -> None:
+        from app.modules.agent.domain.folder_lookup import FolderEntry
+        from app.modules.agent.infrastructure.jev_folder_resolver import folder_choices
+
+        folders = [
+            FolderEntry(id="a", name="Archive", path=("Archive",), child_folders=(), child_documents=()),
+            FolderEntry(id="b", name="archive", path=("팀", "archive"), child_folders=(), child_documents=()),
+            FolderEntry(id="c", name="회의 록", path=("회의 록",), child_folders=(), child_documents=()),
+            FolderEntry(id="d", name="회의록", path=("팀", "회의록"), child_folders=(), child_documents=()),
+        ]
+
+        groups = sorted(ids for text, ids in folder_choices(folders).values() if "2곳 전부" in text)
+
+        self.assertEqual(groups, [("a", "b"), ("c", "d")])
+
     def test_group_choice_returns_every_same_name_folder_and_none_returns_empty(self) -> None:
         group, _ = self._resolver(FakeJevClient(lambda key, text: "2곳 전부" in text))
         nothing, _ = self._resolver(FakeJevClient(lambda key, text: key == "none"))

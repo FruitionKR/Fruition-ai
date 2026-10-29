@@ -73,23 +73,29 @@ class JevFolderResolver:
 
 def folder_choices(folders: list[FolderEntry]) -> dict[str, tuple[str, tuple[str, ...]]]:
     """선택지 키 → (설명, 폴더 id들). 폴더마다 하나, 같은 이름이 여러 곳이면 이름 묶음 하나, 그리고 지목 없음."""
+    # LLM 경로 프롬프트와 같이 띄어쓰기·대소문자만 다른 이름은 같은 이름으로 본다.
     by_name: dict[str, list[FolderEntry]] = defaultdict(list)
     for folder in folders:
-        by_name[folder.name].append(folder)
+        by_name[_name_key(folder.name)].append(folder)
     choices: dict[str, tuple[str, tuple[str, ...]]] = {NONE_CHOICE: ("특정 폴더를 지목하지 않음", ())}
     for index, folder in enumerate(folders, start=1):
-        same = len(by_name[folder.name])
+        same = len(by_name[_name_key(folder.name)])
         # 같은 이름이 여러 곳이면 개별 경로는 단서가 있을 때만 고르게 하고, 단서가 없으면 아래 묶음을 고르게 한다.
         hint = f" — 같은 이름 폴더가 {same}곳 있어, 이 경로를 가리키는 단서가 있을 때만" if same > 1 else ""
         top = ", 최상위" if len(folder.path) == 1 else ""
         choices[f"f{index}"] = (f"폴더 {_label(folder.name)} (경로: {' / '.join(folder.path)}{top}){hint}", (folder.id,))
-    for index, (name, same) in enumerate(((n, s) for n, s in by_name.items() if len(s) > 1), start=1):
+    for index, same in enumerate((s for s in by_name.values() if len(s) > 1), start=1):
+        name = same[0].name
         paths = ", ".join(" / ".join(folder.path) for folder in same)
         choices[f"n{index}"] = (
             f"이름이 {_label(name)}인 폴더 {len(same)}곳 전부 ({paths}) — 어느 쪽인지 단서 없이 이름만 말했을 때",
             tuple(folder.id for folder in same),
         )
     return choices
+
+
+def _name_key(name: str) -> str:
+    return "".join(name.split()).casefold()
 
 
 def _label(name: str) -> str:
