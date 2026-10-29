@@ -32,7 +32,6 @@ from app.core.jev_client import (
     build_jev_client,
     choice_probability,
 )
-from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.query.domain.scoring import hybrid_score
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
@@ -270,7 +269,7 @@ def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:
 
 
 def _request(concept: JsonDict, candidates: list[JsonDict]) -> dict[str, Any]:
-    # 규칙은 질문마다 반복하지 않고 state에 한 번만 둔다. 보안 경계는 클라이언트가 붙이는 그대로 토큰에 센다.
+    # 규칙과 보안 경계는 질문마다 반복하지 않고 state에 한 번만 둔다(경계는 클라이언트가 넣는다).
     state = {
         "rule": CONCEPT_PAIR_RULE,
         "incoming": {
@@ -294,7 +293,7 @@ def _request(concept: JsonDict, candidates: list[JsonDict]) -> dict[str, Any]:
         "questions": {
             candidate["slug"]: {
                 "type": "choice",
-                "instructions": with_llm_security_boundary(f"Judge candidate {candidate['slug']} against incoming."),
+                "instructions": f"Judge candidate {candidate['slug']} against incoming.",
                 "criteria": PAIR_CRITERIA,
             }
             for candidate in candidates

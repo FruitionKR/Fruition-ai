@@ -21,7 +21,6 @@ from typing import Any
 
 from app.core.jev_batches import MAX_BATCH_TOKENS, token_batches
 from app.core.jev_client import JevClient, JevUnavailable, choice_probability
-from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.query.application.ports import (
     EmbeddingSearchPort,
     EvidenceSelectorPort,
@@ -194,8 +193,8 @@ def _request(question: str, batch: list[_Candidate]) -> dict[str, Any]:
         "questions": {
             candidate.unit.id: {
                 "type": "choice",
-                # 평가와 같은 문구다. 보안 경계가 이미 있으면 클라이언트가 다시 붙이지 않는다.
-                "instructions": with_llm_security_boundary(EVIDENCE_POLICY) + f"\n판정할 후보 ID: {candidate.unit.id}",
+                # 평가와 같은 문구다. 보안 경계는 클라이언트가 state에 한 번 넣는다.
+                "instructions": EVIDENCE_POLICY + f"\n판정할 후보 ID: {candidate.unit.id}",
                 "criteria": EVIDENCE_CRITERIA,
             }
             for candidate in batch

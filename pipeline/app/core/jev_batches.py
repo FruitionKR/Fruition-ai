@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 
 import tiktoken
 
-from app.core.jev_client import JEV_MODEL, JevUnavailable
+from app.core.jev_client import JEV_MODEL, JevUnavailable, with_security_boundary
 
 # Jev는 state와 가장 긴 질문 합계에 32k 제한이 있어 tokenizer 차이 여유를 둔다.
 MAX_BATCH_TOKENS = 28_000
@@ -49,7 +49,8 @@ def request_tokens(request: dict[str, Any]) -> int:
         encoding = _encoding()
     except Exception as exc:  # tokenizer 파일을 못 읽으면 크기를 알 수 없어 Jev를 쓰지 않는다.
         raise JevUnavailable(f"tokenizer를 불러오지 못했습니다: {type(exc).__name__}") from None
-    body = {"model": JEV_MODEL, **request}
+    # 클라이언트가 보내는 그대로 state에 보안 경계를 넣고 센다.
+    body = {"model": JEV_MODEL, **request, "state": with_security_boundary(request["state"])}
     return len(encoding.encode(json.dumps(body, ensure_ascii=False, sort_keys=True)))
 
 

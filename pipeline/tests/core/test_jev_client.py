@@ -14,6 +14,7 @@ from app.core.jev_client import (
 )
 from app.core.llm_prompt import LLM_SECURITY_BOUNDARY
 
+STATE = json.dumps({"question": "state"})
 QUESTIONS = {
     "q0": {
         "type": "choice",
@@ -85,22 +86,32 @@ class JevClientTest(unittest.TestCase):
         requests: list[httpx.Request] = []
         client = _client(httpx.Response(200, json=_answer()), requests=requests)
 
-        answers = client.choose("연락처 010-1234-5678", QUESTIONS)
+        answers = client.choose(json.dumps({"note": "연락처 010-1234-5678"}, ensure_ascii=False), QUESTIONS)
 
         self.assertEqual(answers["q0"]["choice"], "include")
         body = json.loads(requests[0].content)
         self.assertEqual(body["model"], JEV_MODEL)
         self.assertNotIn("010-1234-5678", body["state"])
-        self.assertIn(LLM_SECURITY_BOUNDARY.strip(), body["questions"]["q0"]["instructions"])
+        # 보안 경계는 state에 한 번만 넣고 질문에는 붙이지 않는다.
+        self.assertEqual(json.loads(body["state"])["security_boundary"], LLM_SECURITY_BOUNDARY)
+        self.assertNotIn(LLM_SECURITY_BOUNDARY.strip(), body["questions"]["q0"]["instructions"])
+
+    def test_rejects_state_that_is_not_a_json_object(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(httpx.Response(200, json=_answer()), requests=requests)
+
+        with self.assertRaises(ValueError):
+            client.choose("plain text", QUESTIONS)
+        self.assertEqual(requests, [])
 
     def test_credit_exhaustion_blocks_following_calls_without_request(self) -> None:
         requests: list[httpx.Request] = []
         client = _client(httpx.Response(402, json={"error": "no credits"}), requests=requests)
 
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
 
         self.assertEqual(len(requests), 1)
 
@@ -110,7 +121,7 @@ class JevClientTest(unittest.TestCase):
             httpx.Response(200, json=_answer("exclude")),
         )
 
-        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "exclude")
+        self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "exclude")
 
     def test_retries_overload_up_to_four_attempts(self) -> None:
         requests: list[httpx.Request] = []
@@ -122,26 +133,26 @@ class JevClientTest(unittest.TestCase):
             requests=requests,
         )
 
-        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "include")
+        self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "include")
         self.assertEqual(len(requests), 4)
 
     def test_repeated_server_error_is_unavailable(self) -> None:
         client = _client(*(httpx.Response(503) for _ in range(4)))
 
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
 
     def test_long_retry_after_is_unavailable_without_waiting(self) -> None:
         client = _client(httpx.Response(429, headers={"retry-after": "120"}))
 
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
 
     def test_batch_client_retries_timeouts(self) -> None:
         requests: list[httpx.Request] = []
         client = _client(httpx.ReadTimeout("slow"), httpx.Response(200, json=_answer()), requests=requests)
 
-        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "include")
+        self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "include")
         self.assertEqual(len(requests), 2)
 
     def test_interactive_client_does_not_retry_timeouts(self) -> None:
@@ -149,7 +160,7 @@ class JevClientTest(unittest.TestCase):
         client = _client(httpx.ReadTimeout("slow"), requests=requests, deadline_seconds=15.0)
 
         with self.assertRaisesRegex(JevUnavailable, "시간 초과"):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
         self.assertEqual(len(requests), 1)
         jev_client.time.sleep.assert_not_called()
 
@@ -158,7 +169,7 @@ class JevClientTest(unittest.TestCase):
         client = _client(httpx.Response(429, headers={"retry-after": "20"}), requests=requests, deadline_seconds=15.0)
 
         with self.assertRaisesRegex(JevUnavailable, "응답 예산"):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
         self.assertEqual(len(requests), 1)
         jev_client.time.sleep.assert_not_called()
 
@@ -171,7 +182,7 @@ class JevClientTest(unittest.TestCase):
             deadline_seconds=15.0,
         )
 
-        self.assertEqual(client.choose("state", QUESTIONS)["q0"]["choice"], "exclude")
+        self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "exclude")
         self.assertEqual(len(requests), 2)
         self.assertTrue(all(request.extensions["timeout"]["read"] <= 15.0 for request in requests))
 
@@ -179,7 +190,7 @@ class JevClientTest(unittest.TestCase):
         client = _client(httpx.Response(200, json=_answer("unknown")))
 
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
 
     def test_transport_error_is_unavailable(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -188,7 +199,7 @@ class JevClientTest(unittest.TestCase):
         client = JevClient("key", http=httpx.Client(transport=httpx.MockTransport(handler)))
 
         with self.assertRaises(JevUnavailable):
-            client.choose("state", QUESTIONS)
+            client.choose(STATE, QUESTIONS)
 
     def test_choice_probability_ignores_invalid_values(self) -> None:
         self.assertEqual(choice_probability({"probabilities": {"include": 0.7}}, "include"), 0.7)
