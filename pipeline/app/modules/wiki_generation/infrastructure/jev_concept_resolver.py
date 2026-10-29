@@ -14,10 +14,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import random
 from array import array
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from functools import lru_cache
 from typing import Any
 
 from app.core.jev_batches import token_batches
@@ -32,8 +34,7 @@ from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.query.domain.scoring import hybrid_score
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
-from app.modules.wiki_embedding.infrastructure.embedding_model import embedding_model_from_env
-from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
 from app.modules.wiki_generation.domain.text_utils import slugify
 
@@ -64,7 +65,21 @@ def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
     client = build_jev_client(JEV_CONCEPT_MERGE_ENABLED_ENV)
     if client is None:
         return resolver
-    return JevConceptResolver(client, resolver, embedding_model_from_env())
+    # 편입 워커는 BGE-M3를 직접 올리지 않는다(ADR-0026). 임베딩 서버가 없으면 후보를 거를 수 없어 기존 판정기를 쓴다.
+    if not os.environ.get("EMBEDDING_SERVICE_URL"):
+        logger.warning("[Jev concept merge 꺼짐] EMBEDDING_SERVICE_URL이 없어 기존 개념 병합을 씁니다.")
+        return resolver
+    try:
+        embedding_model = _remote_embedding_model()
+    except RuntimeError as exc:
+        logger.warning("[Jev concept merge 꺼짐] 임베딩 서버 설정 오류: %s", exc)
+        return resolver
+    return JevConceptResolver(client, resolver, embedding_model)
+
+
+@lru_cache(maxsize=1)
+def _remote_embedding_model() -> RemoteEmbeddingModel:
+    return RemoteEmbeddingModel.from_env()
 
 
 class JevConceptResolver(ConceptResolver):

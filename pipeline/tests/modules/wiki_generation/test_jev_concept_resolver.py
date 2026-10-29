@@ -242,12 +242,25 @@ class WithJevConceptMergeTest(unittest.TestCase):
         with patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}):
             self.assertIs(with_jev_concept_merge(resolver), resolver)
 
-    def test_wraps_resolver_when_enabled_with_key(self) -> None:
+    def test_wraps_resolver_when_enabled_with_key_and_embedding_server(self) -> None:
+        env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key", "EMBEDDING_SERVICE_URL": "http://embedding"}
         with (
-            patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}),
-            patch.object(jev_concept_resolver, "embedding_model_from_env", return_value=AngleEmbedder()),
+            patch.dict("os.environ", env),
+            patch.object(jev_concept_resolver, "_remote_embedding_model", return_value=AngleEmbedder()),
         ):
             self.assertIsInstance(with_jev_concept_merge(RecordingResolver()), JevConceptResolver)
+
+    def test_keeps_existing_resolver_without_embedding_server(self) -> None:
+        # 편입 워커가 BGE-M3를 직접 올리지 않도록 임베딩 서버가 없거나 설정이 잘못되면 Jev 병합을 쓰지 않는다.
+        resolver = RecordingResolver()
+        env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}
+        with patch.dict("os.environ", env), patch.dict("os.environ", {"EMBEDDING_SERVICE_URL": ""}):
+            self.assertIs(with_jev_concept_merge(resolver), resolver)
+        with (
+            patch.dict("os.environ", {**env, "EMBEDDING_SERVICE_URL": "http://embedding"}),
+            patch.object(jev_concept_resolver, "_remote_embedding_model", side_effect=RuntimeError("no token")),
+        ):
+            self.assertIs(with_jev_concept_merge(resolver), resolver)
 
 
 if __name__ == "__main__":
