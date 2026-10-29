@@ -483,3 +483,33 @@ def test_link_to_resolution_keeps_the_concept_and_links_it_through_the_ingest_st
     assert ("concept:rolling-update", "concept:deployment") in {
         (link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"
     }
+
+
+def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [
+            {"slug": "weighted-mean", "title": "가중 평균", "aliases": []},
+            {"slug": "average", "title": "평균", "aliases": []},
+        ],
+        "evidence_units": [],
+    }
+    existing = [{"slug": "mean", "title": "Mean", "definition": "합을 개수로 나눈 값이다."}]
+    raw = {
+        "resolutions": [
+            {"incoming_slug": "weighted-mean", "decision": "link_to", "canonical_slug": "average"},
+            {"incoming_slug": "average", "decision": "merge_into", "canonical_slug": "mean"},
+        ]
+    }
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    links = LinkBuilder().build(apply_concept_resolutions(normalized, resolutions, existing))
+
+    assert [(link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"] == [
+        ("concept:weighted-mean", "concept:mean")
+    ]

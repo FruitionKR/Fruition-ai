@@ -120,7 +120,8 @@ class JevConceptResolverTest(unittest.TestCase):
             [{"incoming_slug": "memoization-new", "decision": "link_to", "canonical_slug": "cache", "alias_to_add": None}],
         )
 
-    def test_link_to_a_merged_incoming_concept_follows_the_merge(self) -> None:
+    def test_link_to_a_merged_incoming_concept_is_left_to_the_slug_map(self) -> None:
+        # 병합을 따라가는 처리는 실제로 적용된 병합(concept_slug_map)을 보는 LinkBuilder가 맡는다.
         incoming = [
             {"slug": "a", "title": "평균", "definition": "합을 개수로 나눈 값이다."},
             {"slug": "b", "title": "가중 평균", "definition": "가중치를 곱한 합을 가중치 합으로 나눈 값이다."},
@@ -130,7 +131,7 @@ class JevConceptResolverTest(unittest.TestCase):
 
         result = JevConceptResolver(jev, RecordingResolver()).resolve(incoming, existing)
 
-        self.assertIn({"incoming_slug": "b", "decision": "link_to", "canonical_slug": "mean", "alias_to_add": None},
+        self.assertIn({"incoming_slug": "b", "decision": "link_to", "canonical_slug": "a", "alias_to_add": None},
                       result["resolutions"])
 
 

@@ -93,9 +93,8 @@ class JevConceptResolver(ConceptResolver):
             for slug, target in merges.items()
             if target not in merges
         ]
-        # 연결 대상이 병합돼 사라지면 병합된 개념으로 잇는다.
         resolutions.extend(
-            {"incoming_slug": slug, "decision": "link_to", "canonical_slug": merges.get(target, target), "alias_to_add": None}
+            {"incoming_slug": slug, "decision": "link_to", "canonical_slug": target, "alias_to_add": None}
             for slug, target in links.items()
         )
         return resolutions
