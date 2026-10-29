@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
 from app.modules.wiki_generation.domain.entities import NormalizedConcept, NormalizedEvidence, SourceBlock, SourceDocument
-from app.modules.wiki_generation.domain.text_utils import contains_ci, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, slugify, unique_keep_order
 
 
 class PipelineValidationError(Exception):
@@ -240,6 +240,7 @@ class SemanticNormalizer:
             slug=slug,
             title=title,
             aliases=aliases,
+            tags=clean_concept_tags(c.get("tags") or [], title, aliases),
             definition=c.get("definition", ""),
             why_page_worthy=c.get("why_page_worthy", ""),
             anchor_reference_ids=anchor_refs,
@@ -248,6 +249,7 @@ class SemanticNormalizer:
 
     def _merge_concept(self, target: NormalizedConcept, incoming: NormalizedConcept) -> None:
         target.aliases = unique_keep_order(target.aliases + incoming.aliases)
+        target.tags = clean_concept_tags(target.tags + incoming.tags, target.title, target.aliases)
         if len(incoming.definition) > len(target.definition):
             target.definition = incoming.definition
         if len(incoming.why_page_worthy) > len(target.why_page_worthy):

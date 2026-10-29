@@ -18,6 +18,7 @@ from app.core.ai_database import connect_ai
 from app.core.pipeline_control import PipelineRunCancelledError
 from app.core.error_text import truncate_error
 from app.modules.wiki_generation.domain.text_utils import slugify
+from app.modules.wiki_generation.infrastructure.concept_resolution import concept_page_tags
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
     read_contributions,
     read_document,
@@ -1408,7 +1409,9 @@ def _concept_index_from_markdown(slug: str, title: str, markdown_uri: str, markd
     return {
         "slug": slug,
         "title": title,
-        "aliases": _markdown_list_section(markdown, "Aliases"),
+        # 페이지 골격은 별칭을 한 줄에 쉼표로 이어 쓴다(`## Aliases`).
+        "aliases": [alias.strip() for line in _markdown_list_section(markdown, "Aliases") for alias in line.split(",") if alias.strip()],
+        "tags": concept_page_tags(markdown),
         "definition": _markdown_section(markdown, "Definition"),
         "evidence": _markdown_list_section(markdown, "Evidence"),
         "why_page_worthy": _markdown_section(markdown, "Why It Matters"),

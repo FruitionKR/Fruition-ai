@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.modules.wiki_generation.domain.text_utils import slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, slugify, unique_keep_order
 
 
 VALID_DECISIONS = {"merge_into", "link_to", "create_new"}
@@ -237,6 +237,7 @@ def merge_concept_ledger(
             merged_by_slug[canonical_slug] = target
         else:
             target["aliases"] = unique_keep_order(target.get("aliases", []) + concept.get("aliases", []) + [concept.get("title"), original_slug])
+            target["tags"] = clean_concept_tags(target.get("tags", []) + concept.get("tags", []), target.get("title"), target["aliases"])
             target["anchor_reference_ids"] = unique_keep_order(target.get("anchor_reference_ids", []) + concept.get("anchor_reference_ids", []))
             target["mention_reference_ids"] = unique_keep_order(target.get("mention_reference_ids", []) + concept.get("mention_reference_ids", []))
             target["display_reference_ids"] = unique_keep_order(target.get("display_reference_ids", []) + concept.get("display_reference_ids", []))
@@ -272,7 +273,8 @@ def _read_concept_page(path: Path) -> dict[str, Any]:
     return {
         "slug": slug,
         "title": title,
-        "aliases": _aliases(frontmatter),
+        "aliases": _frontmatter_list(frontmatter, "aliases"),
+        "tags": _frontmatter_list(frontmatter, "tags"),
         "summary": _definition_summary(text),
         "path": str(path),
     }
@@ -305,8 +307,12 @@ def _definition_summary(text: str) -> str:
     return " ".join(lines)
 
 
-def _aliases(frontmatter: dict[str, str]) -> list[str]:
-    raw = frontmatter.get("aliases") or ""
+def concept_page_tags(markdown: str) -> list[str]:
+    return _frontmatter_list(_frontmatter(markdown), "tags")
+
+
+def _frontmatter_list(frontmatter: dict[str, str], key: str) -> list[str]:
+    raw = frontmatter.get(key) or ""
     return [item.strip().strip("'\"") for item in raw.strip("[]").split(",") if item.strip()]
 
 

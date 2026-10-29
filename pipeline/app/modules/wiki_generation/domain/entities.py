@@ -46,6 +46,7 @@ class NormalizedConcept:
     definition: str
     why_page_worthy: str
     anchor_reference_ids: List[str]
+    tags: List[str] = field(default_factory=list)
     mention_reference_ids: List[str] = field(default_factory=list)
     display_reference_ids: List[str] = field(default_factory=list)
     source_document_ids: List[str] = field(default_factory=list)
