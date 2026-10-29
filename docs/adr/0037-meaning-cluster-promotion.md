@@ -29,6 +29,7 @@ Accepted
   - `same`(`merge_into`): 새 페이지를 만들지 않고 그 개념에 근거를 병합한다. `merged_promotions`에 남는다.
   - `related`(`link_to`): 새 페이지를 만들고 대상마다 `concept_related_to` 링크를 잇는다(ADR-0038).
   - 판정 없음·Jev를 쓸 수 없음: 새 개념 페이지를 만든다.
+  - 생성한 페이지의 slug가 클러스터 id와 달라도 기존 개념의 slug와 같으면 새 페이지를 만들지 않고 그 개념에 근거를 병합한다(2026-10-29). 이전에는 같은 페이지 id를 받아 기존 개념 본문을 덮어썼다.
   - 판정은 페이지 생성처럼 개념 저장 잠금 전에 끝낸다. dry run이거나 승격을 materialize하지 않으면 판정하지 않는다.
 - lint는 승격·병합한 클러스터를 `archived.md`로 옮기면서 원래 섹션과 보관 항목을 그 페이지의 lint 기록(`pages/{page_id}/ops/{lint_operation_id}.json`의 `archived_clusters`)에 남긴다(2026-10-29). lint 복원은 이를 읽어 클러스터를 `active.md`로 되돌리고 보관 항목을 지운다. 되돌리지 않으면 페이지만 지워지고 클러스터는 보관된 채 다시 승격되지 않았다. 같은 id의 클러스터가 그 사이 새로 생겼으면 덮어쓰지 않고 건너뛴다.
 

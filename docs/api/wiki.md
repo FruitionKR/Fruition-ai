@@ -16,7 +16,7 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 24,000자까지 섹션 단위로 보낸다. 승격 후보
 (`Promotion.status: candidate`)는 근거를 덧붙인 뒤 두 경로로만 정한다. 이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터,
 이름이 달라도 Jev 쌍 판정이 같은 개념으로 고른 클러스터는 그 개념(`target: concept:{slug}`)으로, 근거가 덧붙은 클러스터는
-클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격 후보를 `target`·같은 slug의 개념에 병합하거나, 생성한 개념 페이지를
+클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
 기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합하고 관련 개념이면 새 페이지를 만들고 `concept_related_to`로 잇는다.
 판정 링크는 `materialized_relations`에 담겨 lint 복원 시 함께 지운다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
 `archived.md`로 옮기고, lint 복원은 이를 `active.md`로 되돌린다([ADR 0037](../adr/0037-meaning-cluster-promotion.md), [ADR 0038](../adr/0038-concept-to-concept-links.md)).

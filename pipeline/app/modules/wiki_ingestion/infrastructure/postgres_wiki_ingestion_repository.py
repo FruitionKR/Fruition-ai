@@ -2014,6 +2014,11 @@ def _materialize_promotion_candidates(
         judgment = judgments.get(cluster_id) or {}
         if target_slug not in existing_concept_ids and judgment.get("decision") == "merge_into":
             target_slug = judgment["canonical_slug"]
+        page = prepared_pages.get(cluster_id)
+        generated_slug = slugify(str(page.get("slug") or cluster_id)) if page else ""
+        # 생성한 페이지의 slug가 기존 개념이면 같은 페이지 id를 받아 그 개념을 덮어쓰므로 근거만 병합한다.
+        if target_slug not in existing_concept_ids and generated_slug in existing_concept_ids:
+            target_slug = generated_slug
         if target_slug in existing_concept_ids:
             merged_page = _merge_promotion_into_existing_concept(
                 conn,
@@ -2042,7 +2047,6 @@ def _materialize_promotion_candidates(
                         f"merged_to: concept:{target_slug}\nmerged_at: {_today_iso()}",
                     )
             continue
-        page = prepared_pages.get(cluster_id)
         if page is None:
             continue
         source_refs = _unique_keep_order(ref for claim in claims for ref in claim.get("refs", []))
@@ -2059,7 +2063,7 @@ def _materialize_promotion_candidates(
         ).strip()
         markdown = sanitize_ai_markdown(markdown)
         title = str(page.get("title") or cluster_id).strip()
-        slug = slugify(str(page.get("slug") or cluster_id))
+        slug = generated_slug
         if not markdown or not slug or slug == "untitled":
             continue
         page_id = _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug)

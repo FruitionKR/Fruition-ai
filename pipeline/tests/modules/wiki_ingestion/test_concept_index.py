@@ -1096,7 +1096,7 @@ class _FakeConceptJudge:
         return self.resolutions
 
 
-def _materialize_with_judge(monkeypatch, judge):
+def _materialize_with_judge(monkeypatch, judge, page_slug="orchid-lease"):
     upserts = []
     links = []
     active = """# Active Meaning Clusters
@@ -1147,7 +1147,7 @@ source_refs: [doc-1]
     monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
     monkeypatch.setattr(repository, "_upsert_wiki_page_link", lambda *args: links.append(args[1:]))
     page = {
-        "slug": "orchid-lease",
+        "slug": page_slug,
         "title": "Orchid Lease",
         "markdown": "# Orchid Lease\n\n## Definition\nOrchid Lease는 공급 계약이다.\n\n## Aliases\n-\n",
     }
@@ -1231,6 +1231,20 @@ def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:
         assert [item["concept_slug"] for item in result["promotions"]] == ["orchid-lease"]
         assert result["merged_promotions"] == []
         assert links == []
+
+
+def test_lint_promotion_merges_when_generated_slug_is_existing_concept(monkeypatch) -> None:
+    # 생성한 페이지의 slug가 클러스터 id와 달라도 기존 개념과 같으면 덮어쓰지 않고 그 개념에 병합한다.
+    result, upserts, _links = _materialize_with_judge(monkeypatch, None, page_slug="Supply Contract")
+
+    assert result["promotions"] == []
+    assert result["merged_promotions"] == [
+        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
+    ]
+    [upsert] = upserts
+    assert upsert[2:5] == ("concept", "공급 계약", "supply-contract")
+    assert result["page_changes"][0]["content_action"] == "append_evidence"
+    assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
 
 
 def test_lint_restore_returns_archived_cluster_to_active(monkeypatch) -> None:
