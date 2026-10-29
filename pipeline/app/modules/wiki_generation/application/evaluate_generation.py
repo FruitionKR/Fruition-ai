@@ -35,6 +35,16 @@ NOTE_ITEM_KEYS = (
     "mentions",
     "evidence_claims",
 )
+# 평가 판단에 쓰지 않는 필드: 단일 문서라 항목마다 같은 문서 ID, 집계값, 다른 쪽 목록에 이미 있는 역방향 ID.
+EVALUATION_OMITTED_ITEM_KEYS = {
+    "source_document_id",
+    "source_document_ids",
+    "mention_count",
+    "importance_score",
+    "display_reference_ids",
+    "mention_reference_ids",
+    "evidence_claim_ids",
+}
 
 
 def evaluate_generation(
@@ -87,7 +97,10 @@ def _evaluate_window(
             for block in blocks
         ],
         "normalized": {
-            **{key: normalized.get(key, []) for key in NORMALIZED_LIST_KEYS},
+            **{
+                key: [_evaluation_item(item) for item in normalized.get(key, [])]
+                for key in NORMALIZED_LIST_KEYS
+            },
             "semantic_notes": [
                 {key: value for key, value in note.items() if key not in NOTE_ITEM_KEYS}
                 for note in normalized.get("semantic_notes", [])
@@ -101,6 +114,16 @@ def _evaluate_window(
     )
     _normalize_evaluation(evaluation)
     return evaluation
+
+
+def _evaluation_item(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    omitted = set(EVALUATION_OMITTED_ITEM_KEYS)
+    # term은 정규화가 name/title을 복사해 둔 값이라, 같으면 한 번만 보낸다.
+    if item.get("term") is not None and item.get("term") in (item.get("name"), item.get("title")):
+        omitted.add("term")
+    return {key: value for key, value in item.items() if key not in omitted}
 
 
 def _block_windows(blocks: list[Any], max_chars: int) -> list[list[Any]]:
