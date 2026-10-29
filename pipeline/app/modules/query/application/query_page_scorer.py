@@ -192,21 +192,20 @@ class QueryPageScorer:
         return {normalized for value in values if (normalized := self._normalize_name(value))}
 
     def _extract_aliases(self, markdown: str) -> list[str]:
-        aliases = []
-        in_alias_block = False
+        """개념 페이지 `## Aliases` 섹션의 쉼표 목록을 읽는다. 편입이 쓰고 갱신하는 형식이다."""
+        aliases: list[str] = []
+        in_aliases = False
         for line in markdown.splitlines():
             stripped = line.strip()
-            if re.match(r"^aliases\s*:\s*$", stripped, flags=re.IGNORECASE):
-                in_alias_block = True
+            if stripped.startswith("## "):
+                in_aliases = stripped.casefold() == "## aliases"
                 continue
-            if in_alias_block:
-                if stripped.startswith("-"):
-                    aliases.append(stripped.lstrip("-").strip().strip('"').strip("'"))
-                    continue
-                in_alias_block = False
-            match = re.match(r"^(aliases|alias|별칭|다른 이름)\s*[:：]\s*(.+)$", stripped, flags=re.IGNORECASE)
-            if match:
-                aliases.extend(part.strip().strip('"').strip("'") for part in re.split(r"[,/、，]", match.group(2)) if part.strip())
+            if in_aliases:
+                aliases.extend(
+                    item.strip()
+                    for item in stripped.removeprefix("- ").split(",")
+                    if item.strip() not in {"", "-"}
+                )
         return aliases
 
     def _normalize_name(self, value: str) -> str:
