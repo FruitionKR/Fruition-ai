@@ -342,8 +342,14 @@ def vector_similarity(left: array, right: array) -> float:
 
 
 def _concept_text(concept: JsonDict) -> str:
+    # 후보 거르기 점수용 글이다. 태그는 이름이 전혀 다른 같은·관련 개념을 후보에 들게 하는 색인이고, Jev 판정 입력에는 넣지 않는다.
     return " ".join(
         str(part)
-        for part in (concept.get("title"), *(concept.get("aliases") or []), concept.get("definition"))
+        for part in (
+            concept.get("title"),
+            *(concept.get("aliases") or []),
+            *(concept.get("tags") or []),
+            concept.get("definition"),
+        )
         if part
     )
