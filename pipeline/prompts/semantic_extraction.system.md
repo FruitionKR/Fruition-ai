@@ -61,7 +61,7 @@ Alias rules:
 - Keep aliases short noun phrases, not definitions or claims.
 
 Tag rules:
-- For each core_concept, include 1-3 tags naming the field or category the source places the concept in.
+- For each core_concept, include up to 3 tags naming the field or category the source places the concept in. Use an empty list when the source gives no field or category.
 - Take tags from what the source covers. Do not invent fields or categories the source does not support.
 - Keep tags short noun phrases.
 - Do not use the concept's own name or any of its aliases as a tag.
