@@ -2,8 +2,9 @@
 
 선택지는 분류 결과 계약(`author_skill._intent_result`)을 통과하는 조합이다.
 - 미지원·애매: skill_kinds 없음
-- 지원: skill_kinds 조합 × reference_mode(참고 문서가 없으면 none만, fixed-template은 template일 때만)
-  × requires_source(새 문서를 만드는 document-create·template일 때만 true/false, 아니면 false)
+- 지원: skill_kinds 조합 × reference_mode(참고 문서가 없으면 none만, fixed-template은 template이고 참고 문서가 1개일 때만)
+  × requires_source(규칙으로 정해지지 않는 document-create일 때만 true/false. template은 규칙
+  `inferred_requires_source`가 정해 분류값을 쓰지 않으므로 false만 둔다)
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from app.modules.skill.infrastructure.chat_completions_skill_authoring_generator
 )
 
 SKILL_KINDS = ("document-create", "document-edit", "folder-organize", "template")
-CREATES_DOCUMENT = {"document-create", "template"}
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +46,7 @@ class JevSkillIntentClassifier:
         requested_description: str | None,
     ) -> dict[str, object]:
         state = json.dumps(intent_payload(instruction, references, requested_description), ensure_ascii=False, indent=2)
-        options = intent_options(bool(references))
+        options = intent_options(len(references))
         # 라우팅과 같이 요청 상태로 정한 고정 무작위 순서로 섞어 선택지 위치가 단서가 되지 않게 한다.
         random.Random(hashlib.sha256(state.encode()).hexdigest()).shuffle(options)
         choices = {f"c{index}": option for index, option in enumerate(options)}
@@ -68,18 +68,20 @@ class JevSkillIntentClassifier:
         return self._generator.generate(*args, **kwargs)
 
 
-def intent_options(has_references: bool) -> list[dict[str, object]]:
+def intent_options(reference_count: int) -> list[dict[str, object]]:
     options: list[dict[str, object]] = [
         {"decision": decision, "skill_kinds": [], "reference_mode": "none", "requires_source": False}
         for decision in ("unsupported", "ambiguous")
     ]
     for size in range(1, len(SKILL_KINDS) + 1):
         for kinds in itertools.combinations(SKILL_KINDS, size):
-            modes = ["none", "structure-reference", "fixed-template"] if has_references else ["none"]
+            modes = ["none", "structure-reference", "fixed-template"] if reference_count else ["none"]
             for mode in modes:
-                if mode == "fixed-template" and "template" not in kinds:
+                # 고정 양식은 template Skill이 참고 문서 하나의 구조를 그대로 쓸 때만 만들 수 있다(author_skill).
+                if mode == "fixed-template" and ("template" not in kinds or reference_count != 1):
                     continue
-                for requires_source in ((True, False) if CREATES_DOCUMENT & set(kinds) else (False,)):
+                classified = "document-create" in kinds and "template" not in kinds
+                for requires_source in ((True, False) if classified else (False,)):
                     options.append({
                         "decision": "supported",
                         "skill_kinds": list(kinds),
