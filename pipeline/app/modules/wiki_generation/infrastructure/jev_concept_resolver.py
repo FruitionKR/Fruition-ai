@@ -16,6 +16,8 @@ import json
 import logging
 import os
 import random
+import threading
+import unicodedata
 from array import array
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -36,7 +38,6 @@ from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
-from app.modules.wiki_generation.domain.text_utils import slugify
 
 CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
@@ -57,6 +58,8 @@ MAX_WORKERS = 4
 # ponytail: 프로세스 안 dict 캐시라 워커가 재시작하면 다시 임베딩한다. 한도를 넘으면 통째로 비운다.
 EMBEDDING_CACHE_LIMIT = 20_000
 _embedding_cache: dict[tuple[str, str], array] = {}
+# 편입 작업은 워커 스레드에서 동시에 돌아 캐시 갱신을 한 번에 하나만 한다.
+_embedding_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -132,9 +135,10 @@ class JevConceptResolver(ConceptResolver):
         pool = list({concept["slug"]: concept for concept in pool}.values())
         resolutions: dict[str, JsonDict] = {}
         tasks: list[tuple[JsonDict, list[JsonDict]]] = []
+        incoming_slugs = {concept["slug"] for concept in concepts}
         for concept in concepts:
             others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
-            if target := _exact_name_match(concept, others):
+            if target := _exact_name_match(concept, others, incoming_slugs):
                 resolutions[concept["slug"]] = _merge(concept["slug"], target)
                 logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=merge_into:%s(이름 일치)",
                             concept["slug"], len(others), target)
@@ -190,33 +194,51 @@ class JevConceptResolver(ConceptResolver):
         """개념 텍스트 벡터를 돌려준다. 기존 개념은 편입마다 다시 오므로 (모델, 텍스트 해시)로 캐시한다."""
         model_name = self._embedding_model.model_name
         keys = {text: (model_name, hashlib.sha256(text.encode("utf-8")).hexdigest()) for text in texts}
-        missing = [text for text, key in keys.items() if key not in _embedding_cache]
+        with _embedding_cache_lock:
+            found = {text: _embedding_cache[key] for text, key in keys.items() if key in _embedding_cache}
+        missing = [text for text in keys if text not in found]
         if missing:
             try:
                 # 임베딩 서버는 텍스트당 MAX_TEXT_CHARS까지만 받는다. 개념 텍스트는 보통 그보다 훨씬 짧다.
                 vectors = self._embedding_model.embed([text[:MAX_TEXT_CHARS] for text in missing])
             except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
                 raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
-            if len(_embedding_cache) + len(missing) > EMBEDDING_CACHE_LIMIT:
-                _embedding_cache.clear()
             for text, vector in zip(missing, vectors, strict=True):
-                _embedding_cache[keys[text]] = array("f", vector)
-        return {text: _embedding_cache[key] for text, key in keys.items()}
+                found[text] = array("f", vector)
+            # 결과는 위에서 모은 found로 돌려준다. 캐시를 비워도 이번 결과에는 영향이 없다.
+            with _embedding_cache_lock:
+                if len(_embedding_cache) + len(missing) > EMBEDDING_CACHE_LIMIT:
+                    _embedding_cache.clear()
+                _embedding_cache.update({keys[text]: found[text] for text in missing})
+        return found
 
 
-def _exact_name_match(concept: JsonDict, candidates: list[JsonDict]) -> str | None:
-    """제목·별칭이 후보의 slug·제목·별칭과 slug로 같은 후보 중 slug가 가장 앞인 것을 고른다."""
-    names = _slugs(concept.get("title"), *(concept.get("aliases") or []))
+def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_slugs: set[str]) -> str | None:
+    """제목·별칭이 후보의 slug·제목·별칭과 글자 그대로 같은 후보를 고른다.
+
+    기존 개념을 먼저 고른다. 같은 편입의 개념끼리는 이름 일치가 양쪽으로 성립하므로, 서로 병합해
+    둘 다 남지 않도록 slug가 앞선 쪽만 정본으로 둔다.
+    """
+    names = _names(concept.get("title"), *(concept.get("aliases") or []))
     matches = [
         candidate["slug"]
         for candidate in candidates
-        if names & _slugs(candidate["slug"], candidate.get("title"), *(candidate.get("aliases") or []))
+        if names & _names(candidate["slug"], candidate.get("title"), *(candidate.get("aliases") or []))
     ]
-    return min(matches, default=None)
+    existing = [slug for slug in matches if slug not in incoming_slugs]
+    if existing:
+        return min(existing)
+    return min((slug for slug in matches if slug < concept["slug"]), default=None)
 
 
-def _slugs(*names: object) -> set[str]:
-    return {slugify(str(name)) for name in names if name}
+def _names(*names: object) -> set[str]:
+    """대소문자·전각/반각·공백·하이픈만 맞춘 이름. 기호를 지우는 slugify로 비교하면 `C#`과 `C`가 같아진다."""
+    normalized = {
+        " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
+        for name in names
+        if name
+    }
+    return normalized - {"", "untitled"}
 
 
 def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:

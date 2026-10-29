@@ -187,6 +187,49 @@ class JevConceptResolverTest(unittest.TestCase):
         self.assertEqual(jev.requests, [])
         self.assertEqual(embedder.calls, [])
 
+    def test_exact_name_ignores_symbols_and_unslugifiable_names(self) -> None:
+        # slugify로 비교하면 `C#`은 `c`, `Σ`·`λ`는 모두 `untitled`가 돼 다른 개념끼리 일치한다.
+        existing = [
+            {"slug": "c-language", "title": "C", "aliases": [], "definition": "절차형 언어다."},
+            {"slug": "lambda", "title": "lambda", "aliases": ["λ"], "definition": "익명 함수다."},
+        ]
+        incoming = [
+            {"slug": "c-sharp", "title": "C#", "aliases": [], "definition": "닷넷 언어다."},
+            {"slug": "sigma", "title": "Σ", "aliases": [], "definition": "합 기호다."},
+        ]
+
+        result = _resolver(PairJev()).resolve(incoming, existing)
+
+        self.assertEqual(result["resolutions"], [])
+
+    def test_exact_name_prefers_existing_and_breaks_incoming_cycles(self) -> None:
+        incoming = [
+            {"slug": "attention", "title": "attention", "aliases": ["주의"], "definition": "가중치를 준다."},
+            {"slug": "주의-메커니즘", "title": "주의 메커니즘", "aliases": ["attention"], "definition": "가중치를 준다."},
+        ]
+        existing = [{"slug": "attn", "title": "Attention", "aliases": [], "definition": "가중치를 준다."}]
+
+        both_to_existing = _resolver(PairJev()).resolve(incoming, existing)
+        among_incoming = _resolver(PairJev()).resolve(incoming, [])
+
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in both_to_existing["resolutions"]},
+            {"attention": "attn", "주의-메커니즘": "attn"},
+        )
+        # 서로 가리키면 연쇄 금지로 둘 다 남으므로 slug가 앞선 쪽만 정본으로 둔다.
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in among_incoming["resolutions"]},
+            {"주의-메커니즘": "attention"},
+        )
+
+    def test_cache_overflow_still_returns_previously_cached_vectors(self) -> None:
+        resolver = _resolver(PairJev())
+        with patch.object(jev_concept_resolver, "EMBEDDING_CACHE_LIMIT", 3), patch.dict(jev_concept_resolver._embedding_cache, clear=True):
+            resolver._embed(["a", "b"])
+            vectors = resolver._embed(["a", "c", "d"])
+
+        self.assertEqual(set(vectors), {"a", "c", "d"})
+
     def test_reuses_cached_embeddings_across_ingests(self) -> None:
         embedder = AngleEmbedder()
 
