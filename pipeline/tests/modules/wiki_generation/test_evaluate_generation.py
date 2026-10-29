@@ -104,6 +104,34 @@ class EvaluateGenerationTest(unittest.TestCase):
             [["B0003"]],
         )
 
+    def test_note_items_are_sent_once_through_top_level_lists(self) -> None:
+        completion = WindowRecordingCompletion()
+        observation = {"title": "관찰", "anchor_reference_ids": ["B0001"]}
+        evaluate_generation(
+            completion=completion,
+            evaluator_prompt="evaluate",
+            document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
+            blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
+            normalized={
+                "semantic_notes": [{
+                    "chunk_id": "chunk_0001",
+                    "semantic_summary": "요약",
+                    "key_points": [{"text": "핵심", "anchor_reference_ids": ["B0001"]}],
+                    "observations": [observation],
+                    "core_concepts": [{"slug": "concept", "anchor_reference_ids": ["B0001"]}],
+                }],
+                "observations": [observation],
+            },
+        )
+
+        normalized = completion.payloads[0]["normalized"]
+        self.assertEqual(normalized["semantic_notes"], [{
+            "chunk_id": "chunk_0001",
+            "semantic_summary": "요약",
+            "key_points": [{"text": "핵심", "anchor_reference_ids": ["B0001"]}],
+        }])
+        self.assertEqual(normalized["observations"], [observation])
+
     def test_small_document_keeps_single_request(self) -> None:
         completion = WindowRecordingCompletion()
         evaluate_generation(

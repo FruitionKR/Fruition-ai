@@ -25,6 +25,16 @@ NORMALIZED_LIST_KEYS = (
     "observations",
     "evidence_units",
 )
+# 노트 안의 추출 항목은 정규화 때 최상위 목록으로 펼쳐지므로, 평가 입력에서는 노트에서 빼고 한 번만 보낸다.
+NOTE_ITEM_KEYS = (
+    "observations",
+    "categories",
+    "core_concepts",
+    "concept_candidates",
+    "section_candidates",
+    "mentions",
+    "evidence_claims",
+)
 
 
 def evaluate_generation(
@@ -78,12 +88,16 @@ def _evaluate_window(
         ],
         "normalized": {
             **{key: normalized.get(key, []) for key in NORMALIZED_LIST_KEYS},
+            "semantic_notes": [
+                {key: value for key, value in note.items() if key not in NOTE_ITEM_KEYS}
+                for note in normalized.get("semantic_notes", [])
+            ],
             "warnings": normalized.get("warnings", []),
         },
     }
     evaluation: GenerationEvaluation = completion.complete_json(
         evaluator_prompt,
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
     _normalize_evaluation(evaluation)
     return evaluation
