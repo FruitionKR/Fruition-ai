@@ -21,11 +21,11 @@ from app.modules.wiki_generation.application.ports import ConceptResolver, JsonD
 
 CONCEPT_MERGE_RULE = (
     "Resolve concept identity using only the supplied definitions. Merge only synonyms without losing "
-    "distinct meaning or scope. A broader, narrower, part, stage, method, variant or directly dependent "
-    "concept keeps its own page and is linked to that candidate. Sharing only a domain or a source is not "
-    "a link. An insufficiently defined or unrelated concept stays keep_new. Compare each task only to its "
-    "own candidates. A listed candidate may be existing or incoming. Choose one allowed option. "
-    "Return no explanation."
+    "distinct meaning or scope. A broader, narrower, part, stage, method, variant, same-kind sibling under "
+    "the same broader concept, or directly dependent concept keeps its own page and is linked to that "
+    "candidate. Sharing only a domain or a source is not a link. An insufficiently defined or unrelated "
+    "concept stays keep_new. Compare each task only to its own candidates. A listed candidate may be "
+    "existing or incoming. Choose one allowed option. Return no explanation."
 )
 KEEP_NEW = "keep_new"
 MERGE_PREFIX = "merge:"

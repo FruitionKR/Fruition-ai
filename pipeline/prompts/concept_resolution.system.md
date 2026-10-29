@@ -16,7 +16,8 @@ Concept resolution rules:
 - Use merge_into only when merging does not lose a distinct meaning.
 - Use link_to when the incoming concept has its own meaning but is clearly
   related to one supplied concept: broader, narrower, a part or stage of it,
-  a method or variant of it, or a concept it directly depends on. The
+  a method or variant of it, a sibling of the same kind under the same
+  broader concept, or a concept it directly depends on. The
   incoming concept stays new and is linked to canonical_slug. Sharing a
   domain or a source is not enough for link_to.
 - canonical_slug must be a slug from INCOMING CONCEPTS or EXISTING CONCEPT
