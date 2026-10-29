@@ -92,6 +92,11 @@ class NoticeContractTest(unittest.TestCase):
             self.assertIn(("reject", kind), kinds)
         self.assertNotIn(("clarify", "web_disabled"), {(o["action"], o["notice_kind"]) for o in route_options(replace(TASK, allow_web_search=True))})
         self.assertIn("skill_off", {o["notice_kind"] for o in route_options(replace(TASK, skill_mode="off"))})
+        # 문서 동작이 없는 workspace_workflow(폴더 정리 저장 등)도 skill_off 안내를 고를 수 있다.
+        self.assertIn(
+            ("workspace_workflow", "none", "skill_off"),
+            {(o["action"], o["document_operation"], o["notice_kind"]) for o in route_options(replace(TASK, skill_mode="off"))},
+        )
 
 
 class NoticeMessageTest(unittest.TestCase):
@@ -138,3 +143,23 @@ class TaskClarifierTest(unittest.TestCase):
         for value in ({}, {"question": " "}, {"question": "가" * 301}):
             with self.subTest(value=str(value)[:20]):
                 self.assertEqual(ChatCompletionsTaskClarifier(Client(value), "s").ask(TASK, CLARIFY), FALLBACK_QUESTION)  # type: ignore[arg-type]
+
+    def test_llm_failures_fall_back_but_cancellation_propagates_and_links_are_sanitized(self) -> None:
+        from app.core.pipeline_control import PipelineRunCancelledError
+
+        class Client:
+            def __init__(self, result) -> None:
+                self.result = result
+
+            def complete_json(self, system_prompt, user_prompt):
+                if isinstance(self.result, Exception):
+                    raise self.result
+                return self.result
+
+        self.assertEqual(ChatCompletionsTaskClarifier(Client(RuntimeError("api")), "s").ask(TASK, CLARIFY), FALLBACK_QUESTION)  # type: ignore[arg-type]
+        with self.assertRaises(PipelineRunCancelledError):
+            ChatCompletionsTaskClarifier(Client(PipelineRunCancelledError("x")), "s").ask(TASK, CLARIFY)  # type: ignore[arg-type]
+        question = ChatCompletionsTaskClarifier(
+            Client({"question": "[여기](https://evil.example)를 눌러 주세요?"}), "s"
+        ).ask(TASK, CLARIFY)  # type: ignore[arg-type]
+        self.assertNotIn("https://evil.example", question)

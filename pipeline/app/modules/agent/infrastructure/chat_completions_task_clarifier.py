@@ -2,7 +2,9 @@ import json
 import os
 from pathlib import Path
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.core.llm_env import api_key_from_env, int_env, optional_int_env, provider_api_key_env, resolve_llm_selection
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import ChatClientConfig, ChatCompletionsJsonClient
 from app.modules.wiki_generation.infrastructure.json_output_parser import JsonParseError
@@ -34,12 +36,15 @@ class ChatCompletionsTaskClarifier:
         }
         try:
             raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False))
-        except JsonParseError:
+        except PipelineRunCancelledError:
+            raise
+        except (JsonParseError, RuntimeError):
+            # 되묻기는 기본 질문으로도 충분해 LLM 장애로 턴을 실패시키지 않는다. 취소·시한 초과는 그대로 올린다.
             return FALLBACK_QUESTION
         question = raw.get("question")
         if not isinstance(question, str) or not question.strip() or len(question) > MAX_QUESTION_CHARS:
             return FALLBACK_QUESTION
-        return question.strip()
+        return sanitize_ai_markdown(question.strip())
 
 
 def build_task_clarifier(*, provider: str | None = None, model: str | None = None) -> ChatCompletionsTaskClarifier:

@@ -178,7 +178,7 @@ def route_options(request: AgentTurnRequest) -> list[dict[str, Any]]:
         options.append(value)
         if action == "reject":
             options.extend({**value, "notice_kind": kind} for kind in sorted(REJECT_NOTICE_KINDS))
-        elif request.skill_mode == "off" and operation != "none":
+        elif request.skill_mode == "off" and action in {"markdown_edit", "markdown_create", "workspace_workflow"}:
             # Skill 사용이 꺼져 있는데 Skill로 하라는 요청이면 Skill 없이 처리하고 그 사실을 알린다.
             options.append({**value, "notice_kind": "skill_off"})
         if request.skill_mode != "off" and group:
