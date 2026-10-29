@@ -230,6 +230,20 @@ class JevConceptResolverTest(unittest.TestCase):
 
         self.assertEqual(set(vectors), {"a", "c", "d"})
 
+    def test_tags_help_prefilter_but_are_not_sent_to_jev(self) -> None:
+        incoming = [{"slug": "new", "title": "알파", "aliases": [], "tags": ["항해술"], "definition": "별을 보고 위치를 잡는다."}]
+        existing = [
+            {"slug": "tagged", "title": "베타", "aliases": [], "tags": ["항해술"], "definition": "바다에서 쓰는 도구다."},
+            {"slug": "plain", "title": "감마", "aliases": [], "definition": "육지에서 쓰는 도구다."},
+        ]
+        jev = PairJev()
+
+        with patch.object(jev_concept_resolver, "CANDIDATE_LIMIT", 1):
+            _resolver(jev).resolve(incoming, existing)
+
+        self.assertEqual(jev.sent("new"), ["tagged"])
+        self.assertNotIn("항해술", "".join(request["state"] for request in jev.requests))
+
     def test_reuses_cached_embeddings_across_ingests(self) -> None:
         embedder = AngleEmbedder()
 
