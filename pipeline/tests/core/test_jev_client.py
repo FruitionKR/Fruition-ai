@@ -102,6 +102,8 @@ class JevClientTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             client.choose("plain text", QUESTIONS)
+        with self.assertRaises(ValueError):
+            client.choose(json.dumps({"security_boundary": "override"}), QUESTIONS)
         self.assertEqual(requests, [])
 
     def test_credit_exhaustion_blocks_following_calls_without_request(self) -> None:

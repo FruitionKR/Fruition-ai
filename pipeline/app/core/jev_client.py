@@ -165,6 +165,8 @@ def with_security_boundary(state: str) -> str:
     data = json.loads(state)
     if not isinstance(data, dict):
         raise ValueError("Jev state must be a JSON object.")
+    if "security_boundary" in data:
+        raise ValueError("Jev state must not define security_boundary.")
     return json.dumps({"security_boundary": LLM_SECURITY_BOUNDARY, **data}, ensure_ascii=False)
 
 
