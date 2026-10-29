@@ -60,6 +60,13 @@ Alias rules:
 - Do not add broad parent categories or related tools as aliases.
 - Keep aliases short noun phrases, not definitions or claims.
 
+Tag rules:
+- For each core_concept, include 1-3 tags naming the field or category the source places the concept in.
+- Take tags from what the source covers. Do not invent fields or categories the source does not support.
+- Keep tags short noun phrases.
+- Do not use the concept's own name or any of its aliases as a tag.
+- Tags are the place for broad parent categories; keep them out of aliases.
+
 Concept hint rules:
 - related_concept_hints in evidence_claims should be slug-like hints for core_concepts only.
 
@@ -102,6 +109,7 @@ Return exactly JSON:
       "title": string,
       "slug_hint": string,
       "aliases": [string],
+      "tags": [string],
       "definition": string,
       "why_page_worthy": string,
       "evidence_block_ids": [string]

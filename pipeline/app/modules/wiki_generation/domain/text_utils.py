@@ -39,3 +39,18 @@ def unique_keep_order(items: Iterable[str]) -> List[str]:
 
 def contains_ci(text: str, needle: str) -> bool:
     return needle.strip().lower() in text.lower()
+
+
+def clean_concept_tags(tags: Iterable[str], title: str, aliases: Iterable[str], limit: int = 3) -> List[str]:
+    """후보 매칭용 분류 태그를 정리한다: 공백 제거, 순서 유지 중복 제거, 제목·별칭과 같은 값 제외, 최대 limit개."""
+    seen = {str(name).strip().lower() for name in [title, *aliases] if name}
+    out = []
+    for tag in tags or []:
+        text = str(tag).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
