@@ -507,9 +507,16 @@ def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() 
         ]
     }
 
+    from app.modules.wiki_generation.infrastructure.concept_page_sections import concept_related_lines
+
     resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
-    links = LinkBuilder().build(apply_concept_resolutions(normalized, resolutions, existing))
+    resolved = apply_concept_resolutions(normalized, resolutions, existing)
+    resolved["existing_concept_index"] = existing
+    links = LinkBuilder().build(resolved)
 
     assert [(link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"] == [
         ("concept:weighted-mean", "concept:mean")
     ]
+    # 본문 Related Concepts도 병합된 개념을 적는다.
+    ledger_by_slug = {c["slug"]: c for c in resolved["concept_ledger"]}
+    assert concept_related_lines("weighted-mean", resolved, ledger_by_slug) == ["- [[mean|Mean]]"]

@@ -82,6 +82,7 @@ def concept_related_lines(
         if concept.get("slug")
     }
     titles.update({target_slug: target.get("title") for target_slug, target in ledger_by_slug.items()})
+    slug_map = normalized.get("concept_slug_map", {})
     related_slugs: list[str] = []
     for ev in normalized.get("evidence_units", []):
         ev_slugs = [s for s in ev.get("related_concept_slugs", []) if s in ledger_by_slug]
@@ -95,7 +96,7 @@ def concept_related_lines(
     for key in ("concept_resolutions", "hint_resolutions"):
         for resolution in normalized.get(key, []):
             source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
-            targets = [target for target in resolution.get("link_targets", []) if target in titles]
+            targets = [slug_map.get(t, t) for t in resolution.get("link_targets", []) if slug_map.get(t, t) in titles]
             if source_slug == slug:
                 related_slugs.extend(targets)
             elif slug in targets and source_slug in ledger_by_slug:
