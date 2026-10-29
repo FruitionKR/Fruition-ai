@@ -170,7 +170,8 @@ def _relevant_active_clusters(markdown: str, candidates: list[dict[str, Any]]) -
     점수는 후보마다 임베딩 0.75 + BM25 0.25를 매겨 클러스터별 최고점을 쓴다. 임베딩 서버를 쓸 수 없으면
     BM25만 쓴다. 단어가 다른 동의어는 놓치지만 꼬리만 보내 앞쪽 클러스터를 아예 못 보는 것보다 낫다.
     """
-    if len(markdown) <= ACTIVE_CLUSTER_CONTEXT_CHARS:
+    # 판정할 후보가 없으면 판정 함수가 LLM을 부르지 않으므로 클러스터를 고를 필요도 없다.
+    if not candidates or len(markdown) <= ACTIVE_CLUSTER_CONTEXT_CHARS:
         return markdown
     sections = list(cluster_sections_by_id(markdown).items())
     documents = [f"{cluster_id} {_cluster_concept(cluster_id, section)['definition']}" for cluster_id, section in sections]

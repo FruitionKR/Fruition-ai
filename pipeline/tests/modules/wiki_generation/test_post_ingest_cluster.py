@@ -284,3 +284,16 @@ def test_cluster_judge_ranks_sections_with_embedding_server() -> None:
         sent = _judged_active_markdown(_large_active_markdown())
 
     assert list(cluster_sections_by_id(sent))[:2] == ["back-emf", "zz-inventory-59"]
+
+
+def test_cluster_context_skips_embedding_when_there_are_no_candidates() -> None:
+    from app.modules.wiki_generation.infrastructure.post_ingest_cluster import _relevant_active_clusters
+
+    existing = _large_active_markdown()
+    embedder = MagicMock()
+    with patch(
+        "app.modules.wiki_generation.infrastructure.post_ingest_cluster.embedding_server_model",
+        return_value=embedder,
+    ):
+        assert _relevant_active_clusters(existing, []) == existing
+    embedder.embed.assert_not_called()
