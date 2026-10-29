@@ -127,6 +127,8 @@ def _lint_payload(
             "slug": str(change["slug"]),
             "title": str(change.get("title") or change["slug"]),
             "definition": str(change.get("definition") or ""),
+            # 병합하며 덧붙인 별칭. 페이지를 기록으로 다시 만들 때도 남는다.
+            "aliases": [str(alias) for alias in change.get("aliases", [])],
             "source_document_ids": document_ids,
             "evidence_claim_ids": [
                 str(unit["evidence_id"]) for unit in evidence_units

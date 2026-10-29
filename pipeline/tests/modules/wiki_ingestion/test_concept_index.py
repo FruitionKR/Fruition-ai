@@ -147,6 +147,7 @@ def test_lint_merge_does_not_overwrite_previous_operation_snapshot(
                 "refs": ["doc-A:B0001"],
             }
         ],
+        aliases=[],
     )
 
     assert writes[0][0] == "wiki/ws/concepts/shared.md"
@@ -183,6 +184,7 @@ def test_promotion_merge_neutralizes_external_links_in_claims(monkeypatch) -> No
         "ws",
         "shared",
         [{"id": "claim-1", "claim": "lint 근거 [안내](https://attacker.example)", "refs": ["doc-A:B0001"]}],
+        aliases=[],
     )
 
     assert change is not None
@@ -1132,7 +1134,9 @@ source_refs: [doc-1]
     monkeypatch.setattr(
         repository,
         "_read_optional_text_object",
-        lambda path: active if path.endswith("clusters/active.md") else "# 공급 계약\n\n## Evidence\n- 기존 근거\n",
+        lambda path: active
+        if path.endswith("clusters/active.md")
+        else "# 공급 계약\n\n## Aliases\n-\n\n## Evidence\n- 기존 근거\n",
     )
     monkeypatch.setattr(
         repository,
@@ -1183,6 +1187,21 @@ def test_lint_promotion_judged_same_merges_into_existing_concept(monkeypatch) ->
     assert [upsert[1] for upsert in upserts] == ["page-supply"]
     assert links == []
     assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
+
+
+def test_lint_judged_merge_adds_cluster_representative_to_concept_aliases(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge)
+
+    # 클러스터 id는 대표명과 대소문자·하이픈만 달라 한 번만 넣는다.
+    [merged] = result["page_changes"]
+    concept = _concept_index_from_markdown("supply-contract", "공급 계약", "uri", merged["markdown"])
+    assert concept["aliases"] == ["Orchid Lease"]
+    assert merged["aliases"] == ["Orchid Lease"]
+    assert "- 기존 근거" in merged["markdown"]
 
 
 def test_lint_promotion_judged_related_creates_page_and_links(monkeypatch) -> None:

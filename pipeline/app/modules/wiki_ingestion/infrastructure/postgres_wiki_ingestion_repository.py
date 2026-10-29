@@ -2026,6 +2026,7 @@ def _materialize_promotion_candidates(
                 workspace_id,
                 target_slug,
                 claims,
+                aliases=[cluster.get("representative") or "", cluster_id],
                 operation_id=operation_id,
             )
             if merged_page is not None:
@@ -2184,6 +2185,7 @@ def _merge_promotion_into_existing_concept(
     concept_slug: str,
     claims: list[dict[str, Any]],
     *,
+    aliases: list[str],
     operation_id: str | None = None,
 ) -> dict[str, Any] | None:
     row = conn.execute(
@@ -2210,7 +2212,10 @@ def _merge_promotion_into_existing_concept(
         }
         for claim in claims
     ]
-    updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
+    # 병합한 클러스터의 이름을 별칭으로 남겨, 다음 편입이 그 이름으로 이 개념을 찾게 한다.
+    title = str(row.get("title") or concept_slug)
+    with_aliases, added_aliases = _add_aliases(markdown, title, aliases)
+    updated_markdown = sanitize_ai_markdown(append_concept_evidence(with_aliases, updates))
     if operation_id:
         current_markdown_uri = storage_uri(
             f"wiki/{workspace_id}/pages/{row['id']}/ops/{operation_id}.md"
@@ -2227,7 +2232,7 @@ def _merge_promotion_into_existing_concept(
         conn,
         str(row["id"]),
         "concept",
-        str(row.get("title") or concept_slug),
+        title,
         concept_slug,
         str(row.get("summary") or ""),
         current_markdown_uri,
@@ -2244,12 +2249,42 @@ def _merge_promotion_into_existing_concept(
     return {
         "page_id": str(row["id"]),
         "slug": concept_slug,
-        "title": str(row.get("title") or concept_slug),
+        "title": title,
         "definition": str(row.get("summary") or ""),
         "markdown": updated_markdown,
         "content_action": "append_evidence",
         "claims": claims,
+        "aliases": added_aliases,
     }
+
+
+def _add_aliases(markdown: str, title: str, names: list[str]) -> tuple[str, list[str]]:
+    """`## Aliases` 줄에 새 이름을 쉼표로 덧붙인다. 제목·기존 별칭과 대소문자·하이픈만 다르면 건너뛴다."""
+    lines = markdown.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip().casefold() == "## aliases"), None)
+    if start is None:
+        return markdown, []
+    end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
+    current = [
+        item.strip()
+        for line in lines[start + 1 : end]
+        for item in line.strip().removeprefix("- ").split(",")
+        if item.strip() not in {"", "-"}
+    ]
+
+    def key(name: str) -> str:
+        return " ".join(name.casefold().replace("-", " ").split())
+
+    seen = {key(name) for name in [title, *current]}
+    added: list[str] = []
+    for name in names:
+        if name.strip() and key(name) not in seen:
+            seen.add(key(name))
+            added.append(name.strip())
+    if not added:
+        return markdown, []
+    lines[start + 1 : end] = [", ".join([*current, *added]), ""]
+    return "\n".join(lines) + ("\n" if markdown.endswith("\n") else ""), added
 
 
 def _materialize_active_relation_candidates(
