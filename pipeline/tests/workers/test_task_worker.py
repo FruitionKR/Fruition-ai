@@ -1999,9 +1999,15 @@ def test_agent_command_startup_requires_folder_source_config_when_skills_enabled
     task_worker._verify_agent_command_config()
 
 
-def test_agent_command_startup_skips_folder_source_config_when_skills_disabled(monkeypatch) -> None:
+def test_agent_command_startup_requires_folder_tree_config_even_when_skills_disabled(monkeypatch) -> None:
+    # 폴더 내용 조회(folder_lookup)는 Skill 기능과 무관하게 document-svc 트리를 읽는다.
     monkeypatch.setattr(task_worker.database, "verify_agent_schema", lambda: None)
     monkeypatch.setenv("AGENT_SKILLS_ENABLED", "false")
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "token")
     monkeypatch.delenv("DOCUMENT_INTERNAL_BASE_URL", raising=False)
 
+    with pytest.raises(RuntimeError, match="DOCUMENT_INTERNAL_BASE_URL"):
+        task_worker._verify_agent_command_config()
+
+    monkeypatch.setenv("DOCUMENT_INTERNAL_BASE_URL", "http://document-svc:8080")
     task_worker._verify_agent_command_config()

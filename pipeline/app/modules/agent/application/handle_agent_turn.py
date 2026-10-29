@@ -6,7 +6,9 @@ from dataclasses import replace
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
+    FolderReferenceResolverPort,
     FolderSourceReaderPort,
+    FolderTreeReaderPort,
 )
 from app.modules.agent.domain.entities import (
     ActiveMarkdownContext,
@@ -19,6 +21,11 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
+from app.modules.agent.domain.folder_lookup import (
+    FolderLookupUnavailableError,
+    folder_lookup_message,
+    pick_folders,
+)
 from app.modules.agent.domain.folder_sources import (
     MAX_FOLDER_SOURCE_DOCUMENTS,
     FolderSourceUnavailableError,
@@ -149,6 +156,8 @@ class HandleAgentTurnUseCase:
         markdown_turn_repository: AgentRunManagementRepositoryPort | None = None,
         event_publisher: QueryEventPublisherPort | None = None,
         folder_source_reader: FolderSourceReaderPort | None = None,
+        folder_tree_reader: FolderTreeReaderPort | None = None,
+        folder_reference_resolver: FolderReferenceResolverPort | None = None,
         on_chat_answer: Callable[[], None] | None = None,
     ) -> None:
         self._on_chat_answer = on_chat_answer
@@ -166,6 +175,8 @@ class HandleAgentTurnUseCase:
         self._conversation_replier = conversation_replier
         self._markdown_turn_repository = markdown_turn_repository
         self._folder_source_reader = folder_source_reader
+        self._folder_tree_reader = folder_tree_reader
+        self._folder_reference_resolver = folder_reference_resolver
 
     def execute(self, request: AgentTurnRequest) -> AgentTurnResult:
         if not request.message.strip():
@@ -202,6 +213,7 @@ class HandleAgentTurnUseCase:
             "chat_answer": "질문에 답할 근거를 찾고 있어요.",
             "conversation_reply": "대화 맥락에 맞는 답변을 작성하고 있어요.",
             "folder_organize": "폴더 정리 계획을 준비하고 있어요.",
+            "folder_lookup": "폴더 내용을 확인하고 있어요.",
             "workspace_workflow": "문서 작업 계획을 준비하고 있어요.",
             "skill_authoring": "스킬 작성 요청을 처리하고 있어요.",
             "skill_draft_proposal": "완료한 작업을 바탕으로 스킬 제안을 준비하고 있어요.",
@@ -474,6 +486,9 @@ class HandleAgentTurnUseCase:
         if route.action == "markdown_edit":
             return self._execute_markdown_edit(request, route, selected_skill)
 
+        if route.action == "folder_lookup":
+            return self._execute_folder_lookup(request, route)
+
         if route.action == "clarify":
             if is_task_mode(request) and route.edit_goal is None:
                 message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
@@ -498,6 +513,22 @@ class HandleAgentTurnUseCase:
             return self._execute_conversation_reply(request, route)
 
         return self._execute_chat_answer(request, route)
+
+    def _execute_folder_lookup(self, request: AgentTurnRequest, route: AgentTurnRoute) -> AgentTurnResult:
+        if (
+            self._folder_tree_reader is None
+            or self._folder_reference_resolver is None
+            or not request.workspace_id
+            or not request.user_id
+        ):
+            raise AgentConfigurationError("Folder lookup requires workspace_id, user_id, a tree reader, and a resolver.")
+        try:
+            folders = self._folder_tree_reader.read(workspace_id=request.workspace_id, user_id=request.user_id)
+            referenced = self._folder_reference_resolver.resolve(request, folders) if folders else []
+        except FolderLookupUnavailableError as exc:
+            return AgentTurnResult(action="folder_lookup", route=route, message=str(exc))
+        matches = pick_folders(folders, referenced, request.folder_id)
+        return AgentTurnResult(action="folder_lookup", route=route, message=folder_lookup_message(matches))
 
     def _confirmed_preview_edit(
         self,
