@@ -82,3 +82,13 @@ def test_contribution_rebuild_unions_tags() -> None:
     )
 
     assert merged["concept_ledger"][0]["tags"] == ["분야", "분류"]
+
+
+def test_concept_index_splits_comma_joined_aliases_and_tags_drop_commas() -> None:
+    normalized = _normalize([_concept(aliases=["A1", "A2"], tags=["분야, 분류"])])
+    page = ConceptPageAssembler().build_top(normalized, top_n=None)[0]
+
+    index = _concept_index_from_markdown("alpha", page["title"], "uri", page["markdown"])
+
+    assert index["aliases"] == ["A1", "A2", "Alpha"]
+    assert index["tags"] == ["분야 분류"]
