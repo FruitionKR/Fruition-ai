@@ -68,6 +68,9 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
     RetryOnceJsonCompletion,
 )
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+    jev_concept_judge,
+)
 from app.modules.wiki_generation.infrastructure.post_ingest_cluster import (
     build_post_ingest_cluster_artifact,
 )
@@ -824,6 +827,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 core_concepts=list(
                     command["cluster_normalized"].get("core_concepts") or []
                 ),
+                concept_judge=jev_concept_judge(),
             )
             database.checkpoint_pipeline_run(run_id, state)
 

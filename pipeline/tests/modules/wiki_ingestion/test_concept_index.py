@@ -1081,3 +1081,153 @@ def test_delete_source_related_links_is_scoped_to_workspace() -> None:
     assert "user_id" not in conn.calls[0][0]
     assert "DELETE FROM wiki_page_links" in conn.calls[0][0]
     assert "from_page.workspace_id = %s" in conn.calls[0][0]
+
+
+class _FakeConceptJudge:
+    def __init__(self, resolutions=None, error=None) -> None:
+        self.resolutions = resolutions or {}
+        self.error = error
+        self.calls = []
+
+    def judge_concepts(self, concepts, pool):
+        self.calls.append((concepts, pool))
+        if self.error:
+            raise self.error
+        return self.resolutions
+
+
+def _materialize_with_judge(monkeypatch, judge):
+    upserts = []
+    links = []
+    active = """# Active Meaning Clusters
+
+## cluster: orchid-lease
+
+representative: Orchid Lease
+
+### Evidence Claims
+- claim_001: Orchid Lease는 공급 계약이다. [doc-1:B0001]
+
+### Promotion
+status: candidate
+source_refs: [doc-1]
+"""
+
+    class Result:
+        def fetchone(self):
+            return {
+                "id": "page-supply",
+                "title": "공급 계약",
+                "summary": "공급 조건을 정한 계약",
+                "markdown_uri": "wiki/ws/concepts/supply-contract.md",
+            }
+
+    class Connection:
+        def execute(self, _query, _params):
+            return Result()
+
+    monkeypatch.setattr(repository, "_load_existing_concept_ids_by_slug", lambda *_args: {"supply-contract": "page-supply"})
+    monkeypatch.setattr(repository, "_source_blocks_for_refs", lambda *_args: [])
+    monkeypatch.setattr(repository, "_lock_concept_persistence", lambda *_args: None)
+    monkeypatch.setattr(
+        repository,
+        "_read_optional_text_object",
+        lambda path: active if path.endswith("clusters/active.md") else "# 공급 계약\n\n## Evidence\n- 기존 근거\n",
+    )
+    monkeypatch.setattr(
+        repository,
+        "list_active_concept_index",
+        lambda _workspace_id: [
+            {"slug": "supply-contract", "title": "공급 계약", "aliases": [], "definition": "공급 조건을 정한 계약"},
+            {"slug": "draft", "title": "초안", "aliases": [], "definition": ""},
+        ],
+    )
+    monkeypatch.setattr(repository, "_resolve_or_create_wiki_page_id", lambda *_args: "page-orchid")
+    monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *args: upserts.append(args))
+    monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
+    monkeypatch.setattr(repository, "_upsert_wiki_page_link", lambda *args: links.append(args[1:]))
+    page = {
+        "slug": "orchid-lease",
+        "title": "Orchid Lease",
+        "markdown": "# Orchid Lease\n\n## Definition\nOrchid Lease는 공급 계약이다.\n\n## Aliases\n-\n",
+    }
+    result = repository._materialize_promotion_candidates(
+        Connection(),
+        "user-1",
+        "ws",
+        parse_active_cluster_lint(active),
+        active,
+        lambda _cluster: page,
+        concept_judge=judge,
+        operation_id="lint-op-1",
+    )
+    return result, upserts, links
+
+
+def test_lint_promotion_judged_same_merges_into_existing_concept(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+    [(concepts, pool)] = judge.calls
+    assert concepts == [
+        {"slug": "orchid-lease", "title": "Orchid Lease", "aliases": [], "definition": "Orchid Lease는 공급 계약이다."}
+    ]
+    assert [concept["slug"] for concept in pool] == ["supply-contract"]
+    assert result["promotions"] == []
+    assert result["merged_promotions"] == [
+        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
+    ]
+    assert [upsert[1] for upsert in upserts] == ["page-supply"]
+    assert links == []
+    assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
+
+
+def test_lint_promotion_judged_related_creates_page_and_links(monkeypatch) -> None:
+    from app.modules.wiki_ingestion.domain.lint_operation_recovery import calculate_lint_link_changes
+
+    judge = _FakeConceptJudge(
+        {
+            "orchid-lease": {
+                "incoming_slug": "orchid-lease",
+                "decision": "link_to",
+                "canonical_slug": "supply-contract",
+                "link_targets": ["supply-contract", "missing"],
+                "link_confidences": {"supply-contract": 0.7, "missing": 0.6},
+            }
+        }
+    )
+
+    result, _upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+    assert result["promotions"] == [{"cluster_id": "orchid-lease", "concept_slug": "orchid-lease", "page_id": "page-orchid"}]
+    assert links == [("page-orchid", "page-supply", "concept_related_to", None, 0.7, "ws")]
+    assert result["relations"] == [
+        {"from": "orchid-lease", "to": "supply-contract", "relation": "concept_related_to", "confidence": 0.7}
+    ]
+
+    # 판정 링크는 lint 기록의 added_links에 들어가고, 복원 시 지지하는 근거가 없으면 지운다.
+    writes = []
+    monkeypatch.setattr(repository, "write_text_object", lambda key, text, content_type: writes.append((key, text)) or key)
+    repository.persist_lint_operation_result(
+        "ws",
+        "lint-op-1",
+        {"_lint_page_changes": result["page_changes"], "materialized_relations": result["relations"]},
+    )
+    contribution = json.loads(next(text for key, text in writes if key.endswith(".json")))
+    link = {"source": "concept:orchid-lease", "target": "concept:supply-contract", "relation": "concept_related_to"}
+    assert contribution["added_links"] == [link]
+    assert calculate_lint_link_changes([contribution], [])["removed_links"] == [link]
+
+
+def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:
+    from app.core.jev_client import JevUnavailable
+
+    for judge in (None, _FakeConceptJudge(error=JevUnavailable("down"))):
+        result, _upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+        assert [item["concept_slug"] for item in result["promotions"]] == ["orchid-lease"]
+        assert result["merged_promotions"] == []
+        assert links == []
