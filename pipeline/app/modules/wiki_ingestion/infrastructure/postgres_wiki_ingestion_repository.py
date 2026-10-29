@@ -1418,7 +1418,6 @@ def _concept_index_from_markdown(slug: str, title: str, markdown_uri: str, markd
         "aliases": [alias.strip() for line in _markdown_list_section(markdown, "Aliases") for alias in line.split(",") if alias.strip()],
         "tags": concept_page_tags(markdown),
         "definition": _markdown_section(markdown, "Definition"),
-        "evidence": _markdown_list_section(markdown, "Evidence"),
         "why_page_worthy": _markdown_section(markdown, "Why It Matters"),
         "path": markdown_uri,
     }
