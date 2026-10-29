@@ -128,8 +128,11 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
     instruction = request.instruction.lower()
     nonempty_lines = [line for line in replacement.splitlines() if line.strip()]
-    failures = _edit_goal_shape_failures(request, replacement, nonempty_lines)
-    failures.extend(_requested_markdown_failures(instruction, replacement, nonempty_lines))
+    # 문서 전체를 목록으로 바꿀 때 원문 제목은 그대로 둔다. 목록 형식은 제목을 뺀 줄에만 요구한다.
+    source_headings = set(_atx_heading_lines(request.markdown))
+    item_lines = [line for line in nonempty_lines if line.strip() not in source_headings]
+    failures = _edit_goal_shape_failures(request, replacement, item_lines)
+    failures.extend(_requested_markdown_failures(instruction, replacement, nonempty_lines, item_lines))
 
     if request.edit_goal in PLAIN_TEXT_EDIT_GOALS and not _source_starts_with_list(request.markdown):
         if re.match(r"^\s*(?:[-*+]\s+|\d+\.\s+)", replacement):
@@ -149,31 +152,32 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
     return failures
 
 
-def _edit_goal_shape_failures(
-    request: MarkdownEditRequest,
-    replacement: str,
-    nonempty_lines: list[str],
-) -> list[str]:
+def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, item_lines: list[str]) -> list[str]:
     failures: list[str] = []
     if request.edit_goal == "checklist":
-        if not nonempty_lines or not all(re.match(r"^- \[ \] ", line) for line in nonempty_lines):
+        if not item_lines or not all(re.match(r"^- \[ \] ", line) for line in item_lines):
             failures.append("checklist items must all start with `- [ ] `")
     if request.edit_operation == "insert_after":
         source_heading = next(iter(_atx_heading_lines(request.markdown)), "")
         if source_heading and source_heading in _atx_heading_lines(replacement):
             failures.append("insert_after output must not repeat the current section heading")
     if request.edit_goal == "bullet_list":
-        if not nonempty_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in nonempty_lines):
+        if not item_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in item_lines):
             failures.append("bullet list items must use plain bullet markers")
-        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in nonempty_lines):
+        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in item_lines):
             failures.append("plain bullet list must not contain checkboxes")
     return failures
 
 
-def _requested_markdown_failures(instruction: str, replacement: str, nonempty_lines: list[str]) -> list[str]:
+def _requested_markdown_failures(
+    instruction: str,
+    replacement: str,
+    nonempty_lines: list[str],
+    item_lines: list[str],
+) -> list[str]:
     failures: list[str] = []
     if _asks_for_numbered_list(instruction):
-        if not nonempty_lines or not all(re.match(r"^\d+\.\s+", line) for line in nonempty_lines):
+        if not item_lines or not all(re.match(r"^\d+\.\s+", line) for line in item_lines):
             failures.append("numbered list items must start directly with `1.`, `2.`, and so on")
     if _asks_for_blockquote(instruction) and not any(line.startswith("> ") for line in nonempty_lines):
         failures.append("blockquote marker `> ` must start its line")
