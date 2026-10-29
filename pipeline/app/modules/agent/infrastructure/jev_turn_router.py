@@ -17,7 +17,7 @@ from typing import Any
 from app.core.jev_client import JEV_ROUTING_ENABLED_ENV, JevClient, JevUnavailable, build_jev_client
 from app.core.llm_prompt import with_llm_security_boundary
 from app.modules.agent.application.ports import AgentTurnRouterPort
-from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
+from app.modules.agent.domain.entities import REJECT_NOTICE_KINDS, AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
     ALLOWED_ACTIONS,
     ALLOWED_DOCUMENT_OPERATIONS,
@@ -42,6 +42,7 @@ ROUTE_CHOICE_FIELDS = (
     "required_capabilities",
     "selected_skill_id",
     "skill_candidates",
+    "notice_kind",
 )
 EDIT_CHOICE_FIELDS = (
     "action",
@@ -169,18 +170,26 @@ def route_options(request: AgentTurnRequest) -> list[dict[str, Any]]:
             "reason": JEV_ROUTE_REASON,
             "selected_skill_id": None,
             "skill_candidates": [],
+            "notice_kind": None,
         }
         route, failures = _normalize_route(value)
         if failures or _route_failures(route, request):
             continue
         options.append(value)
+        if action == "reject":
+            options.extend({**value, "notice_kind": kind} for kind in sorted(REJECT_NOTICE_KINDS))
+        elif request.skill_mode == "off" and action in {"markdown_edit", "markdown_create", "workspace_workflow"}:
+            # Skill 사용이 꺼져 있는데 Skill로 하라는 요청이면 Skill 없이 처리하고 그 사실을 알린다.
+            options.append({**value, "notice_kind": "skill_off"})
         if request.skill_mode != "off" and group:
             for skill in request.available_skills:
                 if set(group).issubset(_supported_capabilities(skill.capabilities)):
                     options.append({**value, "selected_skill_id": skill.id})
     if request.mode == "task":
-        # 작업 탭에서 질문·잡담은 답변 갈래 대신 채팅 탭 안내 clarify로 받는다.
-        options.append({
+        # 작업 탭 clarify: 질문·잡담은 채팅 탭 안내, 작업에 꼭 필요한 정보가 없으면 되묻기,
+        # 웹 근거가 필요한데 웹 검색이 꺼져 있으면 그 안내.
+        kinds = ["chat_tab", "details"] + ([] if request.allow_web_search is True else ["web_disabled"])
+        options.extend({
             "action": "clarify",
             "retrieval_source": "none",
             "document_operation": "none",
@@ -193,8 +202,10 @@ def route_options(request: AgentTurnRequest) -> list[dict[str, Any]]:
             "reason": JEV_ROUTE_REASON,
             "selected_skill_id": None,
             "skill_candidates": [],
-        })
-    return options
+            "notice_kind": kind,
+        } for kind in kinds)
+    # 안내 종류를 붙인 변형도 계약을 통과하는 것만 남긴다.
+    return [option for option in options if not _route_failures(_normalize_route(option)[0], request)]
 
 
 def edit_options(value: dict[str, Any], request: AgentTurnRequest) -> list[dict[str, Any]]:

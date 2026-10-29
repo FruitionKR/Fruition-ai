@@ -18,8 +18,11 @@ from app.modules.agent.application.ports import AgentTurnRouterPort
 from app.modules.agent.domain.entities import (
     AgentAction,
     AgentTurnRequest,
+    CLARIFY_NOTICE_KINDS,
+    REJECT_NOTICE_KINDS,
     AgentTurnRoute,
     DocumentOperation,
+    NoticeKind,
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
@@ -60,6 +63,7 @@ ALLOWED_ACTIONS = {
     "reject",
 }
 ALLOWED_RETRIEVAL_SOURCES = {"none", "workspace", "web"}
+ALLOWED_NOTICE_KINDS = CLARIFY_NOTICE_KINDS | REJECT_NOTICE_KINDS | {"skill_off"}
 ALLOWED_DOCUMENT_OPERATIONS = {"none", "create", "edit"}
 ALLOWED_EDIT_GOALS = {
     "shorten",
@@ -317,6 +321,7 @@ def repair_insert_after_without_section(route: AgentTurnRoute, request: AgentTur
 
 def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     failures: list[str] = []
+    failures.extend(_notice_failures(route, request))
     if route.action == "folder_lookup" and request.mode != "task":
         failures.append("folder_lookup is available only in task mode")
     if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
@@ -430,6 +435,24 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     return failures
 
 
+def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
+    kind = route.notice_kind
+    if kind is None:
+        return []
+    if kind in CLARIFY_NOTICE_KINDS:
+        if route.action != "clarify" or route.document_operation != "none" or route.skill_candidates:
+            return [f"notice_kind {kind} requires clarify with document_operation none and no skill candidates"]
+        if kind == "web_disabled" and request.allow_web_search is True:
+            return ["notice_kind web_disabled requires allow_web_search false"]
+        return []
+    if kind in REJECT_NOTICE_KINDS:
+        return [] if route.action == "reject" else [f"notice_kind {kind} requires reject"]
+    # skill_off: Skill 사용이 꺼져 있는데 Skill로 하라는 요청을 Skill 없이 처리할 때다.
+    if route.action not in {"markdown_edit", "markdown_create", "workspace_workflow"} or request.skill_mode != "off":
+        return ["notice_kind skill_off requires a document action with skill_mode off"]
+    return []
+
+
 def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
     failures: list[str] = []
     raw_action = value.get("action")
@@ -529,6 +552,14 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
     else:
         skill_candidates = tuple(candidate.strip() for candidate in raw_skill_candidates)
 
+    # 선택 항목이다. 없으면 기존 안내 문구를 쓴다.
+    raw_notice_kind = value.get("notice_kind")
+    if raw_notice_kind is not None and raw_notice_kind not in ALLOWED_NOTICE_KINDS:
+        failures.append("notice_kind must be a supported value or null")
+        notice_kind: NoticeKind | None = None
+    else:
+        notice_kind = cast(NoticeKind | None, raw_notice_kind)
+
     raw_required_capabilities = value.get("required_capabilities")
     if (
         not isinstance(raw_required_capabilities, list)
@@ -558,6 +589,7 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
         document_operation=document_operation,
         persist=persist,
         required_capabilities=required_capabilities,
+        notice_kind=notice_kind,
     ), failures
 
 

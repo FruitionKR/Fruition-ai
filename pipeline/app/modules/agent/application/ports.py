@@ -31,6 +31,12 @@ class FolderSourceReaderPort(Protocol):
         ...
 
 
+class TaskClarifierPort(Protocol):
+    def ask(self, request: AgentTurnRequest, route: AgentTurnRoute) -> str:
+        """작업 탭 요청에서 진행에 꼭 필요한 정보를 묻는 질문 한 문장."""
+        ...
+
+
 class FolderTreeReaderPort(Protocol):
     def read(self, *, workspace_id: str, user_id: str) -> list[FolderEntry]:
         """사용자 기준 워크스페이스 폴더 목록(바로 아래 항목 이름 포함). 읽을 수 없으면 FolderLookupUnavailableError를 낸다."""

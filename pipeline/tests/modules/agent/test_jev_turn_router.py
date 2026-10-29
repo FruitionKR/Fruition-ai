@@ -81,7 +81,8 @@ class JevTurnRouterTest(unittest.TestCase):
 
     def test_shuffles_options_deterministically_with_evaluated_fields(self) -> None:
         request = AgentTurnRequest(message="정책 알려줘")
-        first, second = ChoosingJev(lambda value: True), ChoosingJev(lambda value: True)
+        # 첫 선택이 편집이면 편집 세부를 한 번 더 고르므로 두 번 고를 수 있게 둔다.
+        first, second = ChoosingJev(lambda value: True, lambda value: True), ChoosingJev(lambda value: True, lambda value: True)
 
         JevTurnRouter(first, RecordingRouter(), "system").route(request)
         JevTurnRouter(second, RecordingRouter(), "system").route(request)
@@ -94,7 +95,7 @@ class JevTurnRouterTest(unittest.TestCase):
         )
         self.assertEqual(
             list(next(iter(criteria.values()))),
-            ["action", "retrieval_source", "document_operation", "persist", "required_capabilities", "selected_skill_id", "skill_candidates"],
+            ["action", "retrieval_source", "document_operation", "persist", "required_capabilities", "selected_skill_id", "skill_candidates", "notice_kind"],
         )
 
     def test_unavailable_jev_uses_existing_router(self) -> None:
