@@ -1952,7 +1952,8 @@ def _materialize_promotion_candidates(
                 "source_blocks": _source_blocks_for_refs(conn, source_refs),
             }
         )
-    # 판정은 외부 호출이라 페이지 생성처럼 잠금 전에 끝낸다.
+    # 판정은 외부 호출이라 페이지 생성처럼 DB 잠금(_lock_concept_persistence) 전에 끝낸다. 워크스페이스 개념 잠금
+    # (concept_write_lock)은 wiki_maintenance가 lint 전체에 걸쳐 쥐고 있어, 그동안 편입·post-ingest는 기다린다.
     judgments = _judge_promoted_concepts(concept_judge, workspace_id, prepared_pages) if concept_judge else {}
 
     _lock_concept_persistence(conn, workspace_id)
