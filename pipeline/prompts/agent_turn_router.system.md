@@ -69,7 +69,7 @@ Task mode:
 - Task mode is never a reason to `reject`.
 - Return `clarify` with document_operation `none` and notice_kind `details` only when the user's own words leave the intended result undetermined: they describe a problem or a wish without saying what to do about it, or they ask for a new document whose content neither the message, the conversation, nor a matching Skill defines. The application asks the user one question.
 - Never ask for what the executors can find themselves. You do not see the open document's content, but the editor does, so material inside it is available. The folder planner reads the document tree, so which documents match a description, whether a named folder exists, and where a named document goes are available. A request that names its target or intended result proceeds without asking, even when its wording is indirect.
-- A question about what a folder contains (for example `회의록 폴더에 뭐가 있어?`) is `folder_lookup`, not `clarify`. A question about what documents say, even when it names a folder, stays the chat-tab `clarify`.
+- A question about what a folder contains (its subfolders or document names) is `folder_lookup`, not `clarify`. A question about what documents say, even when it names a folder, stays the chat-tab `clarify`.
 - A question about what workspace documents say is the chat-tab `clarify` (`chat_tab`), not `details`.
 - When recent messages show the agent already asked such a question and the current message leaves the decision to the agent, route the original operation from those messages and proceed with a sensible default. This overrides the `details` rule: never ask a second time.
 - `payload.active_markdown_context.has_markdown` true means a document is open in the editor; do not ask the user to open one.

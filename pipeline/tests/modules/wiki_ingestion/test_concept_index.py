@@ -219,7 +219,7 @@ back electromotive force, BEMF
     assert "summary" not in concept
     assert concept["definition"] == "Back EMF는 회전 전동기에서 유기되는 역기전력이다. [doc_a:B0001]"
     assert concept["why_page_worthy"] == "전동기 성능 평가에 필요하다."
-    assert concept["aliases"] == ["back electromotive force, BEMF"]
+    assert concept["aliases"] == ["back electromotive force", "BEMF"]
     assert concept["evidence"] == [
         "Back EMF는 토크 리플 및 코깅 토크와 함께 최적화 대상이다. [doc_a:B0002]",
         "제조 공차는 Back EMF 응답에 영향을 준다. [doc_b:B0003]",

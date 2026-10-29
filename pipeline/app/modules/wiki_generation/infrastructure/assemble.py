@@ -134,6 +134,8 @@ def _term_record(item: dict[str, Any]) -> dict[str, Any]:
         record["evidence_block_ids"] = refs
     if item.get("aliases"):
         record["aliases"] = item.get("aliases")
+    if item.get("tags"):
+        record["tags"] = item.get("tags")
     return record
 
 
@@ -282,6 +284,7 @@ class ConceptPageAssembler:
 type: concept
 slug: {c['slug']}
 sources: {', '.join(c.get('source_document_ids', []))}
+tags: {', '.join(c.get('tags', []))}
 mention_count: {c.get('mention_count', 0)}
 importance_score: {round(c.get('importance_score', 0), 2)}
 generated_by: backend_skeleton

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
 from app.modules.wiki_ingestion.domain.contribution_identity import (
     globalize_contribution_identity,
@@ -205,6 +206,11 @@ def _merge_contributions(
             for concept in concepts
             for value in concept.get(field, [])
         )
+    merged_concept["tags"] = clean_concept_tags(
+        (tag for concept in concepts for tag in concept.get("tags", [])),
+        merged_concept.get("title"),
+        merged_concept["aliases"],
+    )
 
     evidence_units = _unique_dicts(
         item
