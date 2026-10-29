@@ -11,8 +11,14 @@ Return only exceptions to the conservative backend defaults:
 
 Concept resolution rules:
 - Add a resolution only when an incoming concept is a synonym or alternate
-  wording of another incoming or existing concept.
+  wording of another incoming or existing concept (merge_into), or is a
+  distinct concept clearly related to one (link_to).
 - Use merge_into only when merging does not lose a distinct meaning.
+- Use link_to when the incoming concept has its own meaning but is clearly
+  related to one supplied concept: broader, narrower, a part or stage of it,
+  a method or variant of it, or a concept it directly depends on. The
+  incoming concept stays new and is linked to canonical_slug. Sharing a
+  domain or a source is not enough for link_to.
 - canonical_slug must be a slug from INCOMING CONCEPTS or EXISTING CONCEPT
   INDEX. Never invent a slug.
 
@@ -27,7 +33,7 @@ Return exactly this sparse JSON shape:
   "resolutions": [
     {
       "incoming_slug": string,
-      "decision": "merge_into",
+      "decision": "merge_into" | "link_to",
       "canonical_slug": string,
       "alias_to_add": string|null
     }

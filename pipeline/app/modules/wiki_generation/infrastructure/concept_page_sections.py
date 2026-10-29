@@ -65,51 +65,57 @@ def concept_key_points_from_source(
     return lines
 
 
-def concept_related_lines(
+def concept_related_slugs(
     slug: str,
     normalized: dict[str, Any],
     ledger_by_slug: dict[str, dict[str, Any]],
     source_key_points: list[dict[str, Any]] | None = None,
 ) -> list[str]:
+    """이 개념과 관련된 개념 slug. 본문 Related Concepts와 그래프 링크(concept_related_to)가 같이 쓴다.
+
+    같은 근거에 함께 나오거나 핵심 내용을 공유한 이번 문서의 개념, 그리고 병합 판단이 '따로 두고 연결(link_to)'로
+    고른 개념이다. 연결 대상은 다른 문서에서 온 기존 개념일 수 있다.
+    """
+    linkable = set(ledger_by_slug) | {
+        str(concept.get("slug")) for concept in normalized.get("existing_concept_index", []) if concept.get("slug")
+    }
     related_slugs: list[str] = []
     for ev in normalized.get("evidence_units", []):
         ev_slugs = [s for s in ev.get("related_concept_slugs", []) if s in ledger_by_slug]
         if slug in ev_slugs:
             related_slugs.extend([s for s in ev_slugs if s != slug])
 
-    related_slugs.extend(
-        target
-        for source, target, _reason in shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
-        if source == slug
-    )
-    related_slugs.extend(
-        source
-        for source, target, _reason in shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
-        if target == slug
-    )
+    pairs = shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
+    related_slugs.extend(target for source, target, _reason in pairs if source == slug)
+    related_slugs.extend(source for source, target, _reason in pairs if target == slug)
 
-    for resolution in normalized.get("concept_resolutions", []):
-        source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
-        targets = [target for target in resolution.get("link_targets", []) if target in ledger_by_slug]
-        if source_slug == slug:
-            related_slugs.extend(targets)
-        elif slug in targets and source_slug in ledger_by_slug:
-            related_slugs.append(source_slug)
+    for key in ("concept_resolutions", "hint_resolutions"):
+        for resolution in normalized.get(key, []):
+            source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
+            targets = [target for target in resolution.get("link_targets", []) if target in linkable]
+            if source_slug == slug:
+                related_slugs.extend(targets)
+            elif slug in targets and source_slug in ledger_by_slug:
+                related_slugs.append(source_slug)
+    return unique_keep_order([s for s in related_slugs if s and s != slug])
 
-    for resolution in normalized.get("hint_resolutions", []):
-        source_slug = resolution.get("canonical_slug")
-        targets = [target for target in resolution.get("link_targets", []) if target in ledger_by_slug]
-        if source_slug == slug:
-            related_slugs.extend(targets)
-        elif slug in targets and source_slug in ledger_by_slug:
-            related_slugs.append(source_slug)
 
-    lines = []
-    for target_slug in unique_keep_order([s for s in related_slugs if s and s != slug]):
-        target = ledger_by_slug.get(target_slug)
-        if target:
-            lines.append(f"- [[{target_slug}|{target.get('title') or target_slug}]]")
-    return lines
+def concept_related_lines(
+    slug: str,
+    normalized: dict[str, Any],
+    ledger_by_slug: dict[str, dict[str, Any]],
+    source_key_points: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    titles = {
+        str(concept.get("slug")): concept.get("title")
+        for concept in normalized.get("existing_concept_index", [])
+        if concept.get("slug")
+    }
+    titles.update({target_slug: target.get("title") for target_slug, target in ledger_by_slug.items()})
+    return [
+        f"- [[{target_slug}|{titles.get(target_slug) or target_slug}]]"
+        for target_slug in concept_related_slugs(slug, normalized, ledger_by_slug, source_key_points)
+    ]
 
 
 def shared_key_point_pairs(
