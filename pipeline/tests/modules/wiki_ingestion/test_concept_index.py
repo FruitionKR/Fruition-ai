@@ -1098,14 +1098,14 @@ class _FakeConceptJudge:
         return self.resolutions
 
 
-def _materialize_with_judge(monkeypatch, judge, page_slug="orchid-lease"):
+def _materialize_with_judge(monkeypatch, judge, page_slug="orchid-lease", representative="Orchid Lease"):
     upserts = []
     links = []
-    active = """# Active Meaning Clusters
+    active = f"""# Active Meaning Clusters
 
 ## cluster: orchid-lease
 
-representative: Orchid Lease
+representative: {representative}
 
 ### Evidence Claims
 - claim_001: Orchid Lease는 공급 계약이다. [doc-1:B0001]
@@ -1202,6 +1202,19 @@ def test_lint_judged_merge_adds_cluster_representative_to_concept_aliases(monkey
     assert concept["aliases"] == ["Orchid Lease"]
     assert merged["aliases"] == ["Orchid Lease"]
     assert "- 기존 근거" in merged["markdown"]
+
+
+def test_lint_judged_merge_keeps_representative_and_cluster_id_as_separate_aliases(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge, representative="오키드 리스")
+
+    # 대표명과 클러스터 id가 다르면 별칭 두 개로 읽혀야 다음 편입의 이름 일치가 둘 다 찾는다.
+    [merged] = result["page_changes"]
+    concept = _concept_index_from_markdown("supply-contract", "공급 계약", "uri", merged["markdown"])
+    assert concept["aliases"] == ["오키드 리스", "orchid-lease"]
 
 
 def test_lint_promotion_judged_related_creates_page_and_links(monkeypatch) -> None:
