@@ -186,6 +186,7 @@ class PostgresWikiRepositoryTest(unittest.TestCase):
                     "concept_related_to",
                     "contrasts_with",
                     "part_of",
+                    "related_to",
                     "source_mentions_concept",
                     "supports_or_enables",
                     "uses_or_depends_on",
