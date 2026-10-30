@@ -39,6 +39,8 @@ class WikiGenerationEvaluatorState(TypedDict, total=False):
     evaluation_index: int
     retry_block_ids: list[str] | None
     patch_applied: bool
+    # 평가한 결과 중 overall 점수가 가장 높은 것. 끝까지 통과하지 못하면 마지막 대신 이것을 쓴다.
+    best_attempt: JsonDict
 
 
 GraphNode = Callable[[WikiGenerationEvaluatorState], WikiGenerationEvaluatorState]
@@ -140,7 +142,13 @@ class LangGraphWikiGenerationEvaluator:
         }
         with configured_langsmith_tracing():
             result = self.graph.invoke(initial_state, config={"run_name": "wiki_ingest_evaluator"})
-        return result["notes"], result["normalized"], result["evaluations"]
+        best = result.get("best_attempt")
+        evaluations = result["evaluations"]
+        if best is None or evaluations[-1].get("passed"):
+            return result["notes"], result["normalized"], evaluations
+        # 재시도가 결과를 더 나쁘게 만들 수 있어, 통과하지 못하면 점수가 가장 높았던 결과를 저장한다.
+        evaluations[best["index"]]["selected_for_output"] = True
+        return best["notes"], best["normalized"], evaluations
 
     def _build_graph(self) -> StateGraph:
         return build_wiki_generation_evaluator_graph(
@@ -209,10 +217,12 @@ class LangGraphWikiGenerationEvaluator:
         evaluation = self.evaluator.evaluate(state["normalized"])
         self.evaluation_artifacts.write(state["attempt"], "evaluation", evaluation)
         self._emit_evaluation(state["attempt"], evaluation)
+        evaluations = [*state["evaluations"], evaluation]
         return {
             "evaluation": evaluation,
-            "evaluations": [*state["evaluations"], evaluation],
+            "evaluations": evaluations,
             "repair_operations": [],
+            **_best_attempt_update(state, evaluation, len(evaluations) - 1),
         }
 
     def _repair(self, state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluatorState:
@@ -237,7 +247,12 @@ class LangGraphWikiGenerationEvaluator:
         evaluation["repair_operations"] = state["repair_operations"]
         self.evaluation_artifacts.write(state["attempt"], "repair", evaluation)
         self._emit_repair(state["attempt"], state["repair_operations"], evaluation)
-        return {"evaluation": evaluation, "evaluations": [*state["evaluations"], evaluation]}
+        evaluations = [*state["evaluations"], evaluation]
+        return {
+            "evaluation": evaluation,
+            "evaluations": evaluations,
+            **_best_attempt_update(state, evaluation, len(evaluations) - 1),
+        }
 
     @staticmethod
     def _route_after_normalization(state: WikiGenerationEvaluatorState) -> str:
@@ -317,3 +332,21 @@ class LangGraphWikiGenerationEvaluator:
                 "issue 수": len(evaluation.get("issues", [])),
             },
         )
+
+
+def _best_attempt_update(
+    state: WikiGenerationEvaluatorState,
+    evaluation: GenerationEvaluation,
+    index: int,
+) -> WikiGenerationEvaluatorState:
+    """점수가 같으면 뒤 시도를 고른다. 재시도는 앞 시도의 지적을 반영한 결과다."""
+    score = _overall_score(evaluation)
+    best = state.get("best_attempt")
+    if best is not None and score < best["score"]:
+        return {}
+    return {"best_attempt": {"score": score, "index": index, "notes": state["notes"], "normalized": state["normalized"]}}
+
+
+def _overall_score(evaluation: GenerationEvaluation) -> float:
+    score = (evaluation.get("scores") or {}).get("overall")
+    return float(score) if isinstance(score, int | float) and not isinstance(score, bool) else 0.0
