@@ -16,12 +16,13 @@ Concept resolution rules:
 - Use merge_into only when merging does not lose a distinct meaning.
 - Use link_to when the incoming concept has its own meaning and the
   definitions state a direct relation to one or more supplied concepts: one
-  is a kind, part, stage, method, or variant of the other; or one cannot be
-  explained without the other. The incoming concept stays new and is linked
-  to canonical_slug and every slug in link_targets. Sharing a field, a
-  document, a workflow, or a topic, being siblings that are both kinds of the
-  same broader concept, or connecting only through a third concept, is not
-  enough for link_to. When unsure, do not link.
+  is a kind, part, stage, method, or variant of the other; or one is defined
+  in terms of the other, so it cannot be understood without it. The incoming
+  concept stays new and is linked to canonical_slug and every slug in
+  link_targets. Definitions that only mention or contrast with each other
+  without one of those relations, sharing a field, a document, a workflow, or
+  a topic, being siblings that are both kinds of the same broader concept, or
+  connecting only through a third concept, is not enough for link_to. When unsure, do not link.
 - link_targets lists other clearly related concepts for link_to; omit it
   otherwise.
 - canonical_slug and link_targets must be slugs from INCOMING CONCEPTS or
