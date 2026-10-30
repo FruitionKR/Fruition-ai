@@ -212,3 +212,63 @@ class JudgeCandidatesTest(unittest.TestCase):
         )
 
         self.assertEqual(result, [])
+
+    def test_pair_judge_maps_same_and_related_and_sends_only_identity(self) -> None:
+        calls = []
+
+        def judge_pairs(incoming, pool):
+            calls.append((incoming, pool))
+            return {
+                "cand_001": {"decision": "merge_into", "canonical_slug": "back-emf"},
+                "cand_002": {"decision": "link_to", "canonical_slug": "back-emf"},
+            }
+
+        other = {**candidate(), "candidate_id": "cand_002", "term": "토크 리플", "slug": "torque-ripple"}
+        third = {**candidate(), "candidate_id": "cand_003", "term": "코깅", "slug": "cogging"}
+        completion = FakeCompletion({})
+
+        decisions = judge_concept_update_candidates(
+            completion=completion,
+            concepts=[{
+                "slug": "back-emf",
+                "title": "역기전력",
+                "aliases": ["Back EMF"],
+                "definition": "전동기에서 유기되는 전압이다.",
+                "why_page_worthy": "성능 평가에 필요하다.",
+                "evidence": ["역기전력은 속도에 비례한다."],
+            }],
+            candidates=[candidate(), other, third],
+            judge_pairs=judge_pairs,
+        )
+
+        self.assertEqual(
+            [(item["decision"], item["concept_slug"], item["relation"]) for item in decisions],
+            [("same_concept", "back-emf", "same_concept"), ("relation_candidate", "back-emf", "related_evidence"),
+             ("not_same_concept", "", "")],
+        )
+        incoming, pool = calls[0]
+        self.assertEqual(incoming[0], {
+            "slug": "cand_001", "title": "Back EMF", "aliases": ["back-emf"], "definition": "역기전력은 속도에 비례한다.",
+        })
+        self.assertEqual(pool, [{
+            "slug": "back-emf", "title": "역기전력", "aliases": ["Back EMF"], "definition": "전동기에서 유기되는 전압이다.",
+        }])
+        self.assertEqual(completion.payload, {})
+
+    def test_falls_back_to_llm_without_evidence_when_pair_judge_is_unavailable(self) -> None:
+        from app.core.jev_client import JevUnavailable
+
+        def judge_pairs(_incoming, _pool):
+            raise JevUnavailable("down")
+
+        completion = FakeCompletion({"decisions": [{"candidate_id": "cand_001", "decision": "same_concept", "concept_slug": "back-emf"}]})
+
+        decisions = judge_concept_update_candidates(
+            completion=completion,
+            concepts=[{"slug": "back-emf", "title": "역기전력", "definition": "정의", "evidence": ["근거"], "why_page_worthy": "이유"}],
+            candidates=[candidate()],
+            judge_pairs=judge_pairs,
+        )
+
+        self.assertEqual(decisions[0]["decision"], "same_concept")
+        self.assertEqual(completion.payload["concepts"], [{"slug": "back-emf", "title": "역기전력", "aliases": [], "definition": "정의"}])
