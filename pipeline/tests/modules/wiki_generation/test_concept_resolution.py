@@ -46,3 +46,20 @@ def test_merges_incoming_concepts_by_canonical_slug() -> None:
     assert result[0]["slug"] == "back-emf"
     assert result[0]["anchor_reference_ids"] == ["B0001", "B0002"]
     assert result[0]["definition"] == "더 긴 역기전력 정의"
+
+
+def test_link_to_with_own_slug_as_canonical_does_not_link_to_itself() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import normalize_resolution_output
+
+    incoming = [{"slug": "dense-retrieval", "title": "Dense Retrieval"}]
+    existing = [{"slug": "dense-passage-retrieval", "title": "DPR"}]
+    raw = {"resolutions": [{
+        "incoming_slug": "dense-retrieval",
+        "decision": "link_to",
+        "canonical_slug": "dense-retrieval",
+        "link_targets": ["dense-passage-retrieval"],
+    }]}
+
+    resolutions = normalize_resolution_output(raw, incoming, existing, [])
+
+    assert resolutions[0]["link_targets"] == ["dense-passage-retrieval"]
