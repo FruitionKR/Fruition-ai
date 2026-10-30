@@ -91,5 +91,6 @@ python grade_claims.py ../results/<날짜>/claims ../results/<날짜>/rag/rows.j
 
 - 편입과 개념 병합에도 Claude(Haiku)를 쓴다. 운영 편입은 워크스페이스 공용 설정에서 Claude를 Gemini로 바꾼다.
 - Claude 출력 한도를 32k, 요청 시간 한도를 600초로 둔다. 편입 평가 구간을 4만 자로 줄인다(Haiku 입력 한도 200k).
+- 편입 개념 판정은 운영 계획대로 Jev(`JEV_CONCEPT_MERGE_ENABLED=true`)를 쓴다. 임베딩 서버 포트가 밖으로 열려 있지 않아 Jev 후보 임베딩도 같은 BGE-M3를 프로세스에 올려 쓴다(`rag_prepare.py --concept-judge`, 기본 jev). 2026-10-30 이전 편입(b3·a3)은 LLM 판정이었다.
 - 임베딩은 임베딩 서버 대신 같은 BGE-M3를 프로세스에 올리고, 운영과 같은 `MAX_TEXT_CHARS` 한도를 건다. 로컬 모델은 동시 호출에서 죽어 호출을 직렬화한다.
 - `en-rag-paper.md`의 NUL 문자는 올릴 때만 지운다(PostgreSQL text에 들어가지 않음, 정답 인용문에는 없음).
