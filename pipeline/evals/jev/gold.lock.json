@@ -26,6 +26,18 @@
    "ko-privacy-act-excerpt.md": "e20a109b5543d302edc524d1240ed56ec93019600a3fef3bd1613c64a8cb914c",
    "ko-wiki-ir.md": "c7a6a0b22805fe658d538af346afdbf9a8f4a721221ff2cfc6326a2a1cacf593",
    "ko-wiki-rag.md": "6c99be413c1fb04a5d821a1647eeadcf476cb3648ddeb93d7ce323f392598812"
+  },
+  "edit.json": {
+   "sha256": "1b5ffc13b1dd29e9abb603c108c7c283e22687b47732973ef904f5bd3327ceaa",
+   "cases": 30
+  },
+  "organize.json": {
+   "sha256": "bf7121b735e3d0ce0d6122e5cbdb9d5d96bdcd91b1d6cbddd8465e49fc4b11bd",
+   "cases": 26
+  },
+  "skill.json": {
+   "sha256": "837be16b4e9d09bd4914218816b317a865e48230faf3a98ab9c7b9441aa4ec1d",
+   "cases": 24
   }
  },
  "revisions": [
@@ -52,6 +64,12 @@
    "file": "concept.json",
    "change": "link_to 24건(dist-scope-01~09, dist-rel-01~12, dist-comp-01~06 중 해당 사례)의 also_link에 타당 판정 연결 대상 추가, dist-unrel-05(kubectl)에 link_to 허용 답 추가",
    "reason": "정답 밖 추가 연결 88쌍(자기 연결 제외)을 켬/끔을 가리고 Codex로 채점해 정의상 직접 관계가 있는 valid 73쌍을 허용 연결로 보정. weak 15쌍은 추가 연결로 남김. 기대 답은 유지."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "edit.json, organize.json, skill.json",
+   "change": "AI 기능 평가셋 추가: 문서 편집 30, 문서 관리 26(정리 20·조회 6), Skill 24(의도 12·작성 6·시험 실행 6)",
+   "reason": "검수 페이지(LscCDpAeMrUSJSA58HQsc8) 사용자 검수 반영(승인 77·수정 3). look-03 설명 보강, org-10 기대 답을 되묻기로 바꾸고 원래 계획은 허용 답, org-18 요약에 기존 폴더 사용 안내 검사 추가, st-01 보존 문자열을 핵심 용어로 축소."
   }
  ]
 }
