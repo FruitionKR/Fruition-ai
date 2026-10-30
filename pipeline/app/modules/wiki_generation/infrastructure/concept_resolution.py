@@ -60,7 +60,8 @@ def normalize_resolution_output(
             canonical_slug = incoming_slug
         if decision == "create_new":
             canonical_slug = incoming_slug
-        if decision == "link_to" and canonical_slug in valid_targets:
+        # canonical_slug에 자기 slug를 적은 link_to는 자기 연결이 되므로 대상에 넣지 않는다.
+        if decision == "link_to" and canonical_slug in valid_targets and canonical_slug != incoming_slug:
             link_targets = unique_keep_order([canonical_slug] + link_targets)
             canonical_slug = incoming_slug
         if decision != "merge_into" and canonical_slug != incoming_slug:
