@@ -1,0 +1,51 @@
+{
+ "frozen_at": "2026-10-29",
+ "note": "검수 페이지(K2YHXDB7z946bCiUSE4X5h) 검수 반영 후 확정. 이후 정답 변경 금지, 바꾸면 새 버전으로 다시 확정한다.",
+ "files": {
+  "routing.jsonl": {
+   "sha256": "66b1bd9d126dcc96a170ffea2cd971d6bccc8f036c209ce8ca7ff7361663cdbc",
+   "cases": 102
+  },
+  "rag.json": {
+   "sha256": "7d6500d5de9e440310431669e8c52eb2bb6aae863ebd44b5c4b01c0cdc3b5b9c",
+   "cases": 100
+  },
+  "concept.json": {
+   "sha256": "066d7072dd418642f87c8f6343d80078a67ad72bf5d325a700f773023f620357",
+   "cases": 88
+  },
+  "corpus": {
+   "en-postgres-mvcc.md": "f70f963f47d44babb18327c39d389b8032090b3258c633c01b7f09ef4e2aa1d3",
+   "en-rag-paper.md": "8f25ec73a5dcfeca772c16ffe06525f05f14b5a419c59fdc826808fe380e7686",
+   "en-sre-postmortem.md": "6b7be765426e1ea7d849b7771e2f21eaa73f6f72827c365347950304d9578c79",
+   "ko-ai-ethics.md": "09cf5c24e0be8cca152d104346462fbc660e60abea4dac8bc3d6092fb5ac8d4a",
+   "ko-employment-2026-09.md": "823e00b93b12255d34782bc467cf5f3d3831886b5dc49207c3091a8b52331462",
+   "ko-k8s-deployment.md": "cb1f8e06a2cc0f58236129515bb5b7d3d3ca55fe315bc51319b28e2a3d448ff8",
+   "ko-k8s-pod.md": "f851361e7a936a293ca94921ba1c063870f22f0ffccc84f083841452a2e18ed9",
+   "ko-labor-standards-ch4.md": "7478116f5a0ac7c56ba07bc3e3295b66f0fbeb28556e338d4db58fdcfbb80c2f",
+   "ko-privacy-act-excerpt.md": "e20a109b5543d302edc524d1240ed56ec93019600a3fef3bd1613c64a8cb914c",
+   "ko-wiki-ir.md": "c7a6a0b22805fe658d538af346afdbf9a8f4a721221ff2cfc6326a2a1cacf593",
+   "ko-wiki-rag.md": "6c99be413c1fb04a5d821a1647eeadcf476cb3648ddeb93d7ce323f392598812"
+  }
+ },
+ "revisions": [
+  {
+   "date": "2026-10-30",
+   "file": "routing.jsonl",
+   "change": "chat-04, edit-05, edit-10, edit-11, ind-04, ind-10, pair-01b에 허용 답 추가",
+   "reason": "1차 결과 검토에서 정답과 다르지만 문맥상 타당한 답을 사용자와 확인. 기대 답은 그대로 두고 허용 답만 더했다."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "concept.json",
+   "change": "dist-rel-10, dist-rel-03, dist-scope-07, dist-rel-12, dist-comp-01에 also_link 추가, nodef-07, nodef-08에 허용 답 추가",
+   "reason": "결과 검토에서 정의상 직접 관련이 있는 연결 대상이 정답 범위 밖이던 사례를 사용자 원칙(타당한 답은 정답)에 따라 보정. 기대 답은 유지."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "rag.json",
+   "change": "law-08, emp-01, emp-07, paper-01, x-rag-01, emp-10, x-09, k8s-06에 acceptable_answers 추가",
+   "reason": "질문이 묻는 범위보다 기대 답이 좁았던 문항. 채점기는 기대 답과 허용 답 중 하나를 말하면 정답으로 본다."
+  }
+ ]
+}

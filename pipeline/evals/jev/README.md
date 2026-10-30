@@ -1,0 +1,60 @@
+# Jev 켬/끔 평가
+
+라우팅, 개념 병합, RAG 근거 선택에서 Jev(`JEV_*_ENABLED`)를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다.
+
+## 정답 세트
+
+| 파일 | 내용 |
+|---|---|
+| `routing.jsonl` | 라우팅 102건. `expected` 1개와 `acceptable` 대안 |
+| `concept.json` | 기존 개념 58개와 새 개념 88건. `expected`(`merge_into`·`link_to`·`keep_new`), `also_link`, `acceptable` |
+| `rag.json` | 질문 100건. `expected_answer`, `acceptable_answers`, 정답 인용문(`gold`), 답이 없는 질문(`answerable=false`) |
+| `corpus/` | RAG 원문 11개 |
+| `gold.lock.json` | 위 파일의 sha256과 개정 이력(`revisions`) |
+
+- 모든 실행기는 시작할 때 `gold.lock.json`과 파일을 대조하고, 다르면 실행하지 않는다.
+- 정답을 바꿀 때는 기대 답을 그대로 두고 허용 답만 더한다. 바꾼 사례와 이유를 `revisions`에 남기고 sha256을 다시 계산한다.
+- 프롬프트에 평가 문장이나 평가셋 예시를 넣지 않는다.
+
+## 실행
+
+`pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. 답변·편입 모델은 Claude Haiku(`claude-haiku-4-5-20251001`)이고, 각 사례를 3회 반복한다.
+
+```bash
+cd pipeline/evals/jev/tools
+export PYTHONPATH=/절대/경로/pipeline
+export JEV_EVAL_ENV_FILE=/절대/경로/.env   # ANTHROPIC_API_KEY, TYPESAFE_API_KEY. 이미 환경변수에 있으면 생략
+
+python run_routing.py [--dry-run] [--limit N]   # 라우팅 102건 × 켬·끔 × 3
+python run_concept.py [--dry-run] [--limit N]   # 개념 88건 × 켬·끔 × 3
+```
+
+RAG는 로컬 스택(platform 통합 스크립트로 띄운 PostgreSQL, MinIO, document-svc, access-svc, 각 워커 컨테이너)이 필요하다.
+
+```bash
+python rag_prepare.py --name rag                   # 새 계정·워크스페이스에 corpus를 올리고 Haiku로 편입
+python run_rag.py ../results/<날짜>/rag/workspace.json --name rag   # 질문 100건 × 켬·끔 × 3
+python grade_rag.py ../results/<날짜>/rag/rows.jsonl              # Codex 채점(codex CLI 필요)
+python analyze_rag.py ../results/<날짜>/rag                       # 집계
+```
+
+- `rag_prepare.py`는 `--resume`으로 끝난 문서를 건너뛰고 이어서 편입한다.
+- 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.
+
+## 채점
+
+- **라우팅·개념:** 코드로 채점한다. 기대 답이나 허용 답 중 하나와 같으면 정답이다. 개념 `link_to`는 연결 대상에 `canonical_slug`나 `also_link` 중 하나가 있으면 정답이고, 그 밖의 대상은 추가 연결로 센다.
+- **RAG:** 실행 행마다 선택기가 고른 근거 전체(`evidence`), 답변이 인용한 근거(`cited_evidence`), 답변 모델이 받은 프롬프트(`answer_context`)를 저장한다. 최종 결과의 근거는 인용된 것만 남으므로(`renumber_used_evidence`), 근거 선택은 반드시 `evidence`로 본다. 켬/끔을 가리고 순서를 섞어 Codex가 다음을 채점한다.
+  - 근거 충분성: 고른 근거만으로 기대 답이나 허용 답을 만들 수 있는지(sufficient/partial/none). 같은 질문에 같은 근거가 나온 실행은 한 번만 채점한다.
+  - 정답: 기대 답이나 허용 답을 말하면 correct. 질문이 묻는 사실이 빠지거나 틀렸을 때만 partial이다.
+  - 환각: 답변 프롬프트에 없는 구체적 사실을 단정했는지. 다른 근거로 답했어도 받은 문맥에 있으면 환각이 아니다.
+  - 정답 인용문이 고른 근거에 그대로 들어 있는지(코드 재현율)도 함께 센다.
+
+## 평가 전용 설정
+
+운영과 다르게 평가 스크립트 안에서만 바꾼 것이다.
+
+- 편입과 개념 병합에도 Claude(Haiku)를 쓴다. 운영 편입은 워크스페이스 공용 설정에서 Claude를 Gemini로 바꾼다.
+- Claude 출력 한도를 32k, 요청 시간 한도를 600초로 둔다. 편입 평가 구간을 4만 자로 줄인다(Haiku 입력 한도 200k).
+- 임베딩은 임베딩 서버 대신 같은 BGE-M3를 프로세스에 올리고, 운영과 같은 `MAX_TEXT_CHARS` 한도를 건다. 로컬 모델은 동시 호출에서 죽어 호출을 직렬화한다.
+- `en-rag-paper.md`의 NUL 문자는 올릴 때만 지운다(PostgreSQL text에 들어가지 않음, 정답 인용문에는 없음).
