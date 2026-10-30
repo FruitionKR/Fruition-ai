@@ -4,7 +4,7 @@
 - 이름 일치: 제목이나 별칭이 후보의 slug·제목·별칭과 slug로 같으면 Jev 없이 병합한다.
 - 판정: 판정 규칙은 state에 한 번만 두고, 후보마다 질문 하나(same/related/unrelated)를 요청 토큰 한도로 묶어 보낸다.
 - 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없고 related가 있으면 related 후보 모두와 연결한다.
-정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않고 새 개념으로 둔다. Jev는 missing hint를
+정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않는다. 이름 일치 병합은 정의 없이도 한다. Jev는 missing hint를
 판정하지 않으므로 hint가 있으면 기존 LLM 결과의 hint_resolutions만 쓴다. Jev나 임베딩을 쓸 수 없으면 기존
 LLM 결과를 그대로 쓴다.
 """
@@ -131,8 +131,9 @@ class JevConceptResolver(ConceptResolver):
             # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다.
             *({**concept, "definition": concept.get("definition") or concept.get("summary") or ""} for concept in existing),
         ]
-        pool = [concept for concept in pool if concept.get("slug") and str(concept["definition"]).strip()]
-        concepts = [concept for concept in incoming if str(concept.get("definition") or "").strip()]
+        # 이름 일치는 정의 없이도 판정한다. Jev에는 정의가 있는 개념끼리만 묻는다(judge_concepts).
+        pool = [concept for concept in pool if concept.get("slug")]
+        concepts = [concept for concept in incoming if concept.get("slug")]
         resolutions = self.judge_concepts(concepts, pool)
         # 병합 대상인 incoming 개념이 다시 다른 개념으로 병합되면 연쇄·순환이 생기므로 그 병합은 하지 않는다.
         merged = {slug for slug, item in resolutions.items() if item["decision"] == "merge_into"}
@@ -158,7 +159,10 @@ class JevConceptResolver(ConceptResolver):
                 resolutions[concept["slug"]] = _merge(concept["slug"], target)
                 logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=merge_into:%s(이름 일치)",
                             concept["slug"], len(others), target)
-            elif others:
+                continue
+            # 정의 없이 이름만으로 판정하면 틀려 Jev에는 정의가 있는 개념끼리만 묻는다.
+            others = [candidate for candidate in others if _has_definition(candidate)]
+            if others and _has_definition(concept):
                 tasks.append((concept, others))
         if not tasks:
             return resolutions
@@ -249,6 +253,10 @@ def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_sl
     if existing:
         return min(existing)
     return min((slug for slug in matches if slug < concept["slug"]), default=None)
+
+
+def _has_definition(concept: JsonDict) -> bool:
+    return bool(str(concept.get("definition") or "").strip())
 
 
 def _names(*names: object) -> set[str]:

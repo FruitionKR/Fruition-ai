@@ -85,7 +85,7 @@ class FailingEmbedder:
 
 INCOMING = [
     {"slug": "memoization-new", "title": "메모이제이션 기법", "definition": "함수 결과를 저장해 재계산을 피한다."},
-    {"slug": "untitled", "title": "memoization", "definition": ""},
+    {"slug": "untitled", "title": "정리 안 된 메모", "definition": ""},
 ]
 # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary를 쓴다.
 EXISTING = [
@@ -125,6 +125,18 @@ class JevConceptResolverTest(unittest.TestCase):
         # 정의가 없는 개념은 Jev에 보내지 않고 후보에도 넣지 않는다.
         self.assertEqual(jev.sent("untitled"), [])
         self.assertEqual(set(jev.sent("memoization-new")), {"memoization", "cache", "dynamic-programming"})
+
+    def test_merges_concept_without_definition_by_exact_name(self) -> None:
+        jev = PairJev()
+        incoming = [{"slug": "memo-new", "title": "메모", "definition": ""}]
+
+        result = _resolver(jev).resolve(incoming, EXISTING, [])
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memo-new", "decision": "merge_into", "canonical_slug": "memoization", "alias_to_add": None}],
+        )
+        self.assertEqual(jev.sent("memo-new"), [])
 
     def test_merges_into_candidate_with_highest_same_probability(self) -> None:
         jev = PairJev({
