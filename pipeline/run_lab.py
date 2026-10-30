@@ -501,7 +501,7 @@ def _resolve_pipeline_concepts(
             concepts=concepts,
             candidates=concept_update_candidates,
             # 개념 병합에 Jev를 쓰면 섹션 후보·언급의 개념 판정도 같은 쌍별 판정기를 쓴다.
-            judge_pairs=resolver.judge_concepts if isinstance(resolver, JevConceptResolver) else None,
+            judge_pairs=resolver.inner.judge_concepts if isinstance(resolver.inner, JevConceptResolver) else None,
         )
         return result, monotonic() - started
 

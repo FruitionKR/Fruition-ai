@@ -128,6 +128,12 @@ def demote_unsupported_core_concepts(normalized: dict[str, Any]) -> tuple[dict[s
     return {
         **normalized,
         "concept_ledger": [concept for concept in normalized["concept_ledger"] if concept["slug"] not in slugs],
+        # 강등한 개념은 페이지가 없으므로 별칭 분리로 만든 개념 사이 링크에서도 뺀다.
+        "alias_concept_links": [
+            link
+            for link in normalized.get("alias_concept_links", [])
+            if link["source"] not in slugs and link["target"] not in slugs
+        ],
         "section_candidates": sorted(sections.values(), key=lambda item: str(item.get("slug", ""))),
     }, demoted
 

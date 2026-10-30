@@ -62,7 +62,7 @@ _embedding_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
-def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
+def with_jev_concept_merge(resolver: ConceptResolver) -> NameMatchConceptResolver:
     """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다.
 
     어느 판정기든 이름·별칭이 글자 그대로 같은 개념은 그 앞에서 코드로 병합한다.
