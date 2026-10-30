@@ -382,6 +382,5 @@ def _artifact_mention(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": term,
         "slug": slugify(str(item.get("slug") or term)),
-        "context": item.get("context") or "",
         "anchor_reference_ids": item.get("evidence_block_ids", []) or [],
     }
