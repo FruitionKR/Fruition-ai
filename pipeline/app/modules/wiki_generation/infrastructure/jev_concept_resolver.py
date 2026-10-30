@@ -42,10 +42,11 @@ CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
     "and definitions. same: the same concept under another name, such as a synonym, translation, abbreviation, "
     "or spelling variant, without losing distinct meaning or scope. related: a distinct concept with a direct "
-    "relation stated by the definitions: one is a kind, part, stage, method, or variant of the other; both are "
-    "kinds of the same specific broader concept; or one cannot be explained without the other. unrelated: "
-    "anything else, including concepts that only share a field, a document, a workflow, or a topic, or that "
-    "connect only through a third concept. When unsure between related and unrelated, choose unrelated. "
+    "relation stated by the definitions: one is a kind, part, stage, method, or variant of the other; or one is "
+    "defined in terms of the other, so it cannot be understood without it. unrelated: anything else, including "
+    "concepts whose definitions only mention or contrast with each other without one of those relations, "
+    "concepts that only share a field, a document, a workflow, or a topic, siblings that are both kinds of the "
+    "same broader concept, or concepts that connect only through a third concept. When unsure between related and unrelated, choose unrelated. "
     "Return no explanation."
 )
 PAIR_CRITERIA = {
