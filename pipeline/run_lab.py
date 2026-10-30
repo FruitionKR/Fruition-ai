@@ -15,6 +15,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
@@ -976,6 +977,11 @@ def run_pipeline(
             {},
         )
 
+    # 평가 재시도 뒤에도 근거 주장이 없는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
+    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized)
+    if demoted_concepts:
+        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림: {', '.join(demoted_concepts)}")
+
     # 4. Backend normalize/merge/mention expansion.
     log.emit(
         "4. 정규화",
@@ -986,6 +992,7 @@ def run_pipeline(
             "mention 수": len(normalized.get("mentions", [])),
             "category 수": len(normalized.get("categories", [])),
             "근거 수": len(normalized["evidence_units"]),
+            "섹션 후보로 내린 핵심 개념 수": len(demoted_concepts),
             "경고 수": len(normalized.get("warnings", [])),
         },
     )

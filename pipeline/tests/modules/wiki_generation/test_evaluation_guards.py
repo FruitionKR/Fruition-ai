@@ -60,7 +60,7 @@ class EvaluationGuardsTest(unittest.TestCase):
         }
         normalized = {
             "concept_ledger": [{"slug": "artifact-flow", "title": "Artifact flow", "anchor_reference_ids": []}],
-            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B9999"]}],
+            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B9999"], "related_concept_slugs": ["artifact-flow"]}],
         }
 
         apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
@@ -364,3 +364,43 @@ class EvaluationGuardsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_rejects_core_concept_without_supporting_evidence_claim(self) -> None:
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.95}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "concept_ledger": [
+                {"slug": "supported", "title": "Supported", "anchor_reference_ids": ["B0001"]},
+                {"slug": "unsupported", "title": "Unsupported", "anchor_reference_ids": ["B0001"]},
+            ],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B0001"], "related_concept_slugs": ["supported"]},
+            ],
+        }
+
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+
+        self.assertFalse(evaluation["passed"])
+        issues = [issue for issue in evaluation["issues"] if issue["type"] == "section_or_mention_should_not_be_core"]
+        self.assertEqual([issue["target"] for issue in issues], [["unsupported"]])
+
+    def test_demotes_unsupported_core_concept_to_section_candidate(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts
+
+        normalized = {
+            "concept_ledger": [
+                {"slug": "supported", "title": "Supported", "definition": "정의", "anchor_reference_ids": ["B0001"]},
+                {"slug": "unsupported", "title": "Unsupported", "definition": "약한 정의", "anchor_reference_ids": ["B0002"]},
+            ],
+            "section_candidates": [{"term": "Other", "title": "Other", "slug": "other", "context": "", "anchor_reference_ids": ["B0003"]}],
+            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["supported"]}],
+        }
+
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized)
+
+        self.assertEqual(demoted, ["unsupported"])
+        self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["supported"])
+        self.assertIn(
+            {"term": "Unsupported", "title": "Unsupported", "slug": "unsupported", "context": "약한 정의", "anchor_reference_ids": ["B0002"]},
+            demoted_normalized["section_candidates"],
+        )
+        self.assertEqual(demote_unsupported_core_concepts(demoted_normalized)[1], [])
