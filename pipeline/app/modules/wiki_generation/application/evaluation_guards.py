@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import re
 from copy import deepcopy
 from typing import Any
@@ -387,19 +386,12 @@ def _merge_evidence_refs(
     if keeper_note is incoming_note:
         keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *refs])
         return
-    # 다른 노트의 근거는 keeper 노트로 새 id를 붙여 옮겨 온다. 같은 id가 다른 근거를 뜻할 수 있어서다.
+    # 다른 노트의 근거 id는 keeper 노트에서 뜻이 달라, 근거 행을 늘리지 않고 문장과 블록만 keeper로 옮긴다.
     evidence_by_id = {str(item.get("id")): item for item in incoming_note.get("evidence_claims", []) or [] if item.get("id")}
-    used = {str(item.get("id")) for item in keeper_note.get("evidence_claims", []) or [] if item.get("id")}
-    copied = []
-    for ref in refs:
-        evidence = evidence_by_id.get(ref)
-        if evidence is None:
-            continue
-        new_id = next(f"{ref}-m{index}" for index in itertools.count(1) if f"{ref}-m{index}" not in used)
-        used.add(new_id)
-        keeper_note.setdefault("evidence_claims", []).append({**evidence, "id": new_id})
-        copied.append(new_id)
-    keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *copied])
+    carried = [evidence_by_id[ref] for ref in refs if ref in evidence_by_id]
+    keeper["claims"] = _unique([*(keeper.get("claims") or []), *(str(item.get("claim") or "").strip() for item in carried if str(item.get("claim") or "").strip())])
+    anchor_field = "anchor_reference_ids" if "anchor_reference_ids" in keeper else "anchor_block_ids"
+    keeper[anchor_field] = _unique([*_observation_anchors(keeper), *(ref for item in carried for ref in item.get("anchor_block_ids", []) or [])])
 
 
 def _select_observation_keeper(observations: list[dict[str, Any]]) -> dict[str, Any]:

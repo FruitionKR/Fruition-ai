@@ -135,6 +135,8 @@ class SemanticNormalizer:
                     "query_text": _optional_text(obs.get("query_text")),
                     "summary": str(obs.get("summary", "")).strip(),
                     "evidence_refs": [str(ref).strip() for ref in (obs.get("evidence_refs") or []) if str(ref).strip()],
+                    # 다른 노트의 중복 관찰을 합칠 때 옮겨 온 근거 문장이다. 추출 출력에는 보통 없다.
+                    "claims": [str(claim).strip() for claim in (obs.get("claims") or []) if str(claim).strip()],
                     "related_concept_hints": [slugify(x) for x in (obs.get("related_concept_hints") or [])],
                     "anchor_reference_ids": self._anchor_refs((obs.get("anchor_block_ids") or []), warnings, limit=5),
                 }
@@ -230,7 +232,7 @@ class SemanticNormalizer:
                 warnings.append(f"unknown observation evidence_ref: {ref}")
                 continue
             rows.append(row)
-        observation["claims"] = unique_keep_order(row.claim for row in rows)
+        observation["claims"] = unique_keep_order([*observation.get("claims", []), *(row.claim for row in rows)])
         observation["anchor_reference_ids"] = unique_keep_order(
             observation["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
         )

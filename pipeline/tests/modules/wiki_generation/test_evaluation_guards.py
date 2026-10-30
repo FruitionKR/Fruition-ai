@@ -385,7 +385,8 @@ class EvaluationGuardsTest(unittest.TestCase):
         normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), blocks).normalize_notes(repaired)
 
         self.assertEqual([len(note["observations"]) for note in repaired], [1, 0])
-        self.assertEqual(normalized["observations"][0]["claims"], ["A는 B다", "C는 D다"])
+        self.assertEqual(normalized["observations"][0]["claims"], ["C는 D다", "A는 B다"])
+        self.assertEqual([item["claim"] for item in normalized["evidence_units"]], ["A는 B다", "C는 D다"])
 
 
 if __name__ == "__main__":

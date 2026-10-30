@@ -112,3 +112,35 @@ def test_rejects_uneditable_path_or_unknown_anchor() -> None:
         targets,
         ["B0001", "B0002", "B0003"],
     ) is None
+
+
+def test_rejects_patch_that_breaks_evidence_refs() -> None:
+    notes = [
+        {
+            "chunk_id": "chunk_0001",
+            "evidence_claims": [{"id": "e1", "claim": "넓은 주장", "anchor_block_ids": ["B0002"]}],
+            "observations": [{"title": "관찰", "summary": "요약", "evidence_refs": ["e1"], "anchor_block_ids": ["B0002"]}],
+        }
+    ]
+    targets = build_semantic_patch_targets(notes, {"issues": [{"target": ["ev_0001"]}]}, ["B0002"])
+
+    def split(first_id: str, second_id: str) -> dict[str, object]:
+        return {
+            "operations": [
+                {
+                    "op": "replace",
+                    "chunk_id": "chunk_0001",
+                    "collection": "evidence_claims",
+                    "index": 0,
+                    "items": [
+                        {"id": first_id, "claim": "주장 A", "anchor_block_ids": ["B0002"]},
+                        {"id": second_id, "claim": "주장 B", "anchor_block_ids": ["B0002"]},
+                    ],
+                }
+            ]
+        }
+
+    assert apply_semantic_patch(notes, split("e1", "e2"), targets, ["B0002"]) is not None
+    # 같은 id를 다시 쓰거나 관찰이 가리키던 id가 사라지면 chunk 재생성으로 넘긴다.
+    assert apply_semantic_patch(notes, split("e1", "e1"), targets, ["B0002"]) is None
+    assert apply_semantic_patch(notes, split("e2", "e3"), targets, ["B0002"]) is None
