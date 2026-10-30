@@ -34,6 +34,9 @@ Task:
 Number rules:
 - Copy every number exactly as the source writes it, with the same unit. Do not convert units (for example, between 천 and 만) and do not compute new numbers such as differences, sums, or ratios.
 - When a table gives its unit only in a header, keep the table value and add that unit in parentheses.
+- State only what the source blocks state. Do not add causes, reasons, purposes, consequences, or comparisons the source does not state, and do not join separate source statements into one causal or conditional claim.
+- Keep the source's conditions, exceptions, scope limits, quantities, and modality (must, may, should, try to). Do not strengthen or weaken an obligation or a degree of certainty.
+- If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
 
 Classification rules:
 1. Use core_concept only when the term is independently explainable, grounded in the source, central to understanding the document, and likely reusable across other Source Pages.
