@@ -68,6 +68,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--name", default="concept", help="결과 폴더 이름(판정 규칙 전후 비교용)")
     args = parser.parse_args()
     verify_gold()
     data = json.loads((EVAL_DIR / "concept.json").read_text())
@@ -140,11 +141,12 @@ def main() -> None:
     jobs = [(case, variant, r) for case in cases for variant in ("off", "on") for r in range(RUNS)]
     with ThreadPoolExecutor(max_workers=4) as executor:
         rows = list(executor.map(run, jobs))
-    out = results_dir("concept")
+    out = results_dir(args.name)
     write_jsonl(out / "rows.jsonl", rows)
     for variant in ("off", "on"):
         mine = [row for row in rows if row["variant"] == variant]
-        print(variant, sum(row["ok"] for row in mine), "/", len(mine), "errors", sum(bool(row["error"]) for row in mine))
+        print(variant, sum(row["ok"] for row in mine), "/", len(mine), "errors", sum(bool(row["error"]) for row in mine),
+              "extra_links", sum(len(row["extra_links"]) for row in mine))
     print("saved to", out)
 
 

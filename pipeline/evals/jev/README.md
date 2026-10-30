@@ -1,6 +1,6 @@
-# Jev 켬/끔 평가
+# Jev 켬/끔·AI 기능 평가
 
-라우팅, 개념 병합, RAG 근거 선택에서 Jev(`JEV_*_ENABLED`)를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다.
+라우팅, 개념 병합, RAG 근거 선택에서 Jev(`JEV_*_ENABLED`)를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다. 문서 편집, 문서 관리, Skill은 운영 기능 경로로 실행해 성공 수를 세고, RAG는 Wiki 없는 일반 RAG 대조군과 주장 단위로 비교한다.
 
 ## 정답 세트
 
@@ -9,7 +9,10 @@
 | `routing.jsonl` | 라우팅 102건. `expected` 1개와 `acceptable` 대안 |
 | `concept.json` | 기존 개념 58개와 새 개념 88건. `expected`(`merge_into`·`link_to`·`keep_new`), `also_link`, `acceptable` |
 | `rag.json` | 질문 100건. `expected_answer`, `acceptable_answers`, 정답 인용문(`gold`), 답이 없는 질문(`answerable=false`) |
-| `corpus/` | RAG 원문 11개 |
+| `edit.json` | 문서 편집 30건. corpus 발췌·대상 범위·요청, 코드 검사(`checks`), 판정 기준(`criteria`) |
+| `organize.json` | 문서 관리 26건. 폴더 정리 20건(`hierarchy`·요청·최종 배치 정답, 되묻기 정답 포함)과 폴더 조회 6건 |
+| `skill.json` | Skill 24건. 의도 분류 12, Skill 작성 6, 시험 실행 6 |
+| `corpus/` | RAG 원문 11개(편집·Skill 발췌에도 사용) |
 | `gold.lock.json` | 위 파일의 sha256과 개정 이력(`revisions`) |
 
 - 모든 실행기는 시작할 때 `gold.lock.json`과 파일을 대조하고, 다르면 실행하지 않는다.
@@ -44,6 +47,14 @@ python run_routing.py [--dry-run] [--limit N]   # 라우팅 102건 × 켬·끔 �
 python run_concept.py [--dry-run] [--limit N]   # 개념 88건 × 켬·끔 × 3
 ```
 
+```bash
+python run_edit.py                                   # 문서 편집 30건 × 3 → grade_features.py edit 로 판정
+python run_organize.py                               # 폴더 정리 20건 + 조회 6건 × 3
+python run_skill.py                                  # 의도 분류·작성(켬/끔) + 시험 실행 × 3 → grade_features.py skill
+python grade_features.py edit ../results/<날짜>/edit/rows.jsonl
+python grade_features.py skill ../results/<날짜>/skill/rows.jsonl
+```
+
 RAG는 로컬 스택(platform 통합 스크립트로 띄운 PostgreSQL, MinIO, document-svc, access-svc, 각 워커 컨테이너)이 필요하다.
 
 ```bash
@@ -51,7 +62,14 @@ python rag_prepare.py --name rag                   # 새 계정·워크스페이
 python run_rag.py ../results/<날짜>/rag/workspace.json --name rag   # 질문 100건 × 켬·끔 × 3
 python grade_rag.py ../results/<날짜>/rag/rows.jsonl              # Codex 채점(codex CLI 필요)
 python analyze_rag.py ../results/<날짜>/rag                       # 집계
+python run_rag_baseline.py                                         # 일반 RAG 대조군(원문 청크 검색, 같은 답변 모델) × 3
+python grade_rag.py ../results/<날짜>/rag_baseline/rows.jsonl      # 대조군도 같은 방식으로 채점
+python grade_claims.py ../results/<날짜>/claims ../results/<날짜>/rag/rows.jsonl:on ../results/<날짜>/rag_baseline/rows.jsonl
+python run_lint.py ../results/<날짜>/rag/workspace.json --dry-run   # 운영 경로(백엔드 API → 워커)로 lint. --dry-run을 빼면 승격까지 반영
 ```
+
+- `rag_prepare.py --sources en-rag-paper`처럼 일부 문서만 편입해 프롬프트 변경을 빠르게 확인할 수 있다.
+- 채점(`grade_rag.py`, `grade_claims.py`)은 codex 묶음을 동시에 6개씩 보낸다.
 
 - 편입이 끊기면 `python rag_prepare.py --resume ../results/<날짜>/rag/workspace.json`으로 같은 계정·워크스페이스에서 끝난 문서를 건너뛰고 이어서 편입한다. 결과도 그 폴더에 쓴다.
 - 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.
@@ -66,11 +84,17 @@ python analyze_rag.py ../results/<날짜>/rag                       # 집계
   - 환각: 답변 프롬프트에 없는 구체적 사실을 단정했는지. 다른 근거로 답했어도 받은 문맥에 있으면 환각이 아니다.
   - 정답 인용문이 고른 근거에 그대로 들어 있는지(코드 재현율)도 함께 센다.
 
+- **문서 편집:** 실행 오류가 없고, 코드 검사(대상 밖 줄 그대로, 보존·필수·금지 문자열, 형식, 원문과 같은 결과 아님)와 Codex의 판정 기준 채점을 모두 통과하면 성공이다.
+- **문서 관리:** 정리 계획을 메모리 폴더 트리에 적용해 최종 배치(이동 위치, 같은 폴더로 묶일 문서, 이름, 건드리면 안 되는 항목, 요약 안내)를 정답과 비교한다. 되묻기가 정답인 사례는 되물었을 때만 성공이다. 범위가 있는 사례는 운영 worker처럼 `scoped_hierarchy`로 잘라 계획을 만든다. 조회는 고른 폴더 id 집합이 정답과 같으면 성공이다.
+- **Skill:** 의도 분류는 판단·Skill 종류·참고 방식·원문 필요 여부가 정답과 같으면, 작성은 상태·기능·초안 검사가 맞으면 성공이다. 시험 실행은 `completed`이고 코드 검사와 Codex 판정을 통과하면 성공이다.
+- **RAG 주장 단위 검증:** 답변을 원자 주장으로 나누고 Codex가 corpus 원문 파일을 직접 읽어 supported/unsupported/contradicted로 판정한다. 근거 없는 주장 비율 = (unsupported + contradicted) / 전체 주장.
+
 ## 평가 전용 설정
 
 운영과 다르게 평가 스크립트 안에서만 바꾼 것이다.
 
 - 편입과 개념 병합에도 Claude(Haiku)를 쓴다. 운영 편입은 워크스페이스 공용 설정에서 Claude를 Gemini로 바꾼다.
 - Claude 출력 한도를 32k, 요청 시간 한도를 600초로 둔다. 편입 평가 구간을 4만 자로 줄인다(Haiku 입력 한도 200k).
+- 편입 개념 판정은 운영 계획대로 Jev(`JEV_CONCEPT_MERGE_ENABLED=true`)를 쓴다. 임베딩 서버 포트가 밖으로 열려 있지 않아 Jev 후보 임베딩도 같은 BGE-M3를 프로세스에 올려 쓴다(`rag_prepare.py --concept-judge`, 기본 jev). 2026-10-30 이전 편입(b3·a3)은 LLM 판정이었다.
 - 임베딩은 임베딩 서버 대신 같은 BGE-M3를 프로세스에 올리고, 운영과 같은 `MAX_TEXT_CHARS` 한도를 건다. 로컬 모델은 동시 호출에서 죽어 호출을 직렬화한다.
 - `en-rag-paper.md`의 NUL 문자는 올릴 때만 지운다(PostgreSQL text에 들어가지 않음, 정답 인용문에는 없음).

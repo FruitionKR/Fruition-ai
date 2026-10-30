@@ -1,4 +1,5 @@
 """RAG 평가용 워크스페이스 준비: 새 계정·워크스페이스에 원문 11개를 올리고, 최신 dev 코드로 Haiku 편입·후속 편입을 한다.
+개념 판정은 기본으로 운영 계획대로 Jev를 쓴다(--concept-judge llm이면 LLM).
 
 운영 편입 워커는 워크스페이스 공용 설정에서 Claude가 오면 Gemini로 바꾼다. 평가 요청대로 Haiku로 편입하려고
 이 프로세스에서만 그 대체를 끈다(운영 코드는 바꾸지 않는다).
@@ -62,13 +63,41 @@ def jwt_subject(token: str) -> str:
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
 
 
+def use_local_embedding_for_jev_concepts() -> None:
+    """운영처럼 Jev 개념 판정을 켠다. 임베딩 서버 포트가 밖으로 열려 있지 않아 같은 BGE-M3를 이 프로세스에 올려 쓴다(평가 전용)."""
+    from threading import Lock
+
+    from app.core.jev_client import JEV_CONCEPT_MERGE_ENABLED_ENV
+    from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
+    from app.modules.wiki_generation.infrastructure import jev_concept_resolver
+
+    os.environ[JEV_CONCEPT_MERGE_ENABLED_ENV] = "true"
+    model, lock = BgeM3EmbeddingModel(), Lock()
+
+    class SerializedModel:
+        # 로컬 모델은 스레드 동시 호출에서 죽어서(segfault) 호출을 직렬화한다.
+        model_name = model.model_name
+
+        @staticmethod
+        def embed(texts):
+            with lock:
+                return model.embed(texts)
+
+    jev_concept_resolver.embedding_server_model = lambda: SerializedModel()
+    assert jev_concept_resolver.jev_concept_judge() is not None, "Jev 개념 판정기를 만들지 못했습니다"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="rag", help="결과 폴더 이름(편입 방식 전후 비교용)")
     parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
+    parser.add_argument("--sources", help="쉼표로 구분한 corpus 문서 이름만 편입(확인용)")
+    parser.add_argument("--concept-judge", choices=("jev", "llm"), default="jev", help="편입·후속 편입의 개념 판정기")
     args = parser.parse_args()
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")
+    # 임베딩 서버 주소는 도커 네트워크 안에서만 닿는다. 이 프로세스는 같은 BGE-M3를 직접 올려 쓴다(평가 전용).
+    os.environ.pop("EMBEDDING_SERVICE_URL", None)
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     import app.modules.wiki_ingestion.interfaces.http.schemas as ingest_schemas
     import app.workers.task_worker as task_worker
@@ -95,6 +124,8 @@ def main() -> None:
     from app.modules.wiki_generation.application import evaluate_generation
 
     evaluate_generation.EVALUATION_WINDOW_CHARS = 40_000
+    if args.concept_judge == "jev":
+        use_local_embedding_for_jev_concepts()
 
     out = Path(args.resume).resolve().parent if args.resume else results_dir(args.name)
     if args.resume:
@@ -111,7 +142,7 @@ def main() -> None:
         (out / "workspace.json").write_text(json.dumps(state, ensure_ascii=False, indent=1))
     done = {doc["source_id"] for doc in state["documents"]}
     for i, path in enumerate(sorted((EVAL_DIR / "corpus").glob("*.md"))):
-        if path.stem in done:
+        if path.stem in done or (args.sources and path.stem not in args.sources.split(",")):
             continue
         # PDF 수식 변환 잔재 NUL은 PostgreSQL text에 들어가지 않는다. 정답 인용문에는 없다.
         md = path.read_text(encoding="utf-8").replace("\x00", "")

@@ -42,12 +42,14 @@ def main() -> None:
     parser.add_argument("workspace")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--name", default="rag", help="결과 폴더 이름(편입 방식 전후 비교용)")
+    parser.add_argument("--ids", help="쉼표로 구분한 질문 id만 실행(일부 문서 편입 확인용)")
     args = parser.parse_args()
     verify_gold()
     workspace = json.loads(Path(args.workspace).read_text())
     source_by_document = {d["document_id"]: d["source_id"] for d in workspace["documents"]}
     cases = json.loads((EVAL_DIR / "rag.json").read_text())
     cases = cases[: args.limit] if args.limit else cases
+    cases = [c for c in cases if c["id"] in args.ids.split(",")] if args.ids else cases
 
     load_container_env("fruition-query-task-worker-dev")
     os.environ.pop("EMBEDDING_SERVICE_URL", None)
