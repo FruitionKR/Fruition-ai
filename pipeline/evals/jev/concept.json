@@ -1690,7 +1690,12 @@
     "maximum-inner-product-search"
    ],
    "reachable_by_jev": false,
-   "note": "On-call과 관련된 다른 역할"
+   "note": "On-call과 관련된 다른 역할 / 허용 답 추가: 두 정의가 서로를 언급하지 않고 같은 흐름에만 속해, 같은 흐름만으로는 연결하지 않는 규칙(#168)상 keep_new도 타당 (2026-10-31)",
+   "acceptable": [
+    {
+     "decision": "keep_new"
+    }
+   ]
   },
   {
    "id": "dist-rel-06",
