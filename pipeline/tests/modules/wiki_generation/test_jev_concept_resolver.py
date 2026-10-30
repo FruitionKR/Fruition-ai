@@ -309,7 +309,7 @@ class WithJevConceptMergeTest(unittest.TestCase):
     def test_keeps_existing_resolver_when_disabled(self) -> None:
         resolver = RecordingResolver()
         with patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
     def test_wraps_resolver_when_enabled_with_key_and_embedding_server(self) -> None:
         env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key", "EMBEDDING_SERVICE_URL": "http://embedding"}
@@ -317,20 +317,40 @@ class WithJevConceptMergeTest(unittest.TestCase):
             patch.dict("os.environ", env),
             patch.object(jev_concept_resolver, "_remote_embedding_model", return_value=AngleEmbedder()),
         ):
-            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()), JevConceptResolver)
+            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()).inner, JevConceptResolver)
 
     def test_keeps_existing_resolver_without_embedding_server(self) -> None:
         # 편입 워커가 BGE-M3를 직접 올리지 않도록 임베딩 서버가 없거나 설정이 잘못되면 Jev 병합을 쓰지 않는다.
         resolver = RecordingResolver()
         env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}
         with patch.dict("os.environ", env), patch.dict("os.environ", {"EMBEDDING_SERVICE_URL": ""}):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
         with (
             patch.dict("os.environ", {**env, "EMBEDDING_SERVICE_URL": "http://embedding"}),
             patch.object(jev_concept_resolver, "_remote_embedding_model", side_effect=RuntimeError("no token")),
         ):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameMatchConceptResolverTest(unittest.TestCase):
+    def test_merges_exact_names_before_llm_and_sends_only_the_rest(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        llm = RecordingResolver()
+        incoming = [
+            {"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"], "definition": "정의"},
+            {"slug": "new-thing", "title": "새 개념", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "rag", "title": "Retrieval-Augmented Generation", "aliases": ["RAG", "검색 증강 생성"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(llm).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            result["resolutions"][0],
+            {"incoming_slug": "retrieval-augmented-generation", "decision": "merge_into", "canonical_slug": "rag", "alias_to_add": None},
+        )
+        self.assertEqual([c["slug"] for c in llm.calls[0][0]], ["new-thing"])

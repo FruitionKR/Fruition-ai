@@ -363,6 +363,22 @@ class LinkBuilder:
                         "decided_by": "concept_resolution",
                     }
                 )
+        # 별칭에서 뺀 다른 핵심 개념은 같은 문서 안의 하위·관련 개념으로 잇는다.
+        for item in normalized.get("alias_concept_links", []):
+            source = slug_map.get(item["source"], item["source"])
+            target = slug_map.get(item["target"], item["target"])
+            key = frozenset((source, target))
+            if source == target or key in seen:
+                continue
+            seen.add(key)
+            links.append(
+                {
+                    "source": f"concept:{source}",
+                    "target": f"concept:{target}",
+                    "relation": "concept_related_to",
+                    "decided_by": "alias_overlap",
+                }
+            )
         return links
 
 

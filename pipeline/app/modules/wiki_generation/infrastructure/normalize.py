@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
@@ -89,6 +90,8 @@ class SemanticNormalizer:
                         item["sample_claims"].append(ev.claim)
                     item["max_confidence"] = max(item["max_confidence"], ev.confidence)
 
+        alias_concept_links = _split_concept_aliases(concepts_by_slug)
+
         # Backend expands direct mentions from all blocks by title/aliases.
         for concept in concepts_by_slug.values():
             mention_refs = self._expand_mentions(concept)
@@ -107,6 +110,7 @@ class SemanticNormalizer:
             "mentions": sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", "")),
             "observations": observations,
             "evidence_units": [asdict(e) for e in evidence_rows],
+            "alias_concept_links": alias_concept_links,
             "missing_related_concept_hints": sorted(missing_related_hints.values(), key=lambda x: (-x["max_confidence"], x["slug"])),
             "warnings": warnings,
         }
@@ -291,6 +295,33 @@ class SemanticNormalizer:
         # For Korean aliases, substring is acceptable. For English, require substring
         # across case; this keeps the prototype simple.
         return contains_ci(text, needle)
+
+
+def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> list[dict[str, str]]:
+    """별칭이 같은 문서의 다른 핵심 개념 이름이면 별칭에서 빼고 두 개념을 잇는다.
+
+    다른 핵심 개념이 된 이름은 같은 개념의 다른 이름이 아니라 따로 둔 하위·관련 개념이다. 별칭에 남기면
+    나중에 그 이름의 개념이 들어올 때 이름 일치로 잘못 병합된다.
+    """
+    owner_by_name = {}
+    for concept in concepts_by_slug.values():
+        for name in (concept.title, concept.slug):
+            owner_by_name.setdefault(_name_key(name), concept.slug)
+    links = []
+    for concept in concepts_by_slug.values():
+        kept = []
+        for alias in concept.aliases:
+            owner = owner_by_name.get(_name_key(alias))
+            if owner and owner != concept.slug:
+                links.append({"source": concept.slug, "target": owner})
+                continue
+            kept.append(alias)
+        concept.aliases = kept
+    return links
+
+
+def _name_key(name: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
 
 
 def _optional_text(value: Any) -> str | None:

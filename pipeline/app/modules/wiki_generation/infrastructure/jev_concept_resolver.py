@@ -63,8 +63,41 @@ logger = logging.getLogger(__name__)
 
 
 def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
-    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다."""
-    return jev_concept_judge(resolver) or resolver
+    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다.
+
+    어느 판정기든 이름·별칭이 글자 그대로 같은 개념은 그 앞에서 코드로 병합한다.
+    """
+    return NameMatchConceptResolver(jev_concept_judge(resolver) or resolver)
+
+
+class NameMatchConceptResolver(ConceptResolver):
+    """이름이 같은 개념은 판정기 없이 병합하고 나머지만 판정기에 넘긴다. Jev·임베딩이 없을 때도 같게 동작한다."""
+
+    def __init__(self, inner: ConceptResolver) -> None:
+        self.inner = inner
+
+    def resolve(
+        self,
+        incoming_concepts: list[JsonDict],
+        existing_concepts: list[JsonDict],
+        missing_related_hints: list[JsonDict] | None = None,
+    ) -> JsonDict:
+        incoming = [concept for concept in incoming_concepts if concept.get("slug")]
+        pool = [*incoming, *(concept for concept in existing_concepts if concept.get("slug"))]
+        incoming_slugs = {concept["slug"] for concept in incoming}
+        matched = {}
+        for concept in incoming:
+            others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            if target := _exact_name_match(concept, others, incoming_slugs):
+                matched[concept["slug"]] = _merge(concept["slug"], target)
+        rest = [concept for concept in incoming_concepts if concept.get("slug") not in matched]
+        raw = self.inner.resolve(rest, existing_concepts, missing_related_hints) if rest or missing_related_hints else {}
+        resolutions = list(raw.get("resolutions") or [])
+        # 이름 일치 대상이 판정기에서 다시 병합되면 연쇄가 생기므로 최종 대상으로 바로 잇는다.
+        merged_to = {item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"}
+        for item in matched.values():
+            item["canonical_slug"] = merged_to.get(item["canonical_slug"], item["canonical_slug"])
+        return {**raw, "resolutions": [*matched.values(), *resolutions]}
 
 
 def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptResolver | None:
