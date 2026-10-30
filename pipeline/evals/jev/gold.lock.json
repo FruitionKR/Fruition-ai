@@ -11,7 +11,7 @@
    "cases": 100
   },
   "concept.json": {
-   "sha256": "066d7072dd418642f87c8f6343d80078a67ad72bf5d325a700f773023f620357",
+   "sha256": "93e0c4e824c70b2a3c1bcc8a02c3dbc750c6ad084ccf794e37c13cb62dbb0eaf",
    "cases": 88
   },
   "corpus": {
@@ -46,6 +46,12 @@
    "file": "rag.json",
    "change": "law-08, emp-01, emp-07, paper-01, x-rag-01, emp-10, x-09, k8s-06에 acceptable_answers 추가",
    "reason": "질문이 묻는 범위보다 기대 답이 좁았던 문항. 채점기는 기대 답과 허용 답 중 하나를 말하면 정답으로 본다."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "concept.json",
+   "change": "link_to 24건(dist-scope-01~09, dist-rel-01~12, dist-comp-01~06 중 해당 사례)의 also_link에 타당 판정 연결 대상 추가, dist-unrel-05(kubectl)에 link_to 허용 답 추가",
+   "reason": "정답 밖 추가 연결 88쌍(자기 연결 제외)을 켬/끔을 가리고 Codex로 채점해 정의상 직접 관계가 있는 valid 73쌍을 허용 연결로 보정. weak 15쌍은 추가 연결로 남김. 기대 답은 유지."
   }
  ]
 }

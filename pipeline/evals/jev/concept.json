@@ -1295,7 +1295,13 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "snapshot-isolation",
-    "also_link": []
+    "also_link": [
+     "mvcc",
+     "phantom-read",
+     "predicate-lock",
+     "repeatable-read",
+     "serializable-isolation"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1319,7 +1325,14 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "read-committed",
-    "also_link": []
+    "also_link": [
+     "dirty-read",
+     "mvcc",
+     "phantom-read",
+     "repeatable-read",
+     "serializable-isolation",
+     "snapshot-isolation"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1341,7 +1354,11 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "deployment",
-    "also_link": []
+    "also_link": [
+     "pod",
+     "replicaset",
+     "statefulset"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1365,7 +1382,12 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "dense-passage-retrieval",
-    "also_link": []
+    "also_link": [
+     "information-retrieval",
+     "maximum-inner-product-search",
+     "retrieval-augmented-generation",
+     "vector-space-model"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1389,7 +1411,15 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "bm25",
-    "also_link": []
+    "also_link": [
+     "boolean-model",
+     "dense-passage-retrieval",
+     "hybrid-search",
+     "information-retrieval",
+     "inverted-index",
+     "retrieval-augmented-generation",
+     "vector-space-model"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1413,7 +1443,11 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "pseudonymous-information",
-    "also_link": []
+    "also_link": [
+     "personal-information",
+     "personal-information-controller",
+     "pseudonymization"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1463,7 +1497,10 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "unemployment-rate",
-    "also_link": []
+    "also_link": [
+     "economically-active-population",
+     "employment-rate"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1488,7 +1525,8 @@
     "decision": "link_to",
     "canonical_slug": "unemployment-rate",
     "also_link": [
-     "seasonal-adjustment"
+     "seasonal-adjustment",
+     "economically-active-population"
     ]
    },
    "jev_eligible": true,
@@ -1537,7 +1575,14 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "phantom-read",
-    "also_link": []
+    "also_link": [
+     "dirty-read",
+     "mvcc",
+     "read-committed",
+     "repeatable-read",
+     "serializable-isolation",
+     "snapshot-isolation"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1561,7 +1606,11 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "deployment",
-    "also_link": []
+    "also_link": [
+     "pod",
+     "replicaset",
+     "statefulset"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1611,7 +1660,11 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "anonymization",
-    "also_link": []
+    "also_link": [
+     "personal-information",
+     "pseudonymization",
+     "pseudonymous-information"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1659,7 +1712,9 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "postmortem",
-    "also_link": []
+    "also_link": [
+     "blameless-postmortem"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1683,7 +1738,9 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "selective-working-hours",
-    "also_link": []
+    "also_link": [
+     "flexible-working-hours"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1707,7 +1764,10 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "extended-unemployment-rate",
-    "also_link": []
+    "also_link": [
+     "economically-active-population",
+     "unemployment-rate"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1731,7 +1791,9 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "employment-rate",
-    "also_link": []
+    "also_link": [
+     "economically-active-population"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1757,7 +1819,13 @@
     "canonical_slug": "transparency",
     "also_link": [
      "ai-ethics-standard",
-     "personal-information"
+     "personal-information",
+     "anonymization",
+     "data-breach-notification",
+     "data-subject",
+     "privacy-policy",
+     "pseudonymization",
+     "pseudonymous-information"
     ]
    },
    "jev_eligible": true,
@@ -1782,7 +1850,9 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "retrieval-augmented-generation",
-    "also_link": []
+    "also_link": [
+     "information-retrieval"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1807,7 +1877,8 @@
     "decision": "link_to",
     "canonical_slug": "hybrid-search",
     "also_link": [
-     "information-retrieval"
+     "information-retrieval",
+     "bm25"
     ]
    },
    "jev_eligible": true,
@@ -1833,7 +1904,10 @@
     "decision": "link_to",
     "canonical_slug": "mvcc",
     "also_link": [
-     "predicate-lock"
+     "predicate-lock",
+     "dirty-read",
+     "repeatable-read",
+     "snapshot-isolation"
     ]
    },
    "jev_eligible": true,
@@ -1857,7 +1931,10 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "postmortem",
-    "also_link": []
+    "also_link": [
+     "blameless-postmortem",
+     "root-cause-analysis"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1881,7 +1958,10 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "retrieval-augmented-generation",
-    "also_link": []
+    "also_link": [
+     "graphrag",
+     "information-retrieval"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1906,7 +1986,8 @@
     "decision": "link_to",
     "canonical_slug": "overtime-work",
     "also_link": [
-     "night-work"
+     "night-work",
+     "compensatory-leave"
     ]
    },
    "jev_eligible": true,
@@ -1931,7 +2012,11 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "pseudonymous-information",
-    "also_link": []
+    "also_link": [
+     "personal-information",
+     "personal-information-controller",
+     "pseudonymization"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1955,7 +2040,9 @@
    "expected": {
     "decision": "link_to",
     "canonical_slug": "deployment",
-    "also_link": []
+    "also_link": [
+     "rolling-update"
+    ]
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -2127,7 +2214,19 @@
     "statefulset"
    ],
    "reachable_by_jev": true,
-   "note": "리소스가 아니라 도구"
+   "note": "리소스가 아니라 도구",
+   "acceptable": [
+    {
+     "decision": "link_to",
+     "canonical_slug": "deployment",
+     "also_link": [
+      "pod",
+      "replicaset",
+      "rolling-update",
+      "statefulset"
+     ]
+    }
+   ]
   },
   {
    "id": "dist-unrel-06",
