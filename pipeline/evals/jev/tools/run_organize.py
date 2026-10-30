@@ -113,6 +113,7 @@ def judge(case: dict, outcome: str, tree: dict | None, operations: list[dict], s
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--name", default="organize", help="결과 폴더 이름(수정 전후 비교용)")
     args = parser.parse_args()
     verify_gold()
     data = json.loads((EVAL_DIR / "organize.json").read_text())
@@ -176,7 +177,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=4) as executor:
         rows = list(executor.map(run_organize, [(c, r) for c in organize for r in range(RUNS)]))
         rows += list(executor.map(run_lookup, [(c, r) for c in lookup for r in range(RUNS)]))
-    out = results_dir("organize")
+    out = results_dir(args.name)
     write_jsonl(out / "rows.jsonl", rows)
     for name, mine in (("정리", [r for r in rows if r["outcome"] != "lookup"]), ("조회", [r for r in rows if r["outcome"] == "lookup"])):
         print(name, sum(r["ok"] for r in mine), "/", len(mine), "errors", sum(bool(r["error"]) for r in mine))

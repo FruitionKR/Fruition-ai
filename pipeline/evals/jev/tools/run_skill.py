@@ -116,6 +116,7 @@ def test_run_failures(case: dict, original: str, result: str) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--name", default="skill", help="결과 폴더 이름(수정 전후 비교용)")
     parser.add_argument("--ids", help="쉼표로 구분한 사례 id만 실행")
     args = parser.parse_args()
     verify_gold()
@@ -192,7 +193,7 @@ def main() -> None:
     jobs = [(c, v, r) for c in cases for v in (("off", "on") if c["kind"] != "test_run" else ("off",)) for r in range(RUNS)]
     with ThreadPoolExecutor(max_workers=4) as executor:
         rows = list(executor.map(run, jobs))
-    out = results_dir("skill")
+    out = results_dir(args.name)
     write_jsonl(out / "rows.jsonl", rows)
     for kind in ("intent", "authoring", "test_run"):
         for variant in ("off", "on"):

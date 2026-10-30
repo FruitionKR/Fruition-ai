@@ -69,6 +69,7 @@ def check(case: dict, original: str, result: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--name", default="edit", help="결과 폴더 이름(수정 전후 비교용)")
     args = parser.parse_args()
     verify_gold()
     cases = json.loads((EVAL_DIR / "edit.json").read_text())
@@ -105,7 +106,7 @@ def main() -> None:
     jobs = [(case, r) for case in cases for r in range(RUNS)]
     with ThreadPoolExecutor(max_workers=4) as executor:
         rows = list(executor.map(run, jobs))
-    out = results_dir("edit")
+    out = results_dir(args.name)
     write_jsonl(out / "rows.jsonl", rows)
     print("code ok", sum(r["code_ok"] for r in rows), "/", len(rows), "errors", sum(bool(r["error"]) for r in rows))
     print("saved to", out)
