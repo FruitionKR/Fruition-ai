@@ -186,9 +186,15 @@ def drop_unsupported_number_items(normalized: dict[str, Any], source_texts: list
     ]
     if not dropped:
         return normalized, []
+    kept_evidence_ids = {str(item.get("evidence_id")) for item in normalized.get("evidence_units", []) if keep(item)}
     return {
         **normalized,
         **{collection: [item for item in normalized.get(collection, []) if keep(item)] for collection in _NUMBER_DROP_COLLECTIONS},
+        # 뺀 근거 주장을 개념이 계속 가리키지 않게 한다.
+        "concept_ledger": [
+            {**concept, "evidence_claim_ids": [ev for ev in concept.get("evidence_claim_ids", []) if ev in kept_evidence_ids]}
+            for concept in normalized.get("concept_ledger", [])
+        ],
         "semantic_notes": [
             {
                 **note,

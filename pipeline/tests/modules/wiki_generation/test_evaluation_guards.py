@@ -505,7 +505,7 @@ class EvaluationGuardsTest(unittest.TestCase):
         source = ["보건업은 20만 7천명 증가"]
         wrong_observation = {"observation_id": "O001", "title": "증감", "summary": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"]}
         normalized = {
-            "concept_ledger": [{"slug": "health", "title": "보건업", "definition": "20만 7천명 증가한 산업", "anchor_reference_ids": ["B0001"]}],
+            "concept_ledger": [{"slug": "health", "title": "보건업", "definition": "20만 7천명 증가한 산업", "anchor_reference_ids": ["B0001"], "evidence_claim_ids": ["ev_0001", "ev_0002"]}],
             "observations": [wrong_observation],
             "evidence_units": [
                 {"evidence_id": "ev_0001", "claim": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"], "related_concept_slugs": []},
@@ -527,7 +527,7 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(dropped_normalized["observations"], [])
         self.assertEqual(dropped_normalized["semantic_notes"][0]["key_points"], [])
         self.assertEqual(dropped_normalized["semantic_notes"][0]["observations"], [])
-        self.assertEqual(len(dropped_normalized["concept_ledger"]), 1)
+        self.assertEqual(dropped_normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0002"])
         self.assertTrue(evaluation["passed"])
         self.assertEqual(evaluation["issues"], [])
 
