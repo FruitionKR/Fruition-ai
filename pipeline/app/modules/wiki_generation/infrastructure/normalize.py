@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
 from app.modules.wiki_generation.domain.entities import NormalizedConcept, NormalizedEvidence, SourceBlock, SourceDocument
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, name_key, slugify, unique_keep_order
 
 
 class PipelineValidationError(Exception):
@@ -306,25 +305,21 @@ def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> li
     owner_by_name = {}
     for concept in concepts_by_slug.values():
         for name in (concept.title, concept.slug):
-            owner_by_name.setdefault(_name_key(name), concept.slug)
-    names_by_slug = {slug: {_name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
+            owner_by_name.setdefault(name_key(name), concept.slug)
+    names_by_slug = {slug: {name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
     links = []
     for concept in concepts_by_slug.values():
         kept = []
         for alias in concept.aliases:
-            owner = owner_by_name.get(_name_key(alias))
+            owner = owner_by_name.get(name_key(alias))
             # 서로를 별칭으로 가진 두 개념은 같은 개념의 두 이름이라 그대로 두고 이름 일치 병합에 맡긴다.
-            mutual = owner is not None and bool(names_by_slug[owner] & {_name_key(concept.title), _name_key(concept.slug)})
+            mutual = owner is not None and bool(names_by_slug[owner] & {name_key(concept.title), name_key(concept.slug)})
             if owner and owner != concept.slug and not mutual:
                 links.append({"source": concept.slug, "target": owner})
                 continue
             kept.append(alias)
         concept.aliases = kept
     return links
-
-
-def _name_key(name: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
 
 
 def _optional_text(value: Any) -> str | None:

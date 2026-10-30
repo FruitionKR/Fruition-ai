@@ -370,3 +370,30 @@ class NameMatchConceptResolverTest(unittest.TestCase):
             {item["incoming_slug"]: item["canonical_slug"] for item in result["resolutions"]},
             {"rag": "retrieval-augmented-generation", "rag-model": "retrieval-augmented-generation"},
         )
+
+    def test_chain_follow_stops_on_cycles_and_missing_targets(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        class Fixed:
+            def __init__(self, resolutions):
+                self.resolutions = resolutions
+
+            def resolve(self, incoming, existing, hints=None):
+                return {"resolutions": self.resolutions, "hint_resolutions": []}
+
+        incoming = [
+            {"slug": "a", "title": "Alpha", "aliases": [], "definition": "정의"},
+            {"slug": "b", "title": "Beta", "aliases": [], "definition": "정의"},
+            {"slug": "x", "title": "X", "aliases": ["alpha"], "definition": "정의"},
+        ]
+        cycle = Fixed([
+            {"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "b"},
+            {"incoming_slug": "b", "decision": "merge_into", "canonical_slug": "a"},
+        ])
+        ghost = Fixed([{"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "ghost"}])
+
+        cyclic = NameMatchConceptResolver(cycle).resolve(incoming, [], [])
+        missing = NameMatchConceptResolver(ghost).resolve(incoming, [], [])
+
+        self.assertEqual(cyclic["resolutions"][0], {"incoming_slug": "x", "decision": "merge_into", "canonical_slug": "a", "alias_to_add": None})
+        self.assertEqual(missing["resolutions"][0]["canonical_slug"], "a")

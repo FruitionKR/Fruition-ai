@@ -17,7 +17,6 @@ import logging
 import os
 import random
 import threading
-import unicodedata
 from array import array
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -37,6 +36,7 @@ from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
+from app.modules.wiki_generation.domain.text_utils import name_key
 
 CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
@@ -95,13 +95,16 @@ class NameMatchConceptResolver(ConceptResolver):
         resolutions = list(raw.get("resolutions") or [])
         # 이름 일치 대상이 다시 병합되면(이름 일치끼리 또는 판정기에서) 연쇄가 생기므로 최종 대상으로 바로 잇는다.
         # 이름 일치는 기존 개념이나 slug가 앞선 개념만 가리켜 순환이 없다.
+        # 판정기 출력은 아직 검증 전이라 순환이나 없는 대상을 가리킬 수 있어, 있는 개념으로만 한 번씩 따라간다.
+        valid = {concept["slug"] for concept in pool}
         merged_to = {
             **{slug: item["canonical_slug"] for slug, item in matched.items()},
             **{item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"},
         }
-        for item in matched.values():
-            target = item["canonical_slug"]
-            while target in merged_to and merged_to[target] != target:
+        for slug, item in matched.items():
+            target, seen = item["canonical_slug"], {slug}
+            while target in merged_to and merged_to[target] in valid and target not in seen:
+                seen.add(target)
                 target = merged_to[target]
             item["canonical_slug"] = target
         return {**raw, "resolutions": [*matched.values(), *resolutions]}
@@ -301,12 +304,7 @@ def _has_definition(concept: JsonDict) -> bool:
 
 def _names(*names: object) -> set[str]:
     """대소문자·전각/반각·공백·하이픈만 맞춘 이름. 기호를 지우는 slugify로 비교하면 `C#`과 `C`가 같아진다."""
-    normalized = {
-        " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
-        for name in names
-        if name
-    }
-    return normalized - {"", "untitled"}
+    return {name_key(name) for name in names if name} - {"", "untitled"}
 
 
 def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:
