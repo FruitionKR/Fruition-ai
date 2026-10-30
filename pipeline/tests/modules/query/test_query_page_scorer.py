@@ -151,7 +151,7 @@ class QueryPageScorerTest(unittest.TestCase):
         page = concept_page(
             "concept:persistent-wiki",
             "Persistent Wiki",
-            "aliases:\n- 지속적 위키",
+            "## Aliases\nPersistent wiki, 지속적 위키\n\n## Evidence\n- 근거 없음",
         )
         scorer = QueryPageScorer(
             embedding_search=EmptyTextSearch(),
@@ -167,6 +167,15 @@ class QueryPageScorerTest(unittest.TestCase):
         )
 
         self.assertEqual(selected, ["concept:persistent-wiki"])
+
+    def test_aliases_are_read_only_from_the_aliases_section(self) -> None:
+        scorer = QueryPageScorer(embedding_search=EmptyTextSearch(), text_search=EmptyTextSearch())
+
+        self.assertEqual(
+            scorer._extract_aliases("# RAG\n\n## Aliases\nRAG, 검색 증강 생성\n\n## Evidence\n- RAG는 검색을 쓴다."),
+            ["RAG", "검색 증강 생성"],
+        )
+        self.assertEqual(scorer._extract_aliases("## Aliases\n-\n\n## Evidence\n- 근거 없음"), [])
 
     def test_name_matching_does_not_partially_strip_short_compound_particle(self) -> None:
         scorer = QueryPageScorer(embedding_search=EmptyTextSearch(), text_search=EmptyTextSearch())

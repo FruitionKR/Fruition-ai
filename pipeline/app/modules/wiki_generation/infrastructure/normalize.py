@@ -67,6 +67,14 @@ class SemanticNormalizer:
                 row = self._normalize_evidence(evidence_id, ev, warnings)
                 evidence_rows.append(row)
 
+        # 근거 힌트를 개념의 제목·별칭으로 썼으면 그 개념 slug로 맞춘다. 근거를 붙이는 곳과 근거 검증이 같은 기준을 쓴다.
+        slug_by_name = {slug: slug for slug in concepts_by_slug}
+        for concept in concepts_by_slug.values():
+            for name in [concept.title, *concept.aliases]:
+                slug_by_name.setdefault(slugify(name), concept.slug)
+        for ev in evidence_rows:
+            ev.related_concept_slugs = unique_keep_order(slug_by_name.get(slug, slug) for slug in ev.related_concept_slugs)
+
         # Attach evidence to concepts.
         missing_related_hints: dict[str, dict[str, Any]] = {}
         for ev in evidence_rows:

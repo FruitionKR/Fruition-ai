@@ -517,6 +517,24 @@ def test_link_confidences_of_validated_targets_reach_concept_links() -> None:
     } == {"concept:deployment": 0.8, "concept:replica-set": 0.6}
 
 
+def test_merge_resolution_with_null_link_targets_is_normalized() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import normalize_resolution_output
+
+    existing = [{"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."}]
+    raw = {"resolutions": [{
+        "incoming_slug": "deploy",
+        "decision": "merge_into",
+        "canonical_slug": "deployment",
+        "link_targets": None,
+    }]}
+
+    resolutions = normalize_resolution_output(raw, [{"slug": "deploy", "title": "Deploy"}], existing, [])
+
+    assert resolutions[0]["decision"] == "merge_into"
+    assert resolutions[0]["canonical_slug"] == "deployment"
+    assert resolutions[0]["link_targets"] == []
+
+
 def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
     from app.modules.wiki_generation.infrastructure.concept_resolution import (
         apply_concept_resolutions,

@@ -33,13 +33,13 @@ class ConceptPageSectionsTest(unittest.TestCase):
             ],
         )
 
-    def test_uses_direct_evidence_before_ref_fallback(self) -> None:
+    def test_uses_only_evidence_that_names_the_concept(self) -> None:
         concept = {"slug": "back-emf", "display_reference_ids": ["B0001"]}
-        fallback = {"claim": "ref fallback", "anchor_reference_ids": ["B0001"], "related_concept_slugs": []}
+        same_block = {"claim": "같은 블록의 다른 근거", "anchor_reference_ids": ["B0001"], "related_concept_slugs": []}
         direct = {"claim": "direct", "anchor_reference_ids": ["B0002"], "related_concept_slugs": ["back-emf"]}
 
-        self.assertEqual(concept_evidence(concept, [fallback, direct]), [direct])
-        self.assertEqual(concept_evidence(concept, [fallback]), [fallback])
+        self.assertEqual(concept_evidence(concept, [same_block, direct]), [direct])
+        self.assertEqual(concept_evidence(concept, [same_block]), [])
 
     def test_builds_key_points_and_related_lines_from_shared_refs(self) -> None:
         normalized = {

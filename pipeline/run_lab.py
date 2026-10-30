@@ -15,6 +15,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.modules.wiki_generation.application.evaluation_guards import (
+    clear_resolved_core_concept_issues,
+    demote_unsupported_core_concepts,
+)
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
@@ -47,7 +51,7 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
     RetryOnceJsonCompletion,
 )
-from app.modules.wiki_generation.infrastructure.jev_concept_resolver import with_jev_concept_merge
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver, with_jev_concept_merge
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
     load_existing_concept_index,
@@ -496,6 +500,8 @@ def _resolve_pipeline_concepts(
             completion=RetryOnceJsonCompletion(api_client),
             concepts=concepts,
             candidates=concept_update_candidates,
+            # 개념 병합에 Jev를 쓰면 섹션 후보·언급의 개념 판정도 같은 쌍별 판정기를 쓴다.
+            judge_pairs=resolver.judge_concepts if isinstance(resolver, JevConceptResolver) else None,
         )
         return result, monotonic() - started
 
@@ -976,6 +982,13 @@ def run_pipeline(
             {},
         )
 
+    # 평가 재시도 뒤에도 근거 주장이 없는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
+    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized)
+    if demoted_concepts:
+        if generation_evaluations:
+            clear_resolved_core_concept_issues(generation_evaluations[-1], demoted_concepts)
+        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림: {', '.join(demoted_concepts)}")
+
     # 4. Backend normalize/merge/mention expansion.
     log.emit(
         "4. 정규화",
@@ -986,6 +999,7 @@ def run_pipeline(
             "mention 수": len(normalized.get("mentions", [])),
             "category 수": len(normalized.get("categories", [])),
             "근거 수": len(normalized["evidence_units"]),
+            "섹션 후보로 내린 핵심 개념 수": len(demoted_concepts),
             "경고 수": len(normalized.get("warnings", [])),
         },
     )
@@ -1007,6 +1021,12 @@ def run_pipeline(
             normalized,
             existing_source_artifact,
         )
+        # 기존 원본 산출물의 핵심 개념도 합친 근거로 다시 검증한다. 합치면서 강등이 되돌려지지 않게 한다.
+        normalized, reingest_demoted = demote_unsupported_core_concepts(normalized)
+        if reingest_demoted:
+            normalized.setdefault("warnings", []).append(
+                f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림(재편입): {', '.join(reingest_demoted)}"
+            )
     if args.save_debug_json:
         write_json(out / "normalized.json", normalized)
         if generation_evaluations:

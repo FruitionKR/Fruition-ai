@@ -51,7 +51,7 @@ def normalize_resolution_output(
         item = by_incoming.get(incoming_slug, {})
         decision = item.get("decision") if item.get("decision") in VALID_DECISIONS else "create_new"
         canonical_slug = slugify(item.get("canonical_slug") or incoming_slug)
-        link_targets = [slugify(str(target)) for target in item.get("link_targets", [])]
+        link_targets = [slugify(str(target)) for target in item.get("link_targets") or []]
         link_targets = unique_keep_order([target for target in link_targets if target in valid_targets and target != incoming_slug])
 
         if decision in {"merge_into", "link_to"} and canonical_slug not in valid_targets:
@@ -109,7 +109,7 @@ def normalize_hint_resolution_output(
         item = by_hint.get(hint_slug, {})
         decision = item.get("decision") if item.get("decision") in VALID_HINT_DECISIONS else "unresolved"
         canonical_slug = slugify(item.get("canonical_slug") or "") if item.get("canonical_slug") else None
-        link_targets = [slugify(str(target)) for target in item.get("link_targets", [])]
+        link_targets = [slugify(str(target)) for target in item.get("link_targets") or []]
         link_targets = unique_keep_order([target for target in link_targets if target in valid_targets and target != hint_slug])
 
         if decision == "merge_into_current" and canonical_slug not in incoming_slugs:

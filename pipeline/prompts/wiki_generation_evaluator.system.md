@@ -22,6 +22,9 @@ Hard grounding rule:
   or evidence claim without direct source refs is invalid.
 - If any generated factual item lacks anchor_reference_ids/evidence refs, add a
   high severity missing_ref issue and set passed=false.
+- A core_concept must be named in related_concept_slugs of at least one evidence
+  unit. If none supports it, add a high severity section_or_mention_should_not_be_core
+  issue targeting its slug and set passed=false.
 
 MVP metrics:
 - source_excerpt_fidelity: 1-5
