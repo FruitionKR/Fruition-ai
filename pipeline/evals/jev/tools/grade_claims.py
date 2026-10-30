@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -21,6 +23,7 @@ from common import EVAL_DIR, verify_gold  # noqa: E402
 from grade_rag import schema  # noqa: E402
 
 BATCH = 5
+WORKERS = 6  # 동시에 보내는 codex 채점 묶음 수
 PROMPT = """You are verifying answers from a Korean/English Q&A system against the original source documents.
 The source documents are the Markdown files in the current directory (read them with shell commands such as grep, sed
 or cat; do not use any other knowledge). For each item:
@@ -75,7 +78,9 @@ def main() -> None:
         shutil.copytree(EVAL_DIR / "corpus", work)
         schema_path = Path(tmp) / "schema.json"
         schema_path.write_text(json.dumps(SCHEMA))
-        for start in range(0, len(pending), BATCH):
+        lock = threading.Lock()
+
+        def run(start):
             batch = pending[start:start + BATCH]
             last = Path(tmp) / f"out_{start}.json"
             subprocess.run(
@@ -86,9 +91,12 @@ def main() -> None:
             )
             grades = json.loads(last.read_text())["grades"]
             assert {g["item_id"] for g in grades} == {i["item_id"] for i in batch}, "채점 결과가 항목과 맞지 않습니다"
-            with grades_path.open("a") as f:
+            with lock, grades_path.open("a") as f:
                 f.writelines(json.dumps(g, ensure_ascii=False) + "\n" for g in grades)
-            print("graded", start + len(batch), "/", len(pending), flush=True)
+                print("graded batch", start // BATCH + 1, flush=True)
+
+        with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+            list(executor.map(run, range(0, len(pending), BATCH)))
     summarize(out, mapping)
 
 

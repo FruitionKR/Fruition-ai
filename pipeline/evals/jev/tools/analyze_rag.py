@@ -61,7 +61,7 @@ def main() -> None:
         for row in rows:
             row["category"] = cases[row["id"]]["category"]
         out[folder.name] = {"rows": rows}
-        for variant in ("off", "on"):
+        for variant in sorted({r["variant"] for r in rows}):
             mine = [r for r in rows if r["variant"] == variant]
             out[folder.name][variant] = summarize(mine)
             out[folder.name][f"{variant}_by_category"] = {

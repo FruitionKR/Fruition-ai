@@ -14,13 +14,16 @@ import random
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import EVAL_DIR, verify_gold  # noqa: E402
 
 BATCH = 20
+WORKERS = 6  # 동시에 보내는 codex 채점 묶음 수
 SNIPPET_CHARS = 900  # AnswerContextFormatter가 근거 조각을 자르는 길이
 EVIDENCE_PROMPT = """You are grading evidence retrieved by a Korean/English workspace Q&A system. Grade each item independently.
 Use only the item's question, expected_answer, acceptable_answers and evidence list. Do not use outside knowledge.
@@ -72,14 +75,19 @@ ANSWER_SCHEMA = schema({
 
 
 def grade(items: list[dict], prompt: str, item_schema: dict, out_path: Path, first_batch_only: bool) -> None:
+    """BATCH개씩 묶어 WORKERS개 묶음을 동시에 채점한다. 끝난 항목은 건너뛰므로 끊겨도 이어서 채점한다."""
     done = {json.loads(line)["item_id"] for line in out_path.read_text().splitlines()} if out_path.exists() else set()
     pending = [item for item in items if item["item_id"] not in done]
+    batches = [pending[start:start + BATCH] for start in range(0, len(pending), BATCH)]
+    batches = batches[:1] if first_batch_only else batches
+    lock, finished = threading.Lock(), [0]
     with tempfile.TemporaryDirectory() as tmp:
         schema_path = Path(tmp) / "schema.json"
         schema_path.write_text(json.dumps(item_schema))
-        for start in range(0, len(pending), BATCH):
-            batch = pending[start:start + BATCH]
-            last = Path(tmp) / f"out_{start}.json"
+
+        def run(index_batch):
+            index, batch = index_batch
+            last = Path(tmp) / f"out_{index}.json"
             subprocess.run(
                 ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", str(schema_path),
                  "-o", str(last), prompt + json.dumps(batch, ensure_ascii=False, indent=1)],
@@ -88,11 +96,13 @@ def grade(items: list[dict], prompt: str, item_schema: dict, out_path: Path, fir
             )
             grades = json.loads(last.read_text())["grades"]
             assert {g["item_id"] for g in grades} == {i["item_id"] for i in batch}, "채점 결과가 항목과 맞지 않습니다"
-            with out_path.open("a") as f:
+            with lock, out_path.open("a") as f:
                 f.writelines(json.dumps(g, ensure_ascii=False) + "\n" for g in grades)
-            print(out_path.name, "graded", start + len(batch), "/", len(pending), flush=True)
-            if first_batch_only:
-                break
+                finished[0] += len(batch)
+                print(out_path.name, "graded", finished[0], "/", len(pending), flush=True)
+
+        with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+            list(executor.map(run, enumerate(batches)))
 
 
 def main() -> None:

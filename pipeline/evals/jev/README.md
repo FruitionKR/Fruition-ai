@@ -65,7 +65,11 @@ python analyze_rag.py ../results/<날짜>/rag                       # 집계
 python run_rag_baseline.py                                         # 일반 RAG 대조군(원문 청크 검색, 같은 답변 모델) × 3
 python grade_rag.py ../results/<날짜>/rag_baseline/rows.jsonl      # 대조군도 같은 방식으로 채점
 python grade_claims.py ../results/<날짜>/claims ../results/<날짜>/rag/rows.jsonl:on ../results/<날짜>/rag_baseline/rows.jsonl
+python run_lint.py ../results/<날짜>/rag/workspace.json --dry-run   # 운영 경로(백엔드 API → 워커)로 lint. --dry-run을 빼면 승격까지 반영
 ```
+
+- `rag_prepare.py --sources en-rag-paper`처럼 일부 문서만 편입해 프롬프트 변경을 빠르게 확인할 수 있다.
+- 채점(`grade_rag.py`, `grade_claims.py`)은 codex 묶음을 동시에 6개씩 보낸다.
 
 - 편입이 끊기면 `python rag_prepare.py --resume ../results/<날짜>/rag/workspace.json`으로 같은 계정·워크스페이스에서 끝난 문서를 건너뛰고 이어서 편입한다. 결과도 그 폴더에 쓴다.
 - 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.

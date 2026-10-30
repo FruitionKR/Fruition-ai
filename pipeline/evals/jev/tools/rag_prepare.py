@@ -91,10 +91,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="rag", help="결과 폴더 이름(편입 방식 전후 비교용)")
     parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
+    parser.add_argument("--sources", help="쉼표로 구분한 corpus 문서 이름만 편입(확인용)")
     parser.add_argument("--concept-judge", choices=("jev", "llm"), default="jev", help="편입·후속 편입의 개념 판정기")
     args = parser.parse_args()
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")
+    # 임베딩 서버 주소는 도커 네트워크 안에서만 닿는다. 이 프로세스는 같은 BGE-M3를 직접 올려 쓴다(평가 전용).
+    os.environ.pop("EMBEDDING_SERVICE_URL", None)
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     import app.modules.wiki_ingestion.interfaces.http.schemas as ingest_schemas
     import app.workers.task_worker as task_worker
@@ -139,7 +142,7 @@ def main() -> None:
         (out / "workspace.json").write_text(json.dumps(state, ensure_ascii=False, indent=1))
     done = {doc["source_id"] for doc in state["documents"]}
     for i, path in enumerate(sorted((EVAL_DIR / "corpus").glob("*.md"))):
-        if path.stem in done:
+        if path.stem in done or (args.sources and path.stem not in args.sources.split(",")):
             continue
         # PDF 수식 변환 잔재 NUL은 PostgreSQL text에 들어가지 않는다. 정답 인용문에는 없다.
         md = path.read_text(encoding="utf-8").replace("\x00", "")
