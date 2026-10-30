@@ -219,7 +219,10 @@ class SemanticNormalizer:
         evidence_by_local_id: dict[str, NormalizedEvidence],
         warnings: list[str],
     ) -> None:
-        """관찰이 가리킨 근거 주장으로 claims를 채운다. 같은 사실을 관찰과 근거에 두 번 쓰지 않게 하려는 구조다."""
+        """관찰이 가리킨 근거 주장으로 claims를 채운다. 같은 사실을 관찰과 근거에 두 번 쓰지 않게 하려는 구조다.
+
+        근거 id(ev_NNNN)는 실행마다 다시 매겨져 관찰에 남기지 않는다. 남기면 재편입 병합의 중복 판정이 깨진다.
+        """
         rows = []
         for ref in observation.pop("evidence_refs", []):
             row = evidence_by_local_id.get(ref)
@@ -228,7 +231,6 @@ class SemanticNormalizer:
                 continue
             rows.append(row)
         observation["claims"] = unique_keep_order(row.claim for row in rows)
-        observation["evidence_ids"] = [row.evidence_id for row in rows]
         observation["anchor_reference_ids"] = unique_keep_order(
             observation["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
         )

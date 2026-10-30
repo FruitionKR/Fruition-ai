@@ -589,7 +589,7 @@ def test_observation_claims_come_from_referenced_evidence_claims() -> None:
     observation = normalized["observations"][0]
 
     assert observation["claims"] == ["BM25는 점수를 매긴다.", "검색 인덱스는 후보를 찾는다."]
-    assert observation["evidence_ids"] == ["ev_0002", "ev_0001"]
+    assert "evidence_ids" not in observation
     assert observation["anchor_reference_ids"] == ["B0001", "B0002"]
     assert "evidence_refs" not in observation
     assert [e["claim"] for e in normalized["evidence_units"]] == ["검색 인덱스는 후보를 찾는다.", "BM25는 점수를 매긴다."]

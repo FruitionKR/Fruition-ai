@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import re
 from copy import deepcopy
 from typing import Any
@@ -318,6 +319,7 @@ def repair_notes_from_evaluation(
     repaired_notes = deepcopy(notes)
     observations_by_id: dict[str, dict[str, Any]] = {}
     observation_ids_by_location: dict[tuple[int, int], str] = {}
+    note_index_by_id: dict[str, int] = {}
     for note_index, note in enumerate(repaired_notes):
         for item_index, observation in enumerate(note.get("observations", []) or []):
             if not isinstance(observation, dict):
@@ -327,6 +329,7 @@ def repair_notes_from_evaluation(
             observation_id = f"O{len(observations_by_id) + 1:03d}"
             observations_by_id[observation_id] = observation
             observation_ids_by_location[(note_index, item_index)] = observation_id
+            note_index_by_id[observation_id] = note_index
 
     remove_ids: set[str] = set()
     duplicate_groups: list[list[str]] = []
@@ -346,6 +349,7 @@ def repair_notes_from_evaluation(
         if len(candidates) < 2:
             continue
         keeper = _select_observation_keeper(candidates)
+        keeper_id = next(observation_id for observation_id in ids if observations_by_id.get(observation_id) is keeper)
         for observation_id in ids:
             if observation_id in remove_ids:
                 continue
@@ -353,6 +357,12 @@ def repair_notes_from_evaluation(
             if candidate is None or candidate is keeper:
                 continue
             _merge_observation(keeper, candidate)
+            _merge_evidence_refs(
+                repaired_notes[note_index_by_id[keeper_id]],
+                keeper,
+                repaired_notes[note_index_by_id[observation_id]],
+                candidate,
+            )
             remove_ids.add(observation_id)
 
     for note_index, note in enumerate(repaired_notes):
@@ -364,13 +374,42 @@ def repair_notes_from_evaluation(
     return repaired_notes
 
 
+def _merge_evidence_refs(
+    keeper_note: dict[str, Any],
+    keeper: dict[str, Any],
+    incoming_note: dict[str, Any],
+    incoming: dict[str, Any],
+) -> None:
+    """병합되는 관찰이 가리키던 근거를 keeper가 가리키게 한다. 근거 id는 노트 안에서만 유효하다."""
+    refs = [str(ref) for ref in incoming.get("evidence_refs", []) or [] if str(ref)]
+    if not refs:
+        return
+    if keeper_note is incoming_note:
+        keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *refs])
+        return
+    # 다른 노트의 근거는 keeper 노트로 새 id를 붙여 옮겨 온다. 같은 id가 다른 근거를 뜻할 수 있어서다.
+    evidence_by_id = {str(item.get("id")): item for item in incoming_note.get("evidence_claims", []) or [] if item.get("id")}
+    used = {str(item.get("id")) for item in keeper_note.get("evidence_claims", []) or [] if item.get("id")}
+    copied = []
+    for ref in refs:
+        evidence = evidence_by_id.get(ref)
+        if evidence is None:
+            continue
+        new_id = next(f"{ref}-m{index}" for index in itertools.count(1) if f"{ref}-m{index}" not in used)
+        used.add(new_id)
+        keeper_note.setdefault("evidence_claims", []).append({**evidence, "id": new_id})
+        copied.append(new_id)
+    keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *copied])
+
+
 def _select_observation_keeper(observations: list[dict[str, Any]]) -> dict[str, Any]:
     return max(
         observations,
         key=lambda item: (
             len(_observation_anchors(item)),
             len(str(item.get("summary") or "")),
-            len(item.get("claims", []) or []),
+            # 정규화 전 노트의 관찰은 claims 대신 evidence_refs로 근거를 가리킨다.
+            len(item.get("evidence_refs") or item.get("claims") or []),
         ),
     )
 
