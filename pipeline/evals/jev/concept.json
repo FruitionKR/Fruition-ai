@@ -1574,13 +1574,10 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "phantom-read",
+    "canonical_slug": "repeatable-read",
     "also_link": [
-     "dirty-read",
-     "mvcc",
-     "read-committed",
-     "repeatable-read",
      "serializable-isolation",
+     "mvcc",
      "snapshot-isolation"
     ]
    },
@@ -1593,7 +1590,7 @@
     "dirty-read"
    ],
    "reachable_by_jev": true,
-   "note": "Phantom Read와 형제 현상"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 이 현상을 막는 격리 수준·방법과 연결"
   },
   {
    "id": "dist-rel-02",
@@ -1605,12 +1602,8 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "deployment",
-    "also_link": [
-     "pod",
-     "replicaset",
-     "statefulset"
-    ]
+    "canonical_slug": "pod",
+    "also_link": []
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1621,7 +1614,7 @@
     "replicaset"
    ],
    "reachable_by_jev": true,
-   "note": "디플로이먼트·스테이트풀셋과 형제"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 파드를 실행하는 워크로드 리소스라 파드와 연결"
   },
   {
    "id": "dist-rel-03",
@@ -1633,10 +1626,8 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "init-container",
-    "also_link": [
-     "pod"
-    ]
+    "canonical_slug": "pod",
+    "also_link": []
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1647,7 +1638,7 @@
     "rolling-update"
    ],
    "reachable_by_jev": true,
-   "note": "초기화 컨테이너와 형제 / 연결 허용 추가: 임시 컨테이너는 파드 안에서 도는 컨테이너라 파드와 직접 관련 (2026-10-30 결과 검토)"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 파드 안에서 도는 컨테이너라 파드와 연결"
   },
   {
    "id": "dist-rel-04",
@@ -1737,10 +1728,8 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "selective-working-hours",
-    "also_link": [
-     "flexible-working-hours"
-    ]
+    "canonical_slug": "flexible-working-hours",
+    "also_link": []
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1751,7 +1740,7 @@
     "overtime-work"
    ],
    "reachable_by_jev": true,
-   "note": "선택적 근로시간제와 형제"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 유연근로시간제의 한 종류라 상위 개념과 연결"
   },
   {
    "id": "dist-rel-08",
@@ -1763,9 +1752,8 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "extended-unemployment-rate",
+    "canonical_slug": "economically-active-population",
     "also_link": [
-     "economically-active-population",
      "unemployment-rate"
     ]
    },
@@ -1778,7 +1766,7 @@
     "economically-active-population"
    ],
    "reachable_by_jev": true,
-   "note": "고용보조지표3과 형제"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 정의에 쓰는 경제활동인구, 변형 관계인 실업률과 연결"
   },
   {
    "id": "dist-rel-09",
@@ -1790,10 +1778,8 @@
    },
    "expected": {
     "decision": "link_to",
-    "canonical_slug": "employment-rate",
-    "also_link": [
-     "economically-active-population"
-    ]
+    "canonical_slug": "economically-active-population",
+    "also_link": []
    },
    "jev_eligible": true,
    "ineligible_reason": null,
@@ -1804,7 +1790,7 @@
     "economically-active-population"
    ],
    "reachable_by_jev": true,
-   "note": "고용률과 형제 지표"
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 정의에 쓰는 경제활동인구와 연결"
   },
   {
    "id": "dist-rel-10",
