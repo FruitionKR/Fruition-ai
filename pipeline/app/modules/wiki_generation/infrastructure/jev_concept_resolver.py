@@ -3,8 +3,8 @@
 - 후보: 다른 incoming 개념과 기존 개념을 제목·별칭·정의로 BGE-M3 0.75 + BM25 0.25 점수 상위 100개
 - 이름 일치: 제목이나 별칭이 후보의 slug·제목·별칭과 slug로 같으면 Jev 없이 병합한다.
 - 판정: 판정 규칙은 state에 한 번만 두고, 후보마다 질문 하나(same/related/unrelated)를 요청 토큰 한도로 묶어 보낸다.
-- 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없고 related가 있으면 related 후보 모두와 연결한다.
-정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않고 새 개념으로 둔다. Jev는 missing hint를
+- 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없으면 P(related)가 0.9 이상인 related 후보 모두와 연결한다.
+정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않는다. 이름 일치 병합은 정의 없이도 한다. Jev는 missing hint를
 판정하지 않으므로 hint가 있으면 기존 LLM 결과의 hint_resolutions만 쓴다. Jev나 임베딩을 쓸 수 없으면 기존
 LLM 결과를 그대로 쓴다.
 """
@@ -17,7 +17,6 @@ import logging
 import os
 import random
 import threading
-import unicodedata
 from array import array
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -37,20 +36,25 @@ from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
+from app.modules.wiki_generation.domain.text_utils import name_key
 
 CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
     "and definitions. same: the same concept under another name, such as a synonym, translation, abbreviation, "
-    "or spelling variant, without losing distinct meaning or scope. related: a distinct concept that is clearly "
-    "related: broader, narrower, part, stage, method, variant, a same-kind sibling under the same broader concept, "
-    "or a directly dependent concept. unrelated: an unrelated concept, or one that shares only a domain or a "
-    "source. Return no explanation."
+    "or spelling variant, without losing distinct meaning or scope. related: a distinct concept with a direct "
+    "relation stated by the definitions: one is a kind, part, stage, method, or variant of the other; both are "
+    "kinds of the same specific broader concept; or one cannot be explained without the other. unrelated: "
+    "anything else, including concepts that only share a field, a document, a workflow, or a topic, or that "
+    "connect only through a third concept. When unsure between related and unrelated, choose unrelated. "
+    "Return no explanation."
 )
 PAIR_CRITERIA = {
     "same": "Same concept",
-    "related": "Distinct but clearly related concept",
-    "unrelated": "Unrelated, or only the same domain or source",
+    "related": "Distinct concept with a direct relation stated by the definitions",
+    "unrelated": "Unrelated, or only the same field, document, workflow, or topic",
 }
+# related는 이 확률 이상일 때만 연결한다. 같은 분야 개념을 넓게 related로 고르는 경향이 있어서다.
+RELATED_MIN_PROBABILITY = 0.9
 CANDIDATE_LIMIT = 100
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
@@ -62,9 +66,52 @@ _embedding_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
-def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
-    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다."""
-    return jev_concept_judge(resolver) or resolver
+def with_jev_concept_merge(resolver: ConceptResolver) -> NameMatchConceptResolver:
+    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다.
+
+    어느 판정기든 이름·별칭이 글자 그대로 같은 개념은 그 앞에서 코드로 병합한다.
+    """
+    return NameMatchConceptResolver(jev_concept_judge(resolver) or resolver)
+
+
+class NameMatchConceptResolver(ConceptResolver):
+    """이름이 같은 개념은 판정기 없이 병합하고 나머지만 판정기에 넘긴다. Jev·임베딩이 없을 때도 같게 동작한다."""
+
+    def __init__(self, inner: ConceptResolver) -> None:
+        self.inner = inner
+
+    def resolve(
+        self,
+        incoming_concepts: list[JsonDict],
+        existing_concepts: list[JsonDict],
+        missing_related_hints: list[JsonDict] | None = None,
+    ) -> JsonDict:
+        incoming = [concept for concept in incoming_concepts if concept.get("slug")]
+        pool = [*incoming, *(concept for concept in existing_concepts if concept.get("slug"))]
+        incoming_slugs = {concept["slug"] for concept in incoming}
+        matched = {}
+        for concept in incoming:
+            others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            if target := _exact_name_match(concept, others, incoming_slugs):
+                matched[concept["slug"]] = _merge(concept["slug"], target)
+        rest = [concept for concept in incoming_concepts if concept.get("slug") not in matched]
+        raw = self.inner.resolve(rest, existing_concepts, missing_related_hints) if rest or missing_related_hints else {}
+        resolutions = list(raw.get("resolutions") or [])
+        # 이름 일치 대상이 다시 병합되면(이름 일치끼리 또는 판정기에서) 연쇄가 생기므로 최종 대상으로 바로 잇는다.
+        # 이름 일치는 기존 개념이나 slug가 앞선 개념만 가리켜 순환이 없다.
+        # 판정기 출력은 아직 검증 전이라 순환이나 없는 대상을 가리킬 수 있어, 있는 개념으로만 한 번씩 따라간다.
+        valid = {concept["slug"] for concept in pool}
+        merged_to = {
+            **{slug: item["canonical_slug"] for slug, item in matched.items()},
+            **{item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"},
+        }
+        for slug, item in matched.items():
+            target, seen = item["canonical_slug"], {slug}
+            while target in merged_to and merged_to[target] in valid and target not in seen:
+                seen.add(target)
+                target = merged_to[target]
+            item["canonical_slug"] = target
+        return {**raw, "resolutions": [*matched.values(), *resolutions]}
 
 
 def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptResolver | None:
@@ -131,8 +178,9 @@ class JevConceptResolver(ConceptResolver):
             # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다.
             *({**concept, "definition": concept.get("definition") or concept.get("summary") or ""} for concept in existing),
         ]
-        pool = [concept for concept in pool if concept.get("slug") and str(concept["definition"]).strip()]
-        concepts = [concept for concept in incoming if str(concept.get("definition") or "").strip()]
+        # 이름 일치는 정의 없이도 판정한다. Jev에는 정의가 있는 개념끼리만 묻는다(judge_concepts).
+        pool = [concept for concept in pool if concept.get("slug")]
+        concepts = [concept for concept in incoming if concept.get("slug")]
         resolutions = self.judge_concepts(concepts, pool)
         # 병합 대상인 incoming 개념이 다시 다른 개념으로 병합되면 연쇄·순환이 생기므로 그 병합은 하지 않는다.
         merged = {slug for slug, item in resolutions.items() if item["decision"] == "merge_into"}
@@ -158,7 +206,10 @@ class JevConceptResolver(ConceptResolver):
                 resolutions[concept["slug"]] = _merge(concept["slug"], target)
                 logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=merge_into:%s(이름 일치)",
                             concept["slug"], len(others), target)
-            elif others:
+                continue
+            # 정의 없이 이름만으로 판정하면 틀려 Jev에는 정의가 있는 개념끼리만 묻는다.
+            others = [candidate for candidate in others if _has_definition(candidate)]
+            if others and _has_definition(concept):
                 tasks.append((concept, others))
         if not tasks:
             return resolutions
@@ -251,14 +302,13 @@ def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_sl
     return min((slug for slug in matches if slug < concept["slug"]), default=None)
 
 
+def _has_definition(concept: JsonDict) -> bool:
+    return bool(str(concept.get("definition") or "").strip())
+
+
 def _names(*names: object) -> set[str]:
     """대소문자·전각/반각·공백·하이픈만 맞춘 이름. 기호를 지우는 slugify로 비교하면 `C#`과 `C`가 같아진다."""
-    normalized = {
-        " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
-        for name in names
-        if name
-    }
-    return normalized - {"", "untitled"}
+    return {name_key(name) for name in names if name} - {"", "untitled"}
 
 
 def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:
@@ -306,7 +356,10 @@ def _decide(slug: str, answers: dict[str, JsonDict]) -> JsonDict | None:
     if same:
         return _merge(slug, min(same, key=lambda target: (-same[target], target)))
     related = {
-        target: choice_probability(answer, "related") for target, answer in answers.items() if answer["choice"] == "related"
+        target: probability
+        for target, answer in answers.items()
+        if answer["choice"] == "related"
+        and (probability := choice_probability(answer, "related")) >= RELATED_MIN_PROBABILITY
     }
     if not related:
         return None

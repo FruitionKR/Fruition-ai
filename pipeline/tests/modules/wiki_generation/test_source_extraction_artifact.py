@@ -525,6 +525,24 @@ def test_link_confidences_of_validated_targets_reach_concept_links() -> None:
     } == {"concept:deployment": 0.8, "concept:replica-set": 0.6}
 
 
+def test_merge_resolution_with_null_link_targets_is_normalized() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import normalize_resolution_output
+
+    existing = [{"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."}]
+    raw = {"resolutions": [{
+        "incoming_slug": "deploy",
+        "decision": "merge_into",
+        "canonical_slug": "deployment",
+        "link_targets": None,
+    }]}
+
+    resolutions = normalize_resolution_output(raw, [{"slug": "deploy", "title": "Deploy"}], existing, [])
+
+    assert resolutions[0]["decision"] == "merge_into"
+    assert resolutions[0]["canonical_slug"] == "deployment"
+    assert resolutions[0]["link_targets"] == []
+
+
 def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
     from app.modules.wiki_generation.infrastructure.concept_resolution import (
         apply_concept_resolutions,
@@ -560,6 +578,43 @@ def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() 
     # 본문 Related Concepts도 병합된 개념을 적는다.
     ledger_by_slug = {c["slug"]: c for c in resolved["concept_ledger"]}
     assert concept_related_lines("weighted-mean", resolved, ledger_by_slug) == ["- [[mean|Mean]]"]
+
+
+def test_alias_that_names_another_core_concept_becomes_a_link() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [SourceBlock("doc_test", "B0001", "ref_b0001", "RAG와 RAG-Token을 설명한다.", 1, 1)]
+    note = {
+        "chunk_id": "chunk_0001",
+        "core_concepts": [
+            {"title": "RAG", "slug_hint": "rag", "aliases": ["RAG-Token", "검색 증강 생성"], "definition": "검색 증강 생성", "evidence_block_ids": ["B0001"]},
+            {"title": "RAG-Token", "slug_hint": "rag-token", "aliases": [], "definition": "토큰마다 문서를 고른다", "evidence_block_ids": ["B0001"]},
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    rag = next(c for c in normalized["concept_ledger"] if c["slug"] == "rag")
+    links = LinkBuilder().build(normalized)
+
+    assert "RAG-Token" not in rag["aliases"]
+    assert "검색 증강 생성" in rag["aliases"]
+    assert {"source": "concept:rag", "target": "concept:rag-token", "relation": "concept_related_to", "decided_by": "alias_overlap"} in links
+
+
+def test_concepts_naming_each_other_keep_aliases_for_name_match() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [SourceBlock("doc_test", "B0001", "ref_b0001", "RAG는 검색 증강 생성이다.", 1, 1)]
+    note = {
+        "chunk_id": "chunk_0001",
+        "core_concepts": [
+            {"title": "RAG", "slug_hint": "rag", "aliases": ["Retrieval-Augmented Generation"], "definition": "정의", "evidence_block_ids": ["B0001"]},
+            {"title": "Retrieval-Augmented Generation", "slug_hint": "retrieval-augmented-generation", "aliases": ["RAG"], "definition": "정의", "evidence_block_ids": ["B0001"]},
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+
+    assert normalized["alias_concept_links"] == []
+    assert "Retrieval-Augmented Generation" in next(c for c in normalized["concept_ledger"] if c["slug"] == "rag")["aliases"]
 
 
 def test_observation_claims_come_from_referenced_evidence_claims() -> None:

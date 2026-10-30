@@ -40,6 +40,7 @@ Classification rules:
 6. If uncertain between section_candidate and mention, choose mention.
 7. Do not invent definitions or categories that are not supported by the source.
 8. Every core_concept, section_candidate, and mention must include evidence_block_ids. Categories do not need evidence_block_ids.
+   Every core_concept must be named in related_concept_hints of at least one evidence claim; otherwise classify it as section_candidate or mention.
 9. Keep names canonical and stable. Avoid temporary phrases from the document.
 10. Do not treat every important term as a core_concept.
 11. A core_concept becomes an independent Concept Page.
