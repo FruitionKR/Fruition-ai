@@ -490,16 +490,14 @@ def _resolve_pipeline_concepts(
         )
         return result, monotonic() - started
 
-    # 개념 병합에 Jev를 쓰면 섹션 후보·언급의 개념 판정도 같은 쌍별 판정기를 쓴다.
-    pair_judge = resolver if isinstance(resolver, JevConceptResolver) else None
-
     def judge_updates() -> tuple[list[dict[str, Any]], float]:
         started = monotonic()
         result = judge_concept_update_candidates(
             completion=RetryOnceJsonCompletion(api_client),
             concepts=concepts,
             candidates=concept_update_candidates,
-            judge_pairs=pair_judge.judge_concepts if pair_judge else None,
+            # 개념 병합에 Jev를 쓰면 섹션 후보·언급의 개념 판정도 같은 쌍별 판정기를 쓴다.
+            judge_pairs=resolver.judge_concepts if isinstance(resolver, JevConceptResolver) else None,
         )
         return result, monotonic() - started
 
