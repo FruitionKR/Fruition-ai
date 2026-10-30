@@ -158,6 +158,19 @@ def refs_in_text(text: str) -> list[str]:
     return _unique_keep_order(re.findall(ref_pattern, text))
 
 
+# 승격은 여러 문서에 반복해 나오는 용어를 개념으로 올린다. 근거 문서가 이보다 적은 클러스터는 승격 후보가 될 수 없다.
+MIN_PROMOTION_SOURCE_DOCUMENTS = 2
+
+
+def source_document_ids(refs: list[str]) -> set[str]:
+    """`문서ID:블록ID` 근거에서 문서 ID만 모은다."""
+    return {ref.split(":", 1)[0] for ref in refs if ":" in ref}
+
+
+def cluster_source_document_ids(section: str) -> set[str]:
+    return source_document_ids([ref for claim in cluster_claims(section) for ref in claim["refs"]])
+
+
 def cluster_claims(section: str) -> list[dict[str, str]]:
     claims = []
     current_claim: dict[str, str] | None = None

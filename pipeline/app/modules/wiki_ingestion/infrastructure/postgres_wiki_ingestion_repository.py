@@ -26,6 +26,8 @@ from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
 )
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     MATERIALIZED_CORE_RELATIONS,
+    MIN_PROMOTION_SOURCE_DOCUMENTS,
+    source_document_ids as _source_document_ids,
     cluster_relation_items as _cluster_relation_items,
     cluster_sections_by_id as _cluster_sections_by_id,
     parse_active_cluster_lint as _parse_active_cluster_lint,
@@ -90,6 +92,14 @@ from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import (
 
 def _unique_keep_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _has_multi_document_evidence(cluster: dict[str, Any]) -> bool:
+    """승격 후보가 여러 문서에 근거를 가졌는지. 핵심 개념과 맞춘 후보(target)는 편입 때 다른 문서 근거를 확인했다."""
+    if cluster.get("promotion_target"):
+        return True
+    refs = [ref for claim in cluster.get("claims", []) for ref in claim.get("refs", [])]
+    return len(_source_document_ids(refs)) >= MIN_PROMOTION_SOURCE_DOCUMENTS
 
 
 def _today_iso() -> str:
@@ -1535,6 +1545,15 @@ def lint_wiki_workspace(
         }
         for cluster in clusters
         if cluster.get("promotion_status") == "candidate" and not cluster.get("promotion_source_refs")
+    ] + [
+        {
+            "cluster_id": cluster["id"],
+            "reason": "promotion candidate has evidence from a single source document",
+        }
+        for cluster in clusters
+        if cluster.get("promotion_status") == "candidate"
+        and cluster.get("promotion_source_refs")
+        and not _has_multi_document_evidence(cluster)
     ]
     blocked_cluster_ids = {
         cluster["id"]
@@ -1552,6 +1571,7 @@ def lint_wiki_workspace(
         cluster["id"]
         for cluster in clusters
         if cluster.get("promotion_status") == "candidate" and cluster.get("promotion_source_refs")
+        and _has_multi_document_evidence(cluster)
         and cluster["id"] not in blocked_cluster_ids
     ]
     needs_review = [
@@ -1940,7 +1960,7 @@ def _materialize_promotion_candidates(
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
             continue
-        if not cluster.get("promotion_source_refs"):
+        if not cluster.get("promotion_source_refs") or not _has_multi_document_evidence(cluster):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         # 핵심 개념과 같아 승격 후보가 된 클러스터는 그 개념(target)에 병합한다.
@@ -2008,7 +2028,7 @@ def _materialize_promotion_candidates(
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
             continue
-        if not cluster.get("promotion_source_refs"):
+        if not cluster.get("promotion_source_refs") or not _has_multi_document_evidence(cluster):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         if not claims:
