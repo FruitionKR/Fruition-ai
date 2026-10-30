@@ -407,6 +407,7 @@ def repair_notes_from_evaluation(
     repaired_notes = deepcopy(notes)
     observations_by_id: dict[str, dict[str, Any]] = {}
     observation_ids_by_location: dict[tuple[int, int], str] = {}
+    note_index_by_id: dict[str, int] = {}
     for note_index, note in enumerate(repaired_notes):
         for item_index, observation in enumerate(note.get("observations", []) or []):
             if not isinstance(observation, dict):
@@ -416,6 +417,7 @@ def repair_notes_from_evaluation(
             observation_id = f"O{len(observations_by_id) + 1:03d}"
             observations_by_id[observation_id] = observation
             observation_ids_by_location[(note_index, item_index)] = observation_id
+            note_index_by_id[observation_id] = note_index
 
     remove_ids: set[str] = set()
     duplicate_groups: list[list[str]] = []
@@ -435,6 +437,7 @@ def repair_notes_from_evaluation(
         if len(candidates) < 2:
             continue
         keeper = _select_observation_keeper(candidates)
+        keeper_id = next(observation_id for observation_id in ids if observations_by_id.get(observation_id) is keeper)
         for observation_id in ids:
             if observation_id in remove_ids:
                 continue
@@ -442,6 +445,12 @@ def repair_notes_from_evaluation(
             if candidate is None or candidate is keeper:
                 continue
             _merge_observation(keeper, candidate)
+            _merge_evidence_refs(
+                repaired_notes[note_index_by_id[keeper_id]],
+                keeper,
+                repaired_notes[note_index_by_id[observation_id]],
+                candidate,
+            )
             remove_ids.add(observation_id)
 
     for note_index, note in enumerate(repaired_notes):
@@ -453,13 +462,35 @@ def repair_notes_from_evaluation(
     return repaired_notes
 
 
+def _merge_evidence_refs(
+    keeper_note: dict[str, Any],
+    keeper: dict[str, Any],
+    incoming_note: dict[str, Any],
+    incoming: dict[str, Any],
+) -> None:
+    """병합되는 관찰이 가리키던 근거를 keeper가 가리키게 한다. 근거 id는 노트 안에서만 유효하다."""
+    refs = [str(ref) for ref in incoming.get("evidence_refs", []) or [] if str(ref)]
+    if not refs:
+        return
+    if keeper_note is incoming_note:
+        keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *refs])
+        return
+    # 다른 노트의 근거 id는 keeper 노트에서 뜻이 달라, 근거 행을 늘리지 않고 문장과 블록만 keeper로 옮긴다.
+    evidence_by_id = {str(item.get("id")): item for item in incoming_note.get("evidence_claims", []) or [] if item.get("id")}
+    carried = [evidence_by_id[ref] for ref in refs if ref in evidence_by_id]
+    keeper["claims"] = _unique([*(keeper.get("claims") or []), *(str(item.get("claim") or "").strip() for item in carried if str(item.get("claim") or "").strip())])
+    anchor_field = "anchor_reference_ids" if "anchor_reference_ids" in keeper else "anchor_block_ids"
+    keeper[anchor_field] = _unique([*_observation_anchors(keeper), *(ref for item in carried for ref in item.get("anchor_block_ids", []) or [])])
+
+
 def _select_observation_keeper(observations: list[dict[str, Any]]) -> dict[str, Any]:
     return max(
         observations,
         key=lambda item: (
             len(_observation_anchors(item)),
             len(str(item.get("summary") or "")),
-            len(item.get("claims", []) or []),
+            # 정규화 전 노트의 관찰은 claims 대신 evidence_refs로 근거를 가리킨다.
+            len(item.get("evidence_refs") or item.get("claims") or []),
         ),
     )
 

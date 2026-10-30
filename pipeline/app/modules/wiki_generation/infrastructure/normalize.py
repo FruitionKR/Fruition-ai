@@ -34,6 +34,17 @@ class SemanticNormalizer:
             normalized_note = self._normalize_single_note(note, warnings)
             normalized_notes.append(normalized_note)
 
+            evidence_by_local_id: dict[str, NormalizedEvidence] = {}
+            for ev in (note.get("evidence_claims") or []):
+                evidence_id = f"ev_{len(evidence_rows) + 1:04d}"
+                row = self._normalize_evidence(evidence_id, ev, warnings)
+                evidence_rows.append(row)
+                local_id = str(ev.get("id") or "").strip()
+                if local_id:
+                    evidence_by_local_id[local_id] = row
+
+            for observation in (normalized_note.get("observations") or []):
+                self._resolve_observation_evidence(observation, evidence_by_local_id, warnings)
             for observation in (normalized_note.get("observations") or []):
                 observations.append(
                     {
@@ -61,11 +72,6 @@ class SemanticNormalizer:
                 else:
                     self._merge_concept(concepts_by_slug[concept.slug], concept)
                     concepts_by_slug[concept.slug].importance_score += max(0, 10 - rank) * 0.5
-
-            for ev_idx, ev in enumerate((note.get("evidence_claims") or []), start=1):
-                evidence_id = f"ev_{len(evidence_rows) + 1:04d}"
-                row = self._normalize_evidence(evidence_id, ev, warnings)
-                evidence_rows.append(row)
 
         # 근거 힌트를 개념의 제목·별칭으로 썼으면 그 개념 slug로 맞춘다. 근거를 붙이는 곳과 근거 검증이 같은 기준을 쓴다.
         slug_by_name = {slug: slug for slug in concepts_by_slug}
@@ -139,6 +145,8 @@ class SemanticNormalizer:
                     "title": str(obs.get("title", "")).strip(),
                     "query_text": _optional_text(obs.get("query_text")),
                     "summary": str(obs.get("summary", "")).strip(),
+                    "evidence_refs": [str(ref).strip() for ref in (obs.get("evidence_refs") or []) if str(ref).strip()],
+                    # 다른 노트의 중복 관찰을 합칠 때 옮겨 온 근거 문장이다. 추출 출력에는 보통 없다.
                     "claims": [str(claim).strip() for claim in (obs.get("claims") or []) if str(claim).strip()],
                     "related_concept_hints": [slugify(x) for x in (obs.get("related_concept_hints") or [])],
                     "anchor_reference_ids": self._anchor_refs((obs.get("anchor_block_ids") or []), warnings, limit=5),
@@ -217,6 +225,28 @@ class SemanticNormalizer:
             "needs_neighbor_context": bool(note.get("needs_neighbor_context", False)),
             "context_problem": note.get("context_problem"),
         }
+
+    def _resolve_observation_evidence(
+        self,
+        observation: dict[str, Any],
+        evidence_by_local_id: dict[str, NormalizedEvidence],
+        warnings: list[str],
+    ) -> None:
+        """관찰이 가리킨 근거 주장으로 claims를 채운다. 같은 사실을 관찰과 근거에 두 번 쓰지 않게 하려는 구조다.
+
+        근거 id(ev_NNNN)는 실행마다 다시 매겨져 관찰에 남기지 않는다. 남기면 재편입 병합의 중복 판정이 깨진다.
+        """
+        rows = []
+        for ref in observation.pop("evidence_refs", []):
+            row = evidence_by_local_id.get(ref)
+            if row is None:
+                warnings.append(f"unknown observation evidence_ref: {ref}")
+                continue
+            rows.append(row)
+        observation["claims"] = unique_keep_order([*observation.get("claims", []), *(row.claim for row in rows)])
+        observation["anchor_reference_ids"] = unique_keep_order(
+            observation["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
+        )
 
     def _merge_source_item(self, bucket: dict[str, dict[str, Any]], item: dict[str, Any], key: str) -> None:
         raw_key = str(item.get(key, "")).strip()

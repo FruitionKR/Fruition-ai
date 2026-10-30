@@ -157,6 +157,16 @@ class SemanticGenerationAdapter:
             "evaluator_issues": evaluation.get("issues", []),
             "retry_feedback": evaluation.get("retry_feedback", ""),
             "editable_targets": editable_targets,
+            # 관찰은 같은 chunk 근거 주장의 id를 가리키므로 편집할 chunk의 근거 id와 문장을 함께 준다.
+            "chunk_evidence_claims": {
+                str(note.get("chunk_id")): [
+                    {"id": item.get("id"), "claim": item.get("claim")}
+                    for item in note.get("evidence_claims", []) or []
+                    if isinstance(item, dict)
+                ]
+                for note in previous_notes
+                if str(note.get("chunk_id")) in {str(target["chunk_id"]) for target in editable_targets}
+            },
             "source_blocks": [
                 {"block_id": block.block_id, "text": block.text}
                 for block in context_blocks

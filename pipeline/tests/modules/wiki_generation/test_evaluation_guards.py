@@ -361,6 +361,33 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(repaired_notes[0]["observations"], [])
         self.assertTrue(operations)
 
+    def test_duplicate_observations_across_notes_keep_both_evidence_claims(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import repair_notes_from_evaluation
+        from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+        from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
+
+        notes = [
+            {
+                "chunk_id": "c1",
+                "evidence_claims": [{"id": "e1", "claim": "A는 B다", "anchor_block_ids": ["B0001"]}],
+                "observations": [{"title": "관찰", "summary": "요약이 더 긴 쪽", "evidence_refs": ["e1"], "anchor_block_ids": ["B0001", "B0002"]}],
+            },
+            {
+                "chunk_id": "c2",
+                "evidence_claims": [{"id": "e1", "claim": "C는 D다", "anchor_block_ids": ["B0002"]}],
+                "observations": [{"title": "관찰", "summary": "요약", "evidence_refs": ["e1"], "anchor_block_ids": ["B0002"]}],
+            },
+        ]
+        evaluation = {"issues": [{"type": "duplicate_observation", "target": ["O001", "O002"]}]}
+
+        repaired = repair_notes_from_evaluation(notes, evaluation)
+        blocks = [SourceBlock("d", "B0001", "B0001", "A", 1, 1), SourceBlock("d", "B0002", "B0002", "C", 2, 2)]
+        normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), blocks).normalize_notes(repaired)
+
+        self.assertEqual([len(note["observations"]) for note in repaired], [1, 0])
+        self.assertEqual(normalized["observations"][0]["claims"], ["C는 D다", "A는 B다"])
+        self.assertEqual([item["claim"] for item in normalized["evidence_units"]], ["A는 B다", "C는 D다"])
+
     def test_rejects_core_concept_without_supporting_evidence_claim(self) -> None:
         evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.95}, "issues": [], "retry_feedback": ""}
         normalized = {

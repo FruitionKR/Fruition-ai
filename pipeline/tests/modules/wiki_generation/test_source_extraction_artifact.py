@@ -35,7 +35,7 @@ def test_source_extraction_artifact_uses_embedding_friendly_terms(tmp_path: Path
                     "title": "검색 인덱스의 역할 질문",
                     "query_text": "검색 인덱스가 왜 필요해?",
                     "summary": "검색 인덱스는 문서를 검색 가능한 구조로 바꿔 후속 질의의 후보가 된다.",
-                    "claims": ["검색 인덱스는 후속 질의 후보를 찾는 데 쓰인다."],
+                    "evidence_refs": ["e1"],
                     "related_concept_hints": ["search-index"],
                     "anchor_block_ids": ["B0001", "B0002"],
                 }
@@ -67,7 +67,15 @@ def test_source_extraction_artifact_uses_embedding_friendly_terms(tmp_path: Path
                     "evidence_block_ids": ["B0003"],
                 }
             ],
-            "evidence_claims": [],
+            "evidence_claims": [
+                {
+                    "id": "e1",
+                    "claim": "검색 인덱스는 후속 질의 후보를 찾는 데 쓰인다.",
+                    "anchor_block_ids": ["B0001"],
+                    "related_concept_hints": ["search-index"],
+                    "confidence": 0.9,
+                }
+            ],
             "needs_neighbor_context": False,
             "context_problem": None,
         }
@@ -607,3 +615,37 @@ def test_concepts_naming_each_other_keep_aliases_for_name_match() -> None:
 
     assert normalized["alias_concept_links"] == []
     assert "Retrieval-Augmented Generation" in next(c for c in normalized["concept_ledger"] if c["slug"] == "rag")["aliases"]
+
+
+def test_observation_claims_come_from_referenced_evidence_claims() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [
+        SourceBlock("doc_test", "B0001", "ref_b0001", "검색 인덱스는 후보를 찾는다.", 1, 1),
+        SourceBlock("doc_test", "B0002", "ref_b0002", "BM25는 점수를 매긴다.", 2, 2),
+    ]
+    note = {
+        "chunk_id": "chunk_0001",
+        "evidence_claims": [
+            {"id": "e1", "claim": "검색 인덱스는 후보를 찾는다.", "anchor_block_ids": ["B0001"]},
+            {"id": "e2", "claim": "BM25는 점수를 매긴다.", "anchor_block_ids": ["B0002"]},
+        ],
+        "observations": [
+            {
+                "type": "source_claim",
+                "title": "검색 흐름",
+                "summary": "후보를 찾고 점수를 매긴다.",
+                "evidence_refs": ["e2", "missing", "e1"],
+                "anchor_block_ids": ["B0001"],
+            }
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    observation = normalized["observations"][0]
+
+    assert observation["claims"] == ["BM25는 점수를 매긴다.", "검색 인덱스는 후보를 찾는다."]
+    assert "evidence_ids" not in observation
+    assert observation["anchor_reference_ids"] == ["B0001", "B0002"]
+    assert "evidence_refs" not in observation
+    assert [e["claim"] for e in normalized["evidence_units"]] == ["검색 인덱스는 후보를 찾는다.", "BM25는 점수를 매긴다."]
+    assert "unknown observation evidence_ref: missing" in normalized["warnings"]

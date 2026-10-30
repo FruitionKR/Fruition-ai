@@ -72,6 +72,7 @@ Concept hint rules:
 - related_concept_hints in evidence_claims should be slug-like hints for core_concepts only.
 
 Observation rules:
+- Do not restate facts inside an observation. Write each fact once as an evidence claim and list its id in evidence_refs.
 - observation.type must be one of: source_claim, definition, comparison, example, qa_episode, follow_up, correction, decision.
 - For qa_episode, title should summarize the user's question and summary should summarize the answer or decision.
 - For follow_up, include enough context in summary so a later query with "that", "the second issue", "this method", or similar references can be resolved.
@@ -80,6 +81,7 @@ Observation rules:
 - anchor_block_ids may include up to 5 direct anchors when an observation spans multiple turns or a question-answer pair.
 
 Evidence rules:
+- Give each evidence claim an id unique within this packet, such as e1, e2.
 - Evidence claim = one atomic claim.
 - Avoid broad claims that need many anchors.
 - anchor_block_ids should directly prove the exact claim.
@@ -91,20 +93,6 @@ Return exactly JSON:
   "key_points": [
     {"text": string, "anchor_block_ids": [string]}
   ],
-  "observations": [
-    {
-      "type": string,
-      "title": string,
-      "query_text": string|null,
-      "summary": string,
-      "claims": [string],
-      "related_concept_hints": [string],
-      "anchor_block_ids": [string]
-    }
-  ],
-  "categories": [
-    {"name": string}
-  ],
   "core_concepts": [
     {
       "title": string,
@@ -115,6 +103,29 @@ Return exactly JSON:
       "why_page_worthy": string,
       "evidence_block_ids": [string]
     }
+  ],
+  "evidence_claims": [
+    {
+      "id": string,
+      "claim": string,
+      "anchor_block_ids": [string],
+      "related_concept_hints": [string],
+      "confidence": number
+    }
+  ],
+  "observations": [
+    {
+      "type": string,
+      "title": string,
+      "query_text": string|null,
+      "summary": string,
+      "evidence_refs": [string],
+      "related_concept_hints": [string],
+      "anchor_block_ids": [string]
+    }
+  ],
+  "categories": [
+    {"name": string}
   ],
   "section_candidates": [
     {
@@ -130,14 +141,6 @@ Return exactly JSON:
       "slug_hint": string,
       "context": string,
       "evidence_block_ids": [string]
-    }
-  ],
-  "evidence_claims": [
-    {
-      "claim": string,
-      "anchor_block_ids": [string],
-      "related_concept_hints": [string],
-      "confidence": number
     }
   ],
   "needs_neighbor_context": boolean,

@@ -131,7 +131,22 @@ def apply_semantic_patch(
             collection[operation["index"] : operation["index"] + 1] = operation["items"]
         else:
             collection.extend(operation["items"])
+    # 근거 id가 겹치거나 관찰이 없는 id를 가리키면 정규화가 근거를 잘못 잇거나 버리므로 chunk 재생성으로 넘긴다.
+    if any(not _evidence_refs_resolve(note) for note in patched if str(note.get("chunk_id")) in editable_chunks):
+        return None
     return patched
+
+
+def _evidence_refs_resolve(note: JsonDict) -> bool:
+    ids = [str(item.get("id")) for item in note.get("evidence_claims", []) or [] if isinstance(item, dict) and item.get("id")]
+    if len(ids) != len(set(ids)):
+        return False
+    return all(
+        str(ref) in ids
+        for observation in note.get("observations", []) or []
+        if isinstance(observation, dict)
+        for ref in observation.get("evidence_refs", []) or []
+    )
 
 
 def _validated_operation(
