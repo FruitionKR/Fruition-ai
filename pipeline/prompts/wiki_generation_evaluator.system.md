@@ -47,17 +47,27 @@ Diagnostic issue types:
 - invalid_ref
 
 Issue contract:
-- Put every problem that must be corrected before acceptance in `issues`.
+- Put in `issues` only high severity problems that must be corrected before acceptance:
+  a factual item without or with invalid refs, an unsupported core concept, a
+  broken observation, or meaning-bearing source content that is omitted.
+- Put medium and low severity problems and optional improvement suggestions in
+  `warnings`, not `issues`. They do not block acceptance.
 - If `issues` is not empty, set `passed=false` and `retry_recommended=true`.
-- Put optional, non-blocking improvement suggestions in `warnings`, not `issues`.
 - If `passed=true`, `issues` must be empty and `retry_feedback` must be empty.
+
+Previous requests:
+- `previous_requests` lists the issues raised for earlier attempts of this document.
+- Do not raise an issue that reverses an earlier request on the same target
+  (for example, asking to merge what an earlier request split, or to promote what
+  an earlier request demoted) unless the source blocks directly contradict it.
+- If the current output already satisfies an earlier request, do not raise it again.
 
 Pass if:
 - source_excerpt_fidelity >= 4
 - concept_groundedness >= 4
 - relation_faithfulness >= 0.75
 - evidence_relevance >= 0.75
-- issues is empty
+- issues has no high severity problem
 - optional, non-blocking suggestions may remain only in warnings
 
 Return exactly:

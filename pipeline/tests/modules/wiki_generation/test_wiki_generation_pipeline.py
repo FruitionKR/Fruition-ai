@@ -350,7 +350,7 @@ class WikiGenerationPipelineTest(unittest.TestCase):
             prompts.append(system_prompt)
             return [{"attempt": attempt}]
 
-        def fake_evaluate_generation(_self, _normalized):
+        def fake_evaluate_generation(_self, _normalized, _previous_requests):
             return evaluations.pop(0)
 
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -20,6 +20,7 @@ from app.modules.wiki_generation.application.run_generation_loop import (
     generation_evaluation_finished,
     generation_retry_block_ids,
     generation_retry_prompt,
+    previous_evaluation_requests,
 )
 
 
@@ -214,7 +215,7 @@ class LangGraphWikiGenerationEvaluator:
         }
 
     def _evaluate(self, state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluatorState:
-        evaluation = self.evaluator.evaluate(state["normalized"])
+        evaluation = self.evaluator.evaluate(state["normalized"], previous_evaluation_requests(state["evaluations"]))
         self.evaluation_artifacts.write(state["attempt"], "evaluation", evaluation)
         self._emit_evaluation(state["attempt"], evaluation)
         evaluations = [*state["evaluations"], evaluation]
@@ -243,7 +244,7 @@ class LangGraphWikiGenerationEvaluator:
         }
 
     def _reevaluate(self, state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluatorState:
-        evaluation = self.evaluator.evaluate(state["normalized"])
+        evaluation = self.evaluator.evaluate(state["normalized"], previous_evaluation_requests(state["evaluations"]))
         evaluation["repair_operations"] = state["repair_operations"]
         self.evaluation_artifacts.write(state["attempt"], "repair", evaluation)
         self._emit_repair(state["attempt"], state["repair_operations"], evaluation)
@@ -282,7 +283,7 @@ class LangGraphWikiGenerationEvaluator:
         )
         result: WikiGenerationEvaluatorState = {
             "attempt": state["attempt"] + 1,
-            "prompt": generation_retry_prompt(state["semantic_system_prompt"], state["evaluation"]),
+            "prompt": generation_retry_prompt(state["semantic_system_prompt"], state["evaluations"]),
             "retry_block_ids": retry_block_ids,
             "patch_applied": False,
         }
