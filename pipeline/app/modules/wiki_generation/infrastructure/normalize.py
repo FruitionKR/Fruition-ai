@@ -307,12 +307,15 @@ def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> li
     for concept in concepts_by_slug.values():
         for name in (concept.title, concept.slug):
             owner_by_name.setdefault(_name_key(name), concept.slug)
+    names_by_slug = {slug: {_name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
     links = []
     for concept in concepts_by_slug.values():
         kept = []
         for alias in concept.aliases:
             owner = owner_by_name.get(_name_key(alias))
-            if owner and owner != concept.slug:
+            # 서로를 별칭으로 가진 두 개념은 같은 개념의 두 이름이라 그대로 두고 이름 일치 병합에 맡긴다.
+            mutual = owner is not None and bool(names_by_slug[owner] & {_name_key(concept.title), _name_key(concept.slug)})
+            if owner and owner != concept.slug and not mutual:
                 links.append({"source": concept.slug, "target": owner})
                 continue
             kept.append(alias)

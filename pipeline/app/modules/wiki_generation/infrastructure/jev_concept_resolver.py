@@ -93,10 +93,17 @@ class NameMatchConceptResolver(ConceptResolver):
         rest = [concept for concept in incoming_concepts if concept.get("slug") not in matched]
         raw = self.inner.resolve(rest, existing_concepts, missing_related_hints) if rest or missing_related_hints else {}
         resolutions = list(raw.get("resolutions") or [])
-        # 이름 일치 대상이 판정기에서 다시 병합되면 연쇄가 생기므로 최종 대상으로 바로 잇는다.
-        merged_to = {item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"}
+        # 이름 일치 대상이 다시 병합되면(이름 일치끼리 또는 판정기에서) 연쇄가 생기므로 최종 대상으로 바로 잇는다.
+        # 이름 일치는 기존 개념이나 slug가 앞선 개념만 가리켜 순환이 없다.
+        merged_to = {
+            **{slug: item["canonical_slug"] for slug, item in matched.items()},
+            **{item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"},
+        }
         for item in matched.values():
-            item["canonical_slug"] = merged_to.get(item["canonical_slug"], item["canonical_slug"])
+            target = item["canonical_slug"]
+            while target in merged_to and merged_to[target] != target:
+                target = merged_to[target]
+            item["canonical_slug"] = target
         return {**raw, "resolutions": [*matched.values(), *resolutions]}
 
 

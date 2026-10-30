@@ -354,3 +354,19 @@ class NameMatchConceptResolverTest(unittest.TestCase):
             {"incoming_slug": "retrieval-augmented-generation", "decision": "merge_into", "canonical_slug": "rag", "alias_to_add": None},
         )
         self.assertEqual([c["slug"] for c in llm.calls[0][0]], ["new-thing"])
+
+    def test_follows_chained_name_matches_to_the_final_concept(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        incoming = [
+            {"slug": "rag", "title": "RAG", "aliases": ["검색 증강 생성"], "definition": "정의"},
+            {"slug": "rag-model", "title": "검색 증강 생성", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "retrieval-augmented-generation", "title": "Retrieval-Augmented Generation", "aliases": ["RAG"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(RecordingResolver()).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in result["resolutions"]},
+            {"rag": "retrieval-augmented-generation", "rag-model": "retrieval-augmented-generation"},
+        )
