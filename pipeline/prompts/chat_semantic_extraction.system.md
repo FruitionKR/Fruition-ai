@@ -117,7 +117,6 @@ Return exactly JSON:
     {
       "name": string,
       "slug_hint": string,
-      "context": string,
       "evidence_block_ids": [string]
     }
   ],

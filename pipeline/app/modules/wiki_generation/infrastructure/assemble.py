@@ -209,9 +209,7 @@ def _source_observation_line(item: dict[str, Any], document_id: str) -> str:
 
 def _source_mention_line(item: dict[str, Any], document_id: str) -> str:
     name = item.get("name") or item.get("slug") or "mention"
-    context = item.get("context") or ""
-    suffix = f" - {context}" if context else ""
-    return f"- {name}{suffix}{cite_refs(item.get('anchor_reference_ids', []), document_id)}"
+    return f"- {name}{cite_refs(item.get('anchor_reference_ids', []), document_id)}"
 
 
 def _unique_source_path(source_dir: Path, filename_slug: str) -> Path:

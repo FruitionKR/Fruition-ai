@@ -49,7 +49,7 @@ Classification rules:
 10. Do not treat every important term as a core_concept.
 11. A core_concept becomes an independent Concept Page.
 12. A section_candidate is stored as a possible section term with context, unless lint later finds it sufficiently frequent/central and promotes it to core.
-13. A mention is only recorded as a referenced term.
+13. A mention is only recorded as a referenced term: give its name and the blocks where it appears, with no description. A term that needs a description is a section_candidate.
 14. A category is metadata for filtering and browsing source pages and source-source links.
 15. If the source directly defines a named workflow, operation set, lifecycle, or process group with multiple supported steps, prefer core_concept over section_candidate when the workflow is central to how the source's system works or users are likely to ask how its parts work.
 16. For workflow-like concepts, avoid promoting overly generic individual step names as separate core_concepts unless the source gives them independent reusable meanings. Prefer one canonical workflow core_concept with the steps represented in its definition, evidence claims, and source-page observations.
@@ -143,7 +143,6 @@ Return exactly JSON:
     {
       "name": string,
       "slug_hint": string,
-      "context": string,
       "evidence_block_ids": [string]
     }
   ],

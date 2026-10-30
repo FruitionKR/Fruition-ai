@@ -7,6 +7,10 @@ from app.modules.wiki_generation.domain.entities import NormalizedConcept, Norma
 from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, name_key, slugify, unique_keep_order
 
 
+# 언급의 클러스터 판정에 쓰는 원문 길이. 개념 갱신·클러스터 후보 문장 한 줄 분량이다.
+MENTION_SOURCE_TEXT_CHARS = 300
+
+
 class PipelineValidationError(Exception):
     pass
 
@@ -120,7 +124,10 @@ class SemanticNormalizer:
             "concept_ledger": [asdict(c) for c in sorted(concepts_by_slug.values(), key=lambda c: (-c.importance_score, c.slug))],
             "categories": sorted(categories_by_name.values(), key=lambda x: x.get("name", "")),
             "section_candidates": sorted(section_candidates_by_slug.values(), key=lambda x: x.get("slug", "")),
-            "mentions": sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", "")),
+            "mentions": [
+                {**mention, "source_text": self._source_text(mention["anchor_reference_ids"])}
+                for mention in sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", ""))
+            ],
             "observations": observations,
             "evidence_units": [asdict(e) for e in evidence_rows],
             "alias_concept_links": alias_concept_links,
@@ -195,7 +202,6 @@ class SemanticNormalizer:
                     "term": item.get("name", ""),
                     "name": item.get("name", ""),
                     "slug": slugify(item.get("slug_hint") or item.get("name", "")),
-                    "context": item.get("context", ""),
                     "anchor_reference_ids": self._anchor_refs(
                         (item.get("evidence_block_ids") or []) or (item.get("anchor_block_ids") or []), warnings, limit=3
                     ),
@@ -260,6 +266,11 @@ class SemanticNormalizer:
         for field in ("context", "definition", "why_page_worthy"):
             if item.get(field) and len(str(item.get(field))) > len(str(existing.get(field, ""))):
                 existing[field] = item[field]
+
+    def _source_text(self, block_ids: list[str]) -> str:
+        """언급이 나온 원문 블록. 언급은 설명을 받지 않으므로 클러스터 판정은 이 원문으로 한다."""
+        text = " ".join(self.by_block_id[block_id].text for block_id in block_ids if block_id in self.by_block_id)
+        return " ".join(text.split())[:MENTION_SOURCE_TEXT_CHARS]
 
     def _anchor_refs(self, anchor_block_ids: Iterable[str], warnings: list[str], limit: int = 3) -> list[str]:
         refs = []

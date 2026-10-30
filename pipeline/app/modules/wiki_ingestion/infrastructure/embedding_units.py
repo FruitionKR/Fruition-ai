@@ -24,6 +24,9 @@ def extract_embedding_units(markdown: str) -> list[dict[str, Any]]:
             continue
         if not source_block_ids(line):
             continue
+        # 언급 줄은 이름뿐이라 검색 근거가 되지 못한다. 그 원문 블록은 원문 unit으로 따로 들어간다.
+        if unit_type(current_section) == "mention":
+            continue
         unit_text = clean_unit_text(line)
         if not unit_text:
             continue
@@ -70,7 +73,6 @@ def section_weight(section: str) -> float:
         "observation": 1.30,
         "core_concept": 1.20,
         "section_candidate": 1.15,
-        "mention": 1.05,
         "category": 0.95,
     }
     return weights.get(unit_type(section), 1.0)
