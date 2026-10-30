@@ -79,6 +79,8 @@ def evaluate_generation(
         evaluation,
         normalized,
         source_block_ids=[block.block_id for block in blocks],
+        # ponytail: 재편입은 바뀐 블록만 받아 그대로인 블록의 숫자도 문제로 본다. 편입 뒤 제거는 전체 블록 기준이다.
+        source_texts=[block.text for block in blocks],
     )
     return evaluation
 

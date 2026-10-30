@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -11,6 +12,7 @@ def apply_generation_evaluation_guards(
     evaluation: GenerationEvaluation,
     normalized: dict[str, Any],
     source_block_ids: list[str] | None = None,
+    source_texts: list[str] | None = None,
 ) -> None:
     # 코드 검증 문제만 남은 평가를 나중에 풀어 줄 때 평가자 자신의 판정으로 되돌린다.
     evaluation.setdefault("evaluator_passed", bool(evaluation.get("passed")))
@@ -43,6 +45,8 @@ def apply_generation_evaluation_guards(
         )
     _apply_observation_evaluation_guards(evaluation, normalized)
     _apply_core_concept_evidence_guard(evaluation, normalized)
+    if source_texts is not None:
+        _apply_number_guard(evaluation, normalized, source_texts)
     if evaluation.get("issues"):
         evaluation["passed"] = False
         evaluation["retry_recommended"] = True
@@ -65,22 +69,26 @@ def unsupported_core_concept_slugs(normalized: dict[str, Any]) -> list[str]:
 
 
 def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
-    """섹션 후보로 내려 해결된 근거 없음 문제를 마지막 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
+    """섹션 후보로 내려 해결된 근거 없음 문제를 마지막 평가에서 지운다."""
     demoted_slugs = set(demoted)
-
-    def resolved(issue: dict[str, Any]) -> bool:
-        return (
+    clear_resolved_issues(
+        evaluation,
+        lambda issue: (
             issue.get("type") == "section_or_mention_should_not_be_core"
             and bool(issue.get("target"))
             and set(map(str, issue["target"])) <= demoted_slugs
-        )
+        ),
+    )
 
+
+def clear_resolved_issues(evaluation: GenerationEvaluation, resolved: Callable[[dict[str, Any]], bool]) -> None:
+    """편입 뒤 코드가 해결한 문제를 마지막 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
     issues = [issue for issue in evaluation.get("issues", []) if not resolved(issue)]
     if len(issues) == len(evaluation.get("issues", [])):
         return
     evaluation["issues"] = issues
     evaluation["retry_feedback"] = " ".join(_unique([str(issue["feedback"]) for issue in issues if issue.get("feedback")]))
-    # 평가자가 합격했거나, 평가자가 올린 문제가 모두 강등으로 해결됐으면 합격으로 되돌린다.
+    # 평가자가 합격했거나, 평가자가 올린 문제가 모두 해결됐으면 합격으로 되돌린다.
     evaluator_issues = evaluation.get("evaluator_issues", [])
     evaluator_resolved = bool(evaluator_issues) and all(resolved(issue) for issue in evaluator_issues)
     if not issues and (evaluation.get("evaluator_passed") or evaluator_resolved):
@@ -101,6 +109,115 @@ def _apply_core_concept_evidence_guard(evaluation: GenerationEvaluation, normali
                 "feedback": f"{slug}: 이 개념을 직접 뒷받침하는 evidence claim을 추가하거나, 근거가 없으면 section_candidate 또는 mention으로 낮추세요.",
             },
         )
+
+
+# 숫자와 바로 뒤의 만·천·억 단위. 영문자·숫자 바로 뒤의 숫자(B0036, BM25)는 식별자라 보지 않는다.
+_NUMBER = re.compile(r"(?<![A-Za-z0-9.,])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(만|천|억))?")
+_NUMBER_TEXT_FIELDS = ("title", "text", "summary", "query_text", "claim", "definition", "context")
+# 페이지가 따로 있는 개념은 빼지 않고 평가 문제로만 남긴다.
+_NUMBER_DROP_COLLECTIONS = ("observations", "section_candidates", "mentions", "evidence_units")
+
+
+def number_tokens(text: str) -> set[str]:
+    """쉼표를 뺀 숫자와 붙은 단위. 단위를 바꿔 쓴 숫자(25만 3천 → 253만)는 다른 토큰이 된다."""
+    tokens = set()
+    for whole, fraction, unit in _NUMBER.findall(text):
+        number = whole.replace(",", "") + fraction
+        # 한 자리 정수는 목록 번호처럼 흔해서 단위가 붙을 때만 본다.
+        if unit or len(number) > 1:
+            tokens.add(number + unit)
+    return tokens
+
+
+def unsupported_numbers(item: dict[str, Any], source_numbers: set[str]) -> list[str]:
+    texts = [str(item.get(field) or "") for field in _NUMBER_TEXT_FIELDS]
+    texts += [str(claim) for claim in item.get("claims") or []]
+    return sorted(set().union(*map(number_tokens, texts)) - source_numbers)
+
+
+def _source_numbers(source_texts: list[str]) -> set[str]:
+    return set().union(*map(number_tokens, source_texts))
+
+
+def _number_checked_items(normalized: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    # 노트의 관찰은 최상위 observations와 같은 내용이라 한 번만 본다.
+    return [
+        *((collection, item) for collection in ("concept_ledger", *_NUMBER_DROP_COLLECTIONS) for item in normalized.get(collection, [])),
+        *(("key_points", item) for note in normalized.get("semantic_notes", []) for item in note.get("key_points", [])),
+    ]
+
+
+def _number_issue_target(collection: str, item: dict[str, Any]) -> list[str]:
+    # 핵심 문장은 ID가 없어 근거 블록으로 재시도 대상을 가리킨다.
+    return _item_refs(item) if collection == "key_points" else [_item_target(item, collection)]
+
+
+def _apply_number_guard(evaluation: GenerationEvaluation, normalized: dict[str, Any], source_texts: list[str]) -> None:
+    source_numbers = _source_numbers(source_texts)
+    for collection, item in _number_checked_items(normalized):
+        missing = unsupported_numbers(item, source_numbers)
+        target = _number_issue_target(collection, item)
+        if not missing or not target:
+            continue
+        _append_eval_issue(
+            evaluation,
+            {
+                "metric": "source_faithfulness",
+                "type": "unsupported_number",
+                "severity": "high",
+                "target": target,
+                "reason": f"원문에 없는 숫자를 씁니다: {', '.join(missing)}",
+                "feedback": f"{target[0]}: 원문에 없는 숫자({', '.join(missing)})를 원문 표기와 단위 그대로 고치거나 빼세요.",
+            },
+        )
+
+
+def drop_unsupported_number_items(normalized: dict[str, Any], source_texts: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """재시도 뒤에도 원문에 없는 숫자를 쓰는 항목을 뺀다. 개념은 평가 문제로 남는다."""
+    source_numbers = _source_numbers(source_texts)
+
+    def keep(item: dict[str, Any]) -> bool:
+        return not unsupported_numbers(item, source_numbers)
+
+    dropped = [
+        _item_target(item, collection)
+        for collection, item in _number_checked_items(normalized)
+        if collection != "concept_ledger" and not keep(item)
+    ]
+    if not dropped:
+        return normalized, []
+    kept_evidence_ids = {str(item.get("evidence_id")) for item in normalized.get("evidence_units", []) if keep(item)}
+    return {
+        **normalized,
+        **{collection: [item for item in normalized.get(collection, []) if keep(item)] for collection in _NUMBER_DROP_COLLECTIONS},
+        # 뺀 근거 주장을 개념이 계속 가리키지 않게 한다.
+        "concept_ledger": [
+            {**concept, "evidence_claim_ids": [ev for ev in concept.get("evidence_claim_ids", []) if ev in kept_evidence_ids]}
+            for concept in normalized.get("concept_ledger", [])
+        ],
+        "semantic_notes": [
+            {
+                **note,
+                "key_points": [item for item in note.get("key_points", []) if keep(item)],
+                "observations": [item for item in note.get("observations", []) if keep(item)],
+            }
+            for note in normalized.get("semantic_notes", [])
+        ],
+    }, dropped
+
+
+def clear_resolved_number_issues(evaluation: GenerationEvaluation, normalized: dict[str, Any], source_texts: list[str]) -> None:
+    """뺀 항목의 숫자 문제를 지운다. 남은 개념의 숫자 문제는 그대로 둔다."""
+    source_numbers = _source_numbers(source_texts)
+    remaining = {
+        tuple(_number_issue_target(collection, item))
+        for collection, item in _number_checked_items(normalized)
+        if unsupported_numbers(item, source_numbers)
+    }
+    clear_resolved_issues(
+        evaluation,
+        lambda issue: issue.get("type") == "unsupported_number" and tuple(map(str, issue.get("target") or [])) not in remaining,
+    )
 
 
 def demote_unsupported_core_concepts(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

@@ -17,7 +17,9 @@ from typing import Any
 
 from app.modules.wiki_generation.application.evaluation_guards import (
     clear_resolved_core_concept_issues,
+    clear_resolved_number_issues,
     demote_unsupported_core_concepts,
+    drop_unsupported_number_items,
 )
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
@@ -982,6 +984,14 @@ def run_pipeline(
             {},
         )
 
+    # 평가 재시도 뒤에도 원문에 없는 숫자를 쓰는 항목은 뺀다. 근거 주장이 빠질 수 있어 개념 강등보다 먼저 한다.
+    block_texts = [block.text for block in blocks]
+    normalized, number_dropped = drop_unsupported_number_items(normalized, block_texts)
+    if number_dropped:
+        if generation_evaluations:
+            clear_resolved_number_issues(generation_evaluations[-1], normalized, block_texts)
+        normalized.setdefault("warnings", []).append(f"원문에 없는 숫자를 쓴 항목을 뺌: {', '.join(number_dropped)}")
+
     # 평가 재시도 뒤에도 근거 주장이 없는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
     normalized, demoted_concepts = demote_unsupported_core_concepts(normalized)
     if demoted_concepts:
@@ -1000,6 +1010,7 @@ def run_pipeline(
             "category 수": len(normalized.get("categories", [])),
             "근거 수": len(normalized["evidence_units"]),
             "섹션 후보로 내린 핵심 개념 수": len(demoted_concepts),
+            "원문에 없는 숫자로 뺀 항목 수": len(number_dropped),
             "경고 수": len(normalized.get("warnings", [])),
         },
     )

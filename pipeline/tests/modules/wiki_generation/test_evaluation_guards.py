@@ -474,5 +474,80 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(evaluation["issues"], [])
 
 
+    def test_number_tokens_keep_magnitude_unit_and_skip_identifiers(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import number_tokens
+
+        self.assertEqual(number_tokens("상용근로자 25만 3천명(1.5%) 증가"), {"25만", "3천", "1.5"})
+        self.assertEqual(number_tokens("253만 명"), {"253만"})
+        self.assertEqual(number_tokens("총 1,918 명, 제3항, B0036, BM25"), {"1918"})
+
+    def test_flags_number_not_written_in_source(self) -> None:
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "observations": [
+                {"observation_id": "O001", "title": "증감", "summary": "상용근로자 253만 명 증가", "anchor_reference_ids": ["B0001"]},
+                {"observation_id": "O002", "title": "증감", "summary": "상용근로자 25만 3천 명 증가", "anchor_reference_ids": ["B0001"]},
+            ],
+        }
+
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], ["상용근로자는 25만 3천명 증가"])
+
+        self.assertFalse(evaluation["passed"])
+        issues = [issue for issue in evaluation["issues"] if issue["type"] == "unsupported_number"]
+        self.assertEqual([issue["target"] for issue in issues], [["O001"]])
+
+    def test_drops_items_with_unsupported_numbers_and_clears_their_issues(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import (
+            clear_resolved_number_issues,
+            drop_unsupported_number_items,
+        )
+
+        source = ["보건업은 20만 7천명 증가"]
+        wrong_observation = {"observation_id": "O001", "title": "증감", "summary": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"]}
+        normalized = {
+            "concept_ledger": [{"slug": "health", "title": "보건업", "definition": "20만 7천명 증가한 산업", "anchor_reference_ids": ["B0001"], "evidence_claim_ids": ["ev_0001", "ev_0002"]}],
+            "observations": [wrong_observation],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"], "related_concept_slugs": []},
+                {"evidence_id": "ev_0002", "claim": "보건업 20만 7천명 증가", "anchor_reference_ids": ["B0001"], "related_concept_slugs": ["health"]},
+            ],
+            "semantic_notes": [
+                {"chunk_id": "c1", "key_points": [{"text": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"]}], "observations": [wrong_observation]},
+            ],
+        }
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], source)
+        self.assertFalse(evaluation["passed"])
+
+        dropped_normalized, dropped = drop_unsupported_number_items(normalized, source)
+        clear_resolved_number_issues(evaluation, dropped_normalized, source)
+
+        self.assertEqual(dropped, ["O001", "ev_0001", "보건업 207만 명 증가"])
+        self.assertEqual([item["evidence_id"] for item in dropped_normalized["evidence_units"]], ["ev_0002"])
+        self.assertEqual(dropped_normalized["observations"], [])
+        self.assertEqual(dropped_normalized["semantic_notes"][0]["key_points"], [])
+        self.assertEqual(dropped_normalized["semantic_notes"][0]["observations"], [])
+        self.assertEqual(dropped_normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0002"])
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual(evaluation["issues"], [])
+
+    def test_keeps_number_issue_for_concept_definition(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import (
+            clear_resolved_number_issues,
+            drop_unsupported_number_items,
+        )
+
+        source = ["보건업은 20만 7천명 증가"]
+        normalized = {"concept_ledger": [{"slug": "health", "title": "보건업", "definition": "207만 명 증가", "anchor_reference_ids": ["B0001"]}]}
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], source)
+
+        dropped_normalized, dropped = drop_unsupported_number_items(normalized, source)
+        clear_resolved_number_issues(evaluation, dropped_normalized, source)
+
+        self.assertEqual(dropped, [])
+        self.assertEqual([issue["target"] for issue in evaluation["issues"] if issue["type"] == "unsupported_number"], [["health"]])
+        self.assertFalse(evaluation["passed"])
+
 if __name__ == "__main__":
     unittest.main()
