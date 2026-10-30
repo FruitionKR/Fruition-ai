@@ -104,6 +104,71 @@ class EvaluateGenerationTest(unittest.TestCase):
             [["B0003"]],
         )
 
+    def test_note_items_are_sent_once_through_top_level_lists(self) -> None:
+        completion = WindowRecordingCompletion()
+        observation = {"title": "관찰", "anchor_reference_ids": ["B0001"]}
+        evaluate_generation(
+            completion=completion,
+            evaluator_prompt="evaluate",
+            document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
+            blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
+            normalized={
+                "semantic_notes": [{
+                    "chunk_id": "chunk_0001",
+                    "semantic_summary": "요약",
+                    "key_points": [{"text": "핵심", "anchor_reference_ids": ["B0001"]}],
+                    "observations": [observation],
+                    "core_concepts": [{"slug": "concept", "anchor_reference_ids": ["B0001"]}],
+                }],
+                "observations": [observation],
+            },
+        )
+
+        normalized = completion.payloads[0]["normalized"]
+        self.assertEqual(normalized["semantic_notes"], [{
+            "chunk_id": "chunk_0001",
+            "semantic_summary": "요약",
+            "key_points": [{"text": "핵심", "anchor_reference_ids": ["B0001"]}],
+        }])
+        self.assertEqual(normalized["observations"], [observation])
+
+    def test_evaluation_input_omits_repeated_document_ids_and_aggregates(self) -> None:
+        completion = WindowRecordingCompletion()
+        evaluate_generation(
+            completion=completion,
+            evaluator_prompt="evaluate",
+            document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
+            blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
+            normalized={
+                "evidence_units": [{
+                    "evidence_id": "ev_0001",
+                    "claim": "주장",
+                    "anchor_reference_ids": ["B0001"],
+                    "source_document_id": "doc-1",
+                }],
+                "concept_ledger": [{
+                    "slug": "concept",
+                    "title": "개념",
+                    "anchor_reference_ids": ["B0001"],
+                    "source_document_ids": ["doc-1"],
+                    "mention_count": 3,
+                    "importance_score": 0.5,
+                }],
+                "mentions": [{"term": "언급", "name": "언급", "slug": "mention", "anchor_reference_ids": ["B0001"]}],
+            },
+        )
+
+        normalized = completion.payloads[0]["normalized"]
+        self.assertEqual(normalized["evidence_units"], [
+            {"evidence_id": "ev_0001", "claim": "주장", "anchor_reference_ids": ["B0001"]},
+        ])
+        self.assertEqual(normalized["concept_ledger"], [
+            {"slug": "concept", "title": "개념", "anchor_reference_ids": ["B0001"]},
+        ])
+        self.assertEqual(normalized["mentions"], [
+            {"name": "언급", "slug": "mention", "anchor_reference_ids": ["B0001"]},
+        ])
+
     def test_small_document_keeps_single_request(self) -> None:
         completion = WindowRecordingCompletion()
         evaluate_generation(
