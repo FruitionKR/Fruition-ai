@@ -236,16 +236,11 @@ class LangGraphWikiGenerationEvaluator:
             if repair_operations
             else state["normalized"]
         )
-        result: WikiGenerationEvaluatorState = {
+        return {
             "notes": notes,
             "normalized": normalized,
             "repair_operations": repair_operations,
         }
-        best = state.get("best_attempt")
-        if repair_operations and best is not None and best["index"] == len(state["evaluations"]) - 1:
-            # repair는 코드 검증이 지적한 항목을 지우는 결정적 정리라, 같은 시도의 최고 결과도 정리된 쪽으로 둔다.
-            result["best_attempt"] = {**best, "notes": notes, "normalized": normalized}
-        return result
 
     def _reevaluate(self, state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluatorState:
         evaluation = self.evaluator.evaluate(state["normalized"])
@@ -253,10 +248,14 @@ class LangGraphWikiGenerationEvaluator:
         self.evaluation_artifacts.write(state["attempt"], "repair", evaluation)
         self._emit_repair(state["attempt"], state["repair_operations"], evaluation)
         evaluations = [*state["evaluations"], evaluation]
+        # repair는 코드 검증이 지적한 항목을 지우는 결정적 정리라, 같은 시도의 repair 전 결과가 최고였으면
+        # 점수와 상관없이 repair된 결과와 그 재평가로 바꾼다. 다른 시도와는 재평가 점수로 비교한다.
+        best = state.get("best_attempt")
+        same_attempt = best is not None and best["index"] == len(state["evaluations"]) - 1
         return {
             "evaluation": evaluation,
             "evaluations": evaluations,
-            **_best_attempt_update(state, evaluation, len(evaluations) - 1),
+            **_best_attempt_update({**state, "best_attempt": None} if same_attempt else state, evaluation, len(evaluations) - 1),
         }
 
     @staticmethod
