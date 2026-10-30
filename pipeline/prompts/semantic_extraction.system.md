@@ -31,6 +31,10 @@ Task:
 - Do not invent block ids.
 - Use the exact chunk_id from input if supplied.
 
+Number rules:
+- Copy every number exactly as the source writes it, with the same unit. Do not convert units (for example, between 천 and 만) and do not compute new numbers such as differences, sums, or ratios.
+- When a table gives its unit only in a header, keep the table value and add that unit in parentheses.
+
 Classification rules:
 1. Use core_concept only when the term is independently explainable, grounded in the source, central to understanding the document, and likely reusable across other Source Pages.
 2. Use section_candidate when the term is important for explaining the document but is currently better handled as a possible section term than an independent page.
