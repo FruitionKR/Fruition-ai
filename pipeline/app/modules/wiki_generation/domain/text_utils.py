@@ -55,3 +55,8 @@ def clean_concept_tags(tags: Iterable[str], title: str, aliases: Iterable[str], 
         if len(out) >= limit:
             break
     return out
+
+
+def name_key(name: object) -> str:
+    """이름 일치 비교용 키. 대소문자·전각/반각·공백·하이픈·밑줄만 맞추고 기호는 남긴다."""
+    return " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
