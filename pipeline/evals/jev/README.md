@@ -59,6 +59,7 @@ python analyze_rag.py ../results/<날짜>/rag                       # 집계
 ## 채점
 
 - **라우팅·개념:** 코드로 채점한다. 기대 답이나 허용 답 중 하나와 같으면 정답이다. 개념 `link_to`는 연결 대상에 `canonical_slug`나 `also_link` 중 하나가 있으면 정답이고, 그 밖의 대상은 추가 연결로 센다.
+  - 추가 연결이 정의상 타당한지는 `python grade_links.py ../results/<날짜>/concept/rows.jsonl`로 Codex가 쌍마다 valid/weak/invalid로 채점한다(결과 `link_grades.json`). valid인 대상은 정답셋의 `also_link`·허용 답에 더할 후보다.
 - **RAG:** 실행 행마다 선택기가 고른 근거 전체(`evidence`), 답변이 인용한 근거(`cited_evidence`), 답변 모델이 받은 프롬프트(`answer_context`)를 저장한다. 최종 결과의 근거는 인용된 것만 남으므로(`renumber_used_evidence`), 근거 선택은 반드시 `evidence`로 본다. 켬/끔을 가리고 순서를 섞어 Codex가 다음을 채점한다.
   - 근거 충분성: 고른 근거만으로 기대 답이나 허용 답을 만들 수 있는지(sufficient/partial/none). 같은 질문에 같은 근거가 나온 실행은 한 번만 채점한다.
   - 정답: 기대 답이나 허용 답을 말하면 correct. 질문이 묻는 사실이 빠지거나 틀렸을 때만 partial이다.
