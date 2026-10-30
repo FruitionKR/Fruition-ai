@@ -177,33 +177,28 @@ class EditEvaluationTest(unittest.TestCase):
                     )
                 self.assertEqual(len(client.calls), 4)
 
-    def test_source_range_edit_uses_same_evaluation_and_retry_limit(self):
+    def test_source_range_evaluation_failure_falls_back_to_general_edit(self):
         source = {
             "summary": "수정",
             "edits": [{"id": "text-0001", "replacement": "정리한 문장"}],
         }
         for verdict in [PASSED, FAILED]:
             with self.subTest(verdict=verdict):
-                client = ScriptedClient([source, FAILED, source, verdict])
+                # 원문 범위 편집 → 평가 불합격 → 일반 편집 → 평가. 일반 편집의 재시도는 그 경로의 규칙을 따른다.
+                responses = [source, FAILED, proposal("정리한 문장"), verdict]
+                if not verdict["passed"]:
+                    responses += [proposal("정리한 문장"), FAILED]
+                client = ScriptedClient(responses)
                 editor = ChatCompletionsMarkdownEditor(client, "system")
                 if verdict["passed"]:
-                    self.assertEqual(
-                        editor.generate_edit(
-                            self.request("cleanup")
-                        ).edit.replacement_markdown,
-                        "정리한 문장",
-                    )
+                    self.assertEqual(editor.generate_edit(self.request("cleanup")).edit.replacement_markdown, "정리한 문장")
                 else:
                     with self.assertRaises(MarkdownOutputContractError):
                         editor.generate_edit(self.request("cleanup"))
-                self.assertEqual(len(client.calls), 4)
+                self.assertEqual(len(client.calls), len(responses))
                 self.assertEqual(client.calls[1][1]["original_markdown"], "원래 문장")
-                self.assertIn(
-                    "LLM evaluation:", client.calls[2][1]["contract_failures"][0]
-                )
-                self.assertEqual(
-                    client.calls[2][1]["previous_assembled_markdown"], "정리한 문장"
-                )
+                self.assertIn("segments", client.calls[0][1])
+                self.assertNotIn("segments", client.calls[2][1])
 
     def test_invalid_generation_skips_evaluator_and_shares_retry_budget(self):
         client = ScriptedClient([proposal(""), proposal(), FAILED])

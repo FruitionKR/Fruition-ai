@@ -125,6 +125,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
     return ProtectedMarkdown(markdown=markdown, fragments=tuple(fragments))
 
 
+LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
     instruction = request.instruction.lower()
     nonempty_lines = [line for line in replacement.splitlines() if line.strip()]
@@ -142,7 +145,8 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
         failures.extend(_protected_content_failures(request.markdown, replacement))
         failures.extend(_protected_fragment_failures(request, replacement))
 
-    if request.edit_goal == "shorten":
+    # 줄이기 규칙은 기존 내용을 줄여 바꿀 때만 쓴다. 요약을 덧붙이는 insert_after는 원문 길이·고정어와 비교하지 않는다.
+    if request.edit_goal == "shorten" and request.edit_operation == "replace":
         failures.extend(_shortening_failures(request.markdown, instruction, replacement))
     if request.edit_operation == "insert_after":
         failures.extend(_insert_after_repeat_failures(request.markdown, replacement))
@@ -154,17 +158,19 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
 
 def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, item_lines: list[str]) -> list[str]:
     failures: list[str] = []
+    # 목록 형식은 목록 항목 줄에만 요구한다. 제목·도입 문장·굵은 소제목 같은 목록 밖 줄은 둘 수 있다.
+    list_lines = [line for line in item_lines if LIST_ITEM_PATTERN.match(line)]
     if request.edit_goal == "checklist":
-        if not item_lines or not all(re.match(r"^- \[ \] ", line) for line in item_lines):
+        if not list_lines or not all(re.match(r"^\s*- \[ \] ", line) for line in list_lines):
             failures.append("checklist items must all start with `- [ ] `")
     if request.edit_operation == "insert_after":
         source_heading = next(iter(_atx_heading_lines(request.markdown)), "")
         if source_heading and source_heading in _atx_heading_lines(replacement):
             failures.append("insert_after output must not repeat the current section heading")
     if request.edit_goal == "bullet_list":
-        if not item_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in item_lines):
+        if not list_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in list_lines):
             failures.append("bullet list items must use plain bullet markers")
-        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in item_lines):
+        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in list_lines):
             failures.append("plain bullet list must not contain checkboxes")
     return failures
 

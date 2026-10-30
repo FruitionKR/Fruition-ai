@@ -147,22 +147,14 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         )
         self.assertNotIn("secret malformed output", client.calls[1][1])
 
-    def test_retries_source_range_after_json_parse_failure(self) -> None:
+    def test_falls_back_to_general_edit_after_source_range_json_parse_failure(self) -> None:
         client = SequenceJsonClient(
             [
                 JsonParseError("secret malformed output"),
-                source_range_response("text-0001", "정리한 문장"),
+                response("정리한 문장"),
             ]
         )
-        timeline = []
-        publisher = Mock()
-        publisher.publish.side_effect = lambda stage, message, data: timeline.append(stage)
-        complete = client.complete_json
-        def record_call(system_prompt, user_prompt):
-            timeline.append("model")
-            return complete(system_prompt, user_prompt)
-        client.complete_json = record_call
-        editor = ChatCompletionsMarkdownEditor(client, "system", event_publisher=publisher)  # type: ignore[arg-type]
+        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
         request = MarkdownEditRequest(
             instruction="문장을 자연스럽게 다듬어줘.",
             markdown="정리할 문장",
@@ -173,12 +165,11 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         result = editor.generate_edit(request)
 
         self.assertEqual(result.edit.replacement_markdown, "정리한 문장")
-        self.assertEqual(timeline, ["model", "agent.retrying", "model", "agent.evaluating", "model"])
-        retry_payload = json.loads(client.calls[1][1])
-        self.assertEqual(
-            retry_payload["contract_failures"],
-            ["model output must be a JSON object"],
-        )
+        # 원문 범위 편집이 실패하면 같은 방식으로 재시도하지 않고 일반 편집으로 넘긴다.
+        self.assertIn("segments", json.loads(client.calls[0][1]))
+        fallback_payload = json.loads(client.calls[1][1])
+        self.assertNotIn("segments", fallback_payload)
+        self.assertIn("editable_context", fallback_payload)
 
     def test_retries_markdown_create_after_json_parse_failure(self) -> None:
         client = SequenceJsonClient(
@@ -693,11 +684,11 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
 
         self.assertEqual(result.edit.replacement_markdown, "- [x] Open item\n- [x] Done item")
 
-    def test_retries_source_range_when_summary_is_missing(self) -> None:
+    def test_falls_back_to_general_edit_when_source_range_summary_is_missing(self) -> None:
         client = SequenceJsonClient(
             [
                 {"edits": [{"id": "text-0001", "replacement": "정리한 문장"}]},
-                source_range_response("text-0001", "정리한 문장"),
+                response("정리한 문장"),
             ]
         )
         editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
@@ -711,9 +702,8 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         result = editor.generate_edit(request)
 
         self.assertEqual(result.edit.replacement_markdown, "정리한 문장")
-        retry_failures = json.loads(client.calls[1][1])["contract_failures"]
-        self.assertIn("summary must be a string", retry_failures)
-        self.assertIn("summary must not be empty", retry_failures)
+        self.assertEqual(len(client.calls), 2)
+        self.assertNotIn("segments", json.loads(client.calls[1][1]))
 
     def test_structure_conversion_receives_only_selected_markdown(self) -> None:
         client = SequenceJsonClient(
@@ -1202,11 +1192,11 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         self.assertNotIn("replacement_markdown", client.calls[0][1])
         self.assertTrue(result.edit.replacement_markdown.startswith("---\ntitle: 배포 가이드\n---"))
 
-    def test_retries_source_range_edit_with_contract_failures(self) -> None:
+    def test_falls_back_to_general_edit_after_source_range_contract_failure(self) -> None:
         client = SequenceJsonClient(
             [
                 source_range_response("text-9999", "잘못된 범위"),
-                source_range_response("text-0001", "배포 전에 테스트한다."),
+                response("배포 전에 테스트한다."),
             ]
         )
         editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
@@ -1221,8 +1211,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
 
         self.assertEqual(result.edit.replacement_markdown, "배포 전에 테스트한다.")
         self.assertEqual(len(client.calls), 2)
-        retry_payload = json.loads(client.calls[1][1])
-        self.assertIn("unknown source range segment id", retry_payload["contract_failures"][0])
+        self.assertNotIn("segments", json.loads(client.calls[1][1]))
 
     def test_retries_once_with_contract_failures(self) -> None:
         client = SequenceJsonClient(
