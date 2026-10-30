@@ -8,6 +8,9 @@ from app.modules.markdown_edit.domain.entities import GeneratedMarkdownDocument,
 
 
 PROTECTED_EDIT_GOALS = {"cleanup", "style_change", "shorten"}
+# 번역은 글자를 바꾸는 편집이라 표·링크 글자는 번역하고, 코드·수식처럼 번역하면 안 되는 조각만 보호한다.
+CODE_PROTECTED_EDIT_GOALS = {"translate"}
+CODE_FRAGMENT_KINDS = {"frontmatter", "code_fence", "indented_code", "display_math", "inline_code"}
 TASK_LIST_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PLAIN_TEXT_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PRESERVE_WORDS = ("유지", "보존", "그대로", "preserve", "keep", "unchanged")
@@ -88,8 +91,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         return ProtectedMarkdown(markdown=request.markdown, fragments=())
 
     preserves_structured_markdown = request.edit_goal in PROTECTED_EDIT_GOALS
+    preserves_code = preserves_structured_markdown or request.edit_goal in CODE_PROTECTED_EDIT_GOALS
     preserves_task_markers = request.edit_goal in TASK_LIST_EDIT_GOALS
-    if (not preserves_structured_markdown and not preserves_task_markers) or _explicit_structure_change(
+    if (not preserves_code and not preserves_task_markers) or _explicit_structure_change(
         request.instruction
     ):
         return ProtectedMarkdown(markdown=request.markdown, fragments=())
@@ -113,7 +117,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         ("link", r"(?<!!)\[[^\]\n]+\]\([^\)\n]+\)"),
         ("footnote_definition", r"(?m)^\[\^[^\]\n]+\]:[^\n]*(?:\r?\n(?: {2,}|\t)[^\n]*)*"),
         ("divider", r"(?m)^(?:---|\*\*\*)$"),
-    ) if preserves_structured_markdown else ()
+    ) if preserves_code else ()
+    if not preserves_structured_markdown:
+        patterns = tuple(item for item in patterns if item[0] in CODE_FRAGMENT_KINDS)
     if preserves_task_markers:
         patterns += (("task_list_marker", TASK_LIST_MARKER_PATTERN),)
     for kind, pattern in patterns:
@@ -123,6 +129,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
             markdown,
         )
     return ProtectedMarkdown(markdown=markdown, fragments=tuple(fragments))
+
+
+LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 
 
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
@@ -140,9 +149,11 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
 
     if request.edit_operation == "replace" and request.edit_goal in PROTECTED_EDIT_GOALS:
         failures.extend(_protected_content_failures(request.markdown, replacement))
+    if request.edit_operation == "replace" and request.edit_goal in PROTECTED_EDIT_GOALS | CODE_PROTECTED_EDIT_GOALS:
         failures.extend(_protected_fragment_failures(request, replacement))
 
-    if request.edit_goal == "shorten":
+    # 줄이기 규칙은 기존 내용을 줄여 바꿀 때만 쓴다. 요약을 덧붙이는 insert_after는 원문 길이·고정어와 비교하지 않는다.
+    if request.edit_goal == "shorten" and request.edit_operation == "replace":
         failures.extend(_shortening_failures(request.markdown, instruction, replacement))
     if request.edit_operation == "insert_after":
         failures.extend(_insert_after_repeat_failures(request.markdown, replacement))
@@ -154,17 +165,19 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
 
 def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, item_lines: list[str]) -> list[str]:
     failures: list[str] = []
+    # 목록 형식은 목록 항목 줄에만 요구한다. 제목·도입 문장·굵은 소제목 같은 목록 밖 줄은 둘 수 있다.
+    list_lines = [line for line in item_lines if LIST_ITEM_PATTERN.match(line)]
     if request.edit_goal == "checklist":
-        if not item_lines or not all(re.match(r"^- \[ \] ", line) for line in item_lines):
+        if not list_lines or not all(re.match(r"^\s*- \[ \] ", line) for line in list_lines):
             failures.append("checklist items must all start with `- [ ] `")
     if request.edit_operation == "insert_after":
         source_heading = next(iter(_atx_heading_lines(request.markdown)), "")
         if source_heading and source_heading in _atx_heading_lines(replacement):
             failures.append("insert_after output must not repeat the current section heading")
     if request.edit_goal == "bullet_list":
-        if not item_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in item_lines):
+        if not list_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in list_lines):
             failures.append("bullet list items must use plain bullet markers")
-        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in item_lines):
+        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in list_lines):
             failures.append("plain bullet list must not contain checkboxes")
     return failures
 
