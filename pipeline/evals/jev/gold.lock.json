@@ -11,7 +11,7 @@
    "cases": 100
   },
   "concept.json": {
-   "sha256": "87a2fcf2659ff39093e228d6f0f75b44a9db5f0954db1f23fcb38db5c874169a",
+   "sha256": "998ff80c76124010ca5e158b0c44dc4ba57c1596b46db837b0b0698d20a1fe42",
    "cases": 88
   },
   "corpus": {
@@ -88,6 +88,12 @@
    "file": "concept.json",
    "change": "dist-rel-05에 허용 답 keep_new 추가(기대 답 link_to on-call은 유지)",
    "reason": "incident-commander와 on-call의 정의는 서로를 언급하지 않고 같은 인시던트 대응 흐름에만 속한다. 같은 흐름·주제만 공유하면 연결하지 않는 판정 규칙(#168)과 맞춘다. 정답만 두면 평가가 같은 흐름 개념을 잇는 쪽으로 규칙을 되돌리게 만든다."
+  },
+  {
+   "date": "2026-10-31",
+   "file": "concept.json",
+   "change": "dist-unrel-05 허용 답 link_to deployment의 also_link에서 형제 개념 replicaset, statefulset 제외",
+   "reason": "replicaset, statefulset은 deployment와 같은 상위 개념(워크로드 리소스) 아래의 형제다. 형제는 연결하지 않는 판정 규칙(#168)과 맞춘다."
   }
  ]
 }
