@@ -1019,6 +1019,12 @@ def run_pipeline(
             normalized,
             existing_source_artifact,
         )
+        # 기존 원본 산출물의 핵심 개념도 합친 근거로 다시 검증한다. 합치면서 강등이 되돌려지지 않게 한다.
+        normalized, reingest_demoted = demote_unsupported_core_concepts(normalized)
+        if reingest_demoted:
+            normalized.setdefault("warnings", []).append(
+                f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림(재편입): {', '.join(reingest_demoted)}"
+            )
     if args.save_debug_json:
         write_json(out / "normalized.json", normalized)
         if generation_evaluations:

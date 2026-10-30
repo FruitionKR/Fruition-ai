@@ -5,7 +5,6 @@ from copy import deepcopy
 from typing import Any
 
 from app.modules.wiki_generation.application.models import GenerationEvaluation
-from app.modules.wiki_generation.domain.text_utils import slugify
 
 
 def apply_generation_evaluation_guards(
@@ -15,6 +14,7 @@ def apply_generation_evaluation_guards(
 ) -> None:
     # 코드 검증 문제만 남은 평가를 나중에 풀어 줄 때 평가자 자신의 판정으로 되돌린다.
     evaluation.setdefault("evaluator_passed", bool(evaluation.get("passed")))
+    evaluation.setdefault("evaluator_issues", deepcopy(evaluation.get("issues", [])))
     if not evaluation.get("passed"):
         evaluation["retry_recommended"] = True
     _apply_reference_guards(evaluation, normalized, source_block_ids)
@@ -55,32 +55,35 @@ def apply_generation_evaluation_guards(
 
 def unsupported_core_concept_slugs(normalized: dict[str, Any]) -> list[str]:
     """뒷받침하는 근거 주장이 하나도 없는 핵심 개념. 평가 기준상 핵심 개념이 될 수 없다."""
+    # 제목·별칭으로 쓴 근거 힌트는 정규화가 개념 slug로 바꿔 두므로, 근거를 붙이는 곳과 같게 slug만 본다.
     supported = {str(slug) for item in normalized.get("evidence_units", []) for slug in item.get("related_concept_slugs", [])}
-    # 근거 힌트는 개념의 제목·별칭으로 쓰일 수 있다(slugify만 거친 값이다).
     return [
         str(concept["slug"])
         for concept in normalized.get("concept_ledger", [])
-        if concept.get("slug")
-        and not {str(concept["slug"]), *(slugify(name) for name in [concept.get("title"), *(concept.get("aliases") or [])] if name)} & supported
+        if concept.get("slug") and str(concept["slug"]) not in supported
     ]
 
 
 def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
     """섹션 후보로 내려 해결된 근거 없음 문제를 마지막 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
     demoted_slugs = set(demoted)
-    issues = [
-        issue
-        for issue in evaluation.get("issues", [])
-        if not (
+
+    def resolved(issue: dict[str, Any]) -> bool:
+        return (
             issue.get("type") == "section_or_mention_should_not_be_core"
-            and issue.get("target")
+            and bool(issue.get("target"))
             and set(map(str, issue["target"])) <= demoted_slugs
         )
-    ]
+
+    issues = [issue for issue in evaluation.get("issues", []) if not resolved(issue)]
     if len(issues) == len(evaluation.get("issues", [])):
         return
     evaluation["issues"] = issues
-    if not issues and evaluation.get("evaluator_passed"):
+    evaluation["retry_feedback"] = " ".join(_unique([str(issue["feedback"]) for issue in issues if issue.get("feedback")]))
+    # 평가자가 합격했거나, 평가자가 올린 문제가 모두 강등으로 해결됐으면 합격으로 되돌린다.
+    evaluator_issues = evaluation.get("evaluator_issues", [])
+    evaluator_resolved = bool(evaluator_issues) and all(resolved(issue) for issue in evaluator_issues)
+    if not issues and (evaluation.get("evaluator_passed") or evaluator_resolved):
         evaluation["passed"] = True
         evaluation["retry_recommended"] = False
 

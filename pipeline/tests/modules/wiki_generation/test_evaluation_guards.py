@@ -403,13 +403,32 @@ class EvaluationGuardsTest(unittest.TestCase):
 
     def test_evidence_hint_using_title_or_alias_supports_core_concept(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import unsupported_core_concept_slugs
+        from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+        from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
 
-        normalized = {
-            "concept_ledger": [{"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"]}],
-            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["rag"]}],
+        note = {
+            "chunk_id": "c1",
+            "core_concepts": [{"title": "검색 증강 생성", "slug_hint": "retrieval-augmented-generation", "aliases": ["RAG"], "definition": "정의", "evidence_block_ids": ["B0001"]}],
+            "evidence_claims": [{"claim": "근거", "anchor_block_ids": ["B0001"], "related_concept_hints": ["rag"]}],
         }
+        normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), [SourceBlock("d", "B0001", "B0001", "RAG", 1, 1)]).normalize_notes([note])
 
+        self.assertEqual(normalized["evidence_units"][0]["related_concept_slugs"], ["retrieval-augmented-generation"])
+        self.assertEqual(normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0001"])
         self.assertEqual(unsupported_core_concept_slugs(normalized), [])
+
+    def test_demotion_restores_pass_when_evaluator_raised_only_that_issue(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues
+
+        issue = {"type": "section_or_mention_should_not_be_core", "target": ["unsupported"], "feedback": "낮추세요"}
+        evaluation = {"passed": False, "retry_recommended": True, "scores": {"overall": 0.7}, "issues": [issue], "retry_feedback": "낮추세요"}
+        normalized = {"concept_ledger": [{"slug": "unsupported", "title": "U", "anchor_reference_ids": ["B0001"]}], "evidence_units": []}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+
+        clear_resolved_core_concept_issues(evaluation, ["unsupported"])
+
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual((evaluation["issues"], evaluation["retry_feedback"]), ([], ""))
 
     def test_demotion_clears_its_issue_and_restores_evaluator_pass(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues
