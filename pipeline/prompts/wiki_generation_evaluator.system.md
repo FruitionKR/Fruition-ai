@@ -45,6 +45,12 @@ Diagnostic issue types:
 - observation_missing_ref
 - semantic_coverage_gap
 - invalid_ref
+- unfaithful_claim
+
+Fidelity check:
+- If a generated item drops or changes a condition, exception, scope limit, or modality stated in its source blocks,
+  or states a cause, reason, or consequence the source blocks do not state, add a `warnings` entry of type
+  unfaithful_claim with the item as target. Do not put it in `issues`.
 
 Issue contract:
 - Put in `issues` only high severity problems that must be corrected before acceptance:

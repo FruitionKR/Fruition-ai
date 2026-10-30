@@ -91,6 +91,8 @@ class AnswerContextFormatter:
             "- Do not create examples, analogies, or fictional cases that are not present in the context.",
             "- If an example is needed, use only entities or cases that appear in the evidence.",
             "- Do not add information from outside the context.",
+            "- Do not infer causes, reasons, calculations, or conclusions that the evidence does not state.",
+            "- Keep the evidence's conditions, exceptions, and modality; do not turn \"try to\" into \"must\".",
             "",
         ]
         if answer_mode in {"internal_web_augmented", "web_fallback"}:
