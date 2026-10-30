@@ -182,6 +182,27 @@ class LangGraphWikiGenerationEvaluatorTest(unittest.TestCase):
         self.assertEqual(normalized, {"attempt": 1})
         self.assertEqual([item.get("selected_for_output") for item in evaluations], [True, None])
 
+    def test_best_attempt_keeps_repaired_result_when_reevaluation_scores_lower(self) -> None:
+        failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": []}
+        graph, _, _ = self.build_graph(
+            [
+                {**failing, "scores": {"overall": 0.74}},
+                {**failing, "scores": {"overall": 0.6}},
+                {**failing, "scores": {"overall": 0.5}},
+                {**failing, "scores": {"overall": 0.4}},
+            ],
+            operations=["removed broken observation"],
+        )
+
+        _, normalized, _ = graph.run(
+            semantic_system_prompt="기본 prompt",
+            source_context=None,
+            evaluation_enabled=True,
+            max_attempts=2,
+        )
+
+        self.assertEqual(normalized, {"attempt": 1, "repaired": True})
+
     def test_prefers_later_attempt_on_equal_score(self) -> None:
         failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": [], "scores": {"overall": 0.5}}
         graph, _, _ = self.build_graph([dict(failing), dict(failing)])

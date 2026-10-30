@@ -236,11 +236,16 @@ class LangGraphWikiGenerationEvaluator:
             if repair_operations
             else state["normalized"]
         )
-        return {
+        result: WikiGenerationEvaluatorState = {
             "notes": notes,
             "normalized": normalized,
             "repair_operations": repair_operations,
         }
+        best = state.get("best_attempt")
+        if repair_operations and best is not None and best["index"] == len(state["evaluations"]) - 1:
+            # repair는 코드 검증이 지적한 항목을 지우는 결정적 정리라, 같은 시도의 최고 결과도 정리된 쪽으로 둔다.
+            result["best_attempt"] = {**best, "notes": notes, "normalized": normalized}
+        return result
 
     def _reevaluate(self, state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluatorState:
         evaluation = self.evaluator.evaluate(state["normalized"])
