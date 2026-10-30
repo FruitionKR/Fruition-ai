@@ -600,10 +600,11 @@ def test_lint_materialize_keeps_concurrent_ingest_updates(monkeypatch) -> None:
 
 ### Evidence Claims
 - claim_001: 기존 근거 [doc-1:B0001]
+- claim_003: 다른 문서 근거 [doc-3:B0001]
 
 ### Promotion
 status: candidate
-source_refs: [doc-1]
+source_refs: [doc-1, doc-3]
 """
     }
     concept_indexes = iter(({}, {"shared": "page-shared"}))
@@ -847,6 +848,61 @@ source_refs: [doc_1]
     assert result["needs_review"] == ["stale-cluster"]
 
 
+def test_lint_promotes_only_candidates_with_evidence_from_multiple_documents(monkeypatch) -> None:
+    active_markdown = """# Active Meaning Clusters
+
+## cluster: single-doc
+
+### Evidence Claims
+- claim_001: 한 문서에만 나온 용어다. [doc_1:B0001]
+- claim_002: 같은 문서의 다른 근거다. [doc_1:B0002]
+
+### Promotion
+status: candidate
+source_refs: [doc_1]
+
+## cluster: multi-doc
+
+### Evidence Claims
+- claim_003: 첫 문서 근거다. [doc_1:B0003]
+- claim_004: 다른 문서 근거다. [doc_2:B0001]
+
+### Promotion
+status: candidate
+source_refs: [doc_1, doc_2]
+
+## cluster: concept-match
+
+### Evidence Claims
+- claim_005: 다른 문서의 핵심 개념과 같다. [doc_1:B0004]
+
+### Promotion
+status: candidate
+source_refs: [doc_1]
+target: concept:shared-concept
+"""
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda _path: active_markdown)
+    monkeypatch.setattr(repository, "_orphan_source_refs", lambda _refs: [])
+    monkeypatch.setattr(repository, "_list_reconciliation_candidates", lambda *_args: [])
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(repository, "connect", FakeConnection)
+
+    result = repository.lint_wiki_workspace("user_1", "workspace_1", write_log=False)
+
+    # 근거 문서가 하나뿐인 후보는 승격하지 않고 이유를 남긴다. 핵심 개념과 맞춘 후보는 편입 때 다른 문서를 확인했다.
+    assert result["promotion_candidates"] == ["multi-doc", "concept-match"]
+    assert {"cluster_id": "single-doc", "reason": "promotion candidate has evidence from a single source document"} in result[
+        "invalid_promotions"
+    ]
+
+
 def test_lint_does_not_block_claim_regenerated_by_latest_reingest(
     monkeypatch,
 ) -> None:
@@ -856,10 +912,11 @@ def test_lint_does_not_block_claim_regenerated_by_latest_reingest(
 
 ### Evidence Claims
 - claim_002: 수정 후 최신 주장이다. [doc_1:B0002]
+- claim_003: 다른 문서의 같은 주장이다. [doc_2:B0001]
 
 ### Promotion
 status: candidate
-source_refs: [doc_1]
+source_refs: [doc_1, doc_2]
 """
     monkeypatch.setattr(
         repository,
@@ -1107,10 +1164,11 @@ representative: {representative}
 
 ### Evidence Claims
 - claim_001: Orchid Lease는 공급 계약이다. [doc-1:B0001]
+- claim_002: Orchid Lease는 다른 계약서에도 나온다. [doc-2:B0001]
 
 ### Promotion
 status: candidate
-source_refs: [doc-1]
+source_refs: [doc-1, doc-2]
 """
 
     class Result:
