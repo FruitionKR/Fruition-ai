@@ -92,6 +92,17 @@ Return exactly JSON:
   "key_points": [
     {"text": string, "anchor_block_ids": [string]}
   ],
+  "core_concepts": [
+    {
+      "title": string,
+      "slug_hint": string,
+      "aliases": [string],
+      "tags": [string],
+      "definition": string,
+      "why_page_worthy": string,
+      "evidence_block_ids": [string]
+    }
+  ],
   "evidence_claims": [
     {
       "id": string,
@@ -114,17 +125,6 @@ Return exactly JSON:
   ],
   "categories": [
     {"name": string}
-  ],
-  "core_concepts": [
-    {
-      "title": string,
-      "slug_hint": string,
-      "aliases": [string],
-      "tags": [string],
-      "definition": string,
-      "why_page_worthy": string,
-      "evidence_block_ids": [string]
-    }
   ],
   "section_candidates": [
     {
