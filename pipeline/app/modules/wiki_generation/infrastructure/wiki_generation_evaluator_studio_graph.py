@@ -63,7 +63,7 @@ def prepare_retry(state: WikiGenerationEvaluatorState) -> WikiGenerationEvaluato
     retry_block_ids = generation_retry_block_ids(state["normalized"], state["evaluation"])
     result: WikiGenerationEvaluatorState = {
         "attempt": state["attempt"] + 1,
-        "prompt": generation_retry_prompt(state["semantic_system_prompt"], state["evaluation"]),
+        "prompt": generation_retry_prompt(state["semantic_system_prompt"], state["evaluations"]),
         "notes": [{"attempt": state["attempt"] + 1}],
         "retry_block_ids": retry_block_ids,
         "patch_applied": False,

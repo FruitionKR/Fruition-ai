@@ -45,6 +45,13 @@ EVALUATION_OMITTED_ITEM_KEYS = {
     "mention_reference_ids",
     "evidence_claim_ids",
 }
+# 평가자 프롬프트의 합격 점수. 높음 심각도 문제가 없고 이 점수를 넘으면 합격이다.
+PASS_SCORE_THRESHOLDS = {
+    "source_excerpt_fidelity": 4,
+    "concept_groundedness": 4,
+    "relation_faithfulness": 0.75,
+    "evidence_relevance": 0.75,
+}
 
 
 def evaluate_generation(
@@ -54,10 +61,11 @@ def evaluate_generation(
     document: Any,
     blocks: list[Any],
     normalized: dict[str, Any],
+    previous_requests: list[dict[str, Any]],
 ) -> GenerationEvaluation:
     windows = _block_windows(blocks, EVALUATION_WINDOW_CHARS)
     if len(windows) == 1:
-        evaluation = _evaluate_window(completion, evaluator_prompt, document, blocks, normalized)
+        evaluation = _evaluate_window(completion, evaluator_prompt, document, blocks, normalized, previous_requests)
     else:
         subsets = _normalized_by_window(normalized, windows)
         with ThreadPoolExecutor(max_workers=min(EVALUATION_MAX_WORKERS, len(windows))) as executor:
@@ -70,6 +78,7 @@ def evaluate_generation(
                     document,
                     window,
                     subset,
+                    previous_requests,
                 )
                 for window, subset in zip(windows, subsets, strict=True)
             ]
@@ -91,6 +100,7 @@ def _evaluate_window(
     document: Any,
     blocks: list[Any],
     normalized: dict[str, Any],
+    previous_requests: list[dict[str, Any]],
 ) -> GenerationEvaluation:
     payload = {
         "document": asdict(document),
@@ -110,13 +120,33 @@ def _evaluate_window(
             ],
             "warnings": normalized.get("warnings", []),
         },
+        "previous_requests": previous_requests,
     }
     evaluation: GenerationEvaluation = completion.complete_json(
         evaluator_prompt,
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
     _normalize_evaluation(evaluation)
+    _apply_blocking_rule(evaluation)
     return evaluation
+
+
+def _apply_blocking_rule(evaluation: GenerationEvaluation) -> None:
+    """중간·낮음 심각도 문제는 경고로 옮겨, 그것만으로는 불합격·재시도하지 않게 한다. 심각도가 없으면 막는 문제로 본다."""
+    blocking = [issue for issue in evaluation["issues"] if issue.get("severity") not in {"medium", "low"}]
+    if len(blocking) == len(evaluation["issues"]):
+        return
+    evaluation["warnings"] = [*evaluation["warnings"], *(issue for issue in evaluation["issues"] if issue not in blocking)]
+    evaluation["issues"] = blocking
+    # 평가자가 옮긴 문제 때문에 불합격시켰을 수 있어, 남은 문제가 없으면 점수 기준으로 다시 판정한다.
+    evaluation["passed"] = not blocking and all(
+        isinstance(evaluation["scores"].get(metric), int | float) and evaluation["scores"][metric] >= threshold
+        for metric, threshold in PASS_SCORE_THRESHOLDS.items()
+    )
+    evaluation["retry_recommended"] = not evaluation["passed"]
+    evaluation["retry_feedback"] = " ".join(
+        dict.fromkeys(str(issue["feedback"]) for issue in blocking if issue.get("feedback"))
+    )
 
 
 def _evaluation_item(item: Any) -> Any:

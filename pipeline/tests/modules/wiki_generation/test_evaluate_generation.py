@@ -16,6 +16,18 @@ class MalformedEvaluationCompletion:
         }
 
 
+class FixedCompletion:
+    def __init__(self, evaluation: dict) -> None:
+        self.evaluation = evaluation
+        self.payload: dict = {}
+
+    def complete_json(self, _system_prompt: str, user_prompt: str) -> dict:
+        import json
+
+        self.payload = json.loads(user_prompt)
+        return dict(self.evaluation)
+
+
 class MinimalEvaluationCompletion:
     def complete_json(self, _system_prompt: str, _user_prompt: str) -> dict:
         return {"passed": True}
@@ -43,6 +55,7 @@ class EvaluateGenerationTest(unittest.TestCase):
                 )
             ],
             normalized={"concept_ledger": [], "observations": []},
+            previous_requests=[],
         )
 
         self.assertEqual(evaluation["scores"], {"concept_groundedness": 0.5})
@@ -59,6 +72,7 @@ class EvaluateGenerationTest(unittest.TestCase):
             document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
             blocks=[],
             normalized={"concept_ledger": [], "observations": []},
+            previous_requests=[],
         )
 
         self.assertTrue(evaluation["passed"])
@@ -67,6 +81,27 @@ class EvaluateGenerationTest(unittest.TestCase):
         self.assertEqual(evaluation["issues"], [])
         self.assertEqual(evaluation["warnings"], [])
         self.assertEqual(evaluation["retry_feedback"], "")
+
+    def test_medium_issues_become_warnings_and_scores_decide_pass(self) -> None:
+        medium = {"type": "vague_umbrella_concept", "severity": "medium", "target": ["topic"], "feedback": "쪼개세요."}
+        passing_scores = {"source_excerpt_fidelity": 4, "concept_groundedness": 4, "relation_faithfulness": 0.8, "evidence_relevance": 0.8}
+        for scores, expected in ((passing_scores, True), ({**passing_scores, "evidence_relevance": 0.7}, False)):
+            with self.subTest(scores=scores):
+                completion = FixedCompletion({"scores": scores, "passed": False, "issues": [medium], "retry_feedback": "쪼개세요."})
+                evaluation = evaluate_generation(
+                    completion=completion,
+                    evaluator_prompt="evaluate",
+                    document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
+                    blocks=[],
+                    previous_requests=[{"attempt": 1, "type": "missing_ref", "target": ["O001"], "feedback": "근거"}],
+                    normalized={},
+                )
+
+                self.assertEqual(evaluation["passed"], expected)
+                self.assertEqual(evaluation["issues"], [])
+                self.assertEqual(evaluation["warnings"], [medium])
+                self.assertEqual(evaluation["retry_feedback"], "")
+                self.assertEqual(completion.payload["previous_requests"][0]["target"], ["O001"])
 
     def test_large_document_is_evaluated_by_block_windows_and_merged(self) -> None:
         completion = WindowRecordingCompletion()
@@ -88,6 +123,7 @@ class EvaluateGenerationTest(unittest.TestCase):
             document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
             blocks=blocks,
             normalized=normalized,
+            previous_requests=[],
         )
 
         self.assertEqual(len(completion.payloads), 2)
@@ -112,6 +148,7 @@ class EvaluateGenerationTest(unittest.TestCase):
             evaluator_prompt="evaluate",
             document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
             blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
+            previous_requests=[],
             normalized={
                 "semantic_notes": [{
                     "chunk_id": "chunk_0001",
@@ -139,6 +176,7 @@ class EvaluateGenerationTest(unittest.TestCase):
             evaluator_prompt="evaluate",
             document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
             blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
+            previous_requests=[],
             normalized={
                 "evidence_units": [{
                     "evidence_id": "ev_0001",
@@ -177,6 +215,7 @@ class EvaluateGenerationTest(unittest.TestCase):
             document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
             blocks=[SourceBlock("doc-1", "B0001", "B0001", "근거", 1, 1)],
             normalized={},
+            previous_requests=[],
         )
 
         self.assertEqual(len(completion.payloads), 1)

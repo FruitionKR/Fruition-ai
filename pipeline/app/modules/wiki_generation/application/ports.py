@@ -61,7 +61,7 @@ class SemanticNormalizerPort(Protocol):
 
 
 class GenerationEvaluatorPort(Protocol):
-    def evaluate(self, normalized: JsonDict) -> GenerationEvaluation:
+    def evaluate(self, normalized: JsonDict, previous_requests: list[JsonDict]) -> GenerationEvaluation:
         ...
 
 

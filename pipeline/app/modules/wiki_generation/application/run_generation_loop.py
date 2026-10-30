@@ -36,15 +36,40 @@ def generation_evaluation_finished(
 
 def generation_retry_prompt(
     semantic_system_prompt: str,
-    evaluation: GenerationEvaluation,
+    evaluations: list[GenerationEvaluation],
 ) -> str:
-    feedback = str(evaluation.get("retry_feedback") or "")
+    """마지막 평가 피드백과, 재생성하면서 되돌리지 않도록 앞선 시도의 요청을 함께 보낸다."""
+    feedback = str(evaluations[-1].get("retry_feedback") or "")
+    earlier = previous_evaluation_requests(evaluations[:-1])
+    earlier_text = (
+        "\nEarlier evaluator requests (already applied in previous attempts; keep these fixes):\n"
+        + "\n".join(f"- {request['feedback']}" for request in earlier)
+        if earlier
+        else ""
+    )
     return (
         semantic_system_prompt
         + "\n\nEvaluator feedback for retry:\n"
         + feedback
+        + earlier_text
         + "\nApply this feedback strictly. Keep source anchors exact. Return the same JSON schema."
     )
+
+
+def previous_evaluation_requests(evaluations: list[GenerationEvaluation]) -> list[JsonDict]:
+    """앞선 평가가 요청한 수정. 평가자가 같은 대상에 반대 요청을 내지 않도록 다음 평가에 넘긴다."""
+    requests: dict[tuple[str, tuple[str, ...]], JsonDict] = {}
+    for attempt, evaluation in enumerate(evaluations, start=1):
+        for issue in evaluation.get("issues") or []:
+            feedback = str(issue.get("feedback") or "").strip()
+            if not feedback:
+                continue
+            target = tuple(str(item) for item in issue.get("target") or [])
+            requests.setdefault(
+                (str(issue.get("type")), target),
+                {"attempt": attempt, "type": issue.get("type"), "target": list(target), "feedback": feedback},
+            )
+    return list(requests.values())
 
 
 def generation_retry_block_ids(

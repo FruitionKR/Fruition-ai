@@ -240,13 +240,14 @@ class GenerationEvaluatorAdapter:
         self.document = document
         self.blocks = blocks
 
-    def evaluate(self, normalized: dict[str, Any]) -> GenerationEvaluation:
+    def evaluate(self, normalized: dict[str, Any], previous_requests: list[dict[str, Any]]) -> GenerationEvaluation:
         return evaluate_generation(
             completion=self.completion,
             evaluator_prompt=self.evaluator_prompt,
             document=self.document,
             blocks=self.blocks,
             normalized=normalized,
+            previous_requests=previous_requests,
         )
 
 
