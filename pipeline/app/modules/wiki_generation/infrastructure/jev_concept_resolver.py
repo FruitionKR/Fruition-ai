@@ -3,7 +3,7 @@
 - 후보: 다른 incoming 개념과 기존 개념을 제목·별칭·정의로 BGE-M3 0.75 + BM25 0.25 점수 상위 100개
 - 이름 일치: 제목이나 별칭이 후보의 slug·제목·별칭과 slug로 같으면 Jev 없이 병합한다.
 - 판정: 판정 규칙은 state에 한 번만 두고, 후보마다 질문 하나(same/related/unrelated)를 요청 토큰 한도로 묶어 보낸다.
-- 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없고 related가 있으면 related 후보 모두와 연결한다.
+- 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없으면 P(related)가 0.9 이상인 related 후보 모두와 연결한다.
 정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않는다. 이름 일치 병합은 정의 없이도 한다. Jev는 missing hint를
 판정하지 않으므로 hint가 있으면 기존 LLM 결과의 hint_resolutions만 쓴다. Jev나 임베딩을 쓸 수 없으면 기존
 LLM 결과를 그대로 쓴다.
@@ -41,16 +41,20 @@ from app.modules.wiki_generation.domain.text_utils import name_key
 CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
     "and definitions. same: the same concept under another name, such as a synonym, translation, abbreviation, "
-    "or spelling variant, without losing distinct meaning or scope. related: a distinct concept that is clearly "
-    "related: broader, narrower, part, stage, method, variant, a same-kind sibling under the same broader concept, "
-    "or a directly dependent concept. unrelated: an unrelated concept, or one that shares only a domain or a "
-    "source. Return no explanation."
+    "or spelling variant, without losing distinct meaning or scope. related: a distinct concept with a direct "
+    "relation stated by the definitions: one is a kind, part, stage, method, or variant of the other; both are "
+    "kinds of the same specific broader concept; or one cannot be explained without the other. unrelated: "
+    "anything else, including concepts that only share a field, a document, a workflow, or a topic, or that "
+    "connect only through a third concept. When unsure between related and unrelated, choose unrelated. "
+    "Return no explanation."
 )
 PAIR_CRITERIA = {
     "same": "Same concept",
-    "related": "Distinct but clearly related concept",
-    "unrelated": "Unrelated, or only the same domain or source",
+    "related": "Distinct concept with a direct relation stated by the definitions",
+    "unrelated": "Unrelated, or only the same field, document, workflow, or topic",
 }
+# related는 이 확률 이상일 때만 연결한다. 같은 분야 개념을 넓게 related로 고르는 경향이 있어서다.
+RELATED_MIN_PROBABILITY = 0.9
 CANDIDATE_LIMIT = 100
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
@@ -352,7 +356,10 @@ def _decide(slug: str, answers: dict[str, JsonDict]) -> JsonDict | None:
     if same:
         return _merge(slug, min(same, key=lambda target: (-same[target], target)))
     related = {
-        target: choice_probability(answer, "related") for target, answer in answers.items() if answer["choice"] == "related"
+        target: probability
+        for target, answer in answers.items()
+        if answer["choice"] == "related"
+        and (probability := choice_probability(answer, "related")) >= RELATED_MIN_PROBABILITY
     }
     if not related:
         return None
