@@ -193,20 +193,12 @@ class QueryPageScorer:
 
     def _extract_aliases(self, markdown: str) -> list[str]:
         """개념 페이지 `## Aliases` 섹션의 쉼표 목록을 읽는다. 편입이 쓰고 갱신하는 형식이다."""
-        aliases: list[str] = []
-        in_aliases = False
-        for line in markdown.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("## "):
-                in_aliases = stripped.casefold() == "## aliases"
-                continue
-            if in_aliases:
-                aliases.extend(
-                    item.strip()
-                    for item in stripped.removeprefix("- ").split(",")
-                    if item.strip() not in {"", "-"}
-                )
-        return aliases
+        return [
+            item.strip()
+            for line in self._markdown_sections(markdown).get("aliases", "").splitlines()
+            for item in line.strip().removeprefix("- ").split(",")
+            if item.strip() not in {"", "-"}
+        ]
 
     def _normalize_name(self, value: str) -> str:
         normalized = value.lower().strip()
