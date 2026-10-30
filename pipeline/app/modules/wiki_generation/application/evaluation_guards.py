@@ -57,15 +57,45 @@ def apply_generation_evaluation_guards(
         evaluation["retry_feedback"] = " ".join(_unique(feedbacks))
 
 
-def unsupported_core_concept_slugs(normalized: dict[str, Any]) -> list[str]:
-    """뒷받침하는 근거 주장이 하나도 없는 핵심 개념. 평가 기준상 핵심 개념이 될 수 없다."""
+# 번호 붙은 서지 항목의 시작: "[7] Christopher Clark and ...," 꼴.
+_REFERENCE_ENTRY = re.compile(r"\[\d{1,3}\]\s+[A-Z][\w-]+(?:\s+[A-Z]\.)*\s+[A-Z]?[\w-]+,")
+# 참고문헌 블록은 1,000자에 서지 항목이 1.8~3.2개, 본문에 참고문헌 시작이 섞인 블록은 1.3개였다(Jev 평가 corpus).
+_REFERENCE_ENTRIES_PER_1K_CHARS = 1.5
+
+
+def reference_list_refs(blocks: list[Any]) -> set[str]:
+    """서지 항목이 몰린 참고문헌 블록의 ref. 서지 정보만으로는 핵심 개념을 뒷받침하지 못한다."""
+    # ponytail: "[n] 저자," 번호 형식만 본다. 저자-연도·각주 형식 참고문헌은 못 잡는다.
+    refs: set[str] = set()
+    for block in blocks:
+        entries = len(_REFERENCE_ENTRY.findall(block.text))
+        if entries >= 2 and entries * 1000 >= _REFERENCE_ENTRIES_PER_1K_CHARS * len(block.text):
+            refs.update({block.block_id, block.source_reference_id})
+    return refs
+
+
+def unsupported_core_concept_slugs(normalized: dict[str, Any], reference_refs: set[str] = frozenset()) -> list[str]:
+    """뒷받침하는 근거 주장이 하나도 없는 핵심 개념. 평가 기준상 핵심 개념이 될 수 없다.
+
+    참고문헌 블록에만 걸린 근거 주장은 서지 정보라 뒷받침으로 치지 않는다.
+    """
     # 제목·별칭으로 쓴 근거 힌트는 정규화가 개념 slug로 바꿔 두므로, 근거를 붙이는 곳과 같게 slug만 본다.
-    supported = {str(slug) for item in normalized.get("evidence_units", []) for slug in item.get("related_concept_slugs", [])}
+    supported = {
+        str(slug)
+        for item in normalized.get("evidence_units", [])
+        if not _only_reference_list(item, reference_refs)
+        for slug in item.get("related_concept_slugs", [])
+    }
     return [
         str(concept["slug"])
         for concept in normalized.get("concept_ledger", [])
         if concept.get("slug") and str(concept["slug"]) not in supported
     ]
+
+
+def _only_reference_list(item: dict[str, Any], reference_refs: set[str]) -> bool:
+    refs = {str(ref).split(":", 1)[-1] for ref in item.get("anchor_reference_ids", [])}
+    return bool(refs) and refs <= reference_refs
 
 
 def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
@@ -220,9 +250,11 @@ def clear_resolved_number_issues(evaluation: GenerationEvaluation, normalized: d
     )
 
 
-def demote_unsupported_core_concepts(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """재시도 뒤에도 근거 주장이 없는 핵심 개념을 섹션 후보로 내린다. 개념 페이지 대신 클러스터 판정으로 간다."""
-    slugs = set(unsupported_core_concept_slugs(normalized))
+def demote_unsupported_core_concepts(
+    normalized: dict[str, Any], reference_refs: set[str] = frozenset()
+) -> tuple[dict[str, Any], list[str]]:
+    """재시도 뒤에도 근거 주장이 없는(참고문헌에만 있는) 핵심 개념을 섹션 후보로 내린다. 개념 페이지 대신 클러스터 판정으로 간다."""
+    slugs = set(unsupported_core_concept_slugs(normalized, reference_refs))
     if not slugs:
         return normalized, []
     sections = {str(item.get("slug")): dict(item) for item in normalized.get("section_candidates", [])}

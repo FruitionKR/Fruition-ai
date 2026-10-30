@@ -428,6 +428,37 @@ class EvaluationGuardsTest(unittest.TestCase):
         )
         self.assertEqual(demote_unsupported_core_concepts(demoted_normalized)[1], [])
 
+    def test_demotes_core_concept_supported_only_by_reference_list(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts, reference_list_refs
+        from app.modules.wiki_generation.domain.entities import SourceBlock
+
+        references = (
+            "[7] Christopher Clark and Matt Gardner. Simple and effective multi-paragraph reading comprehension. In ACL, 2018. "
+            "[8] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. BERT: Pre-training of deep bidirectional "
+            "transformers. In NAACL, 2019. [9] Angela Fan, Mike Lewis, and Yann Dauphin. Hierarchical neural story generation. 2018."
+        )
+        blocks = [
+            SourceBlock("d", "B0001", "ref_d_b0001", "RAG는 검색한 문서를 생성 모델에 함께 넣는다 [8].", 1, 1),
+            SourceBlock("d", "B0002", "ref_d_b0002", references, 2, 2),
+        ]
+        normalized = {
+            "concept_ledger": [
+                {"slug": "rag", "title": "RAG", "definition": "정의", "anchor_reference_ids": ["ref_d_b0001"]},
+                {"slug": "bert", "title": "BERT", "definition": "정의", "anchor_reference_ids": ["ref_d_b0002"]},
+            ],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["rag"], "anchor_reference_ids": ["ref_d_b0001"]},
+                {"evidence_id": "ev_0002", "claim": "2019년 NAACL 발표", "related_concept_slugs": ["bert"], "anchor_reference_ids": ["d:ref_d_b0002"]},
+            ],
+        }
+
+        refs = reference_list_refs(blocks)
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized, refs)
+
+        self.assertEqual(refs, {"B0002", "ref_d_b0002"})
+        self.assertEqual(demoted, ["bert"])
+        self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["rag"])
+
     def test_evidence_hint_using_title_or_alias_supports_core_concept(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import unsupported_core_concept_slugs
         from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
