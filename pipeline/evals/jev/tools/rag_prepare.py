@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from common import EVAL_DIR, HAIKU, results_dir, verify_gold  # noqa: E402
@@ -64,7 +65,7 @@ def jwt_subject(token: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="rag", help="결과 폴더 이름(편입 방식 전후 비교용)")
-    parser.add_argument("--resume", action="store_true", help="같은 이름의 workspace.json에서 끝난 문서는 건너뛰고 이어서 편입한다")
+    parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
     args = parser.parse_args()
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")
@@ -95,9 +96,9 @@ def main() -> None:
 
     evaluate_generation.EVALUATION_WINDOW_CHARS = 40_000
 
-    out = results_dir(args.name)
+    out = Path(args.resume).resolve().parent if args.resume else results_dir(args.name)
     if args.resume:
-        state = json.loads((out / "workspace.json").read_text())
+        state = json.loads(Path(args.resume).read_text())
         email, password, ws, user_id = state["email"], "jev-eval-password", state["workspace_id"], state["user_id"]
     else:
         email, password = signup()
@@ -106,6 +107,8 @@ def main() -> None:
         user_id = jwt_subject(token())
         ws = call("POST", f"{ACCESS}/api/workspaces", {"name": "Jev 켬/끔 RAG 평가"}, token(), expected=(201,))["id"]
         state = {"workspace_id": ws, "user_id": user_id, "email": email, "documents": []}
+        # 첫 문서에서 실패해도 만든 계정·워크스페이스로 이어갈 수 있게 바로 남긴다.
+        (out / "workspace.json").write_text(json.dumps(state, ensure_ascii=False, indent=1))
     done = {doc["source_id"] for doc in state["documents"]}
     for i, path in enumerate(sorted((EVAL_DIR / "corpus").glob("*.md"))):
         if path.stem in done:

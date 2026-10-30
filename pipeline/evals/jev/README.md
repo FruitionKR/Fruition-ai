@@ -16,6 +16,21 @@
 - 정답을 바꿀 때는 기대 답을 그대로 두고 허용 답만 더한다. 바꾼 사례와 이유를 `revisions`에 남기고 sha256을 다시 계산한다.
 - 프롬프트에 평가 문장이나 평가셋 예시를 넣지 않는다.
 
+## 원문 출처
+
+평가용으로 발췌·변환한 공개 문서다. 일부(통계 보도자료의 시점, 법령 개정일 등)는 평가를 위해 고쳤다. 원문 라이선스를 따르며, 배포 전에 다시 확인한다.
+
+| 파일 | 출처 | 라이선스 |
+|---|---|---|
+| `en-postgres-mvcc.md` | PostgreSQL 문서 13장 Concurrency Control | PostgreSQL License |
+| `en-rag-paper.md` | Lewis et al., Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks (arXiv:2005.11401) | 저자 권리(arXiv 배포) |
+| `en-sre-postmortem.md` | Google, Site Reliability Engineering 15장 Postmortem Culture | CC BY-NC-ND 4.0 |
+| `ko-ai-ethics.md` | 관계부처 합동, 사람이 중심이 되는 인공지능 윤리기준(2020) | 공공저작물 |
+| `ko-employment-2026-09.md` | 국가데이터처 경제활동인구조사 보도자료 형식 | 공공저작물 |
+| `ko-k8s-deployment.md`, `ko-k8s-pod.md` | Kubernetes 한국어 문서 | CC BY 4.0 |
+| `ko-labor-standards-ch4.md`, `ko-privacy-act-excerpt.md` | 근로기준법 제4장, 개인정보 보호법 발췌 | 법령(저작권법 제7조 보호 제외) |
+| `ko-wiki-ir.md`, `ko-wiki-rag.md` | 한국어 위키백과 '정보 검색', '검색증강생성' | CC BY-SA 4.0 |
+
 ## 실행
 
 `pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. 답변·편입 모델은 Claude Haiku(`claude-haiku-4-5-20251001`)이고, 각 사례를 3회 반복한다.
@@ -38,7 +53,7 @@ python grade_rag.py ../results/<날짜>/rag/rows.jsonl              # Codex 채�
 python analyze_rag.py ../results/<날짜>/rag                       # 집계
 ```
 
-- `rag_prepare.py`는 `--resume`으로 끝난 문서를 건너뛰고 이어서 편입한다.
+- 편입이 끊기면 `python rag_prepare.py --resume ../results/<날짜>/rag/workspace.json`으로 같은 계정·워크스페이스에서 끝난 문서를 건너뛰고 이어서 편입한다. 결과도 그 폴더에 쓴다.
 - 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.
 
 ## 채점

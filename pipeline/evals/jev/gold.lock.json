@@ -1,6 +1,6 @@
 {
  "frozen_at": "2026-10-29",
- "note": "검수 페이지(K2YHXDB7z946bCiUSE4X5h) 검수 반영 후 확정. 이후 정답 변경 금지, 바꾸면 새 버전으로 다시 확정한다.",
+ "note": "검수 페이지(K2YHXDB7z946bCiUSE4X5h) 검수 반영 후 확정. 기대 답은 바꾸지 않는다. 결과 검토에서 타당한 답이 보이면 허용 답만 더하고 revisions에 사례와 이유를 남긴 뒤 sha256을 다시 계산한다.",
  "files": {
   "routing.jsonl": {
    "sha256": "66b1bd9d126dcc96a170ffea2cd971d6bccc8f036c209ce8ca7ff7361663cdbc",
