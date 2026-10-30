@@ -29,6 +29,10 @@ whole document as the target and appends the content after its last line; a whol
 target is the correct target there. For insert_after with destination target, the content
 is added after the end of the target section, so a request to add something "below" that
 section is satisfied there.
+For shortening or summarizing requests, leaving out details, conditions, examples, or
+sub-items is the expected effect, not a failure. Fail only when what remains is wrong or
+misleading, changes numbers or article numbers, or drops something the user explicitly
+asked to keep.
 Whitespace, spacing around links or punctuation, and quote or dash style that do not change
 meaning are formatting, not content; do not fail for them.
 Blank lines that only separate blocks are layout, not content. The application places

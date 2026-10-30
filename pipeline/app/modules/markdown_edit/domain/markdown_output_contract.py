@@ -8,6 +8,9 @@ from app.modules.markdown_edit.domain.entities import GeneratedMarkdownDocument,
 
 
 PROTECTED_EDIT_GOALS = {"cleanup", "style_change", "shorten"}
+# 번역은 글자를 바꾸는 편집이라 표·링크 글자는 번역하고, 코드·수식처럼 번역하면 안 되는 조각만 보호한다.
+CODE_PROTECTED_EDIT_GOALS = {"translate"}
+CODE_FRAGMENT_KINDS = {"frontmatter", "code_fence", "indented_code", "display_math", "inline_code"}
 TASK_LIST_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PLAIN_TEXT_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PRESERVE_WORDS = ("유지", "보존", "그대로", "preserve", "keep", "unchanged")
@@ -88,8 +91,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         return ProtectedMarkdown(markdown=request.markdown, fragments=())
 
     preserves_structured_markdown = request.edit_goal in PROTECTED_EDIT_GOALS
+    preserves_code = preserves_structured_markdown or request.edit_goal in CODE_PROTECTED_EDIT_GOALS
     preserves_task_markers = request.edit_goal in TASK_LIST_EDIT_GOALS
-    if (not preserves_structured_markdown and not preserves_task_markers) or _explicit_structure_change(
+    if (not preserves_code and not preserves_task_markers) or _explicit_structure_change(
         request.instruction
     ):
         return ProtectedMarkdown(markdown=request.markdown, fragments=())
@@ -113,7 +117,9 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         ("link", r"(?<!!)\[[^\]\n]+\]\([^\)\n]+\)"),
         ("footnote_definition", r"(?m)^\[\^[^\]\n]+\]:[^\n]*(?:\r?\n(?: {2,}|\t)[^\n]*)*"),
         ("divider", r"(?m)^(?:---|\*\*\*)$"),
-    ) if preserves_structured_markdown else ()
+    ) if preserves_code else ()
+    if not preserves_structured_markdown:
+        patterns = tuple(item for item in patterns if item[0] in CODE_FRAGMENT_KINDS)
     if preserves_task_markers:
         patterns += (("task_list_marker", TASK_LIST_MARKER_PATTERN),)
     for kind, pattern in patterns:
@@ -143,6 +149,7 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
 
     if request.edit_operation == "replace" and request.edit_goal in PROTECTED_EDIT_GOALS:
         failures.extend(_protected_content_failures(request.markdown, replacement))
+    if request.edit_operation == "replace" and request.edit_goal in PROTECTED_EDIT_GOALS | CODE_PROTECTED_EDIT_GOALS:
         failures.extend(_protected_fragment_failures(request, replacement))
 
     # 줄이기 규칙은 기존 내용을 줄여 바꿀 때만 쓴다. 요약을 덧붙이는 insert_after는 원문 길이·고정어와 비교하지 않는다.

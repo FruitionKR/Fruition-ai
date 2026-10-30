@@ -53,6 +53,23 @@ class MarkdownOutputContractTest(unittest.TestCase):
                 mixed = validate_markdown_output(request, converted + f"\n{wrong_marker}롤백 준비")
                 self.assertTrue([f for f in mixed if "list items" in f or "checklist items" in f])
 
+    def test_translation_protects_code_but_not_links_or_tables(self) -> None:
+        source = "설치는 `pip install fruition`으로 한다.\n\n```sql\nSELECT 1;\n```\n\n[설치 안내](/docs/install) 참고"
+        request = MarkdownEditRequest(
+            instruction="영어로 번역해줘.",
+            markdown=source,
+            target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=7),
+            edit_goal="translate",
+        )
+
+        kinds = {fragment.kind for fragment in protect_markdown(request).fragments}
+        translated = "Install with `pip install fruition`.\n\n```sql\nSELECT 1;\n```\n\nSee [installation guide](/docs/install)"
+        changed_code = translated.replace("SELECT 1;", "선택 1;")
+
+        self.assertEqual(kinds, {"inline_code", "code_fence"})
+        self.assertFalse([f for f in validate_markdown_output(request, translated) if f.startswith("protected")])
+        self.assertTrue([f for f in validate_markdown_output(request, changed_code) if f.startswith("protected code_fence")])
+
     def test_appended_summary_is_not_checked_as_shortening(self) -> None:
         source = "# 정보 검색\n\n1945년 버니바 부시가 아이디어를 대중화했다. 1992년 TREC가 시작되었다."
         request = MarkdownEditRequest(
