@@ -1,7 +1,7 @@
 """문서 편집 평가. 운영과 같은 편집 use case로 사례를 실행하고 결과에 코드 검사를 적용한다.
 
-사용: PYTHONPATH=<dev>/pipeline python run_edit.py [--limit N]
-- 편집 모델: Claude Haiku. 결과 판정(Codex)은 grade_edit.py가 한다.
+사용: PYTHONPATH=<dev>/pipeline python run_edit.py [--limit N] [--ids edit-01,edit-02] [--model provider:model]
+- 편집 모델: 기본 Claude Haiku. 결과 판정(Codex)은 grade_features.py가 한다.
 """
 import argparse
 import json
@@ -70,18 +70,23 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int)
     parser.add_argument("--name", default="edit", help="결과 폴더 이름(수정 전후 비교용)")
+    parser.add_argument("--ids", help="쉼표로 구분한 사례 id만 실행")
+    parser.add_argument("--model", default=":".join(HAIKU), help="provider:model (기본 Claude Haiku)")
     args = parser.parse_args()
     verify_gold()
     cases = json.loads((EVAL_DIR / "edit.json").read_text())
+    if args.ids:
+        cases = [case for case in cases if case["id"] in args.ids.split(",")]
     cases = cases[: args.limit] if args.limit else cases
-    load_keys("ANTHROPIC_API_KEY")
+    provider, model = args.model.split(":", 1)
+    load_keys({"claude": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY"}[provider])
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.modules.markdown_edit.application.generate_markdown_edit import GenerateMarkdownEditUseCase
     from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
     from app.modules.markdown_edit.domain.markdown_target_scope import apply_markdown_edit
     from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import build_markdown_editor
 
-    use_case = GenerateMarkdownEditUseCase(build_markdown_editor(provider=HAIKU[0], model=HAIKU[1]))
+    use_case = GenerateMarkdownEditUseCase(build_markdown_editor(provider=provider, model=model))
 
     def run(job):
         case, run_index = job
