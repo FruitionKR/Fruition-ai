@@ -361,10 +361,6 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(repaired_notes[0]["observations"], [])
         self.assertTrue(operations)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_rejects_core_concept_without_supporting_evidence_claim(self) -> None:
         evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.95}, "issues": [], "retry_feedback": ""}
         normalized = {
@@ -404,3 +400,33 @@ if __name__ == "__main__":
             demoted_normalized["section_candidates"],
         )
         self.assertEqual(demote_unsupported_core_concepts(demoted_normalized)[1], [])
+
+    def test_evidence_hint_using_title_or_alias_supports_core_concept(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import unsupported_core_concept_slugs
+
+        normalized = {
+            "concept_ledger": [{"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"]}],
+            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["rag"]}],
+        }
+
+        self.assertEqual(unsupported_core_concept_slugs(normalized), [])
+
+    def test_demotion_clears_its_issue_and_restores_evaluator_pass(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues
+
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "concept_ledger": [{"slug": "unsupported", "title": "Unsupported", "anchor_reference_ids": ["B0001"]}],
+            "evidence_units": [],
+        }
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+        self.assertFalse(evaluation["passed"])
+
+        clear_resolved_core_concept_issues(evaluation, ["unsupported"])
+
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual(evaluation["issues"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
