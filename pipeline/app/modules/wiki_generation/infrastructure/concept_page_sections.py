@@ -25,19 +25,9 @@ def item_refs(item: dict[str, Any]) -> list[str]:
 
 
 def concept_evidence(concept: dict[str, Any], evidence_units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 블록이 겹치는 근거로 대신 채우면 같은 블록의 다른 개념 근거가 붙는다. 근거 없는 핵심 개념은 정규화 뒤 섹션 후보로 내린다.
     slug = concept.get("slug")
-    direct = [ev for ev in evidence_units if slug and slug in ev.get("related_concept_slugs", [])]
-    if direct:
-        return direct
-    concept_refs = _concept_base_refs(concept)
-    if not concept_refs:
-        return []
-    fallback = []
-    for ev in evidence_units:
-        ev_refs = set(ev.get("anchor_reference_ids", []))
-        if concept_refs.intersection(ev_refs):
-            fallback.append(ev)
-    return fallback
+    return [ev for ev in evidence_units if slug and slug in ev.get("related_concept_slugs", [])]
 
 
 def concept_key_points_from_source(
@@ -146,12 +136,4 @@ def _concept_refs(concept: dict[str, Any], related_evidence: list[dict[str, Any]
     refs.extend(concept.get("mention_reference_ids", []))
     for ev in related_evidence:
         refs.extend(ev.get("anchor_reference_ids", []))
-    return set(unique_keep_order(refs))
-
-
-def _concept_base_refs(concept: dict[str, Any]) -> set[str]:
-    refs: list[str] = []
-    refs.extend(concept.get("display_reference_ids", []))
-    refs.extend(concept.get("anchor_reference_ids", []))
-    refs.extend(concept.get("mention_reference_ids", []))
     return set(unique_keep_order(refs))

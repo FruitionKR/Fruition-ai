@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
 from app.modules.wiki_generation.domain.entities import NormalizedConcept, NormalizedEvidence, SourceBlock, SourceDocument
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, name_key, slugify, unique_keep_order
 
 
 class PipelineValidationError(Exception):
@@ -67,6 +67,14 @@ class SemanticNormalizer:
                 row = self._normalize_evidence(evidence_id, ev, warnings)
                 evidence_rows.append(row)
 
+        # 근거 힌트를 개념의 제목·별칭으로 썼으면 그 개념 slug로 맞춘다. 근거를 붙이는 곳과 근거 검증이 같은 기준을 쓴다.
+        slug_by_name = {slug: slug for slug in concepts_by_slug}
+        for concept in concepts_by_slug.values():
+            for name in [concept.title, *concept.aliases]:
+                slug_by_name.setdefault(slugify(name), concept.slug)
+        for ev in evidence_rows:
+            ev.related_concept_slugs = unique_keep_order(slug_by_name.get(slug, slug) for slug in ev.related_concept_slugs)
+
         # Attach evidence to concepts.
         missing_related_hints: dict[str, dict[str, Any]] = {}
         for ev in evidence_rows:
@@ -89,6 +97,8 @@ class SemanticNormalizer:
                         item["sample_claims"].append(ev.claim)
                     item["max_confidence"] = max(item["max_confidence"], ev.confidence)
 
+        alias_concept_links = _split_concept_aliases(concepts_by_slug)
+
         # Backend expands direct mentions from all blocks by title/aliases.
         for concept in concepts_by_slug.values():
             mention_refs = self._expand_mentions(concept)
@@ -107,6 +117,7 @@ class SemanticNormalizer:
             "mentions": sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", "")),
             "observations": observations,
             "evidence_units": [asdict(e) for e in evidence_rows],
+            "alias_concept_links": alias_concept_links,
             "missing_related_concept_hints": sorted(missing_related_hints.values(), key=lambda x: (-x["max_confidence"], x["slug"])),
             "warnings": warnings,
         }
@@ -291,6 +302,32 @@ class SemanticNormalizer:
         # For Korean aliases, substring is acceptable. For English, require substring
         # across case; this keeps the prototype simple.
         return contains_ci(text, needle)
+
+
+def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> list[dict[str, str]]:
+    """별칭이 같은 문서의 다른 핵심 개념 이름이면 별칭에서 빼고 두 개념을 잇는다.
+
+    다른 핵심 개념이 된 이름은 같은 개념의 다른 이름이 아니라 따로 둔 하위·관련 개념이다. 별칭에 남기면
+    나중에 그 이름의 개념이 들어올 때 이름 일치로 잘못 병합된다.
+    """
+    owner_by_name = {}
+    for concept in concepts_by_slug.values():
+        for name in (concept.title, concept.slug):
+            owner_by_name.setdefault(name_key(name), concept.slug)
+    names_by_slug = {slug: {name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
+    links = []
+    for concept in concepts_by_slug.values():
+        kept = []
+        for alias in concept.aliases:
+            owner = owner_by_name.get(name_key(alias))
+            # 서로를 별칭으로 가진 두 개념은 같은 개념의 두 이름이라 그대로 두고 이름 일치 병합에 맡긴다.
+            mutual = owner is not None and bool(names_by_slug[owner] & {name_key(concept.title), name_key(concept.slug)})
+            if owner and owner != concept.slug and not mutual:
+                links.append({"source": concept.slug, "target": owner})
+                continue
+            kept.append(alias)
+        concept.aliases = kept
+    return links
 
 
 def _optional_text(value: Any) -> str | None:

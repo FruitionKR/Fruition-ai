@@ -85,7 +85,7 @@ class FailingEmbedder:
 
 INCOMING = [
     {"slug": "memoization-new", "title": "메모이제이션 기법", "definition": "함수 결과를 저장해 재계산을 피한다."},
-    {"slug": "untitled", "title": "memoization", "definition": ""},
+    {"slug": "untitled", "title": "정리 안 된 메모", "definition": ""},
 ]
 # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary를 쓴다.
 EXISTING = [
@@ -135,6 +135,18 @@ class JevConceptResolverTest(unittest.TestCase):
         result = _resolver(jev).resolve(INCOMING, EXISTING, [])
 
         self.assertEqual(result["resolutions"][0]["link_targets"], ["dynamic-programming"])
+
+    def test_merges_concept_without_definition_by_exact_name(self) -> None:
+        jev = PairJev()
+        incoming = [{"slug": "memo-new", "title": "메모", "definition": ""}]
+
+        result = _resolver(jev).resolve(incoming, EXISTING, [])
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memo-new", "decision": "merge_into", "canonical_slug": "memoization", "alias_to_add": None}],
+        )
+        self.assertEqual(jev.sent("memo-new"), [])
 
     def test_merges_into_candidate_with_highest_same_probability(self) -> None:
         jev = PairJev({
@@ -307,7 +319,7 @@ class WithJevConceptMergeTest(unittest.TestCase):
     def test_keeps_existing_resolver_when_disabled(self) -> None:
         resolver = RecordingResolver()
         with patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
     def test_wraps_resolver_when_enabled_with_key_and_embedding_server(self) -> None:
         env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key", "EMBEDDING_SERVICE_URL": "http://embedding"}
@@ -315,20 +327,83 @@ class WithJevConceptMergeTest(unittest.TestCase):
             patch.dict("os.environ", env),
             patch.object(jev_concept_resolver, "_remote_embedding_model", return_value=AngleEmbedder()),
         ):
-            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()), JevConceptResolver)
+            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()).inner, JevConceptResolver)
 
     def test_keeps_existing_resolver_without_embedding_server(self) -> None:
         # 편입 워커가 BGE-M3를 직접 올리지 않도록 임베딩 서버가 없거나 설정이 잘못되면 Jev 병합을 쓰지 않는다.
         resolver = RecordingResolver()
         env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}
         with patch.dict("os.environ", env), patch.dict("os.environ", {"EMBEDDING_SERVICE_URL": ""}):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
         with (
             patch.dict("os.environ", {**env, "EMBEDDING_SERVICE_URL": "http://embedding"}),
             patch.object(jev_concept_resolver, "_remote_embedding_model", side_effect=RuntimeError("no token")),
         ):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameMatchConceptResolverTest(unittest.TestCase):
+    def test_merges_exact_names_before_llm_and_sends_only_the_rest(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        llm = RecordingResolver()
+        incoming = [
+            {"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"], "definition": "정의"},
+            {"slug": "new-thing", "title": "새 개념", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "rag", "title": "Retrieval-Augmented Generation", "aliases": ["RAG", "검색 증강 생성"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(llm).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            result["resolutions"][0],
+            {"incoming_slug": "retrieval-augmented-generation", "decision": "merge_into", "canonical_slug": "rag", "alias_to_add": None},
+        )
+        self.assertEqual([c["slug"] for c in llm.calls[0][0]], ["new-thing"])
+
+    def test_follows_chained_name_matches_to_the_final_concept(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        incoming = [
+            {"slug": "rag", "title": "RAG", "aliases": ["검색 증강 생성"], "definition": "정의"},
+            {"slug": "rag-model", "title": "검색 증강 생성", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "retrieval-augmented-generation", "title": "Retrieval-Augmented Generation", "aliases": ["RAG"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(RecordingResolver()).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in result["resolutions"]},
+            {"rag": "retrieval-augmented-generation", "rag-model": "retrieval-augmented-generation"},
+        )
+
+    def test_chain_follow_stops_on_cycles_and_missing_targets(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        class Fixed:
+            def __init__(self, resolutions):
+                self.resolutions = resolutions
+
+            def resolve(self, incoming, existing, hints=None):
+                return {"resolutions": self.resolutions, "hint_resolutions": []}
+
+        incoming = [
+            {"slug": "a", "title": "Alpha", "aliases": [], "definition": "정의"},
+            {"slug": "b", "title": "Beta", "aliases": [], "definition": "정의"},
+            {"slug": "x", "title": "X", "aliases": ["alpha"], "definition": "정의"},
+        ]
+        cycle = Fixed([
+            {"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "b"},
+            {"incoming_slug": "b", "decision": "merge_into", "canonical_slug": "a"},
+        ])
+        ghost = Fixed([{"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "ghost"}])
+
+        cyclic = NameMatchConceptResolver(cycle).resolve(incoming, [], [])
+        missing = NameMatchConceptResolver(ghost).resolve(incoming, [], [])
+
+        self.assertEqual(cyclic["resolutions"][0], {"incoming_slug": "x", "decision": "merge_into", "canonical_slug": "a", "alias_to_add": None})
+        self.assertEqual(missing["resolutions"][0]["canonical_slug"], "a")
