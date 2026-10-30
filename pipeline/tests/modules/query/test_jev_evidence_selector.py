@@ -86,6 +86,21 @@ class JevEvidenceSelectorTest(unittest.TestCase):
         self.assertEqual(snippets[0].source_block_ids, ["B0003"])
         self.assertEqual(fallback.calls, 0)
 
+    def test_skips_units_whose_blocks_are_already_selected(self) -> None:
+        units = [
+            _unit("u1", "환불 기한은 7일이다.", "B0001"),
+            _unit("u2", "환불 기한은 7일이다(요약).", "B0001"),
+            _unit("u3", "환불 신청은 앱에서 한다.", "B0002"),
+            WikiEmbeddingUnit("u4", "source:doc", "doc", "observation", ["B0001", "B0002"], "신청과 환불 기한"),
+            _unit("u5", "환불 수수료는 없다.", "B0003"),
+        ]
+        selector, _ = _selector(IncludingJev("환불"), units, max_evidence_snippets=3)
+
+        snippets = selector.select("환불 기한은?", [], {}, workspace_id="ws")
+
+        # u1이 B0001을 차지하면 같은 블록의 u2, 이미 다룬 블록뿐인 u4는 건너뛰고 다른 블록이 자리를 얻는다.
+        self.assertEqual([snippet.source_block_ids for snippet in snippets], [["B0001"], ["B0002"], ["B0003"]])
+
     def test_no_included_unit_returns_empty_evidence(self) -> None:
         selector, fallback = _selector(IncludingJev("없는 단어"), [_unit("u1", "배송은 3일 걸린다.")])
 
