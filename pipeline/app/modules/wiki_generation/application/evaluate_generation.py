@@ -100,6 +100,7 @@ def _evaluate_window(
             **{
                 key: [_evaluation_item(item) for item in normalized.get(key, [])]
                 for key in NORMALIZED_LIST_KEYS
+                if key != "semantic_notes"
             },
             "semantic_notes": [
                 {key: value for key, value in note.items() if key not in NOTE_ITEM_KEYS}
