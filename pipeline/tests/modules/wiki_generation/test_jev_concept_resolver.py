@@ -105,8 +105,8 @@ class JevConceptResolverTest(unittest.TestCase):
 
     def test_links_all_related_candidates_ordered_by_probability(self) -> None:
         jev = PairJev({
-            ("memoization-new", "cache"): ("related", {"related": 0.6, "unrelated": 0.4}),
-            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.8, "unrelated": 0.2}),
+            ("memoization-new", "cache"): ("related", {"related": 0.92, "unrelated": 0.08}),
+            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.97, "unrelated": 0.03}),
         })
 
         result = _resolver(jev).resolve(INCOMING, EXISTING, [])
@@ -118,13 +118,23 @@ class JevConceptResolverTest(unittest.TestCase):
                 "decision": "link_to",
                 "canonical_slug": "dynamic-programming",
                 "link_targets": ["dynamic-programming", "cache"],
-                "link_confidences": {"dynamic-programming": 0.8, "cache": 0.6},
+                "link_confidences": {"dynamic-programming": 0.97, "cache": 0.92},
                 "alias_to_add": None,
             }],
         )
         # 정의가 없는 개념은 Jev에 보내지 않고 후보에도 넣지 않는다.
         self.assertEqual(jev.sent("untitled"), [])
         self.assertEqual(set(jev.sent("memoization-new")), {"memoization", "cache", "dynamic-programming"})
+
+    def test_does_not_link_related_below_probability_threshold(self) -> None:
+        jev = PairJev({
+            ("memoization-new", "cache"): ("related", {"related": 0.85, "unrelated": 0.15}),
+            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.95, "unrelated": 0.05}),
+        })
+
+        result = _resolver(jev).resolve(INCOMING, EXISTING, [])
+
+        self.assertEqual(result["resolutions"][0]["link_targets"], ["dynamic-programming"])
 
     def test_merges_into_candidate_with_highest_same_probability(self) -> None:
         jev = PairJev({
