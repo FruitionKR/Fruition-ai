@@ -11,7 +11,80 @@ from app.modules.markdown_edit.domain.markdown_output_contract import (
 TARGET = MarkdownEditTarget(type="whole_document", start_line=1, end_line=20)
 
 
+RUNBOOK = "# 배포 런북\n\n## 배포 전 확인\n테스트를 통과했는지 확인한다.\n\n## 롤백\n오류율이 오르면 롤백한다."
+
+
 class MarkdownOutputContractTest(unittest.TestCase):
+    def test_whole_document_list_conversion_keeps_source_headings(self) -> None:
+        cases = {
+            "checklist": ("이 문서를 목록으로 바꿔줘", "- [ ] ", "checklist items must all start with `- [ ] `"),
+            "bullet_list": ("이 문서를 목록으로 바꿔줘", "- ", "bullet list items must use plain bullet markers"),
+            "convert_format": (
+                "이 문서를 번호 목록으로 바꿔줘", "1. ", "numbered list items must start directly with `1.`, `2.`, and so on",
+            ),
+        }
+        for goal, (instruction, marker, failure) in cases.items():
+            with self.subTest(goal=goal):
+                request = MarkdownEditRequest(
+                    instruction=instruction,
+                    markdown=RUNBOOK,
+                    target=TARGET,
+                    edit_goal=goal,
+                )
+                converted = (
+                    f"# 배포 런북\n\n## 배포 전 확인\n{marker}테스트를 통과했는지 확인한다.\n\n"
+                    f"## 롤백\n{marker}오류율이 오르면 롤백한다."
+                )
+
+                self.assertNotIn(failure, validate_markdown_output(request, converted))
+                # 목록 항목이 하나도 없는 출력은 목록이 아니다.
+                self.assertIn(failure, validate_markdown_output(request, "# 배포 런북\n\n## 롤백"))
+
+    def test_list_conversion_allows_headings_intro_and_bold_labels_around_items(self) -> None:
+        cases = {"checklist": ("- [ ] ", "- "), "bullet_list": ("- ", "1. ")}
+        for goal, (marker, wrong_marker) in cases.items():
+            with self.subTest(goal=goal):
+                request = MarkdownEditRequest(instruction="이 섹션을 목록으로 바꿔줘", markdown=RUNBOOK, target=TARGET, edit_goal=goal)
+                converted = f"## 배포 점검\n\n배포 전에 아래를 확인한다.\n\n**배포 전**\n\n{marker}테스트 통과\n{marker}승인 확인"
+                failures = validate_markdown_output(request, converted)
+
+                self.assertFalse([f for f in failures if "list items" in f or "checklist items" in f])
+                # 목록 항목 가운데 형식이 다른 항목이 있으면 여전히 막는다.
+                mixed = validate_markdown_output(request, converted + f"\n{wrong_marker}롤백 준비")
+                self.assertTrue([f for f in mixed if "list items" in f or "checklist items" in f])
+
+    def test_translation_protects_code_but_not_links_or_tables(self) -> None:
+        source = "설치는 `pip install fruition`으로 한다.\n\n```sql\nSELECT 1;\n```\n\n[설치 안내](/docs/install) 참고"
+        request = MarkdownEditRequest(
+            instruction="영어로 번역해줘.",
+            markdown=source,
+            target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=7),
+            edit_goal="translate",
+        )
+
+        kinds = {fragment.kind for fragment in protect_markdown(request).fragments}
+        translated = "Install with `pip install fruition`.\n\n```sql\nSELECT 1;\n```\n\nSee [installation guide](/docs/install)"
+        changed_code = translated.replace("SELECT 1;", "선택 1;")
+
+        self.assertEqual(kinds, {"inline_code", "code_fence"})
+        self.assertFalse([f for f in validate_markdown_output(request, translated) if f.startswith("protected")])
+        self.assertTrue([f for f in validate_markdown_output(request, changed_code) if f.startswith("protected code_fence")])
+
+    def test_appended_summary_is_not_checked_as_shortening(self) -> None:
+        source = "# 정보 검색\n\n1945년 버니바 부시가 아이디어를 대중화했다. 1992년 TREC가 시작되었다."
+        request = MarkdownEditRequest(
+            instruction="맨 아래에 3줄로 요약해서 붙여줘.",
+            markdown=source,
+            target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=3),
+            edit_goal="shorten",
+            edit_operation="insert_after",
+            edit_destination="document_end",
+        )
+
+        failures = validate_markdown_output(request, "## 요약\n- 정보 검색의 역사를 다룬다.")
+
+        self.assertFalse([failure for failure in failures if failure.startswith("shortening")])
+
     def test_rejects_insert_after_output_that_repeats_current_section_heading(self) -> None:
         request = MarkdownEditRequest(
             instruction="이 섹션 아래에 문제 해결 절을 추가해줘.",

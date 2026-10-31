@@ -11,10 +11,15 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 `wiki/{workspace_id}/` 아래에 있다: 페이지 본문 `sources/{document_id}.md`·`concepts/{slug}.md`, 의미 클러스터
 `clusters/active.md`·`clusters/archived.md`, 편입·lint 로그 `logs/{날짜}.md`, 페이지 이력 `pages/{page_id}/ops/`.
 
-편입은 개념으로 바로 확정하지 않은 후보의 근거를 `clusters/active.md`의 의미 클러스터에 쌓는다. 승격 후보
-(`Promotion.status: candidate`)는 근거를 덧붙인 뒤 두 경로로만 정한다. 이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터는
-그 개념(`target: concept:{slug}`)으로, 근거가 덧붙은 클러스터는 클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격
-후보를 개념 페이지로 승격하거나 `target`·같은 slug의 개념에 병합하고, 클러스터를 `archived.md`로 옮긴다([ADR 0037](../adr/0037-meaning-cluster-promotion.md)).
+편입은 개념으로 바로 확정하지 않은 후보의 근거를 `clusters/active.md`의 의미 클러스터에 쌓는다. 클러스터 배정 판정에는
+`active.md`가 24,000자를 넘으면 이번 후보와 가까운 클러스터(임베딩 0.75 + BM25 0.25, 임베딩 서버가 없으면 BM25만)부터
+24,000자까지 섹션 단위로 보낸다. 승격 후보
+(`Promotion.status: candidate`)는 근거를 덧붙인 뒤 두 경로로만 정한다. 이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터,
+이름이 달라도 Jev 쌍 판정이 같은 개념으로 고른 클러스터는 그 개념(`target: concept:{slug}`)으로, 근거가 덧붙은 클러스터는
+클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
+기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고 관련 개념이면 새 페이지를 만들고 `concept_related_to`로 잇는다.
+판정 링크는 `materialized_relations`에 담겨 lint 복원 시 함께 지운다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
+`archived.md`로 옮기고, lint 복원은 이를 `active.md`로 되돌린다([ADR 0037](../adr/0037-meaning-cluster-promotion.md), [ADR 0038](../adr/0038-concept-to-concept-links.md)).
 
 - API 수: 11
 
@@ -448,6 +453,13 @@ curl -X POST "$PIPELINE/wiki/ingest-restore-runs" \
 
 lint 작업의 Wiki 변경을 복원합니다.
 
+lint가 승격·병합하며 `clusters/archived.md`로 옮긴 클러스터도 되돌린다. lint는 클러스터를 옮길 때 그 클러스터가 승격·병합된
+페이지의 lint 기록 `wiki/{workspace_id}/pages/{page_id}/ops/{lint_operation_id}.json`의 `archived_clusters`
+(`cluster_id`, 원래 섹션 `section`, archived.md에 덧붙인 항목 `archived_section`)에 남긴다. 복원은 `rebuild_pages`·`deleted_pages`의
+대상 lint 기록에서 이를 읽어 원래 섹션을 `active.md`에 넣고, archived.md에서 같은 `archived_section` 항목을 지운다. lint 뒤에
+같은 id의 클러스터가 `active.md`에 새로 생겼으면 덮어쓰지 않고 건너뛴다. 응답의 `cluster_changes`는 쓴 객체 키
+(`written_object_keys`), 되돌린 클러스터(`restored_cluster_ids`), 건너뛴 클러스터(`skipped_cluster_ids`)다.
+
 #### 3. Auth 필요 여부
 
 - 필요
@@ -716,7 +728,7 @@ curl -X POST "$PIPELINE/wiki/maintenance/lint" \
 #### 연동
 
 - 인바운드 호출자: **HTTP 호출자 없음.** document-svc는 Kafka `ai.maintenance.command`(`kind: lint`)를 발행한다(Fruition-document `src/main/java/fruition/core/wikimaintenance/service/WikiMaintenanceService.java`:66).
-- 아웃바운드 호출: LLM provider(승격 생성).
+- 아웃바운드 호출: LLM provider(승격 생성), Jev·임베딩 서버(승격 개념 판정, `JEV_CONCEPT_MERGE_ENABLED`와 `EMBEDDING_SERVICE_URL`이 있을 때).
 - 미연동 표시: HTTP는 미연동. 같은 로직이 Kafka로 연결되어 있다.
 
 [↑ 요약으로 돌아가기](#summary-post-wiki-maintenance-lint)

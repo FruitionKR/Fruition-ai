@@ -68,8 +68,10 @@ class TargetNormalizer:
 class FakeEvaluator:
     def __init__(self, evaluations: list[dict[str, object]]) -> None:
         self.evaluations = evaluations
+        self.previous_requests: list[list[dict[str, object]]] = []
 
-    def evaluate(self, normalized: dict[str, object]) -> dict[str, object]:
+    def evaluate(self, normalized: dict[str, object], previous_requests: list[dict[str, object]]) -> dict[str, object]:
+        self.previous_requests.append(previous_requests)
         return self.evaluations.pop(0)
 
 
@@ -161,6 +163,112 @@ class LangGraphWikiGenerationEvaluatorTest(unittest.TestCase):
             [item[:2] for item in artifacts.items],
             [(1, "evaluation"), (1, "retry"), (2, "evaluation")],
         )
+
+    def test_passes_earlier_requests_to_evaluator_and_retry_prompt(self) -> None:
+        demote = {"type": "section_or_mention_should_not_be_core", "target": ["a"], "feedback": "a를 섹션 후보로 낮추세요."}
+        merge = {"type": "over_fragmented_concept", "target": ["b"], "feedback": "b를 c에 합치세요."}
+        graph, semantic_generation, _ = self.build_graph(
+            [
+                {"passed": False, "retry_recommended": True, "retry_feedback": demote["feedback"], "scores": {}, "issues": [demote]},
+                {"passed": False, "retry_recommended": True, "retry_feedback": merge["feedback"], "scores": {}, "issues": [merge]},
+                {"passed": True, "retry_recommended": False, "scores": {}, "issues": []},
+            ]
+        )
+        evaluator = graph.evaluator
+
+        graph.run(semantic_system_prompt="기본 prompt", source_context=None, evaluation_enabled=True, max_attempts=3)
+
+        self.assertEqual(
+            evaluator.previous_requests,
+            [
+                [],
+                [{"attempt": 1, "type": demote["type"], "target": ["a"], "feedback": demote["feedback"]}],
+                [
+                    {"attempt": 1, "type": demote["type"], "target": ["a"], "feedback": demote["feedback"]},
+                    {"attempt": 2, "type": merge["type"], "target": ["b"], "feedback": merge["feedback"]},
+                ],
+            ],
+        )
+        # 세 번째 추출은 마지막 피드백과 함께 첫 시도의 요청도 유지하라고 받는다.
+        self.assertIn(merge["feedback"], semantic_generation.prompts[2])
+        self.assertIn("Earlier evaluator requests", semantic_generation.prompts[2])
+        self.assertIn(demote["feedback"], semantic_generation.prompts[2])
+
+    def test_keeps_highest_scoring_attempt_when_no_attempt_passes(self) -> None:
+        failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": []}
+        graph, _, _ = self.build_graph(
+            [
+                {**failing, "scores": {"overall": 0.74}},
+                {**failing, "scores": {"overall": 0.43}},
+            ]
+        )
+
+        notes, normalized, evaluations = graph.run(
+            semantic_system_prompt="기본 prompt",
+            source_context=None,
+            evaluation_enabled=True,
+            max_attempts=2,
+        )
+
+        self.assertEqual(notes[0]["attempt"], 1)
+        self.assertEqual(normalized, {"attempt": 1})
+        self.assertEqual([item.get("selected_for_output") for item in evaluations], [True, None])
+
+    def test_best_attempt_keeps_repaired_result_when_reevaluation_scores_lower(self) -> None:
+        failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": []}
+        graph, _, _ = self.build_graph(
+            [
+                {**failing, "scores": {"overall": 0.74}},
+                {**failing, "scores": {"overall": 0.6}},
+                {**failing, "scores": {"overall": 0.5}},
+                {**failing, "scores": {"overall": 0.4}},
+            ],
+            operations=["removed broken observation"],
+        )
+
+        _, normalized, _ = graph.run(
+            semantic_system_prompt="기본 prompt",
+            source_context=None,
+            evaluation_enabled=True,
+            max_attempts=2,
+        )
+
+        self.assertEqual(normalized, {"attempt": 1, "repaired": True})
+
+    def test_later_attempt_beats_repaired_result_by_reevaluation_score(self) -> None:
+        failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": []}
+        graph, _, _ = self.build_graph(
+            [
+                {**failing, "scores": {"overall": 0.74}},
+                {**failing, "scores": {"overall": 0.6}},
+                {**failing, "scores": {"overall": 0.7}},
+                {**failing, "scores": {"overall": 0.7}},
+            ],
+            operations=["removed broken observation"],
+        )
+
+        _, normalized, evaluations = graph.run(
+            semantic_system_prompt="기본 prompt",
+            source_context=None,
+            evaluation_enabled=True,
+            max_attempts=2,
+        )
+
+        self.assertEqual(normalized, {"attempt": 2, "repaired": True})
+        self.assertEqual([item.get("selected_for_output") for item in evaluations], [None, None, None, True])
+
+    def test_prefers_later_attempt_on_equal_score(self) -> None:
+        failing = {"passed": False, "retry_recommended": True, "retry_feedback": "보강", "issues": [], "scores": {"overall": 0.5}}
+        graph, _, _ = self.build_graph([dict(failing), dict(failing)])
+
+        _, normalized, _ = graph.run(
+            semantic_system_prompt="기본 prompt",
+            source_context=None,
+            evaluation_enabled=True,
+            max_attempts=2,
+        )
+
+        self.assertEqual(normalized, {"attempt": 2})
 
     def test_uses_repaired_normalized_result(self) -> None:
         graph, _, artifacts = self.build_graph(

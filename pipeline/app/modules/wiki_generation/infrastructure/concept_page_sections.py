@@ -25,19 +25,9 @@ def item_refs(item: dict[str, Any]) -> list[str]:
 
 
 def concept_evidence(concept: dict[str, Any], evidence_units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 블록이 겹치는 근거로 대신 채우면 같은 블록의 다른 개념 근거가 붙는다. 근거 없는 핵심 개념은 정규화 뒤 섹션 후보로 내린다.
     slug = concept.get("slug")
-    direct = [ev for ev in evidence_units if slug and slug in ev.get("related_concept_slugs", [])]
-    if direct:
-        return direct
-    concept_refs = _concept_base_refs(concept)
-    if not concept_refs:
-        return []
-    fallback = []
-    for ev in evidence_units:
-        ev_refs = set(ev.get("anchor_reference_ids", []))
-        if concept_refs.intersection(ev_refs):
-            fallback.append(ev)
-    return fallback
+    return [ev for ev in evidence_units if slug and slug in ev.get("related_concept_slugs", [])]
 
 
 def concept_key_points_from_source(
@@ -71,45 +61,40 @@ def concept_related_lines(
     ledger_by_slug: dict[str, dict[str, Any]],
     source_key_points: list[dict[str, Any]] | None = None,
 ) -> list[str]:
+    """본문 Related Concepts 줄.
+
+    같은 근거에 함께 나오거나 핵심 내용을 공유한 이번 문서의 개념, 그리고 병합 판단이 연결 대상으로 고른 개념이다.
+    연결 대상은 다른 문서에서 온 기존 개념일 수 있다.
+    """
+    titles = {
+        str(concept.get("slug")): concept.get("title")
+        for concept in normalized.get("existing_concept_index", [])
+        if concept.get("slug")
+    }
+    titles.update({target_slug: target.get("title") for target_slug, target in ledger_by_slug.items()})
+    slug_map = normalized.get("concept_slug_map", {})
     related_slugs: list[str] = []
     for ev in normalized.get("evidence_units", []):
         ev_slugs = [s for s in ev.get("related_concept_slugs", []) if s in ledger_by_slug]
         if slug in ev_slugs:
             related_slugs.extend([s for s in ev_slugs if s != slug])
 
-    related_slugs.extend(
-        target
-        for source, target, _reason in shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
-        if source == slug
-    )
-    related_slugs.extend(
-        source
-        for source, target, _reason in shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
-        if target == slug
-    )
+    pairs = shared_key_point_pairs(normalized, ledger_by_slug, source_key_points or [])
+    related_slugs.extend(target for source, target, _reason in pairs if source == slug)
+    related_slugs.extend(source for source, target, _reason in pairs if target == slug)
 
-    for resolution in normalized.get("concept_resolutions", []):
-        source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
-        targets = [target for target in resolution.get("link_targets", []) if target in ledger_by_slug]
-        if source_slug == slug:
-            related_slugs.extend(targets)
-        elif slug in targets and source_slug in ledger_by_slug:
-            related_slugs.append(source_slug)
-
-    for resolution in normalized.get("hint_resolutions", []):
-        source_slug = resolution.get("canonical_slug")
-        targets = [target for target in resolution.get("link_targets", []) if target in ledger_by_slug]
-        if source_slug == slug:
-            related_slugs.extend(targets)
-        elif slug in targets and source_slug in ledger_by_slug:
-            related_slugs.append(source_slug)
-
-    lines = []
-    for target_slug in unique_keep_order([s for s in related_slugs if s and s != slug]):
-        target = ledger_by_slug.get(target_slug)
-        if target:
-            lines.append(f"- [[{target_slug}|{target.get('title') or target_slug}]]")
-    return lines
+    for key in ("concept_resolutions", "hint_resolutions"):
+        for resolution in normalized.get(key, []):
+            source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
+            targets = [slug_map.get(t, t) for t in resolution.get("link_targets", []) if slug_map.get(t, t) in titles]
+            if source_slug == slug:
+                related_slugs.extend(targets)
+            elif slug in targets and source_slug in ledger_by_slug:
+                related_slugs.append(source_slug)
+    return [
+        f"- [[{target_slug}|{titles.get(target_slug) or target_slug}]]"
+        for target_slug in unique_keep_order([s for s in related_slugs if s and s != slug])
+    ]
 
 
 def shared_key_point_pairs(
@@ -151,12 +136,4 @@ def _concept_refs(concept: dict[str, Any], related_evidence: list[dict[str, Any]
     refs.extend(concept.get("mention_reference_ids", []))
     for ev in related_evidence:
         refs.extend(ev.get("anchor_reference_ids", []))
-    return set(unique_keep_order(refs))
-
-
-def _concept_base_refs(concept: dict[str, Any]) -> set[str]:
-    refs: list[str] = []
-    refs.extend(concept.get("display_reference_ids", []))
-    refs.extend(concept.get("anchor_reference_ids", []))
-    refs.extend(concept.get("mention_reference_ids", []))
     return set(unique_keep_order(refs))

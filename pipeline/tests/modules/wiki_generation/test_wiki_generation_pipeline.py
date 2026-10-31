@@ -230,18 +230,52 @@ class WikiGenerationPipelineTest(unittest.TestCase):
         self.assertTrue(all(block.document_id == "requested-document" for block in blocks))
         self.assertEqual(source_block_records[0]["document_id"], "requested-document")
 
+    def test_resolve_pipeline_concepts_passes_jev_pair_judge_to_update_check(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+            JevConceptResolver,
+            NameMatchConceptResolver,
+        )
+
+        jev = JevConceptResolver(Mock(), None, Mock())
+        jev.judge_concepts = Mock(return_value={})
+        captured = {}
+
+        def fake_update_check(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "run_lab.with_jev_concept_merge", return_value=NameMatchConceptResolver(jev)
+        ), patch("run_lab.judge_concept_update_candidates", side_effect=fake_update_check):
+            _resolve_pipeline_concepts(
+                SimpleNamespace(save_debug_json=False),
+                api_client=FakeConceptResolutionClient(),  # type: ignore[arg-type]
+                concept_resolution_prompt="resolve",
+                existing_concepts=[],
+                normalized={
+                    "concept_ledger": [{"slug": "concept-a", "title": "Concept A", "aliases": [], "definition": "정의", "anchor_reference_ids": ["B0001"]}],
+                    "document": {"document_id": "doc-1"},
+                    "section_candidates": [],
+                    "mentions": [],
+                    "evidence_units": [],
+                    "missing_related_concept_hints": [],
+                    "warnings": [],
+                },
+                out=Path(tmp_dir),
+                log=PipelineLog(Path(tmp_dir) / "pipeline.log"),
+            )
+
+        self.assertIs(captured["judge_pairs"], jev.judge_concepts)
+
     def test_resolve_pipeline_concepts_preserves_resolution_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             client = FakeConceptResolutionClient()
             log_path = Path(tmp_dir) / "pipeline.log"
             normalized = _resolve_pipeline_concepts(
-                SimpleNamespace(
-                    existing_concept_index=[],
-                    existing_wiki_dir=None,
-                    save_debug_json=False,
-                ),
+                SimpleNamespace(save_debug_json=False),
                 api_client=client,  # type: ignore[arg-type]
                 concept_resolution_prompt="resolve",
+                existing_concepts=[],
                 normalized={
                     "concept_ledger": [
                         {
@@ -314,7 +348,7 @@ class WikiGenerationPipelineTest(unittest.TestCase):
             prompts.append(system_prompt)
             return [{"attempt": attempt}]
 
-        def fake_evaluate_generation(_self, _normalized):
+        def fake_evaluate_generation(_self, _normalized, _previous_requests):
             return evaluations.pop(0)
 
         with tempfile.TemporaryDirectory() as tmp_dir:

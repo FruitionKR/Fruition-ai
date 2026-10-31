@@ -15,6 +15,40 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 작업 탭 안내 종류(`notice_kind`)
+
+라우트의 선택 항목 `notice_kind`는 사용자에게 무엇을 알릴지 정한다. 없으면(`null`) 기존 문구를 쓴다.
+
+| action | notice_kind | 결과 `message` |
+|---|---|---|
+| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(답변·잡담) |
+| | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
+| | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
+| `reject` | `sensitive_data`·`unsupported`·`policy` | 민감한 값·워크스페이스 밖 작업·규칙 우회별 거절 이유 |
+| `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
+
+- 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
+- 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 3종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
+
+### 폴더 내용 조회(`folder_lookup`)
+
+작업 탭에서 "회의록 폴더에 뭐가 있어?"처럼 폴더 내용을 물으면 라우터가 `folder_lookup`(retrieval·문서 동작 없음, persist false, 기능 없음)을 고른다.
+작업 탭(`mode=task`) 턴에서만 쓴다. 읽기 전용이라 run을 만들지 않고 결과 `message`로만 답한다.
+
+- 트리는 document-svc `POST /internal/agent/folder-lookup/tree`로 읽는다(사이드바 트리와 같은 범위, `X-Agent-Service-Token`).
+- 메시지가 어느 폴더를 지목했는지는 `JEV_FOLDER_LOOKUP_ENABLED`가 켜져 있으면 Jev가, 아니면(또는 Jev 실패·선택지 255개 초과 시) 이번 턴의 LLM이
+  판단한다(`prompts/agent_folder_lookup.system.md`, [ADR-0027](../adr/0027-jev-selective-judge.md)). LLM 판단은 폴더 이름·경로 목록
+  (최대 500개, 폴더 id 대신 `f1` 같은 짧은 키)과 메시지·최근 대화 6개를 보내고 지목한 폴더 키를 받는다. 조사·따옴표·띄어쓰기와
+  상관없이 뜻으로 판단하고, 질문 속 일반 단어(`회의록 폴더에 문서 뭐 있어?`의 `문서`)나 문서 이름(`기획서`)은 폴더로 보지 않는다.
+  목록에 없는 키는 버린다.
+- 지목한 폴더가 없을 때만 `folder_id`(사이드바에서 고른 폴더)를 쓴다. 폴더 정리·Skill과 같은 규칙이다.
+- 하나면 바로 아래 하위 폴더·문서 이름을 최대 50개 보여 주고 문서 내용은 채팅 탭에서 물으라고 안내한다. 여러 개면 경로를 보여 주고 되묻는다.
+  없으면 폴더 이름을 정확히 적거나 폴더를 고르라고 안내한다. 문서 본문은 읽지 않는다.
+- 트리를 읽지 못하거나 지목 판단 응답이 형식에 맞지 않으면 안내를 `message`로 돌려준다. document-svc가 400·403·404면 "이 워크스페이스의 폴더 목록을 읽을 수 없어요.",
+  그 밖의 응답·연결 실패는 "폴더 목록을 읽지 못했어요. 잠시 후 다시 시도해 주세요."다.
+- `DOCUMENT_INTERNAL_BASE_URL`·`AGENT_INTERNAL_TOKEN`은 이제 `AGENT_SKILLS_ENABLED`와 무관하게 agent command worker 기동 시 확인한다.
+
 ### 할 일 없이 `/slug`만 보낸 턴(Skill 실행)
 
 `message`가 `/slug`뿐이면(사이드바 "실행"처럼 대상만 고른 경우) 라우터를 거치지 않고 Skill 정의와 고른 대상으로 실행한다.
@@ -46,6 +80,17 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   대화 맥락을 함께 싣되, 생성 프롬프트는 명시한 원문을 대화보다 우선한다.
 - 할 일을 붙인 턴은 라우터를 거치며 결과 방식으로 동작을 맞춘다: `create` Skill은 새 문서, `edit` Skill은 라우터가 새 문서를 골라도 문서 편집,
   `auto` Skill은 문서가 열려 있고 확신도가 0.7 미만이면 위와 같은 `clarify`. 되묻기에는 `/slug 새 문서로 만들어 줘`나 `/slug 지금 문서를 수정해 줘`처럼 답하면 된다.
+
+열린 문서 크기 상한(`MAX_ACTIVE_DOCUMENT_CHARS = 30,000`자):
+
+- Skill 없는 새 문서 요청은 열린 문서를 `reference_context.active_document`(`document_id`, `markdown`)로 싣는다. 사용자가 고른 원문이
+  아니므로 생성 프롬프트는 요청이 그 문서를 가리킬 때("이 회의록을 바탕으로" 등)만 쓴다. 열린 문서가 상한을 넘으면 싣지 않고 초안은 만들며,
+  결과 `message`에 "열린 문서가 길어 초안에 참고하지 않았어요. … 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."를 덧붙인다.
+  저장 계획(`workspace_workflow` 생성)도 원문 안내(긴 열린 문서, 폴더 문서 일부만 읽음)가 있으면 document-svc 기본 문구와 같은
+  "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요." 뒤에 붙여 `message`로 돌려준다.
+- 편집(`markdown_edit`, `workspace_workflow` 편집)은 편집 범위(선택 영역·현재 섹션, 문서 전체 편집이면 문서 전체)가 상한을 넘으면
+  편집안을 만들지 않고 `clarify`로 수정할 부분이나 현재 섹션을 고르라고 안내한다. 편집기는 편집 범위와 앞뒤 몇 줄만 LLM에 보낸다.
+  이미 만든 미리보기를 저장하는 턴은 LLM을 다시 부르지 않으므로 이 상한을 보지 않는다.
 
 - API 수: 11
 

@@ -6,7 +6,10 @@ from dataclasses import replace
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
+    TaskClarifierPort,
+    FolderReferenceResolverPort,
     FolderSourceReaderPort,
+    FolderTreeReaderPort,
 )
 from app.modules.agent.domain.entities import (
     ActiveMarkdownContext,
@@ -19,6 +22,11 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
+from app.modules.agent.domain.folder_lookup import (
+    FolderLookupUnavailableError,
+    folder_lookup_message,
+    pick_folders,
+)
 from app.modules.agent.domain.folder_sources import (
     MAX_FOLDER_SOURCE_DOCUMENTS,
     FolderSourceUnavailableError,
@@ -87,6 +95,17 @@ CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
     "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
+CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
+CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
+REJECT_MESSAGES = {
+    "sensitive_data": "비밀번호·개인정보 같은 민감한 값은 문서에 넣어 드릴 수 없어요. 꼭 필요하면 직접 입력해 주세요.",
+    "unsupported": "메일 발송처럼 워크스페이스 밖에서 일어나는 작업은 아직 지원하지 않아요.",
+    "policy": "규칙을 우회하거나 권한을 바꾸는 요청은 처리할 수 없어요.",
+}
+REJECT_DEFAULT_MESSAGE = "요청한 작업은 현재 지원 범위에서 처리할 수 없습니다."
+SKILL_OFF_NOTICE = "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."
+# 문서 작업 결과에 메시지가 없을 때 document-svc가 채우는 기본 문구와 같다.
+WORKFLOW_DEFAULT_MESSAGE = "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요."
 DEFERRED_TEMPLATE_MESSAGE = "template 기반 전체 문서 재구성은 이후 단계에서 다루겠습니다. 현재는 선택 영역, 현재 섹션, 또는 문서 전체의 일반 편집만 지원합니다."
 CLARIFY_INSERT_AFTER_TARGET_MESSAGE = "내용을 추가할 현재 섹션을 선택한 뒤 다시 요청해 주세요."
 CLARIFY_SKILL_MESSAGE = "이 요청에 적용할 Skill을 선택하거나 Skill 없이 계속해 주세요."
@@ -106,6 +125,16 @@ CREATE_CAPABILITIES = frozenset({"template", "document-create"})
 EDIT_CAPABILITIES = frozenset({"template", "document-edit"})
 EMPTY_FOLDER_SOURCE_MESSAGE = (
     "이 폴더 바로 아래에 읽을 수 있는 Markdown 문서가 없어요. 문서가 있는 폴더나 문서를 골라 다시 실행해 주세요."
+)
+# 열린 문서를 LLM payload에 싣는 상한. 편집은 편집 범위, 새 문서는 참고로 싣는 열린 문서 전체에 적용한다.
+MAX_ACTIVE_DOCUMENT_CHARS = 30_000
+CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = (
+    f"편집할 범위가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 한 번에 편집할 수 없어요. "
+    "수정할 부분을 선택하거나 현재 섹션을 고른 뒤 다시 요청해 주세요."
+)
+ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
+    "열린 문서가 길어 초안에 참고하지 않았어요. "
+    "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
 )
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
@@ -139,8 +168,12 @@ class HandleAgentTurnUseCase:
         markdown_turn_repository: AgentRunManagementRepositoryPort | None = None,
         event_publisher: QueryEventPublisherPort | None = None,
         folder_source_reader: FolderSourceReaderPort | None = None,
+        folder_tree_reader: FolderTreeReaderPort | None = None,
+        folder_reference_resolver: FolderReferenceResolverPort | None = None,
         on_chat_answer: Callable[[], None] | None = None,
+        task_clarifier: TaskClarifierPort | None = None,
     ) -> None:
+        self._task_clarifier = task_clarifier
         self._on_chat_answer = on_chat_answer
         self._event_publisher = event_publisher
         self._router = router
@@ -156,13 +189,15 @@ class HandleAgentTurnUseCase:
         self._conversation_replier = conversation_replier
         self._markdown_turn_repository = markdown_turn_repository
         self._folder_source_reader = folder_source_reader
+        self._folder_tree_reader = folder_tree_reader
+        self._folder_reference_resolver = folder_reference_resolver
 
     def execute(self, request: AgentTurnRequest) -> AgentTurnResult:
         if not request.message.strip():
             raise ValueError("message is required.")
 
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
-        result = self._execute(request)
+        result = _with_skill_off_notice(self._execute(request))
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
@@ -192,6 +227,7 @@ class HandleAgentTurnUseCase:
             "chat_answer": "질문에 답할 근거를 찾고 있어요.",
             "conversation_reply": "대화 맥락에 맞는 답변을 작성하고 있어요.",
             "folder_organize": "폴더 정리 계획을 준비하고 있어요.",
+            "folder_lookup": "폴더 내용을 확인하고 있어요.",
             "workspace_workflow": "문서 작업 계획을 준비하고 있어요.",
             "skill_authoring": "스킬 작성 요청을 처리하고 있어요.",
             "skill_draft_proposal": "완료한 작업을 바탕으로 스킬 제안을 준비하고 있어요.",
@@ -348,6 +384,7 @@ class HandleAgentTurnUseCase:
                 else None
             )
             content = None
+            source_notice = None
             if route.action == "workspace_workflow" and route.document_operation == "create":
                 creation_markdown = (
                     self._confirmed_preview_markdown(request, preview_run_id)
@@ -358,7 +395,7 @@ class HandleAgentTurnUseCase:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if creation_markdown is None:
                     try:
-                        create_request, _ = self._markdown_create_request(request, route, selected_skill)
+                        create_request, source_notice = self._markdown_create_request(request, route, selected_skill)
                     except FolderSourceUnavailableError as exc:
                         return _clarify_document_change(route, str(exc))
                     creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
@@ -397,6 +434,9 @@ class HandleAgentTurnUseCase:
                 if reuses_edit_preview and edit is None:
                     return _clarify_document_change(route, CLARIFY_PREVIEW_MESSAGE)
                 if edit is None:
+                    # 이미 만든 미리보기를 저장할 때는 LLM을 부르지 않으므로 크기 상한을 보지 않는다.
+                    if _edit_scope_too_long(markdown_context.markdown, target):
+                        return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
                     reference_context = self._resolve_reference_context(request, route)
                     edit = self._markdown_edit_use_case.execute(
                         MarkdownEditRequest(
@@ -453,13 +493,26 @@ class HandleAgentTurnUseCase:
                 route=route,
                 run_id=run_id,
                 run_status=run_status,
+                # 원문 안내가 있을 때만 싣는다. 없으면 document-svc가 기본 문구를 채운다.
+                message=f"작업 계획을 만들었습니다. 미리보기에서 확인해 주세요.\n\n{source_notice}" if source_notice else None,
             )
 
         if route.action == "markdown_edit":
             return self._execute_markdown_edit(request, route, selected_skill)
 
+        if route.action == "folder_lookup":
+            return self._execute_folder_lookup(request, route)
+
         if route.action == "clarify":
-            if is_task_mode(request) and route.edit_goal is None:
+            if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
+                message = (
+                    self._task_clarifier.ask(request, route)
+                    if self._task_clarifier is not None
+                    else CLARIFY_DETAILS_FALLBACK_MESSAGE
+                )
+            elif is_task_mode(request) and route.edit_goal is None and route.notice_kind == "web_disabled":
+                message = CLARIFY_WEB_DISABLED_MESSAGE
+            elif is_task_mode(request) and route.edit_goal is None:
                 message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
             elif is_task_mode(request) and not _has_active_markdown(request):
                 message = CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
@@ -475,13 +528,29 @@ class HandleAgentTurnUseCase:
             return AgentTurnResult(
                 action="reject",
                 route=route,
-                message="요청한 작업은 현재 지원 범위에서 처리할 수 없습니다.",
+                message=REJECT_MESSAGES.get(route.notice_kind or "", REJECT_DEFAULT_MESSAGE),
             )
 
         if route.action == "conversation_reply":
             return self._execute_conversation_reply(request, route)
 
         return self._execute_chat_answer(request, route)
+
+    def _execute_folder_lookup(self, request: AgentTurnRequest, route: AgentTurnRoute) -> AgentTurnResult:
+        if (
+            self._folder_tree_reader is None
+            or self._folder_reference_resolver is None
+            or not request.workspace_id
+            or not request.user_id
+        ):
+            raise AgentConfigurationError("Folder lookup requires workspace_id, user_id, a tree reader, and a resolver.")
+        try:
+            folders = self._folder_tree_reader.read(workspace_id=request.workspace_id, user_id=request.user_id)
+            referenced = self._folder_reference_resolver.resolve(request, folders) if folders else []
+        except FolderLookupUnavailableError as exc:
+            return AgentTurnResult(action="folder_lookup", route=route, message=str(exc))
+        matches = pick_folders(folders, referenced, request.folder_id)
+        return AgentTurnResult(action="folder_lookup", route=route, message=folder_lookup_message(matches))
 
     def _confirmed_preview_edit(
         self,
@@ -612,6 +681,8 @@ class HandleAgentTurnUseCase:
                 route,
                 CLARIFY_INSERT_AFTER_TARGET_MESSAGE,
             )
+        if _edit_scope_too_long(markdown_context.markdown, target):
+            return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
         reference_context = self._resolve_reference_context(request, route)
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
         result = self._markdown_edit_use_case.execute(
@@ -761,6 +832,8 @@ class HandleAgentTurnUseCase:
         명시한 Skill이 원문을 필요로 하면(requires_source) 고른 문서를 source_document로, 문서 없이 폴더를 골랐으면
         폴더 바로 아래 Markdown 문서들을 source_documents로 싣는다. 원문이 필요 없는 Skill은 고른 문서가 있어도
         원문으로 쓰지 않는다(새 문서 위치로만 쓴다).
+        Skill 없는 요청은 열린 문서를 active_document로 싣고, 요청이 그 문서를 가리킬 때만 쓰는지는 생성 LLM이 판단한다.
+        열린 문서가 MAX_ACTIVE_DOCUMENT_CHARS를 넘으면 싣지 않고 위키를 거치라고 안내한다.
         `/slug`만 보낸 실행(bare)은 앞선 대화를 원문처럼 섞지 않도록 대화 맥락을 싣지 않는다.
 
         폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError를 낸다.
@@ -786,6 +859,13 @@ class HandleAgentTurnUseCase:
                 for document in sources.documents
             ]
             notice = folder_source_notice(sources)
+        elif selected_skill is None and not bare and _has_active_markdown(request):
+            assert request.active_markdown_context is not None
+            markdown = request.active_markdown_context.markdown
+            if len(markdown) <= MAX_ACTIVE_DOCUMENT_CHARS:
+                reference_context["active_document"] = {"document_id": request.document_id, "markdown": markdown}
+            else:
+                notice = ACTIVE_DOCUMENT_TOO_LONG_NOTICE
         return (
             MarkdownCreateRequest(
                 instruction=request.message,
@@ -1332,6 +1412,28 @@ def _is_ambiguous_auto(route: AgentTurnRoute, skill: Skill | None) -> bool:
         and version.result_mode == "auto"
         and route.confidence < AUTO_RESULT_MODE_MIN_CONFIDENCE
     )
+
+
+def _edit_scope_too_long(markdown: str, target: MarkdownEditTarget) -> bool:
+    """편집기는 편집 범위(+앞뒤 몇 줄)만 LLM에 보낸다. 문서 전체 편집이면 범위가 문서 전체다."""
+    scope = (
+        markdown
+        if target.type == "whole_document"
+        else markdown_line_range(markdown, target.start_line, target.end_line)
+    )
+    return len(scope) > MAX_ACTIVE_DOCUMENT_CHARS
+
+
+def _with_skill_off_notice(result: AgentTurnResult) -> AgentTurnResult:
+    """Skill 사용이 꺼져 있어 Skill 없이 처리한 문서 작업이면 결과 메시지 끝에 알린다."""
+    if result.route.notice_kind != "skill_off" or result.action not in {
+        "markdown_edit",
+        "markdown_create",
+        "workspace_workflow",
+    }:
+        return result
+    base = result.message or (WORKFLOW_DEFAULT_MESSAGE if result.action == "workspace_workflow" else "")
+    return replace(result, message=f"{base}\n\n{SKILL_OFF_NOTICE}" if base else SKILL_OFF_NOTICE)
 
 
 def _has_active_markdown(request: AgentTurnRequest) -> bool:

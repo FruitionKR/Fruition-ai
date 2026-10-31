@@ -60,7 +60,7 @@ class EvaluationGuardsTest(unittest.TestCase):
         }
         normalized = {
             "concept_ledger": [{"slug": "artifact-flow", "title": "Artifact flow", "anchor_reference_ids": []}],
-            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B9999"]}],
+            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B9999"], "related_concept_slugs": ["artifact-flow"]}],
         }
 
         apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
@@ -361,6 +361,224 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(repaired_notes[0]["observations"], [])
         self.assertTrue(operations)
 
+    def test_duplicate_observations_across_notes_keep_both_evidence_claims(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import repair_notes_from_evaluation
+        from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+        from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
+
+        notes = [
+            {
+                "chunk_id": "c1",
+                "evidence_claims": [{"id": "e1", "claim": "A는 B다", "anchor_block_ids": ["B0001"]}],
+                "observations": [{"title": "관찰", "summary": "요약이 더 긴 쪽", "evidence_refs": ["e1"], "anchor_block_ids": ["B0001", "B0002"]}],
+            },
+            {
+                "chunk_id": "c2",
+                "evidence_claims": [{"id": "e1", "claim": "C는 D다", "anchor_block_ids": ["B0002"]}],
+                "observations": [{"title": "관찰", "summary": "요약", "evidence_refs": ["e1"], "anchor_block_ids": ["B0002"]}],
+            },
+        ]
+        evaluation = {"issues": [{"type": "duplicate_observation", "target": ["O001", "O002"]}]}
+
+        repaired = repair_notes_from_evaluation(notes, evaluation)
+        blocks = [SourceBlock("d", "B0001", "B0001", "A", 1, 1), SourceBlock("d", "B0002", "B0002", "C", 2, 2)]
+        normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), blocks).normalize_notes(repaired)
+
+        self.assertEqual([len(note["observations"]) for note in repaired], [1, 0])
+        self.assertEqual(normalized["observations"][0]["claims"], ["C는 D다", "A는 B다"])
+        self.assertEqual([item["claim"] for item in normalized["evidence_units"]], ["A는 B다", "C는 D다"])
+
+    def test_rejects_core_concept_without_supporting_evidence_claim(self) -> None:
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.95}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "concept_ledger": [
+                {"slug": "supported", "title": "Supported", "anchor_reference_ids": ["B0001"]},
+                {"slug": "unsupported", "title": "Unsupported", "anchor_reference_ids": ["B0001"]},
+            ],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "근거", "anchor_reference_ids": ["B0001"], "related_concept_slugs": ["supported"]},
+            ],
+        }
+
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+
+        self.assertFalse(evaluation["passed"])
+        issues = [issue for issue in evaluation["issues"] if issue["type"] == "section_or_mention_should_not_be_core"]
+        self.assertEqual([issue["target"] for issue in issues], [["unsupported"]])
+
+    def test_demotes_unsupported_core_concept_to_section_candidate(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts
+
+        normalized = {
+            "concept_ledger": [
+                {"slug": "supported", "title": "Supported", "definition": "정의", "anchor_reference_ids": ["B0001"]},
+                {"slug": "unsupported", "title": "Unsupported", "definition": "약한 정의", "anchor_reference_ids": ["B0002"]},
+            ],
+            "section_candidates": [{"term": "Other", "title": "Other", "slug": "other", "context": "", "anchor_reference_ids": ["B0003"]}],
+            "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["supported"]}],
+        }
+
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized)
+
+        self.assertEqual(demoted, ["unsupported"])
+        self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["supported"])
+        self.assertIn(
+            {"term": "Unsupported", "title": "Unsupported", "slug": "unsupported", "context": "약한 정의", "anchor_reference_ids": ["B0002"]},
+            demoted_normalized["section_candidates"],
+        )
+        self.assertEqual(demote_unsupported_core_concepts(demoted_normalized)[1], [])
+
+    def test_demotes_core_concept_supported_only_by_reference_list(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts, reference_list_refs
+        from app.modules.wiki_generation.domain.entities import SourceBlock
+
+        references = (
+            "[7] Christopher Clark and Matt Gardner. Simple and effective multi-paragraph reading comprehension. In ACL, 2018. "
+            "[8] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. BERT: Pre-training of deep bidirectional "
+            "transformers. In NAACL, 2019. [9] Angela Fan, Mike Lewis, and Yann Dauphin. Hierarchical neural story generation. 2018."
+        )
+        blocks = [
+            SourceBlock("d", "B0001", "ref_d_b0001", "RAG는 검색한 문서를 생성 모델에 함께 넣는다 [8].", 1, 1),
+            SourceBlock("d", "B0002", "ref_d_b0002", references, 2, 2),
+        ]
+        normalized = {
+            "concept_ledger": [
+                {"slug": "rag", "title": "RAG", "definition": "정의", "anchor_reference_ids": ["ref_d_b0001"]},
+                {"slug": "bert", "title": "BERT", "definition": "정의", "anchor_reference_ids": ["ref_d_b0002"]},
+            ],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["rag"], "anchor_reference_ids": ["ref_d_b0001"]},
+                {"evidence_id": "ev_0002", "claim": "2019년 NAACL 발표", "related_concept_slugs": ["bert"], "anchor_reference_ids": ["d:ref_d_b0002"]},
+            ],
+        }
+
+        refs = reference_list_refs(blocks)
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized, refs)
+
+        self.assertEqual(refs, {"B0002", "ref_d_b0002"})
+        self.assertEqual(demoted, ["bert"])
+        self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["rag"])
+
+    def test_evidence_hint_using_title_or_alias_supports_core_concept(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import unsupported_core_concept_slugs
+        from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+        from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
+
+        note = {
+            "chunk_id": "c1",
+            "core_concepts": [{"title": "검색 증강 생성", "slug_hint": "retrieval-augmented-generation", "aliases": ["RAG"], "definition": "정의", "evidence_block_ids": ["B0001"]}],
+            "evidence_claims": [{"claim": "근거", "anchor_block_ids": ["B0001"], "related_concept_hints": ["rag"]}],
+        }
+        normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), [SourceBlock("d", "B0001", "B0001", "RAG", 1, 1)]).normalize_notes([note])
+
+        self.assertEqual(normalized["evidence_units"][0]["related_concept_slugs"], ["retrieval-augmented-generation"])
+        self.assertEqual(normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0001"])
+        self.assertEqual(unsupported_core_concept_slugs(normalized), [])
+
+    def test_demotion_restores_pass_when_evaluator_raised_only_that_issue(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues
+
+        issue = {"type": "section_or_mention_should_not_be_core", "target": ["unsupported"], "feedback": "낮추세요"}
+        evaluation = {"passed": False, "retry_recommended": True, "scores": {"overall": 0.7}, "issues": [issue], "retry_feedback": "낮추세요"}
+        normalized = {"concept_ledger": [{"slug": "unsupported", "title": "U", "anchor_reference_ids": ["B0001"]}], "evidence_units": []}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+
+        clear_resolved_core_concept_issues(evaluation, ["unsupported"])
+
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual((evaluation["issues"], evaluation["retry_feedback"]), ([], ""))
+
+    def test_demotion_clears_its_issue_and_restores_evaluator_pass(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues
+
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "concept_ledger": [{"slug": "unsupported", "title": "Unsupported", "anchor_reference_ids": ["B0001"]}],
+            "evidence_units": [],
+        }
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"])
+        self.assertFalse(evaluation["passed"])
+
+        clear_resolved_core_concept_issues(evaluation, ["unsupported"])
+
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual(evaluation["issues"], [])
+
+
+    def test_number_tokens_keep_magnitude_unit_and_skip_identifiers(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import number_tokens
+
+        self.assertEqual(number_tokens("상용근로자 25만 3천명(1.5%) 증가"), {"25만", "3천", "1.5"})
+        self.assertEqual(number_tokens("253만 명"), {"253만"})
+        self.assertEqual(number_tokens("총 1,918 명, 제3항, B0036, BM25"), {"1918"})
+
+    def test_flags_number_not_written_in_source(self) -> None:
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        normalized = {
+            "observations": [
+                {"observation_id": "O001", "title": "증감", "summary": "상용근로자 253만 명 증가", "anchor_reference_ids": ["B0001"]},
+                {"observation_id": "O002", "title": "증감", "summary": "상용근로자 25만 3천 명 증가", "anchor_reference_ids": ["B0001"]},
+            ],
+        }
+
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], ["상용근로자는 25만 3천명 증가"])
+
+        self.assertFalse(evaluation["passed"])
+        issues = [issue for issue in evaluation["issues"] if issue["type"] == "unsupported_number"]
+        self.assertEqual([issue["target"] for issue in issues], [["O001"]])
+
+    def test_drops_items_with_unsupported_numbers_and_clears_their_issues(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import (
+            clear_resolved_number_issues,
+            drop_unsupported_number_items,
+        )
+
+        source = ["보건업은 20만 7천명 증가"]
+        wrong_observation = {"observation_id": "O001", "title": "증감", "summary": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"]}
+        normalized = {
+            "concept_ledger": [{"slug": "health", "title": "보건업", "definition": "20만 7천명 증가한 산업", "anchor_reference_ids": ["B0001"], "evidence_claim_ids": ["ev_0001", "ev_0002"]}],
+            "observations": [wrong_observation],
+            "evidence_units": [
+                {"evidence_id": "ev_0001", "claim": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"], "related_concept_slugs": []},
+                {"evidence_id": "ev_0002", "claim": "보건업 20만 7천명 증가", "anchor_reference_ids": ["B0001"], "related_concept_slugs": ["health"]},
+            ],
+            "semantic_notes": [
+                {"chunk_id": "c1", "key_points": [{"text": "보건업 207만 명 증가", "anchor_reference_ids": ["B0001"]}], "observations": [wrong_observation]},
+            ],
+        }
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], source)
+        self.assertFalse(evaluation["passed"])
+
+        dropped_normalized, dropped = drop_unsupported_number_items(normalized, source)
+        clear_resolved_number_issues(evaluation, dropped_normalized, source)
+
+        self.assertEqual(dropped, ["O001", "ev_0001", "보건업 207만 명 증가"])
+        self.assertEqual([item["evidence_id"] for item in dropped_normalized["evidence_units"]], ["ev_0002"])
+        self.assertEqual(dropped_normalized["observations"], [])
+        self.assertEqual(dropped_normalized["semantic_notes"][0]["key_points"], [])
+        self.assertEqual(dropped_normalized["semantic_notes"][0]["observations"], [])
+        self.assertEqual(dropped_normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0002"])
+        self.assertTrue(evaluation["passed"])
+        self.assertEqual(evaluation["issues"], [])
+
+    def test_keeps_number_issue_for_concept_definition(self) -> None:
+        from app.modules.wiki_generation.application.evaluation_guards import (
+            clear_resolved_number_issues,
+            drop_unsupported_number_items,
+        )
+
+        source = ["보건업은 20만 7천명 증가"]
+        normalized = {"concept_ledger": [{"slug": "health", "title": "보건업", "definition": "207만 명 증가", "anchor_reference_ids": ["B0001"]}]}
+        evaluation = {"passed": True, "retry_recommended": False, "scores": {"overall": 0.9}, "issues": [], "retry_feedback": ""}
+        apply_generation_evaluation_guards(evaluation, normalized, ["B0001"], source)
+
+        dropped_normalized, dropped = drop_unsupported_number_items(normalized, source)
+        clear_resolved_number_issues(evaluation, dropped_normalized, source)
+
+        self.assertEqual(dropped, [])
+        self.assertEqual([issue["target"] for issue in evaluation["issues"] if issue["type"] == "unsupported_number"], [["health"]])
+        self.assertFalse(evaluation["passed"])
 
 if __name__ == "__main__":
     unittest.main()

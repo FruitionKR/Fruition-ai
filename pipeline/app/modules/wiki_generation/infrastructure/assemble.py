@@ -134,6 +134,8 @@ def _term_record(item: dict[str, Any]) -> dict[str, Any]:
         record["evidence_block_ids"] = refs
     if item.get("aliases"):
         record["aliases"] = item.get("aliases")
+    if item.get("tags"):
+        record["tags"] = item.get("tags")
     return record
 
 
@@ -207,9 +209,7 @@ def _source_observation_line(item: dict[str, Any], document_id: str) -> str:
 
 def _source_mention_line(item: dict[str, Any], document_id: str) -> str:
     name = item.get("name") or item.get("slug") or "mention"
-    context = item.get("context") or ""
-    suffix = f" - {context}" if context else ""
-    return f"- {name}{suffix}{cite_refs(item.get('anchor_reference_ids', []), document_id)}"
+    return f"- {name}{cite_refs(item.get('anchor_reference_ids', []), document_id)}"
 
 
 def _unique_source_path(source_dir: Path, filename_slug: str) -> Path:
@@ -282,6 +282,7 @@ class ConceptPageAssembler:
 type: concept
 slug: {c['slug']}
 sources: {', '.join(c.get('source_document_ids', []))}
+tags: {', '.join(c.get('tags', []))}
 mention_count: {c.get('mention_count', 0)}
 importance_score: {round(c.get('importance_score', 0), 2)}
 generated_by: backend_skeleton
@@ -334,6 +335,48 @@ class LinkBuilder:
                     "decided_by": "backend",
                     }
                 )
+        # 개념끼리의 링크는 판단을 거친 관계만 만든다. 병합 판단이 '따로 두고 연결(link_to)'로 고른 관계로,
+        # 다른 문서의 기존 개념과도 이어진다. 같은 근거에 함께 나온 정도의 약한 관계는 본문 Related Concepts에만 둔다.
+        # 연결 대상이 같은 편입에서 병합됐으면 병합된 개념으로 잇는다.
+        slug_map = normalized.get("concept_slug_map", {})
+        seen: set[frozenset[str]] = set()
+        for resolution in normalized.get("concept_resolutions", []):
+            if resolution.get("decision") != "link_to":
+                continue
+            source = resolution.get("incoming_slug")
+            # 대상별 확신도(Jev 판정)는 병합 반영 전 대상 slug로 찾고, 없으면 판정 전체 확신도를 쓴다.
+            confidences = resolution.get("link_confidences") or {}
+            for original in resolution.get("link_targets", []):
+                target = slug_map.get(original, original)
+                key = frozenset((source, target))
+                if not source or not target or source == target or key in seen:
+                    continue
+                seen.add(key)
+                links.append(
+                    {
+                        "source": f"concept:{source}",
+                        "target": f"concept:{target}",
+                        "relation": "concept_related_to",
+                        "confidence": confidences.get(original, resolution.get("confidence")),
+                        "decided_by": "concept_resolution",
+                    }
+                )
+        # 별칭에서 뺀 다른 핵심 개념은 같은 문서 안의 하위·관련 개념으로 잇는다.
+        for item in normalized.get("alias_concept_links", []):
+            source = slug_map.get(item["source"], item["source"])
+            target = slug_map.get(item["target"], item["target"])
+            key = frozenset((source, target))
+            if source == target or key in seen:
+                continue
+            seen.add(key)
+            links.append(
+                {
+                    "source": f"concept:{source}",
+                    "target": f"concept:{target}",
+                    "relation": "concept_related_to",
+                    "decided_by": "alias_overlap",
+                }
+            )
         return links
 
 

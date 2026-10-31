@@ -12,6 +12,9 @@ Rules:
 - Keep canonical technical terms when clearer.
 - Use only supplied concept card, evidence claims, and source blocks.
 - Do not invent facts, sources, links, or citations.
+- State only what the source blocks state. Do not add causes, reasons, purposes, consequences, or comparisons the source does not state, and do not join separate source statements into one causal or conditional claim.
+- Keep the source's conditions, exceptions, scope limits, quantities, and modality (must, may, should, try to). Do not strengthen or weaken an obligation or a degree of certainty.
+- If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
 - Use only anchor_block_ids for citations.
 - Do NOT put citations like [B0001] inside text fields.
 - Do not output final Markdown. Backend will assemble Markdown/front matter/links.

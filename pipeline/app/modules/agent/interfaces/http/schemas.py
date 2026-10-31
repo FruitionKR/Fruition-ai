@@ -195,6 +195,7 @@ class AgentTurnRouteResponse(BaseModel):
         "markdown_edit",
         "markdown_create",
         "folder_organize",
+        "folder_lookup",
         "workspace_workflow",
         "skill_authoring",
         "skill_draft_proposal",
@@ -214,6 +215,9 @@ class AgentTurnRouteResponse(BaseModel):
     required_capabilities: list[
         Literal["document-create", "document-edit", "folder-organize", "template"]
     ] = Field(default_factory=list)
+    notice_kind: Literal[
+        "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "policy", "skill_off"
+    ] | None = None
 
 
 class SkillCandidateResponse(BaseModel):
@@ -253,6 +257,7 @@ class AgentTurnResponse(BaseModel):
         "markdown_edit",
         "markdown_create",
         "folder_organize",
+        "folder_lookup",
         "workspace_workflow",
         "skill_authoring",
         "skill_draft_proposal",

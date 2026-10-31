@@ -22,6 +22,13 @@ Task:
 - Do not use refs outside SOURCE BLOCKS.
 - Use the exact chunk_id from input if supplied.
 
+Number rules:
+- Copy every number exactly as the source writes it, with the same unit. Do not convert units (for example, between 천 and 만) and do not compute new numbers such as differences, sums, or ratios.
+- When a table gives its unit only in a header, keep the table value and add that unit in parentheses.
+- State only what the source blocks state. Do not add causes, reasons, purposes, consequences, or comparisons the source does not state, and do not join separate source statements into one causal or conditional claim.
+- Keep the source's conditions, exceptions, scope limits, quantities, and modality (must, may, should, try to). Do not strengthen or weaken an obligation or a degree of certainty.
+- If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
+
 Classification rules:
 1. Use core_concept only when the term is independently explainable, grounded in
    the current chat pairs, central to understanding the source, and likely
@@ -36,10 +43,12 @@ Classification rules:
 6. If uncertain between section_candidate and mention, choose mention.
 7. Do not invent definitions or categories that are not supported by the source.
 8. Every core_concept, section_candidate, and mention must include evidence_block_ids.
+   Every core_concept must be named in related_concept_hints of at least one evidence claim; otherwise classify it as section_candidate or mention.
 9. Keep names canonical and stable. Avoid temporary phrases from the chat.
 10. Do not treat every important term as a core_concept.
 
 Chat observation rules:
+- Do not restate facts inside an observation. Write each fact once as an evidence claim and list its id in evidence_refs.
 - observation.type must be one of: source_claim, definition, comparison, example,
   qa_episode, follow_up, correction, decision.
 - For qa_episode, title should summarize the user's question and summary should
@@ -52,6 +61,7 @@ Chat observation rules:
   multiple chat pairs.
 
 Evidence rules:
+- Give each evidence claim an id unique within this packet, such as e1, e2.
 - Evidence claim = one atomic claim.
 - Avoid broad claims that need many anchors.
 - anchor_block_ids should directly prove the exact claim.
@@ -65,20 +75,6 @@ Return exactly JSON:
   "key_points": [
     {"text": string, "anchor_block_ids": [string]}
   ],
-  "observations": [
-    {
-      "type": string,
-      "title": string,
-      "query_text": string|null,
-      "summary": string,
-      "claims": [string],
-      "related_concept_hints": [string],
-      "anchor_block_ids": [string]
-    }
-  ],
-  "categories": [
-    {"name": string}
-  ],
   "core_concepts": [
     {
       "title": string,
@@ -88,6 +84,29 @@ Return exactly JSON:
       "why_page_worthy": string,
       "evidence_block_ids": [string]
     }
+  ],
+  "evidence_claims": [
+    {
+      "id": string,
+      "claim": string,
+      "anchor_block_ids": [string],
+      "related_concept_hints": [string],
+      "confidence": number
+    }
+  ],
+  "observations": [
+    {
+      "type": string,
+      "title": string,
+      "query_text": string|null,
+      "summary": string,
+      "evidence_refs": [string],
+      "related_concept_hints": [string],
+      "anchor_block_ids": [string]
+    }
+  ],
+  "categories": [
+    {"name": string}
   ],
   "section_candidates": [
     {
@@ -101,16 +120,7 @@ Return exactly JSON:
     {
       "name": string,
       "slug_hint": string,
-      "context": string,
       "evidence_block_ids": [string]
-    }
-  ],
-  "evidence_claims": [
-    {
-      "claim": string,
-      "anchor_block_ids": [string],
-      "related_concept_hints": [string],
-      "confidence": number
     }
   ],
   "needs_neighbor_context": boolean,

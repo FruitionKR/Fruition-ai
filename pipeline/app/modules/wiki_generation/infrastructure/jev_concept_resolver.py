@@ -1,9 +1,12 @@
-"""들어온 개념마다 후보 3개를 추리고 Jev가 같은 개념인지 판정하는 개념 병합기.
+"""들어온 개념마다 후보 100개를 추리고 Jev가 후보 하나씩 같은 개념·관련 개념·무관을 판정하는 개념 병합기.
 
-평가(output/reports/09_concept-merge-jev-vs-llm-final.md)와 같이 요청 하나에 판정 하나만 담고,
-정의만 근거로 후보 3개와 keep_new 중 하나를 고른다. 정의가 없는 개념은 이름만으로 병합하는 오류가
-관찰돼 Jev에 보내지 않고 새 개념으로 둔다. Jev는 missing hint를 판정하지 않으므로 hint가 있으면
-기존 LLM 결과의 hint_resolutions만 쓴다. Jev를 쓸 수 없으면 기존 LLM 결과를 그대로 쓴다.
+- 후보: 다른 incoming 개념과 기존 개념을 제목·별칭·정의로 BGE-M3 0.75 + BM25 0.25 점수 상위 100개
+- 이름 일치: 제목이나 별칭이 후보의 slug·제목·별칭과 slug로 같으면 Jev 없이 병합한다.
+- 판정: 판정 규칙은 state에 한 번만 두고, 후보마다 질문 하나(same/related/unrelated)를 요청 토큰 한도로 묶어 보낸다.
+- 결정: same이 있으면 P(same)이 가장 높은 후보로 병합, 없으면 P(related)가 0.9 이상인 related 후보 모두와 연결한다.
+정의가 없는 개념은 이름만으로 병합하는 오류가 관찰돼 Jev에 보내지 않는다. 이름 일치 병합은 정의 없이도 한다. Jev는 missing hint를
+판정하지 않으므로 hint가 있으면 기존 LLM 결과의 hint_resolutions만 쓴다. Jev나 임베딩을 쓸 수 없으면 기존
+LLM 결과를 그대로 쓴다.
 """
 
 from __future__ import annotations
@@ -11,38 +14,146 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import random
+import threading
+from array import array
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from functools import lru_cache
+from typing import Any
 
-from app.core.jev_client import JEV_CONCEPT_MERGE_ENABLED_ENV, JevClient, JevUnavailable, build_jev_client
-from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
-from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
-
-CONCEPT_MERGE_RULE = (
-    "Resolve concept identity using only the supplied definitions. Merge only synonyms without losing "
-    "distinct meaning or scope. A related, broader, narrower, composite or insufficiently defined concept "
-    "stays keep_new. Compare each task only to its own candidates. A listed candidate may be existing or "
-    "incoming. Choose one allowed option. Return no explanation."
+from app.core.jev_batches import token_batches
+from app.core.jev_client import (
+    JEV_CONCEPT_MERGE_ENABLED_ENV,
+    JevClient,
+    JevUnavailable,
+    build_jev_client,
+    choice_probability,
 )
-KEEP_NEW = "keep_new"
-CANDIDATE_LIMIT = 3
+from app.modules.query.domain.scoring import hybrid_score
+from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
+from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
+from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
+from app.modules.wiki_generation.domain.text_utils import name_key
+
+CONCEPT_PAIR_RULE = (
+    "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
+    "and definitions. same: the same concept under another name, such as a synonym, translation, abbreviation, "
+    "or spelling variant, without losing distinct meaning or scope. related: a distinct concept with a direct "
+    "relation stated by the definitions: one is a kind, part, stage, method, or variant of the other; or one is "
+    "defined in terms of the other, so it cannot be understood without it. unrelated: anything else, including "
+    "concepts whose definitions only mention or contrast with each other without one of those relations, "
+    "concepts that only share a field, a document, a workflow, or a topic, siblings that are both kinds of the "
+    "same broader concept, or concepts that connect only through a third concept. When unsure between related and unrelated, choose unrelated. "
+    "Return no explanation."
+)
+PAIR_CRITERIA = {
+    "same": "Same concept",
+    "related": "Distinct concept with a direct relation stated by the definitions",
+    "unrelated": "Unrelated, or only the same field, document, workflow, or topic",
+}
+# related는 이 확률 이상일 때만 연결한다. 같은 분야 개념을 넓게 related로 고르는 경향이 있어서다.
+RELATED_MIN_PROBABILITY = 0.9
+CANDIDATE_LIMIT = 100
+CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
+# ponytail: 프로세스 안 dict 캐시라 워커가 재시작하면 다시 임베딩한다. 한도를 넘으면 통째로 비운다.
+EMBEDDING_CACHE_LIMIT = 20_000
+_embedding_cache: dict[tuple[str, str], array] = {}
+# 편입 작업은 워커 스레드에서 동시에 돌아 캐시 갱신을 한 번에 하나만 한다.
+_embedding_cache_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
-def with_jev_concept_merge(resolver: ConceptResolver) -> ConceptResolver:
-    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다."""
+def with_jev_concept_merge(resolver: ConceptResolver) -> NameMatchConceptResolver:
+    """`JEV_CONCEPT_MERGE_ENABLED`와 API 키가 있으면 Jev로 병합을 판정하고, 아니면 기존 판정기를 쓴다.
+
+    어느 판정기든 이름·별칭이 글자 그대로 같은 개념은 그 앞에서 코드로 병합한다.
+    """
+    return NameMatchConceptResolver(jev_concept_judge(resolver) or resolver)
+
+
+class NameMatchConceptResolver(ConceptResolver):
+    """이름이 같은 개념은 판정기 없이 병합하고 나머지만 판정기에 넘긴다. Jev·임베딩이 없을 때도 같게 동작한다."""
+
+    def __init__(self, inner: ConceptResolver) -> None:
+        self.inner = inner
+
+    def resolve(
+        self,
+        incoming_concepts: list[JsonDict],
+        existing_concepts: list[JsonDict],
+        missing_related_hints: list[JsonDict] | None = None,
+    ) -> JsonDict:
+        incoming = [concept for concept in incoming_concepts if concept.get("slug")]
+        pool = [*incoming, *(concept for concept in existing_concepts if concept.get("slug"))]
+        incoming_slugs = {concept["slug"] for concept in incoming}
+        matched = {}
+        for concept in incoming:
+            others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            if target := _exact_name_match(concept, others, incoming_slugs):
+                matched[concept["slug"]] = _merge(concept["slug"], target)
+        rest = [concept for concept in incoming_concepts if concept.get("slug") not in matched]
+        raw = self.inner.resolve(rest, existing_concepts, missing_related_hints) if rest or missing_related_hints else {}
+        resolutions = list(raw.get("resolutions") or [])
+        # 이름 일치 대상이 다시 병합되면(이름 일치끼리 또는 판정기에서) 연쇄가 생기므로 최종 대상으로 바로 잇는다.
+        # 이름 일치는 기존 개념이나 slug가 앞선 개념만 가리켜 순환이 없다.
+        # 판정기 출력은 아직 검증 전이라 순환이나 없는 대상을 가리킬 수 있어, 있는 개념으로만 한 번씩 따라간다.
+        valid = {concept["slug"] for concept in pool}
+        merged_to = {
+            **{slug: item["canonical_slug"] for slug, item in matched.items()},
+            **{item.get("incoming_slug"): item.get("canonical_slug") for item in resolutions if item.get("decision") == "merge_into"},
+        }
+        for slug, item in matched.items():
+            target, seen = item["canonical_slug"], {slug}
+            while target in merged_to and merged_to[target] in valid and target not in seen:
+                seen.add(target)
+                target = merged_to[target]
+            item["canonical_slug"] = target
+        return {**raw, "resolutions": [*matched.values(), *resolutions]}
+
+
+def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptResolver | None:
+    """Jev 개념 판정기를 만든다. 쓸 수 없으면 None이다.
+
+    `judge_concepts`만 쓰는 호출자(후속 편입·lint 승격)는 fallback 없이 만든다.
+    """
     client = build_jev_client(JEV_CONCEPT_MERGE_ENABLED_ENV)
     if client is None:
-        return resolver
-    return JevConceptResolver(client, resolver)
+        return None
+    # 임베딩 서버가 없으면 후보를 거를 수 없어 Jev를 쓰지 않는다.
+    embedding_model = embedding_server_model()
+    if embedding_model is None:
+        logger.warning("[Jev concept merge 꺼짐] 임베딩 서버를 쓸 수 없어 Jev 개념 판정을 쓰지 않습니다.")
+        return None
+    return JevConceptResolver(client, fallback, embedding_model)
+
+
+def embedding_server_model() -> RemoteEmbeddingModel | None:
+    """임베딩 서버 모델. 편입 워커는 BGE-M3를 직접 올리지 않으므로(ADR-0026) 서버가 없거나 설정이 잘못되면 None이다."""
+    if not os.environ.get("EMBEDDING_SERVICE_URL"):
+        return None
+    try:
+        return _remote_embedding_model()
+    except RuntimeError as exc:
+        logger.warning("[임베딩 서버 꺼짐] 설정 오류: %s", exc)
+        return None
+
+
+@lru_cache(maxsize=1)
+def _remote_embedding_model() -> RemoteEmbeddingModel:
+    return RemoteEmbeddingModel.from_env()
 
 
 class JevConceptResolver(ConceptResolver):
-    def __init__(self, client: JevClient, fallback: ConceptResolver) -> None:
+    def __init__(
+        self, client: JevClient, fallback: ConceptResolver | None, embedding_model: EmbeddingModelPort
+    ) -> None:
         self._client = client
         self._fallback = fallback
+        self._embedding_model = embedding_model
         self._text_search = Bm25Searcher()
 
     def resolve(
@@ -64,87 +175,234 @@ class JevConceptResolver(ConceptResolver):
 
     def _resolve_with_jev(self, incoming: list[JsonDict], existing: list[JsonDict]) -> list[JsonDict]:
         pool = [
-            *({**concept, "definition": concept.get("definition") or "", "location": "incoming"} for concept in incoming),
+            *({**concept, "definition": concept.get("definition") or ""} for concept in incoming),
             # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다.
-            *(
-                {**concept, "definition": concept.get("definition") or concept.get("summary") or "", "location": "existing"}
-                for concept in existing
-            ),
+            *({**concept, "definition": concept.get("definition") or concept.get("summary") or ""} for concept in existing),
         ]
-        pool = [concept for concept in pool if concept.get("slug") and str(concept["definition"]).strip()]
-        tasks = [
-            (concept, candidates)
-            for concept in incoming
-            if str(concept.get("definition") or "").strip()
-            and (candidates := self._candidates(concept, pool))
+        # 이름 일치는 정의 없이도 판정한다. Jev에는 정의가 있는 개념끼리만 묻는다(judge_concepts).
+        pool = [concept for concept in pool if concept.get("slug")]
+        concepts = [concept for concept in incoming if concept.get("slug")]
+        resolutions = self.judge_concepts(concepts, pool)
+        # 병합 대상인 incoming 개념이 다시 다른 개념으로 병합되면 연쇄·순환이 생기므로 그 병합은 하지 않는다.
+        merged = {slug for slug, item in resolutions.items() if item["decision"] == "merge_into"}
+        return [
+            item
+            for item in resolutions.values()
+            if item["decision"] != "merge_into" or item["canonical_slug"] not in merged
+        ]
+
+    def judge_concepts(self, concepts: list[JsonDict], pool: list[JsonDict]) -> dict[str, JsonDict]:
+        """개념마다 pool(slug·title·aliases·definition)에서 후보를 추려 판정한다.
+
+        병합·연결할 개념의 판정만 incoming slug별로 돌려준다. 연쇄 병합은 거르지 않는다.
+        """
+        # 후보 slug가 질문 키라 slug마다 하나만 둔다.
+        pool = list({concept["slug"]: concept for concept in pool}.values())
+        resolutions: dict[str, JsonDict] = {}
+        tasks: list[tuple[JsonDict, list[JsonDict]]] = []
+        incoming_slugs = {concept["slug"] for concept in concepts}
+        for concept in concepts:
+            others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            if target := _exact_name_match(concept, others, incoming_slugs):
+                resolutions[concept["slug"]] = _merge(concept["slug"], target)
+                logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=merge_into:%s(이름 일치)",
+                            concept["slug"], len(others), target)
+                continue
+            # 정의 없이 이름만으로 판정하면 틀려 Jev에는 정의가 있는 개념끼리만 묻는다.
+            others = [candidate for candidate in others if _has_definition(candidate)]
+            if others and _has_definition(concept):
+                tasks.append((concept, others))
+        if not tasks:
+            return resolutions
+        vectors = self._embed([_concept_text(concept) for concept in [*pool, *concepts]])
+        requests = [
+            (concept, batch)
+            for concept, others in tasks
+            for batch in token_batches(
+                _shuffled(concept, self._candidates(concept, others, vectors)),
+                lambda batch, concept=concept: _request(concept, batch),
+                max_items=CANDIDATE_LIMIT,
+            )
         ]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(copy_context().run, self._judge, concept, candidates) for concept, candidates in tasks]
-            choices = {concept["slug"]: future.result() for (concept, _), future in zip(tasks, futures, strict=True)}
-        merges = {slug: target for slug, target in choices.items() if target != KEEP_NEW}
-        # 병합 대상인 incoming 개념이 다시 다른 개념으로 병합되면 연쇄·순환이 생기므로 그 병합은 하지 않는다.
-        return [
-            {"incoming_slug": slug, "decision": "merge_into", "canonical_slug": target, "alias_to_add": None}
-            for slug, target in merges.items()
-            if target not in merges
+            futures = [
+                executor.submit(copy_context().run, self._client.choose, **_request(concept, batch))
+                for concept, batch in requests
+            ]
+            answers: dict[str, dict[str, JsonDict]] = {}
+            for (concept, _), future in zip(requests, futures, strict=True):
+                answers.setdefault(concept["slug"], {}).update(future.result())
+        for concept, others in tasks:
+            slug = concept["slug"]
+            request_count = sum(1 for item, _ in requests if item["slug"] == slug)
+            resolution = _decide(slug, answers[slug])
+            if resolution:
+                resolutions[slug] = resolution
+            logger.info(
+                "[Jev concept merge] %s 후보=%d 요청=%d 결정=%s 상위=%s",
+                slug,
+                len(answers[slug]),
+                request_count,
+                resolution["decision"] + ":" + resolution["canonical_slug"] if resolution else "create_new",
+                _top_probabilities(answers[slug]),
+            )
+        return resolutions
+
+    def _candidates(self, concept: JsonDict, others: list[JsonDict], vectors: dict[str, array]) -> list[JsonDict]:
+        query = _concept_text(concept)
+        texts = [_concept_text(candidate) for candidate in others]
+        scores = [
+            hybrid_score(vector_similarity(vectors[query], vectors[text]), lexical, CANDIDATE_EMBEDDING_WEIGHT)
+            for text, lexical in zip(texts, self._text_search.score(query, texts), strict=True)
         ]
-
-    def _candidates(self, concept: JsonDict, pool: list[JsonDict]) -> list[JsonDict]:
-        others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
-        if not others:
-            return []
-        scores = self._text_search.score(_concept_text(concept, concept.get("definition")), [
-            _concept_text(candidate, candidate["definition"]) for candidate in others
-        ])
         ranked = sorted(zip(scores, others, strict=True), key=lambda row: (-row[0], row[1]["slug"]))
-        return [candidate for score, candidate in ranked[:CANDIDATE_LIMIT] if score > 0]
+        return [candidate for _, candidate in ranked[:CANDIDATE_LIMIT]]
 
-    def _judge(self, concept: JsonDict, candidates: list[JsonDict]) -> str:
-        # 평가와 같이 후보 순서와 keep_new 위치를 고정하지 않아 순위·위치가 단서가 되지 않게 한다.
-        rng = random.Random(hashlib.sha256(str(concept["slug"]).encode("utf-8")).hexdigest())
-        candidates = list(candidates)
-        rng.shuffle(candidates)
-        state = {
-            "q0": {
-                "incoming": {
-                    "slug": concept["slug"],
-                    "title": concept.get("title"),
-                    "definition": concept.get("definition"),
-                },
-                "candidates": [
-                    {
-                        "slug": candidate["slug"],
-                        "title": candidate.get("title"),
-                        "aliases": candidate.get("aliases") or [],
-                        "definition": candidate["definition"],
-                        "location": candidate["location"],
-                    }
-                    for candidate in candidates
-                ],
-            }
-        }
-        options = [candidate["slug"] for candidate in candidates] + [KEEP_NEW]
-        offset = rng.randrange(len(options))
-        options = options[offset:] + options[:offset]
-        answers = self._client.choose(
-            json.dumps(state, ensure_ascii=False),
+    def _embed(self, texts: list[str]) -> dict[str, array]:
+        try:
+            return cached_embeddings(self._embedding_model, texts)
+        except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
+            raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+
+
+def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, array]:
+    """텍스트 벡터를 돌려준다. 기존 개념·클러스터는 편입마다 다시 오므로 (모델, 텍스트 해시)로 캐시한다."""
+    model_name = model.model_name
+    keys = {text: (model_name, hashlib.sha256(text.encode("utf-8")).hexdigest()) for text in texts}
+    with _embedding_cache_lock:
+        found = {text: _embedding_cache[key] for text, key in keys.items() if key in _embedding_cache}
+    missing = [text for text in keys if text not in found]
+    if missing:
+        # 임베딩 서버는 텍스트당 MAX_TEXT_CHARS까지만 받는다. 개념 텍스트는 보통 그보다 훨씬 짧다.
+        vectors = model.embed([text[:MAX_TEXT_CHARS] for text in missing])
+        for text, vector in zip(missing, vectors, strict=True):
+            found[text] = array("f", vector)
+        # 결과는 위에서 모은 found로 돌려준다. 캐시를 비워도 이번 결과에는 영향이 없다.
+        with _embedding_cache_lock:
+            if len(_embedding_cache) + len(missing) > EMBEDDING_CACHE_LIMIT:
+                _embedding_cache.clear()
+            _embedding_cache.update({keys[text]: found[text] for text in missing})
+    return found
+
+
+def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_slugs: set[str]) -> str | None:
+    """제목·별칭이 후보의 slug·제목·별칭과 글자 그대로 같은 후보를 고른다.
+
+    기존 개념을 먼저 고른다. 같은 편입의 개념끼리는 이름 일치가 양쪽으로 성립하므로, 서로 병합해
+    둘 다 남지 않도록 slug가 앞선 쪽만 정본으로 둔다.
+    """
+    names = _names(concept.get("title"), *(concept.get("aliases") or []))
+    matches = [
+        candidate["slug"]
+        for candidate in candidates
+        if names & _names(candidate["slug"], candidate.get("title"), *(candidate.get("aliases") or []))
+    ]
+    existing = [slug for slug in matches if slug not in incoming_slugs]
+    if existing:
+        return min(existing)
+    return min((slug for slug in matches if slug < concept["slug"]), default=None)
+
+
+def _has_definition(concept: JsonDict) -> bool:
+    return bool(str(concept.get("definition") or "").strip())
+
+
+def _names(*names: object) -> set[str]:
+    """대소문자·전각/반각·공백·하이픈만 맞춘 이름. 기호를 지우는 slugify로 비교하면 `C#`과 `C`가 같아진다."""
+    return {name_key(name) for name in names if name} - {"", "untitled"}
+
+
+def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:
+    # 평가와 같이 후보 순서를 고정하지 않아 순위가 단서가 되지 않게 한다.
+    candidates = list(candidates)
+    random.Random(hashlib.sha256(str(concept["slug"]).encode("utf-8")).hexdigest()).shuffle(candidates)
+    return candidates
+
+
+def _request(concept: JsonDict, candidates: list[JsonDict]) -> dict[str, Any]:
+    # 규칙과 보안 경계는 질문마다 반복하지 않고 state에 한 번만 둔다(경계는 클라이언트가 넣는다).
+    state = {
+        "rule": CONCEPT_PAIR_RULE,
+        "incoming": {
+            "slug": concept["slug"],
+            "title": concept.get("title"),
+            "aliases": concept.get("aliases") or [],
+            "definition": concept.get("definition"),
+        },
+        "candidates": [
             {
-                "q0": {
-                    "type": "choice",
-                    "instructions": f"{CONCEPT_MERGE_RULE} Evaluate task q0 only.",
-                    "criteria": {
-                        option: "Keep incoming separate" if option == KEEP_NEW else f"Merge into candidate {option}"
-                        for option in options
-                    },
-                }
-            },
-        )
-        return answers["q0"]["choice"]
+                "id": candidate["slug"],
+                "title": candidate.get("title"),
+                "aliases": candidate.get("aliases") or [],
+                "definition": candidate["definition"],
+            }
+            for candidate in candidates
+        ],
+    }
+    return {
+        "state": json.dumps(state, ensure_ascii=False),
+        "questions": {
+            candidate["slug"]: {
+                "type": "choice",
+                "instructions": f"Judge candidate {candidate['slug']} against incoming.",
+                "criteria": PAIR_CRITERIA,
+            }
+            for candidate in candidates
+        },
+    }
 
 
-def _concept_text(concept: JsonDict, definition: object) -> str:
+def _decide(slug: str, answers: dict[str, JsonDict]) -> JsonDict | None:
+    same = {target: choice_probability(answer, "same") for target, answer in answers.items() if answer["choice"] == "same"}
+    if same:
+        return _merge(slug, min(same, key=lambda target: (-same[target], target)))
+    related = {
+        target: probability
+        for target, answer in answers.items()
+        if answer["choice"] == "related"
+        and (probability := choice_probability(answer, "related")) >= RELATED_MIN_PROBABILITY
+    }
+    if not related:
+        return None
+    targets = sorted(related, key=lambda target: (-related[target], target))
+    return {
+        "incoming_slug": slug,
+        "decision": "link_to",
+        "canonical_slug": targets[0],
+        "link_targets": targets,
+        "link_confidences": {target: related[target] for target in targets},
+        "alias_to_add": None,
+    }
+
+
+def _merge(slug: str, target: str) -> JsonDict:
+    return {"incoming_slug": slug, "decision": "merge_into", "canonical_slug": target, "alias_to_add": None}
+
+
+def _top_probabilities(answers: dict[str, JsonDict], limit: int = 3) -> str:
+    def best(answer: JsonDict) -> float:
+        return max(choice_probability(answer, "same"), choice_probability(answer, "related"))
+
+    top = sorted(answers.items(), key=lambda row: -best(row[1]))[:limit]
+    return ", ".join(
+        f"{target}(same={choice_probability(answer, 'same'):.2f}, related={choice_probability(answer, 'related'):.2f})"
+        for target, answer in top
+    )
+
+
+def vector_similarity(left: array, right: array) -> float:
+    return max(0.0, min(1.0, float(sum(a * b for a, b in zip(left, right, strict=True)))))
+
+
+def _concept_text(concept: JsonDict) -> str:
+    # 후보 거르기 점수용 글이다. 태그는 이름이 전혀 다른 같은·관련 개념을 후보에 들게 하는 색인이고, Jev 판정 입력에는 넣지 않는다.
     return " ".join(
         str(part)
-        for part in (concept.get("title"), *(concept.get("aliases") or []), definition)
+        for part in (
+            concept.get("title"),
+            *(concept.get("aliases") or []),
+            *(concept.get("tags") or []),
+            concept.get("definition"),
+        )
         if part
     )

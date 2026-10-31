@@ -1,0 +1,3118 @@
+{
+ "organize": [
+  {
+   "id": "org-01",
+   "category": "explicit_move_existing_folder",
+   "instruction": "루트에 있는 9월 주간 회의록 세 개를 회의록 폴더로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-ref",
+     "type": "folder",
+     "name": "참고 자료",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-w-0825",
+     "type": "document",
+     "name": "주간 회의록 8월 4주차",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-w-0901",
+     "type": "document",
+     "name": "주간 회의록 9월 1주차",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-w-0908",
+     "type": "document",
+     "name": "주간 회의록 9월 2주차",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-w-0915",
+     "type": "document",
+     "name": "주간 회의록 9월 3주차",
+     "parent_id": null,
+     "current_version": 3,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-budget",
+     "type": "document",
+     "name": "2026 하반기 예산안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": "f-ref",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-w-0901": "f-minutes",
+     "d-w-0908": "f-minutes",
+     "d-w-0915": "f-minutes"
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-minutes",
+     "f-plan",
+     "f-ref",
+     "d-w-0825",
+     "d-plan-new",
+     "d-budget",
+     "d-k8s-pod"
+    ],
+    "max_operations": 3,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "9월 1~3주차 주간 회의록 세 개가 기존 '회의록' 폴더 아래로 간다.",
+    "새 폴더를 만들지 않고, 다른 문서·폴더는 그대로다."
+   ],
+   "note": "이름으로 지정한 문서를 기존 폴더로 옮기기. base_version이 1이 아닌 문서를 섞어 버전 복사를 본다."
+  },
+  {
+   "id": "org-02",
+   "category": "move_into_new_folder",
+   "instruction": "쿠버네티스 파드 문서랑 디플로이먼트 문서를 '쿠버네티스' 폴더 새로 만들어서 거기로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-dev",
+     "type": "folder",
+     "name": "개발",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-api",
+     "type": "document",
+     "name": "Spring Boot API 설계",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-deploy",
+     "type": "document",
+     "name": "쿠버네티스 디플로이먼트 가이드",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-sre",
+     "type": "document",
+     "name": "SRE 포스트모템 문화",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-dev-weekly",
+     "type": "document",
+     "name": "개발팀 주간 회의록",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-infra-cost",
+     "type": "document",
+     "name": "클라우드 인프라 비용 정리",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-k8s-pod": {
+      "new_folder_name_any_of": [
+       "쿠버네티스"
+      ]
+     },
+     "d-k8s-deploy": {
+      "new_folder_name_any_of": [
+       "쿠버네티스"
+      ]
+     }
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-dev",
+     "d-api",
+     "d-pg-mvcc",
+     "d-sre",
+     "d-dev-weekly",
+     "d-infra-cost"
+    ],
+    "max_operations": 3,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "새로 만든 '쿠버네티스' 폴더 하나에 파드·디플로이먼트 문서가 함께 들어간다.",
+    "다른 문서는 움직이지 않는다."
+   ],
+   "note": "create_folder 결과 참조($operation_result)로 이동하기. 새 폴더 위치는 지정하지 않았으므로 보지 않는다."
+  },
+  {
+   "id": "org-03",
+   "category": "topic_grouping_free_names",
+   "instruction": "현재까지 업로드 한 문서, 알맞은 폴더 이름 생성해서 주제별로 정리해 줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-design",
+     "type": "folder",
+     "name": "디자인",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-inbox",
+     "type": "folder",
+     "name": "미분류",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-deploy",
+     "type": "document",
+     "name": "쿠버네티스 디플로이먼트 가이드",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-privacy",
+     "type": "document",
+     "name": "개인정보 보호법 발췌",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-labor",
+     "type": "document",
+     "name": "근로기준법 제4장 근로시간과 휴식",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-rag-paper",
+     "type": "document",
+     "name": "RAG 논문 - Retrieval-Augmented Generation",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-rag",
+     "type": "document",
+     "name": "검색증강생성(RAG) 위키",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-ir",
+     "type": "document",
+     "name": "정보 검색 개요",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-ethics",
+     "type": "document",
+     "name": "사람이 중심이 되는 AI 윤리기준",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-employment",
+     "type": "document",
+     "name": "경제활동인구조사 2026년 9월 보도자료",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-k8s-pod",
+      "d-k8s-deploy"
+     ],
+     [
+      "d-privacy",
+      "d-labor"
+     ],
+     [
+      "d-rag-paper",
+      "d-wiki-rag",
+      "d-wiki-ir"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [],
+    "max_operations": null,
+    "kind": "plan",
+    "groups_parent_not_root": true,
+    "names_unchanged": [
+     "d-k8s-pod",
+     "d-k8s-deploy",
+     "d-privacy",
+     "d-labor",
+     "d-rag-paper",
+     "d-wiki-rag",
+     "d-wiki-ir"
+    ]
+   },
+   "acceptable": [],
+   "criteria": [
+    "쿠버네티스 2개, 법령 2개, 검색/RAG 3개가 각각 한 폴더에 모이고 세 폴더는 서로 다르다.",
+    "그룹 문서는 루트에 남지 않고 이름이 바뀌지 않는다.",
+    "AI 윤리기준·고용 보도자료는 어디로 가든 상관없다."
+   ],
+   "note": "tests/test_agent_organization_e2e.py:28 지시와 판정(:172-181)을 코퍼스 제목으로 키운 케이스."
+  },
+  {
+   "id": "org-04",
+   "category": "scoped_topic_grouping",
+   "instruction": "이 폴더 문서들 주제별로 폴더 만들어서 정리해줘",
+   "target_folder_id": "f-inbox",
+   "hierarchy": [
+    {
+     "id": "f-inbox",
+     "type": "folder",
+     "name": "미분류",
+     "parent_id": null,
+     "current_version": 2
+    },
+    {
+     "id": "f-mkt",
+     "type": "folder",
+     "name": "마케팅",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-mkt-camp",
+     "type": "document",
+     "name": "마케팅 캠페인 기획",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-ads",
+     "type": "document",
+     "name": "마케팅 광고 성과 분석",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-hr-post",
+     "type": "document",
+     "name": "2026 하반기 채용 공고 초안",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-hr-eval",
+     "type": "document",
+     "name": "면접 평가표 양식",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-old",
+     "type": "document",
+     "name": "상반기 마케팅 리포트",
+     "parent_id": "f-mkt",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-budget",
+     "type": "document",
+     "name": "마케팅 예산안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-hr-root",
+     "type": "document",
+     "name": "신입 온보딩 체크리스트",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-sre",
+     "type": "document",
+     "name": "SRE 포스트모템 문화",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-mkt-camp",
+      "d-mkt-ads"
+     ],
+     [
+      "d-hr-post",
+      "d-hr-eval"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [
+     "f-inbox",
+     "f-mkt",
+     "d-mkt-old",
+     "d-mkt-budget",
+     "d-hr-root",
+     "d-sre"
+    ],
+    "max_operations": null,
+    "kind": "plan",
+    "groups_within": "f-inbox"
+   },
+   "acceptable": [],
+   "criteria": [
+    "미분류 안의 마케팅 2개, 채용 2개가 미분류 하위의 서로 다른 폴더로 나뉜다.",
+    "미분류 폴더 자신과 범위 밖 항목(마케팅 폴더, 루트 문서)은 그대로다."
+   ],
+   "note": "target_folder_id 범위. hierarchy는 전체 트리이며 eval이 agent_worker.scoped_hierarchy로 잘라 넘긴다. 범위 밖 '마케팅' 폴더로 옮기는 계획은 _scope_moves_to_target_folder가 빼므로 그룹 판정에서 걸린다."
+  },
+  {
+   "id": "org-05",
+   "category": "rename_folder",
+   "instruction": "'임시' 폴더 이름을 '2026 하반기 프로젝트'로 바꿔줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-tmp",
+     "type": "folder",
+     "name": "임시",
+     "parent_id": null,
+     "current_version": 3
+    },
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-idea",
+     "type": "document",
+     "name": "서비스 개선 아이디어",
+     "parent_id": "f-tmp",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-comp",
+     "type": "document",
+     "name": "경쟁사 분석",
+     "parent_id": "f-tmp",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프 회의록",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {
+     "f-tmp": [
+      "2026 하반기 프로젝트"
+     ]
+    },
+    "unchanged": [
+     "f-minutes",
+     "f-plan",
+     "d-idea",
+     "d-comp",
+     "d-kick",
+     "d-plan-new",
+     "d-pg-mvcc"
+    ],
+    "max_operations": 1,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "'임시' 폴더 이름만 '2026 하반기 프로젝트'로 바뀌고 위치·내용물은 그대로다."
+   ],
+   "note": "rename_folder 단일 작업. base_version 3 복사."
+  },
+  {
+   "id": "org-06",
+   "category": "rename_document",
+   "instruction": "기획 폴더에 있는 '제목 없는 문서' 이름을 '신규 구독 서비스 기획안'으로 바꿔줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-untitled",
+     "type": "document",
+     "name": "제목 없는 문서",
+     "parent_id": "f-plan",
+     "current_version": 4,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-untitled2",
+     "type": "document",
+     "name": "제목 없는 문서 (2)",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-old",
+     "type": "document",
+     "name": "2026 상반기 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프 회의록",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-ethics",
+     "type": "document",
+     "name": "사람이 중심이 되는 AI 윤리기준",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-ir",
+     "type": "document",
+     "name": "정보 검색 개요",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {
+     "d-untitled": [
+      "신규 구독 서비스 기획안"
+     ]
+    },
+    "unchanged": [
+     "f-plan",
+     "f-minutes",
+     "d-untitled2",
+     "d-plan-old",
+     "d-kick",
+     "d-ethics",
+     "d-wiki-ir"
+    ],
+    "max_operations": 1,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "기획 폴더의 '제목 없는 문서'만 이름이 바뀌고 루트의 '제목 없는 문서 (2)'는 그대로다."
+   ],
+   "note": "rename_document 계약(display_name)과 비슷한 이름 구분."
+  },
+  {
+   "id": "org-07",
+   "category": "rename_and_move_document",
+   "instruction": "'킥오프' 문서 이름을 '10월 프로젝트 킥오프 회의록'으로 바꾸고 회의록 폴더로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-w-0901",
+     "type": "document",
+     "name": "주간 회의록 9월 1주차",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-rag",
+     "type": "document",
+     "name": "검색증강생성(RAG) 위키",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-rag-paper",
+     "type": "document",
+     "name": "RAG 논문 - Retrieval-Augmented Generation",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-memo",
+     "type": "document",
+     "name": "아이디어 메모",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-kick": "f-minutes"
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {
+     "d-kick": [
+      "10월 프로젝트 킥오프 회의록"
+     ]
+    },
+    "unchanged": [
+     "f-minutes",
+     "f-plan",
+     "d-w-0901",
+     "d-plan-new",
+     "d-wiki-rag",
+     "d-rag-paper",
+     "d-memo"
+    ],
+    "max_operations": 2,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "'킥오프' 문서가 새 이름으로 바뀌고 회의록 폴더 아래에 있다."
+   ],
+   "note": "rename 뒤 move의 arguments.base_version이 {$operation_result, field: current_version} 참조여야 검증(_valid_base_version_reference)과 재생이 통과한다."
+  },
+  {
+   "id": "org-08",
+   "category": "date_grouping_created_day",
+   "instruction": "루트에 있는 문서들을 만든 날짜별로 폴더 나눠서 정리해줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-ref",
+     "type": "folder",
+     "name": "참고 자료",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": "f-ref",
+     "current_version": 1,
+     "created_at": "2026-08-20T03:00:00+00:00",
+     "updated_at": "2026-08-20T03:00:00+00:00"
+    },
+    {
+     "id": "d-memo",
+     "type": "document",
+     "name": "서비스 기획 메모",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-01T02:00:00+00:00",
+     "updated_at": "2026-09-01T02:00:00+00:00"
+    },
+    {
+     "id": "d-api-spec",
+     "type": "document",
+     "name": "API 명세 초안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-01T08:00:00+00:00",
+     "updated_at": "2026-09-01T08:00:00+00:00"
+    },
+    {
+     "id": "d-design-fb",
+     "type": "document",
+     "name": "디자인 시안 피드백",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-01T16:30:00+00:00",
+     "updated_at": "2026-09-01T16:30:00+00:00"
+    },
+    {
+     "id": "d-qa",
+     "type": "document",
+     "name": "QA 체크리스트",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-02T05:00:00+00:00",
+     "updated_at": "2026-09-02T05:00:00+00:00"
+    },
+    {
+     "id": "d-release",
+     "type": "document",
+     "name": "릴리스 노트 v1.2",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-02T23:30:00+00:00",
+     "updated_at": "2026-09-02T23:30:00+00:00"
+    },
+    {
+     "id": "d-retro",
+     "type": "document",
+     "name": "배포 회고",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-03T00:10:00+00:00",
+     "updated_at": "2026-09-03T00:10:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-memo",
+      "d-api-spec"
+     ],
+     [
+      "d-design-fb",
+      "d-qa"
+     ],
+     [
+      "d-release",
+      "d-retro"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [
+     "f-ref",
+     "d-pg-mvcc"
+    ],
+    "max_operations": null,
+    "kind": "plan",
+    "groups_parent_not_root": true
+   },
+   "acceptable": [],
+   "criteria": [
+    "KST 날짜 기준 9/1(2개), 9/2(2개), 9/3(2개)로 세 폴더에 나뉜다.",
+    "UTC 16:30·23:30에 만든 문서는 KST 다음 날 폴더에 들어간다.",
+    "참고 자료 폴더 안 문서는 그대로다."
+   ],
+   "note": "created_date_local(chat_completions_plan_generator.py:127) 사용 여부. UTC로 묶으면 그룹이 깨진다. 폴더 이름(YYYY-MM-DD)은 프롬프트 기본값이지만 판정하지 않는다."
+  },
+  {
+   "id": "org-09",
+   "category": "date_grouping_updated_month",
+   "instruction": "마지막으로 수정한 달 기준으로 월별 폴더 만들어서 문서들 정리해줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-inbox",
+     "type": "folder",
+     "name": "미분류",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-e1",
+     "type": "document",
+     "name": "고객 인터뷰 정리",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-07-03T02:00:00+00:00",
+     "updated_at": "2026-08-10T03:00:00+00:00"
+    },
+    {
+     "id": "d-e2",
+     "type": "document",
+     "name": "가격 정책 초안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-08-20T02:00:00+00:00",
+     "updated_at": "2026-08-31T15:30:00+00:00"
+    },
+    {
+     "id": "d-e3",
+     "type": "document",
+     "name": "온보딩 플로우 개선안",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-07-15T02:00:00+00:00",
+     "updated_at": "2026-09-15T02:00:00+00:00"
+    },
+    {
+     "id": "d-e4",
+     "type": "document",
+     "name": "파트너십 제안서",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-01T02:00:00+00:00",
+     "updated_at": "2026-10-02T01:00:00+00:00"
+    },
+    {
+     "id": "d-e5",
+     "type": "document",
+     "name": "분기 OKR 리뷰",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-08-11T02:00:00+00:00",
+     "updated_at": "2026-09-30T16:00:00+00:00"
+    },
+    {
+     "id": "d-e6",
+     "type": "document",
+     "name": "사용성 테스트 결과",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-05T02:00:00+00:00",
+     "updated_at": "2026-08-05T02:00:00+00:00"
+    },
+    {
+     "id": "d-e7",
+     "type": "document",
+     "name": "경쟁사 기능 비교표",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-07-20T02:00:00+00:00",
+     "updated_at": "2026-09-10T02:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-e1",
+      "d-e6"
+     ],
+     [
+      "d-e2",
+      "d-e3",
+      "d-e7"
+     ],
+     [
+      "d-e4",
+      "d-e5"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [],
+    "max_operations": null,
+    "kind": "plan",
+    "groups_parent_not_root": true
+   },
+   "acceptable": [],
+   "criteria": [
+    "KST 수정 월 기준 8월(2), 9월(3), 10월(2)로 서로 다른 폴더에 모인다.",
+    "8/31 15:30Z(=KST 9/1)·9/30 16:00Z(=KST 10/1) 문서는 다음 달로 간다.",
+    "만든 날짜로 묶지 않는다."
+   ],
+   "note": "updated_date_local + 월 단위 지정. d-e6은 만든 날이 수정일보다 늦은 이상치(업로드 메타데이터)지만 기준은 수정일이다. 미분류 폴더는 비어도 그대로 둔다(삭제 도구 없음)."
+  },
+  {
+   "id": "org-10",
+   "category": "scoped_explicit_move_same_name_folder",
+   "instruction": "회의록들은 회의록 폴더로 옮겨줘",
+   "target_folder_id": "f-proj-a",
+   "hierarchy": [
+    {
+     "id": "f-minutes-root",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-proj-a",
+     "type": "folder",
+     "name": "프로젝트 A",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-proj-a-min",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": "f-proj-a",
+     "current_version": 1
+    },
+    {
+     "id": "d-allhands",
+     "type": "document",
+     "name": "전사 회의 9월",
+     "parent_id": "f-minutes-root",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-a-kick",
+     "type": "document",
+     "name": "프로젝트 A 킥오프 회의록",
+     "parent_id": "f-proj-a",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-a-weekly",
+     "type": "document",
+     "name": "프로젝트 A 주간 회의록 1차",
+     "parent_id": "f-proj-a",
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-a-req",
+     "type": "document",
+     "name": "프로젝트 A 요구사항 정의서",
+     "parent_id": "f-proj-a",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-b-weekly",
+     "type": "document",
+     "name": "프로젝트 B 주간 회의록",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-sre",
+     "type": "document",
+     "name": "SRE 포스트모템 문화",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "kind": "clarify"
+   },
+   "acceptable": [
+    {
+     "final_parent": {
+      "d-a-kick": "f-proj-a-min",
+      "d-a-weekly": "f-proj-a-min"
+     },
+     "groups": [],
+     "distinct_groups": false,
+     "renamed": {},
+     "unchanged": [
+      "f-minutes-root",
+      "f-proj-a",
+      "f-proj-a-min",
+      "d-allhands",
+      "d-a-req",
+      "d-b-weekly",
+      "d-sre"
+     ],
+     "max_operations": 2,
+     "kind": "plan"
+    }
+   ],
+   "criteria": [
+    "범위(프로젝트 A) 안팎에 '회의록' 폴더가 둘이라 어느 폴더로 옮길지 되묻는 것이 정답이다.",
+    "범위 안 '프로젝트 A / 회의록'으로 프로젝트 A 회의록 2개만 옮기는 계획도 허용한다.",
+    "루트 '회의록' 폴더로 옮기거나 범위 밖 문서를 건드리면 실패다."
+   ],
+   "note": "검수 반영: 사람마다 기대가 달라 되묻기를 기대 답으로, 범위 안 폴더로 옮기는 계획을 허용 답으로 둔다. hierarchy는 전체 트리이며 eval이 scoped_hierarchy로 잘라 넘긴다."
+  },
+  {
+   "id": "org-11",
+   "category": "nested_new_folders",
+   "instruction": "기획 폴더 안에 '2026' 폴더를 만들고, 그 안에 'Q4' 폴더를 만들어서 Q4 기획안 두 개를 넣어줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-plan-old",
+     "type": "document",
+     "name": "2026 상반기 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-q4-feature",
+     "type": "document",
+     "name": "Q4 신규 기능 기획안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-q4-mkt",
+     "type": "document",
+     "name": "Q4 마케팅 기획안",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-q3-review",
+     "type": "document",
+     "name": "Q3 회고",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프 회의록",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-employment",
+     "type": "document",
+     "name": "경제활동인구조사 2026년 9월 보도자료",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-q4-feature": {
+      "new_folder_name_any_of": [
+       "Q4"
+      ],
+      "parent": {
+       "new_folder_name_any_of": [
+        "2026"
+       ],
+       "parent": "f-plan"
+      }
+     },
+     "d-q4-mkt": {
+      "new_folder_name_any_of": [
+       "Q4"
+      ],
+      "parent": {
+       "new_folder_name_any_of": [
+        "2026"
+       ],
+       "parent": "f-plan"
+      }
+     }
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-plan",
+     "f-minutes",
+     "d-plan-old",
+     "d-q3-review",
+     "d-kick",
+     "d-employment"
+    ],
+    "max_operations": 4,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "기획 / 2026 / Q4 경로가 생기고 Q4 기획안 2개가 그 Q4 폴더에 들어간다.",
+    "Q3 회고 등 다른 문서는 그대로다."
+   ],
+   "note": "create_folder가 다른 create_folder 결과를 부모로 참조하는 체인."
+  },
+  {
+   "id": "org-12",
+   "category": "move_folder",
+   "instruction": "'디자인 리소스' 폴더를 '디자인' 폴더 안으로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-design",
+     "type": "folder",
+     "name": "디자인",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-res",
+     "type": "folder",
+     "name": "디자인 리소스",
+     "parent_id": null,
+     "current_version": 2
+    },
+    {
+     "id": "f-dev",
+     "type": "folder",
+     "name": "개발",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-css",
+     "type": "document",
+     "name": "프런트엔드 CSS 스타일 가이드",
+     "parent_id": "f-design",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-icon",
+     "type": "document",
+     "name": "아이콘 세트 사용 규칙",
+     "parent_id": "f-res",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-color",
+     "type": "document",
+     "name": "브랜드 컬러 팔레트",
+     "parent_id": "f-res",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-api",
+     "type": "document",
+     "name": "Spring Boot API 설계",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-react",
+     "type": "document",
+     "name": "React 컴포넌트 설계",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "f-res": "f-design"
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-design",
+     "f-dev",
+     "d-css",
+     "d-icon",
+     "d-color",
+     "d-api",
+     "d-react"
+    ],
+    "max_operations": 1,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "디자인 리소스 폴더가 내용물째 디자인 폴더 아래로 간다(내용물을 하나씩 옮기지 않는다)."
+   ],
+   "note": "move_folder 계약(parent_folder_id, position). 하위 문서 parent는 f-res로 유지돼야 한다."
+  },
+  {
+   "id": "org-13",
+   "category": "nonexistent_document",
+   "instruction": "'2025 연간 결산 보고서'를 재무 폴더로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-fin",
+     "type": "folder",
+     "name": "재무",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-fin-h1",
+     "type": "document",
+     "name": "2026 상반기 결산 보고서",
+     "parent_id": "f-fin",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-budget",
+     "type": "document",
+     "name": "2026 하반기 예산안",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-fin-2024",
+     "type": "document",
+     "name": "2024 연간 결산 보고서",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-employment",
+     "type": "document",
+     "name": "경제활동인구조사 2026년 9월 보도자료",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-fin",
+     "f-plan",
+     "d-fin-h1",
+     "d-budget",
+     "d-fin-2024",
+     "d-plan-new",
+     "d-employment",
+     "d-pg-mvcc"
+    ],
+    "max_operations": null,
+    "kind": "clarify"
+   },
+   "acceptable": [],
+   "criteria": [
+    "계획을 만들지 않고, '2025 연간 결산 보고서'가 없다는 점과 정확한 문서를 알려 달라는 질문을 한다.",
+    "비슷한 '2024 연간 결산 보고서'를 대신 옮기지 않는다."
+   ],
+   "note": "no-op 계획은 만들 수 없다(normalize_plan_candidate: 작업 1~20개). 대상이 없으면 프롬프트 :4에 따라 clarify가 유일한 정답."
+  },
+  {
+   "id": "org-14",
+   "category": "vague_but_inferable",
+   "instruction": "업로드한 문서들 알아서 깔끔하게 정리해줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-inbox",
+     "type": "folder",
+     "name": "업로드",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-deploy",
+     "type": "document",
+     "name": "쿠버네티스 디플로이먼트 가이드",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-privacy",
+     "type": "document",
+     "name": "개인정보 보호법 발췌",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-labor",
+     "type": "document",
+     "name": "근로기준법 제4장 근로시간과 휴식",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-rag-paper",
+     "type": "document",
+     "name": "RAG 논문 - Retrieval-Augmented Generation",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-rag",
+     "type": "document",
+     "name": "검색증강생성(RAG) 위키",
+     "parent_id": "f-inbox",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-memo",
+     "type": "document",
+     "name": "아이디어 메모",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-k8s-pod",
+      "d-k8s-deploy"
+     ],
+     [
+      "d-privacy",
+      "d-labor"
+     ],
+     [
+      "d-rag-paper",
+      "d-wiki-rag"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [],
+    "max_operations": null,
+    "kind": "plan"
+   },
+   "acceptable": [
+    {
+     "final_parent": {},
+     "groups": [
+      [
+       "d-k8s-pod",
+       "d-k8s-deploy",
+       "d-rag-paper",
+       "d-wiki-rag"
+      ],
+      [
+       "d-privacy",
+       "d-labor"
+      ]
+     ],
+     "distinct_groups": true,
+     "renamed": {},
+     "unchanged": [],
+     "max_operations": null,
+     "kind": "plan"
+    },
+    {
+     "final_parent": {},
+     "groups": [],
+     "distinct_groups": false,
+     "renamed": {},
+     "unchanged": [],
+     "max_operations": null,
+     "kind": "clarify"
+    }
+   ],
+   "criteria": [
+    "업로드 폴더 문서를 주제(쿠버네티스/법령/RAG)별로 서로 다른 폴더에 나눈다.",
+    "IT 문서를 한 폴더로 묶고 법령을 따로 두는 읽기도 맞다. 무엇을 기준으로 할지 묻는 것도 허용한다."
+   ],
+   "note": "기준을 맡긴 요청. 대상(업로드 폴더)이 있고 주제가 분명해 계획이 기대값이지만, 프롬프트 :4 '기준 누락'으로 읽은 clarify도 허용."
+  },
+  {
+   "id": "org-15",
+   "category": "vague_needs_clarification",
+   "instruction": "이거 좀 정리해줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-dev",
+     "type": "folder",
+     "name": "개발",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프 회의록",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-w-0901",
+     "type": "document",
+     "name": "주간 회의록 9월 1주차",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-api",
+     "type": "document",
+     "name": "Spring Boot API 설계",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-ethics",
+     "type": "document",
+     "name": "사람이 중심이 되는 AI 윤리기준",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-minutes",
+     "f-plan",
+     "f-dev",
+     "d-kick",
+     "d-w-0901",
+     "d-plan-new",
+     "d-api",
+     "d-pg-mvcc",
+     "d-ethics"
+    ],
+    "max_operations": null,
+    "kind": "clarify"
+   },
+   "acceptable": [],
+   "criteria": [
+    "'이거'가 무엇인지, 어떤 기준으로 정리할지 묻는다.",
+    "어떤 항목도 바꾸지 않는다."
+   ],
+   "note": "대상 폴더 선택 없음 + 지시어만 있음 + 이미 정리된 트리. 대상과 기준이 모두 없어 clarify."
+  },
+  {
+   "id": "org-16",
+   "category": "exclude_meeting_notes_topic_grouping",
+   "instruction": "회의록은 그대로 두고 나머지 문서만 주제별로 폴더 만들어서 정리해줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "d-w-0901",
+     "type": "document",
+     "name": "주간 회의록 9월 1주차",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-allhands",
+     "type": "document",
+     "name": "10월 전사 회의록",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-design-review",
+     "type": "document",
+     "name": "디자인 리뷰 회의록",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-deploy",
+     "type": "document",
+     "name": "쿠버네티스 디플로이먼트 가이드",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-privacy",
+     "type": "document",
+     "name": "개인정보 보호법 발췌",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-labor",
+     "type": "document",
+     "name": "근로기준법 제4장 근로시간과 휴식",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-sre",
+     "type": "document",
+     "name": "SRE 포스트모템 문화",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [
+     [
+      "d-k8s-pod",
+      "d-k8s-deploy"
+     ],
+     [
+      "d-privacy",
+      "d-labor"
+     ]
+    ],
+    "distinct_groups": true,
+    "renamed": {},
+    "unchanged": [
+     "d-w-0901",
+     "d-allhands",
+     "d-design-review"
+    ],
+    "max_operations": null,
+    "kind": "plan",
+    "groups_parent_not_root": true
+   },
+   "acceptable": [],
+   "criteria": [
+    "회의록 3개는 위치·이름이 그대로다.",
+    "쿠버네티스 2개와 법령 2개는 서로 다른 새 폴더로 간다."
+   ],
+   "note": "제외 조건 + 주제 정리. SRE 포스트모템은 어디든 허용."
+  },
+  {
+   "id": "org-17",
+   "category": "exclude_contracts_move_rest",
+   "instruction": "계약서 두 개만 빼고 루트에 있는 문서는 전부 '보관' 폴더로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-archive",
+     "type": "folder",
+     "name": "보관",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-legal",
+     "type": "folder",
+     "name": "법무 검토",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-arch-old",
+     "type": "document",
+     "name": "2025 연말 행사 정리",
+     "parent_id": "f-archive",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-contract-a",
+     "type": "document",
+     "name": "용역 계약서 - 한빛소프트",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-contract-nda",
+     "type": "document",
+     "name": "NDA 계약서 초안",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-log",
+     "type": "document",
+     "name": "9월 업무 일지",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-sre",
+     "type": "document",
+     "name": "SRE 포스트모템 문화",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-employment",
+     "type": "document",
+     "name": "경제활동인구조사 2026년 9월 보도자료",
+     "parent_id": null,
+     "current_version": 3,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-legal-req",
+     "type": "document",
+     "name": "약관 개정 검토 요청",
+     "parent_id": "f-legal",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-log": "f-archive",
+     "d-sre": "f-archive",
+     "d-employment": "f-archive"
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-archive",
+     "f-legal",
+     "d-arch-old",
+     "d-contract-a",
+     "d-contract-nda",
+     "d-legal-req"
+    ],
+    "max_operations": 3,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "루트 문서 중 계약서 2개를 뺀 3개가 보관 폴더로 간다.",
+    "계약서와 하위 폴더 문서, '법무 검토' 폴더는 그대로다."
+   ],
+   "note": "명시적 제외 + 범위 '루트 문서'. 폴더는 '문서'가 아니므로 옮기지 않는다."
+  },
+  {
+   "id": "org-18",
+   "category": "duplicate_name_existing_folder",
+   "instruction": "마케팅 폴더 만들어서 마케팅 관련 문서들 넣어줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-mkt",
+     "type": "folder",
+     "name": "마케팅",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-dev",
+     "type": "folder",
+     "name": "개발",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-mkt-old",
+     "type": "document",
+     "name": "상반기 마케팅 리포트",
+     "parent_id": "f-mkt",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-camp",
+     "type": "document",
+     "name": "마케팅 캠페인 기획",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-ads",
+     "type": "document",
+     "name": "광고 성과 분석 리포트",
+     "parent_id": null,
+     "current_version": 2,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-k8s-pod",
+     "type": "document",
+     "name": "쿠버네티스 파드 개념 정리",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-api",
+     "type": "document",
+     "name": "Spring Boot API 설계",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-memo",
+     "type": "document",
+     "name": "아이디어 메모",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {
+     "d-mkt-camp": "f-mkt",
+     "d-mkt-ads": "f-mkt"
+    },
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-mkt",
+     "f-dev",
+     "d-mkt-old",
+     "d-k8s-pod",
+     "d-api"
+    ],
+    "max_operations": 2,
+    "kind": "plan",
+    "summary_mentions_any": [
+     "이미",
+     "기존"
+    ]
+   },
+   "acceptable": [
+    {
+     "final_parent": {},
+     "groups": [],
+     "distinct_groups": false,
+     "renamed": {},
+     "unchanged": [],
+     "max_operations": null,
+     "kind": "clarify"
+    }
+   ],
+   "criteria": [
+    "루트의 마케팅 문서 2개가 이미 있는 '마케팅' 폴더로 간다.",
+    "루트에 같은 이름 '마케팅' 폴더를 하나 더 만들지 않는다.",
+    "계획 요약에 '마케팅' 폴더가 이미 있어 그 폴더로 옮긴다는 사실을 알려야 한다.",
+    "이미 있는 폴더를 쓸지 묻는 것도 허용한다."
+   ],
+   "note": "중복 이름 함정. 새 '마케팅' 폴더를 루트에 만들면 review_duplicate_names(plan_review.py:29)가 경고를 다는 상황. 검수 반영: 기존 폴더를 쓴 사실을 계획 요약에 알려야 한다(summary_mentions_any)."
+  },
+  {
+   "id": "org-19",
+   "category": "duplicate_document_names",
+   "instruction": "개발 폴더에 있는 주간 회의록 이름을 '개발팀 주간 회의록'으로 바꿔줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-mkt",
+     "type": "folder",
+     "name": "마케팅",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-dev",
+     "type": "folder",
+     "name": "개발",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "d-weekly-mkt",
+     "type": "document",
+     "name": "주간 회의록",
+     "parent_id": "f-mkt",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-weekly-dev",
+     "type": "document",
+     "name": "주간 회의록",
+     "parent_id": "f-dev",
+     "current_version": 5,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-weekly-tpl",
+     "type": "document",
+     "name": "주간 회의록 템플릿",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-api",
+     "type": "document",
+     "name": "Spring Boot API 설계",
+     "parent_id": "f-dev",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-mkt-camp",
+     "type": "document",
+     "name": "마케팅 캠페인 기획",
+     "parent_id": "f-mkt",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-wiki-ir",
+     "type": "document",
+     "name": "정보 검색 개요",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {
+     "d-weekly-dev": [
+      "개발팀 주간 회의록"
+     ]
+    },
+    "unchanged": [
+     "f-mkt",
+     "f-dev",
+     "d-weekly-mkt",
+     "d-weekly-tpl",
+     "d-api",
+     "d-mkt-camp",
+     "d-wiki-ir"
+    ],
+    "max_operations": 1,
+    "kind": "plan"
+   },
+   "acceptable": [],
+   "criteria": [
+    "개발 폴더의 '주간 회의록'만 이름이 바뀐다.",
+    "마케팅 폴더의 같은 이름 문서와 템플릿은 그대로다."
+   ],
+   "note": "같은 이름 문서를 부모 폴더로 가려내기."
+  },
+  {
+   "id": "org-20",
+   "category": "ambiguous_same_name_folders",
+   "instruction": "'10월 전사 회의 결과'를 회의록 폴더로 옮겨줘",
+   "target_folder_id": null,
+   "hierarchy": [
+    {
+     "id": "f-minutes",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan",
+     "type": "folder",
+     "name": "기획",
+     "parent_id": null,
+     "current_version": 1
+    },
+    {
+     "id": "f-plan-min",
+     "type": "folder",
+     "name": "회의록",
+     "parent_id": "f-plan",
+     "current_version": 1
+    },
+    {
+     "id": "d-kick",
+     "type": "document",
+     "name": "킥오프 회의록",
+     "parent_id": "f-minutes",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-kick",
+     "type": "document",
+     "name": "기획 회의 1차",
+     "parent_id": "f-plan-min",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-allhands",
+     "type": "document",
+     "name": "10월 전사 회의 결과",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-plan-new",
+     "type": "document",
+     "name": "신규 서비스 기획안",
+     "parent_id": "f-plan",
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    },
+    {
+     "id": "d-pg-mvcc",
+     "type": "document",
+     "name": "PostgreSQL MVCC 동시성 제어",
+     "parent_id": null,
+     "current_version": 1,
+     "created_at": "2026-09-20T01:00:00+00:00",
+     "updated_at": "2026-09-20T01:00:00+00:00"
+    }
+   ],
+   "expected": {
+    "final_parent": {},
+    "groups": [],
+    "distinct_groups": false,
+    "renamed": {},
+    "unchanged": [
+     "f-minutes",
+     "f-plan",
+     "f-plan-min",
+     "d-kick",
+     "d-plan-kick",
+     "d-allhands",
+     "d-plan-new",
+     "d-pg-mvcc"
+    ],
+    "max_operations": null,
+    "kind": "clarify"
+   },
+   "acceptable": [],
+   "criteria": [
+    "'회의록' 폴더가 루트와 기획 안에 둘 있다는 점을 알리고 어느 쪽인지 묻는다."
+   ],
+   "note": "목적지 모호. folder_lookup 프롬프트(:13)의 '최상위를 고르지 말라' 규칙과 맞춰 clarify만 정답으로 둔다."
+  }
+ ],
+ "lookup": [
+  {
+   "id": "look-01",
+   "category": "folder_lookup",
+   "request": "회의록 폴더에 뭐 있어?",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    }
+   ],
+   "expected_folder_ids": [
+    "lf-minutes"
+   ],
+   "acceptable": [],
+   "note": "이름이 유일한 폴더. 하위 '2026 회의록'은 이름에 단어만 포함하므로 고르지 않는다(prompt :12)."
+  },
+  {
+   "id": "look-02",
+   "category": "folder_lookup",
+   "request": "기획 폴더 안에 있는 회의록 폴더 보여줘",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-plan-min",
+       "name": "회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-plan-1",
+         "name": "기획 회의 1차.md",
+         "document": {
+          "display_name": "기획 회의 1차"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    }
+   ],
+   "expected_folder_ids": [
+    "lf-plan-min"
+   ],
+   "acceptable": [],
+   "note": "같은 이름 폴더를 부모 경로로 가려낸다. 부모 '기획'은 지목 대상이 아니다."
+  },
+  {
+   "id": "look-03",
+   "category": "folder_lookup",
+   "request": "회의록 폴더에 뭐 들어 있어?",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-plan-min",
+       "name": "회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-plan-1",
+         "name": "기획 회의 1차.md",
+         "document": {
+          "display_name": "기획 회의 1차"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    }
+   ],
+   "expected_folder_ids": [
+    "lf-minutes",
+    "lf-plan-min"
+   ],
+   "acceptable": [],
+   "note": "같은 이름의 폴더가 둘이다(루트 '회의록', '기획/회의록'). 두 폴더를 모두 고르면 시스템이 두 경로를 보여 주며 어느 폴더인지 되묻는다(folder_lookup.py:64). 하나만 골라 그 내용을 보여 주면 실패다."
+  },
+  {
+   "id": "look-04",
+   "category": "folder_lookup",
+   "request": "법무 폴더에 어떤 문서 있는지 알려줘",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-plan-min",
+       "name": "회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-plan-1",
+         "name": "기획 회의 1차.md",
+         "document": {
+          "display_name": "기획 회의 1차"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    }
+   ],
+   "expected_folder_ids": [],
+   "acceptable": [],
+   "note": "없는 폴더. 루트의 문서 '법무 검토 요청서'는 폴더가 아니다(prompt :14)."
+  },
+  {
+   "id": "look-05",
+   "category": "folder_lookup",
+   "request": "「디자인 리소스」엔 뭐 있어?",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-plan-min",
+       "name": "회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-plan-1",
+         "name": "기획 회의 1차.md",
+         "document": {
+          "display_name": "기획 회의 1차"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    }
+   ],
+   "expected_folder_ids": [
+    "lf-design-res"
+   ],
+   "acceptable": [],
+   "note": "괄호·조사·띄어쓰기 차이(prompt :8). 비슷한 '디자인' 폴더를 고르면 오답."
+  },
+  {
+   "id": "look-06",
+   "category": "folder_lookup",
+   "request": "인사 폴더에 문서 뭐 있어?",
+   "tree": [
+    {
+     "type": "folder",
+     "id": "lf-minutes",
+     "name": "회의록",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-minutes-2026",
+       "name": "2026 회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-oct",
+         "name": "10월 전사 회의.md",
+         "document": {
+          "display_name": "10월 전사 회의"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-kick",
+       "name": "킥오프 회의록.md",
+       "document": {
+        "display_name": "킥오프 회의록"
+       }
+      },
+      {
+       "type": "document",
+       "id": "ld-w1",
+       "name": "주간 회의록 9월 1주차.md",
+       "document": {
+        "display_name": "주간 회의록 9월 1주차"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-plan",
+     "name": "기획",
+     "children": [
+      {
+       "type": "folder",
+       "id": "lf-plan-min",
+       "name": "회의록",
+       "children": [
+        {
+         "type": "document",
+         "id": "ld-plan-1",
+         "name": "기획 회의 1차.md",
+         "document": {
+          "display_name": "기획 회의 1차"
+         }
+        }
+       ]
+      },
+      {
+       "type": "document",
+       "id": "ld-plan-new",
+       "name": "신규 서비스 기획안.md",
+       "document": {
+        "display_name": "신규 서비스 기획안"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-hr",
+     "name": "인사팀",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-hr",
+       "name": "면접 평가표 양식.md",
+       "document": {
+        "display_name": "면접 평가표 양식"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design-res",
+     "name": "디자인리소스",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-color",
+       "name": "브랜드 컬러 팔레트.md",
+       "document": {
+        "display_name": "브랜드 컬러 팔레트"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-design",
+     "name": "디자인",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-css",
+       "name": "프런트엔드 CSS 스타일 가이드.md",
+       "document": {
+        "display_name": "프런트엔드 CSS 스타일 가이드"
+       }
+      }
+     ]
+    },
+    {
+     "type": "folder",
+     "id": "lf-docs",
+     "name": "문서",
+     "children": [
+      {
+       "type": "document",
+       "id": "ld-misc",
+       "name": "기타 메모.md",
+       "document": {
+        "display_name": "기타 메모"
+       }
+      }
+     ]
+    },
+    {
+     "type": "document",
+     "id": "ld-legal",
+     "name": "법무 검토 요청서.md",
+     "document": {
+      "display_name": "법무 검토 요청서"
+     }
+    }
+   ],
+   "expected_folder_ids": [],
+   "acceptable": [
+    [
+     "lf-hr"
+    ]
+   ],
+   "note": "'인사'라는 폴더는 없고 '인사팀'만 있다. 이름 포함은 다른 폴더(prompt :12)라 []가 기대값, 의미상 같은 팀으로 본 ['lf-hr']도 허용. '문서'는 질문어이지 폴더 '문서'가 아니다(prompt :9)."
+  }
+ ]
+}

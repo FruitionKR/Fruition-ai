@@ -1,11 +1,14 @@
 import json
+import math
 import unittest
 from threading import Lock
 from unittest.mock import patch
 
+from app.core.jev_batches import MAX_BATCH_TOKENS, request_tokens
 from app.core.jev_client import JevUnavailable
+from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
-    KEEP_NEW,
+    CANDIDATE_LIMIT,
     JevConceptResolver,
     with_jev_concept_merge,
 )
@@ -23,22 +26,34 @@ class RecordingResolver:
         }
 
 
-class MappingJev:
-    """incoming slug별로 정해 둔 선택을 돌려주고 받은 후보를 기록한다."""
+class PairJev:
+    """(incoming, 후보)별로 정해 둔 선택·확률을 돌려주고 받은 요청을 기록한다. 정하지 않은 쌍은 unrelated다."""
 
-    def __init__(self, choices: dict[str, str]) -> None:
-        self._choices = choices
+    def __init__(self, answers: dict[tuple[str, str], tuple[str, dict[str, float]]] | None = None) -> None:
+        self._answers = answers or {}
         self._lock = Lock()
-        self.candidates: dict[str, list[str]] = {}
+        self.requests: list[dict] = []
 
     def choose(self, state: str, questions: dict) -> dict:
-        task = json.loads(state)["q0"]
-        slug = task["incoming"]["slug"]
+        task = json.loads(state)
         with self._lock:
-            self.candidates[slug] = [candidate["slug"] for candidate in task["candidates"]]
-        choice = self._choices.get(slug, KEEP_NEW)
-        assert choice in questions["q0"]["criteria"]
-        return {"q0": {"choice": choice}}
+            self.requests.append({"state": state, "questions": questions})
+        incoming = task["incoming"]["slug"]
+        assert [candidate["id"] for candidate in task["candidates"]] == list(questions)
+        result = {}
+        for key, question in questions.items():
+            choice, probabilities = self._answers.get((incoming, key), ("unrelated", {"unrelated": 0.9}))
+            assert choice in question["criteria"]
+            result[key] = {"choice": choice, "probabilities": probabilities}
+        return result
+
+    def sent(self, incoming: str) -> list[str]:
+        return [
+            key
+            for request in self.requests
+            if json.loads(request["state"])["incoming"]["slug"] == incoming
+            for key in request["questions"]
+        ]
 
 
 class FailingJev:
@@ -46,44 +61,234 @@ class FailingJev:
         raise JevUnavailable("Jev HTTP 402")
 
 
+class AngleEmbedder:
+    """텍스트 첫 단어에 정해 둔 각도의 2차원 단위 벡터를 돌려준다. 정하지 않은 단어는 직교 벡터다."""
+
+    model_name = "fake-embedding"
+
+    def __init__(self, angles: dict[str, float] | None = None) -> None:
+        self._angles = angles or {}
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(texts)
+        angles = [self._angles.get(text.split()[0], math.pi / 2) for text in texts]
+        return [[math.cos(angle), math.sin(angle)] for angle in angles]
+
+
+class FailingEmbedder:
+    model_name = "failing-embedding"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding server down")
+
+
 INCOMING = [
-    {"slug": "memoization-new", "title": "메모이제이션", "definition": "함수 결과를 저장해 재계산을 피한다."},
-    {"slug": "untitled", "title": "memoization", "definition": ""},
+    {"slug": "memoization-new", "title": "메모이제이션 기법", "definition": "함수 결과를 저장해 재계산을 피한다."},
+    {"slug": "untitled", "title": "정리 안 된 메모", "definition": ""},
 ]
 # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary를 쓴다.
 EXISTING = [
-    {"slug": "memoization", "title": "memoization", "aliases": ["메모이제이션"], "definition": "함수 결과를 저장해 재사용한다."},
-    {"slug": "cache", "title": "cache", "aliases": [], "summary": "함수 결과를 포함해 데이터를 저장하는 포괄 개념이다."},
+    {"slug": "memoization", "title": "memoization", "aliases": ["메모"], "definition": "함수 결과를 저장해 재사용한다."},
+    {"slug": "cache", "title": "cache", "aliases": [], "summary": "데이터를 저장하는 포괄 개념이다."},
+    {"slug": "dynamic-programming", "title": "dynamic programming", "aliases": [], "definition": "부분 문제를 저장한다."},
 ]
 
 
-class JevConceptResolverTest(unittest.TestCase):
-    def test_merges_chosen_candidate_and_skips_concepts_without_definition(self) -> None:
-        jev = MappingJev({"memoization-new": "memoization"})
-        fallback = RecordingResolver()
+def _resolver(jev, embedder=None, fallback=None) -> JevConceptResolver:
+    return JevConceptResolver(jev, fallback or RecordingResolver(), embedder or AngleEmbedder())
 
-        result = JevConceptResolver(jev, fallback).resolve(INCOMING, EXISTING, [])
+
+class JevConceptResolverTest(unittest.TestCase):
+    def setUp(self) -> None:
+        jev_concept_resolver._embedding_cache.clear()
+
+    def test_links_all_related_candidates_ordered_by_probability(self) -> None:
+        jev = PairJev({
+            ("memoization-new", "cache"): ("related", {"related": 0.92, "unrelated": 0.08}),
+            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.97, "unrelated": 0.03}),
+        })
+
+        result = _resolver(jev).resolve(INCOMING, EXISTING, [])
 
         self.assertEqual(
             result["resolutions"],
-            [{"incoming_slug": "memoization-new", "decision": "merge_into", "canonical_slug": "memoization", "alias_to_add": None}],
+            [{
+                "incoming_slug": "memoization-new",
+                "decision": "link_to",
+                "canonical_slug": "dynamic-programming",
+                "link_targets": ["dynamic-programming", "cache"],
+                "link_confidences": {"dynamic-programming": 0.97, "cache": 0.92},
+                "alias_to_add": None,
+            }],
         )
-        self.assertEqual(result["hint_resolutions"], [])
-        self.assertNotIn("untitled", jev.candidates)
-        self.assertEqual(set(jev.candidates["memoization-new"]), {"memoization", "cache"})
-        self.assertLessEqual(len(jev.candidates["memoization-new"]), 3)
-        self.assertEqual(fallback.calls, [])
+        # 정의가 없는 개념은 Jev에 보내지 않고 후보에도 넣지 않는다.
+        self.assertEqual(jev.sent("untitled"), [])
+        self.assertEqual(set(jev.sent("memoization-new")), {"memoization", "cache", "dynamic-programming"})
 
-    def test_keep_new_returns_no_resolution(self) -> None:
-        result = JevConceptResolver(MappingJev({}), RecordingResolver()).resolve(INCOMING, EXISTING)
+    def test_does_not_link_related_below_probability_threshold(self) -> None:
+        jev = PairJev({
+            ("memoization-new", "cache"): ("related", {"related": 0.85, "unrelated": 0.15}),
+            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.95, "unrelated": 0.05}),
+        })
+
+        result = _resolver(jev).resolve(INCOMING, EXISTING, [])
+
+        self.assertEqual(result["resolutions"][0]["link_targets"], ["dynamic-programming"])
+
+    def test_merges_concept_without_definition_by_exact_name(self) -> None:
+        jev = PairJev()
+        incoming = [{"slug": "memo-new", "title": "메모", "definition": ""}]
+
+        result = _resolver(jev).resolve(incoming, EXISTING, [])
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memo-new", "decision": "merge_into", "canonical_slug": "memoization", "alias_to_add": None}],
+        )
+        self.assertEqual(jev.sent("memo-new"), [])
+
+    def test_merges_into_candidate_with_highest_same_probability(self) -> None:
+        jev = PairJev({
+            ("memoization-new", "memoization"): ("same", {"same": 0.7}),
+            ("memoization-new", "cache"): ("same", {"same": 0.9}),
+            ("memoization-new", "dynamic-programming"): ("related", {"related": 0.99}),
+        })
+
+        result = _resolver(jev).resolve(INCOMING, EXISTING, [])
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memoization-new", "decision": "merge_into", "canonical_slug": "cache", "alias_to_add": None}],
+        )
+
+    def test_all_unrelated_returns_no_resolution(self) -> None:
+        result = _resolver(PairJev()).resolve(INCOMING, EXISTING)
 
         self.assertEqual(result["resolutions"], [])
+
+    def test_sends_only_top_candidates_by_hybrid_score(self) -> None:
+        existing = [
+            {"slug": f"c{index:03d}", "title": f"c{index:03d}", "aliases": [], "definition": f"정의{index}"}
+            for index in range(CANDIDATE_LIMIT + 20)
+        ]
+        incoming = [{"slug": "query", "title": "query", "definition": "새 개념"}]
+        # 번호가 클수록 incoming과의 각도가 커져 임베딩 점수가 낮다.
+        angles = {"query": 0.0, **{concept["slug"]: index / 100 for index, concept in enumerate(existing)}}
+        jev = PairJev()
+
+        _resolver(jev, AngleEmbedder(angles)).resolve(incoming, existing)
+
+        self.assertEqual(sorted(jev.sent("query")), [concept["slug"] for concept in existing[:CANDIDATE_LIMIT]])
+
+    def test_splits_questions_into_requests_by_token_budget(self) -> None:
+        existing = [
+            {"slug": f"c{index:03d}", "title": f"c{index:03d}", "aliases": [], "definition": "긴 정의 " * 40}
+            for index in range(CANDIDATE_LIMIT)
+        ]
+        incoming = [{"slug": "query", "title": "query", "definition": "새 개념"}]
+        jev = PairJev()
+
+        _resolver(jev).resolve(incoming, existing)
+
+        self.assertGreater(len(jev.requests), 1)
+        self.assertEqual(sorted(jev.sent("query")), [concept["slug"] for concept in existing])
+        for request in jev.requests:
+            self.assertLessEqual(request_tokens(request), MAX_BATCH_TOKENS)
+
+    def test_exact_name_merges_without_jev_or_embedding(self) -> None:
+        incoming = [{"slug": "memo-new", "title": "메모", "aliases": [], "definition": "결과를 저장한다."}]
+        jev, embedder = PairJev(), AngleEmbedder()
+
+        result = _resolver(jev, embedder).resolve(incoming, EXISTING)
+
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "memo-new", "decision": "merge_into", "canonical_slug": "memoization", "alias_to_add": None}],
+        )
+        self.assertEqual(jev.requests, [])
+        self.assertEqual(embedder.calls, [])
+
+    def test_exact_name_ignores_symbols_and_unslugifiable_names(self) -> None:
+        # slugify로 비교하면 `C#`은 `c`, `Σ`·`λ`는 모두 `untitled`가 돼 다른 개념끼리 일치한다.
+        existing = [
+            {"slug": "c-language", "title": "C", "aliases": [], "definition": "절차형 언어다."},
+            {"slug": "lambda", "title": "lambda", "aliases": ["λ"], "definition": "익명 함수다."},
+        ]
+        incoming = [
+            {"slug": "c-sharp", "title": "C#", "aliases": [], "definition": "닷넷 언어다."},
+            {"slug": "sigma", "title": "Σ", "aliases": [], "definition": "합 기호다."},
+        ]
+
+        result = _resolver(PairJev()).resolve(incoming, existing)
+
+        self.assertEqual(result["resolutions"], [])
+
+    def test_exact_name_prefers_existing_and_breaks_incoming_cycles(self) -> None:
+        incoming = [
+            {"slug": "attention", "title": "attention", "aliases": ["주의"], "definition": "가중치를 준다."},
+            {"slug": "주의-메커니즘", "title": "주의 메커니즘", "aliases": ["attention"], "definition": "가중치를 준다."},
+        ]
+        existing = [{"slug": "attn", "title": "Attention", "aliases": [], "definition": "가중치를 준다."}]
+
+        both_to_existing = _resolver(PairJev()).resolve(incoming, existing)
+        among_incoming = _resolver(PairJev()).resolve(incoming, [])
+
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in both_to_existing["resolutions"]},
+            {"attention": "attn", "주의-메커니즘": "attn"},
+        )
+        # 서로 가리키면 연쇄 금지로 둘 다 남으므로 slug가 앞선 쪽만 정본으로 둔다.
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in among_incoming["resolutions"]},
+            {"주의-메커니즘": "attention"},
+        )
+
+    def test_cache_overflow_still_returns_previously_cached_vectors(self) -> None:
+        resolver = _resolver(PairJev())
+        with patch.object(jev_concept_resolver, "EMBEDDING_CACHE_LIMIT", 3), patch.dict(jev_concept_resolver._embedding_cache, clear=True):
+            resolver._embed(["a", "b"])
+            vectors = resolver._embed(["a", "c", "d"])
+
+        self.assertEqual(set(vectors), {"a", "c", "d"})
+
+    def test_tags_help_prefilter_but_are_not_sent_to_jev(self) -> None:
+        incoming = [{"slug": "new", "title": "알파", "aliases": [], "tags": ["항해술"], "definition": "별을 보고 위치를 잡는다."}]
+        existing = [
+            {"slug": "tagged", "title": "베타", "aliases": [], "tags": ["항해술"], "definition": "바다에서 쓰는 도구다."},
+            {"slug": "plain", "title": "감마", "aliases": [], "definition": "육지에서 쓰는 도구다."},
+        ]
+        jev = PairJev()
+
+        with patch.object(jev_concept_resolver, "CANDIDATE_LIMIT", 1):
+            _resolver(jev).resolve(incoming, existing)
+
+        self.assertEqual(jev.sent("new"), ["tagged"])
+        self.assertNotIn("항해술", "".join(request["state"] for request in jev.requests))
+
+    def test_reuses_cached_embeddings_across_ingests(self) -> None:
+        embedder = AngleEmbedder()
+
+        _resolver(PairJev(), embedder).resolve(INCOMING, EXISTING)
+        _resolver(PairJev(), embedder).resolve(INCOMING, EXISTING)
+
+        self.assertEqual(len(embedder.calls), 1)
+
+    def test_embedding_failure_uses_existing_resolver_result(self) -> None:
+        fallback = RecordingResolver()
+        jev = PairJev()
+
+        result = _resolver(jev, FailingEmbedder(), fallback).resolve(INCOMING, EXISTING, [])
+
+        self.assertEqual(result["resolutions"][0]["incoming_slug"], "llm")
+        self.assertEqual(jev.requests, [])
+        self.assertEqual(len(fallback.calls), 1)
 
     def test_hints_use_existing_resolver_hint_result_only(self) -> None:
         fallback = RecordingResolver()
         hints = [{"slug": "hint"}]
 
-        result = JevConceptResolver(MappingJev({}), fallback).resolve(INCOMING, EXISTING, hints)
+        result = _resolver(PairJev(), fallback=fallback).resolve(INCOMING, EXISTING, hints)
 
         self.assertEqual(result["resolutions"], [])
         self.assertEqual(result["hint_resolutions"][0]["hint_slug"], "hint")
@@ -92,7 +297,7 @@ class JevConceptResolverTest(unittest.TestCase):
     def test_unavailable_jev_uses_existing_resolver_result(self) -> None:
         fallback = RecordingResolver()
 
-        result = JevConceptResolver(FailingJev(), fallback).resolve(INCOMING, EXISTING, [])
+        result = _resolver(FailingJev(), fallback=fallback).resolve(INCOMING, EXISTING, [])
 
         self.assertEqual(result["resolutions"][0]["incoming_slug"], "llm")
         self.assertEqual(len(fallback.calls), 1)
@@ -102,10 +307,10 @@ class JevConceptResolverTest(unittest.TestCase):
             {"slug": "a", "title": "평균", "definition": "합을 개수로 나눈 값이다."},
             {"slug": "b", "title": "산술평균", "definition": "합을 개수로 나눈 값이다."},
         ]
-        jev = MappingJev({"a": "b", "b": "mean"})
         existing = [{"slug": "mean", "title": "mean", "aliases": [], "summary": "합을 개수로 나눈 값이다."}]
+        jev = PairJev({("a", "b"): ("same", {"same": 0.9}), ("b", "mean"): ("same", {"same": 0.9})})
 
-        result = JevConceptResolver(jev, RecordingResolver()).resolve(incoming, existing)
+        result = _resolver(jev).resolve(incoming, existing)
 
         self.assertEqual([item["incoming_slug"] for item in result["resolutions"]], ["b"])
 
@@ -114,12 +319,91 @@ class WithJevConceptMergeTest(unittest.TestCase):
     def test_keeps_existing_resolver_when_disabled(self) -> None:
         resolver = RecordingResolver()
         with patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "false", "TYPESAFE_API_KEY": "key"}):
-            self.assertIs(with_jev_concept_merge(resolver), resolver)
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
-    def test_wraps_resolver_when_enabled_with_key(self) -> None:
-        with patch.dict("os.environ", {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}):
-            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()), JevConceptResolver)
+    def test_wraps_resolver_when_enabled_with_key_and_embedding_server(self) -> None:
+        env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key", "EMBEDDING_SERVICE_URL": "http://embedding"}
+        with (
+            patch.dict("os.environ", env),
+            patch.object(jev_concept_resolver, "_remote_embedding_model", return_value=AngleEmbedder()),
+        ):
+            self.assertIsInstance(with_jev_concept_merge(RecordingResolver()).inner, JevConceptResolver)
+
+    def test_keeps_existing_resolver_without_embedding_server(self) -> None:
+        # 편입 워커가 BGE-M3를 직접 올리지 않도록 임베딩 서버가 없거나 설정이 잘못되면 Jev 병합을 쓰지 않는다.
+        resolver = RecordingResolver()
+        env = {"JEV_CONCEPT_MERGE_ENABLED": "true", "TYPESAFE_API_KEY": "key"}
+        with patch.dict("os.environ", env), patch.dict("os.environ", {"EMBEDDING_SERVICE_URL": ""}):
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
+        with (
+            patch.dict("os.environ", {**env, "EMBEDDING_SERVICE_URL": "http://embedding"}),
+            patch.object(jev_concept_resolver, "_remote_embedding_model", side_effect=RuntimeError("no token")),
+        ):
+            self.assertIs(with_jev_concept_merge(resolver).inner, resolver)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameMatchConceptResolverTest(unittest.TestCase):
+    def test_merges_exact_names_before_llm_and_sends_only_the_rest(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        llm = RecordingResolver()
+        incoming = [
+            {"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"], "definition": "정의"},
+            {"slug": "new-thing", "title": "새 개념", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "rag", "title": "Retrieval-Augmented Generation", "aliases": ["RAG", "검색 증강 생성"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(llm).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            result["resolutions"][0],
+            {"incoming_slug": "retrieval-augmented-generation", "decision": "merge_into", "canonical_slug": "rag", "alias_to_add": None},
+        )
+        self.assertEqual([c["slug"] for c in llm.calls[0][0]], ["new-thing"])
+
+    def test_follows_chained_name_matches_to_the_final_concept(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        incoming = [
+            {"slug": "rag", "title": "RAG", "aliases": ["검색 증강 생성"], "definition": "정의"},
+            {"slug": "rag-model", "title": "검색 증강 생성", "aliases": [], "definition": "정의"},
+        ]
+        existing = [{"slug": "retrieval-augmented-generation", "title": "Retrieval-Augmented Generation", "aliases": ["RAG"], "definition": "정의"}]
+
+        result = NameMatchConceptResolver(RecordingResolver()).resolve(incoming, existing, [])
+
+        self.assertEqual(
+            {item["incoming_slug"]: item["canonical_slug"] for item in result["resolutions"]},
+            {"rag": "retrieval-augmented-generation", "rag-model": "retrieval-augmented-generation"},
+        )
+
+    def test_chain_follow_stops_on_cycles_and_missing_targets(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+
+        class Fixed:
+            def __init__(self, resolutions):
+                self.resolutions = resolutions
+
+            def resolve(self, incoming, existing, hints=None):
+                return {"resolutions": self.resolutions, "hint_resolutions": []}
+
+        incoming = [
+            {"slug": "a", "title": "Alpha", "aliases": [], "definition": "정의"},
+            {"slug": "b", "title": "Beta", "aliases": [], "definition": "정의"},
+            {"slug": "x", "title": "X", "aliases": ["alpha"], "definition": "정의"},
+        ]
+        cycle = Fixed([
+            {"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "b"},
+            {"incoming_slug": "b", "decision": "merge_into", "canonical_slug": "a"},
+        ])
+        ghost = Fixed([{"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "ghost"}])
+
+        cyclic = NameMatchConceptResolver(cycle).resolve(incoming, [], [])
+        missing = NameMatchConceptResolver(ghost).resolve(incoming, [], [])
+
+        self.assertEqual(cyclic["resolutions"][0], {"incoming_slug": "x", "decision": "merge_into", "canonical_slug": "a", "alias_to_add": None})
+        self.assertEqual(missing["resolutions"][0]["canonical_slug"], "a")

@@ -15,6 +15,13 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.modules.wiki_generation.application.evaluation_guards import (
+    clear_resolved_core_concept_issues,
+    clear_resolved_number_issues,
+    demote_unsupported_core_concepts,
+    drop_unsupported_number_items,
+    reference_list_refs,
+)
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
@@ -47,7 +54,7 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
     RetryOnceJsonCompletion,
 )
-from app.modules.wiki_generation.infrastructure.jev_concept_resolver import with_jev_concept_merge
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver, with_jev_concept_merge
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
     load_existing_concept_index,
@@ -456,20 +463,26 @@ def _source_content_hash(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
+def _snapshot_concept_index(args: PipelineRunCommand) -> list[dict[str, Any]]:
+    """잠금 없이 실행할 때(로컬 실험·원본 문서 없는 실행) 쓰는 기존 개념 목록."""
+    existing_concepts = getattr(args, "existing_concept_index", None)
+    if existing_concepts is None:
+        existing_concepts = load_existing_concept_index(
+            getattr(args, "existing_wiki_dir", None)
+        )
+    return existing_concepts
+
+
 def _resolve_pipeline_concepts(
     args: PipelineRunCommand,
     *,
     api_client: ChatCompletionsJsonClient,
     concept_resolution_prompt: str,
     normalized: dict[str, Any],
+    existing_concepts: list[dict[str, Any]],
     out: Path,
     log: PipelineLog,
 ) -> dict[str, Any]:
-    existing_concepts = getattr(args, "existing_concept_index", None)
-    if existing_concepts is None:
-        existing_concepts = load_existing_concept_index(
-            getattr(args, "existing_wiki_dir", None)
-        )
     assembler = MeaningClusterArtifactAssembler()
     concept_update_candidates = assembler.candidate_claims(normalized)
     concepts = [*normalized.get("concept_ledger", []), *existing_concepts]
@@ -496,6 +509,8 @@ def _resolve_pipeline_concepts(
             completion=RetryOnceJsonCompletion(api_client),
             concepts=concepts,
             candidates=concept_update_candidates,
+            # 개념 병합에 Jev를 쓰면 섹션 후보·언급의 개념 판정도 같은 쌍별 판정기를 쓴다.
+            judge_pairs=resolver.inner.judge_concepts if isinstance(resolver.inner, JevConceptResolver) else None,
         )
         return result, monotonic() - started
 
@@ -823,6 +838,7 @@ def _prepare_post_ingest_clusters(
             "slug": concept.get("slug"),
             "title": concept.get("title"),
             "aliases": list(concept.get("aliases") or []),
+            "definition": concept.get("definition") or "",
         }
         for concept in normalized.get("concept_ledger", [])
         if concept.get("slug")
@@ -841,7 +857,7 @@ def run_pipeline(
     command: PipelineRunCommand,
     progress_callback: Callable[[], bool | None] | None = None,
     finalization_callback: Callable[
-        [Callable[[], dict[str, Any]]], dict[str, Any]
+        [Callable[[list[dict[str, Any]]], dict[str, Any]]], dict[str, Any]
     ]
     | None = None,
 ) -> dict:
@@ -975,6 +991,22 @@ def run_pipeline(
             {},
         )
 
+    # 평가 재시도 뒤에도 원문에 없는 숫자를 쓰는 항목은 뺀다. 근거 주장이 빠질 수 있어 개념 강등보다 먼저 한다.
+    block_texts = [block.text for block in blocks]
+    normalized, number_dropped = drop_unsupported_number_items(normalized, block_texts)
+    if number_dropped:
+        if generation_evaluations:
+            clear_resolved_number_issues(generation_evaluations[-1], normalized, block_texts)
+        normalized.setdefault("warnings", []).append(f"원문에 없는 숫자를 쓴 항목을 뺌: {', '.join(number_dropped)}")
+
+    # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
+    reference_refs = reference_list_refs(blocks)
+    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, reference_refs)
+    if demoted_concepts:
+        if generation_evaluations:
+            clear_resolved_core_concept_issues(generation_evaluations[-1], demoted_concepts)
+        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림: {', '.join(demoted_concepts)}")
+
     # 4. Backend normalize/merge/mention expansion.
     log.emit(
         "4. 정규화",
@@ -985,57 +1017,68 @@ def run_pipeline(
             "mention 수": len(normalized.get("mentions", [])),
             "category 수": len(normalized.get("categories", [])),
             "근거 수": len(normalized["evidence_units"]),
+            "섹션 후보로 내린 핵심 개념 수": len(demoted_concepts),
+            "원문에 없는 숫자로 뺀 항목 수": len(number_dropped),
             "경고 수": len(normalized.get("warnings", [])),
         },
     )
 
-    # 개념 병합과 연결 판단을 완료한 뒤 페이지를 조립한다.
-    assert api_client is not None
-    if extraction_blocks:
-        normalized = _resolve_pipeline_concepts(
+    # 개념 병합·연결 판단부터 페이지 조립까지는 워크스페이스 개념 잠금 안에서 최신 개념 목록으로 한다.
+    # 무거운 추출이 병렬로 끝나도, 먼저 잠금을 잡은 편입이 저장한 개념을 뒤 편입의 판정이 본다.
+    def build_manifest(existing_concept_index: list[dict[str, Any]]) -> dict[str, Any]:
+        resolved = normalized
+        assert api_client is not None
+        if extraction_blocks:
+            resolved = _resolve_pipeline_concepts(
+                args,
+                api_client=api_client,
+                concept_resolution_prompt=prompts.concept_resolution,
+                normalized=resolved,
+                existing_concepts=existing_concept_index,
+                out=out,
+                log=log,
+            )
+        contribution_normalized = resolved
+        if args.reingest:
+            resolved = source_page_context_normalized(
+                resolved,
+                existing_source_artifact,
+            )
+            # 기존 원본 산출물의 핵심 개념도 합친 근거로 다시 검증한다. 합치면서 강등이 되돌려지지 않게 한다.
+            resolved, reingest_demoted = demote_unsupported_core_concepts(resolved, reference_refs)
+            if reingest_demoted:
+                resolved.setdefault("warnings", []).append(
+                    f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림(재편입): {', '.join(reingest_demoted)}"
+                )
+        if args.save_debug_json:
+            write_json(out / "normalized.json", resolved)
+            if generation_evaluations:
+                write_json(out / "wiki_generation_evaluations.json", generation_evaluations)
+
+        page_outputs = _assemble_wiki_pages(
             args,
             api_client=api_client,
-            concept_resolution_prompt=prompts.concept_resolution,
-            normalized=normalized,
+            prompts=prompts,
+            normalized=resolved,
+            blocks=blocks,
+            existing_source_artifact=existing_source_artifact,
+            existing_source_markdown=existing_source_markdown,
             out=out,
             log=log,
         )
-    contribution_normalized = normalized
-    if args.reingest:
-        normalized = source_page_context_normalized(
-            normalized,
-            existing_source_artifact,
+
+        meaning_cluster_artifact, post_ingest = _prepare_post_ingest_clusters(
+            normalized=contribution_normalized,
+            log=log,
         )
-    if args.save_debug_json:
-        write_json(out / "normalized.json", normalized)
-        if generation_evaluations:
-            write_json(out / "wiki_generation_evaluations.json", generation_evaluations)
+        generation_status = generation_evaluation_status(generation_evaluations)
+        post_ingest.update(
+            {
+                "quality_required": bool(extraction_blocks),
+                "generation_evaluation_status": generation_status,
+            }
+        )
 
-    page_outputs = _assemble_wiki_pages(
-        args,
-        api_client=api_client,
-        prompts=prompts,
-        normalized=normalized,
-        blocks=blocks,
-        existing_source_artifact=existing_source_artifact,
-        existing_source_markdown=existing_source_markdown,
-        out=out,
-        log=log,
-    )
-
-    meaning_cluster_artifact, post_ingest = _prepare_post_ingest_clusters(
-        normalized=contribution_normalized,
-        log=log,
-    )
-    generation_status = generation_evaluation_status(generation_evaluations)
-    post_ingest.update(
-        {
-            "quality_required": bool(extraction_blocks),
-            "generation_evaluation_status": generation_status,
-        }
-    )
-
-    def build_manifest() -> dict[str, Any]:
         source_extraction_artifact = _json_safe(
             page_outputs.source_page_normalized.get("source_extraction_artifact")
         )
@@ -1086,24 +1129,24 @@ def run_pipeline(
             "meaning_clusters": meaning_cluster_artifact,
             "maintenance_summary": {"status": "pending"},
             "post_ingest": post_ingest,
-            "normalized": normalized,
+            "normalized": resolved,
             "generation_evaluations": generation_evaluations,
             "generation_evaluation_status": generation_status,
             "pipeline_log": str(log.path),
             "log_callback_url": getattr(args, "log_callback_url", None),
             "save_debug_json": args.save_debug_json,
-            "warnings": normalized.get("warnings", []),
+            "warnings": resolved.get("warnings", []),
         }
         log.emit(
             "완료",
             "파이프라인 실행이 완료되었습니다.",
             {
                 "문서 ID": document.document_id,
-                "core concept 수": len(normalized["concept_ledger"]),
-                "section candidate 수": len(normalized.get("section_candidates", [])),
-                "mention 수": len(normalized.get("mentions", [])),
-                "category 수": len(normalized.get("categories", [])),
-                "근거 수": len(normalized["evidence_units"]),
+                "core concept 수": len(resolved["concept_ledger"]),
+                "section candidate 수": len(resolved.get("section_candidates", [])),
+                "mention 수": len(resolved.get("mentions", [])),
+                "category 수": len(resolved.get("categories", [])),
+                "근거 수": len(resolved["evidence_units"]),
                 "총 소요 시간(초)": f"{monotonic() - pipeline_started:.2f}",
             },
         )
@@ -1112,7 +1155,7 @@ def run_pipeline(
     return (
         finalization_callback(build_manifest)
         if finalization_callback is not None
-        else build_manifest()
+        else build_manifest(_snapshot_concept_index(args))
     )
 
 

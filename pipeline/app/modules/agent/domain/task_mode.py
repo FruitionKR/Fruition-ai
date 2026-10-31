@@ -32,4 +32,5 @@ def task_mode_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTu
         document_operation="none",
         persist=False,
         required_capabilities=(),
+        notice_kind="chat_tab",
     )

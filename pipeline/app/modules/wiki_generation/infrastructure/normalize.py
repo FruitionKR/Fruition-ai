@@ -4,7 +4,11 @@ from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
 from app.modules.wiki_generation.domain.entities import NormalizedConcept, NormalizedEvidence, SourceBlock, SourceDocument
-from app.modules.wiki_generation.domain.text_utils import contains_ci, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, name_key, slugify, unique_keep_order
+
+
+# 언급의 클러스터 판정에 쓰는 원문 길이. 개념 갱신·클러스터 후보 문장 한 줄 분량이다.
+MENTION_SOURCE_TEXT_CHARS = 300
 
 
 class PipelineValidationError(Exception):
@@ -34,6 +38,17 @@ class SemanticNormalizer:
             normalized_note = self._normalize_single_note(note, warnings)
             normalized_notes.append(normalized_note)
 
+            evidence_by_local_id: dict[str, NormalizedEvidence] = {}
+            for ev in (note.get("evidence_claims") or []):
+                evidence_id = f"ev_{len(evidence_rows) + 1:04d}"
+                row = self._normalize_evidence(evidence_id, ev, warnings)
+                evidence_rows.append(row)
+                local_id = str(ev.get("id") or "").strip()
+                if local_id:
+                    evidence_by_local_id[local_id] = row
+
+            for observation in (normalized_note.get("observations") or []):
+                self._resolve_observation_evidence(observation, evidence_by_local_id, warnings)
             for observation in (normalized_note.get("observations") or []):
                 observations.append(
                     {
@@ -62,10 +77,13 @@ class SemanticNormalizer:
                     self._merge_concept(concepts_by_slug[concept.slug], concept)
                     concepts_by_slug[concept.slug].importance_score += max(0, 10 - rank) * 0.5
 
-            for ev_idx, ev in enumerate((note.get("evidence_claims") or []), start=1):
-                evidence_id = f"ev_{len(evidence_rows) + 1:04d}"
-                row = self._normalize_evidence(evidence_id, ev, warnings)
-                evidence_rows.append(row)
+        # 근거 힌트를 개념의 제목·별칭으로 썼으면 그 개념 slug로 맞춘다. 근거를 붙이는 곳과 근거 검증이 같은 기준을 쓴다.
+        slug_by_name = {slug: slug for slug in concepts_by_slug}
+        for concept in concepts_by_slug.values():
+            for name in [concept.title, *concept.aliases]:
+                slug_by_name.setdefault(slugify(name), concept.slug)
+        for ev in evidence_rows:
+            ev.related_concept_slugs = unique_keep_order(slug_by_name.get(slug, slug) for slug in ev.related_concept_slugs)
 
         # Attach evidence to concepts.
         missing_related_hints: dict[str, dict[str, Any]] = {}
@@ -89,6 +107,8 @@ class SemanticNormalizer:
                         item["sample_claims"].append(ev.claim)
                     item["max_confidence"] = max(item["max_confidence"], ev.confidence)
 
+        alias_concept_links = _split_concept_aliases(concepts_by_slug)
+
         # Backend expands direct mentions from all blocks by title/aliases.
         for concept in concepts_by_slug.values():
             mention_refs = self._expand_mentions(concept)
@@ -104,9 +124,13 @@ class SemanticNormalizer:
             "concept_ledger": [asdict(c) for c in sorted(concepts_by_slug.values(), key=lambda c: (-c.importance_score, c.slug))],
             "categories": sorted(categories_by_name.values(), key=lambda x: x.get("name", "")),
             "section_candidates": sorted(section_candidates_by_slug.values(), key=lambda x: x.get("slug", "")),
-            "mentions": sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", "")),
+            "mentions": [
+                {**mention, "source_text": self._source_text(mention["anchor_reference_ids"])}
+                for mention in sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", ""))
+            ],
             "observations": observations,
             "evidence_units": [asdict(e) for e in evidence_rows],
+            "alias_concept_links": alias_concept_links,
             "missing_related_concept_hints": sorted(missing_related_hints.values(), key=lambda x: (-x["max_confidence"], x["slug"])),
             "warnings": warnings,
         }
@@ -128,6 +152,8 @@ class SemanticNormalizer:
                     "title": str(obs.get("title", "")).strip(),
                     "query_text": _optional_text(obs.get("query_text")),
                     "summary": str(obs.get("summary", "")).strip(),
+                    "evidence_refs": [str(ref).strip() for ref in (obs.get("evidence_refs") or []) if str(ref).strip()],
+                    # 다른 노트의 중복 관찰을 합칠 때 옮겨 온 근거 문장이다. 추출 출력에는 보통 없다.
                     "claims": [str(claim).strip() for claim in (obs.get("claims") or []) if str(claim).strip()],
                     "related_concept_hints": [slugify(x) for x in (obs.get("related_concept_hints") or [])],
                     "anchor_reference_ids": self._anchor_refs((obs.get("anchor_block_ids") or []), warnings, limit=5),
@@ -176,7 +202,6 @@ class SemanticNormalizer:
                     "term": item.get("name", ""),
                     "name": item.get("name", ""),
                     "slug": slugify(item.get("slug_hint") or item.get("name", "")),
-                    "context": item.get("context", ""),
                     "anchor_reference_ids": self._anchor_refs(
                         (item.get("evidence_block_ids") or []) or (item.get("anchor_block_ids") or []), warnings, limit=3
                     ),
@@ -207,6 +232,28 @@ class SemanticNormalizer:
             "context_problem": note.get("context_problem"),
         }
 
+    def _resolve_observation_evidence(
+        self,
+        observation: dict[str, Any],
+        evidence_by_local_id: dict[str, NormalizedEvidence],
+        warnings: list[str],
+    ) -> None:
+        """관찰이 가리킨 근거 주장으로 claims를 채운다. 같은 사실을 관찰과 근거에 두 번 쓰지 않게 하려는 구조다.
+
+        근거 id(ev_NNNN)는 실행마다 다시 매겨져 관찰에 남기지 않는다. 남기면 재편입 병합의 중복 판정이 깨진다.
+        """
+        rows = []
+        for ref in observation.pop("evidence_refs", []):
+            row = evidence_by_local_id.get(ref)
+            if row is None:
+                warnings.append(f"unknown observation evidence_ref: {ref}")
+                continue
+            rows.append(row)
+        observation["claims"] = unique_keep_order([*observation.get("claims", []), *(row.claim for row in rows)])
+        observation["anchor_reference_ids"] = unique_keep_order(
+            observation["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
+        )
+
     def _merge_source_item(self, bucket: dict[str, dict[str, Any]], item: dict[str, Any], key: str) -> None:
         raw_key = str(item.get(key, "")).strip()
         if not raw_key:
@@ -219,6 +266,11 @@ class SemanticNormalizer:
         for field in ("context", "definition", "why_page_worthy"):
             if item.get(field) and len(str(item.get(field))) > len(str(existing.get(field, ""))):
                 existing[field] = item[field]
+
+    def _source_text(self, block_ids: list[str]) -> str:
+        """언급이 나온 원문 블록. 언급은 설명을 받지 않으므로 클러스터 판정은 이 원문으로 한다."""
+        text = " ".join(self.by_block_id[block_id].text for block_id in block_ids if block_id in self.by_block_id)
+        return " ".join(text.split())[:MENTION_SOURCE_TEXT_CHARS]
 
     def _anchor_refs(self, anchor_block_ids: Iterable[str], warnings: list[str], limit: int = 3) -> list[str]:
         refs = []
@@ -240,6 +292,7 @@ class SemanticNormalizer:
             slug=slug,
             title=title,
             aliases=aliases,
+            tags=clean_concept_tags(c.get("tags") or [], title, aliases),
             definition=c.get("definition", ""),
             why_page_worthy=c.get("why_page_worthy", ""),
             anchor_reference_ids=anchor_refs,
@@ -248,6 +301,7 @@ class SemanticNormalizer:
 
     def _merge_concept(self, target: NormalizedConcept, incoming: NormalizedConcept) -> None:
         target.aliases = unique_keep_order(target.aliases + incoming.aliases)
+        target.tags = clean_concept_tags(target.tags + incoming.tags, target.title, target.aliases)
         if len(incoming.definition) > len(target.definition):
             target.definition = incoming.definition
         if len(incoming.why_page_worthy) > len(target.why_page_worthy):
@@ -289,6 +343,32 @@ class SemanticNormalizer:
         # For Korean aliases, substring is acceptable. For English, require substring
         # across case; this keeps the prototype simple.
         return contains_ci(text, needle)
+
+
+def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> list[dict[str, str]]:
+    """별칭이 같은 문서의 다른 핵심 개념 이름이면 별칭에서 빼고 두 개념을 잇는다.
+
+    다른 핵심 개념이 된 이름은 같은 개념의 다른 이름이 아니라 따로 둔 하위·관련 개념이다. 별칭에 남기면
+    나중에 그 이름의 개념이 들어올 때 이름 일치로 잘못 병합된다.
+    """
+    owner_by_name = {}
+    for concept in concepts_by_slug.values():
+        for name in (concept.title, concept.slug):
+            owner_by_name.setdefault(name_key(name), concept.slug)
+    names_by_slug = {slug: {name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
+    links = []
+    for concept in concepts_by_slug.values():
+        kept = []
+        for alias in concept.aliases:
+            owner = owner_by_name.get(name_key(alias))
+            # 서로를 별칭으로 가진 두 개념은 같은 개념의 두 이름이라 그대로 두고 이름 일치 병합에 맡긴다.
+            mutual = owner is not None and bool(names_by_slug[owner] & {name_key(concept.title), name_key(concept.slug)})
+            if owner and owner != concept.slug and not mutual:
+                links.append({"source": concept.slug, "target": owner})
+                continue
+            kept.append(alias)
+        concept.aliases = kept
+    return links
 
 
 def _optional_text(value: Any) -> str | None:

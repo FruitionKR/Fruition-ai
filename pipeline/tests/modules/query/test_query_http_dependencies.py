@@ -7,6 +7,7 @@ from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSe
 from app.modules.query.infrastructure.in_memory_wiki_repository import InMemoryWikiRepository
 from app.modules.query.interfaces.http import dependencies
 from app.modules.query.interfaces.http.dependencies import build_answer_query_use_case
+from app.modules.wiki_embedding.infrastructure.remote_embedding_model import RemoteEmbeddingModel
 
 
 class FixedScoreSearch:
@@ -77,7 +78,7 @@ class QueryHttpDependenciesTest(unittest.TestCase):
         with patch.dict(os.environ, env):
             search = dependencies._build_embedding_search(FixedScoreSearch(0.1))
 
-        self.assertIsInstance(search._embedding_model, dependencies.RemoteEmbeddingModel)
+        self.assertIsInstance(search._embedding_model, RemoteEmbeddingModel)
         self.assertIsNone(search._fallback_search)
         self.assertEqual(search._online_text_limit, dependencies.MAX_TEXT_CHARS)
         dependencies._stored_embedding_search.cache_clear()

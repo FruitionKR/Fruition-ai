@@ -17,7 +17,11 @@ Operations:
 Use the original semantic extraction item schemas for values in `items`.
 Every factual key point, observation, core_concept, concept_candidate, section_candidate, mention, or evidence claim must contain direct `anchor_block_ids` or `evidence_block_ids` from `source_blocks`.
 Categories may omit anchors.
+Copy numbers exactly as `source_blocks` write them, with the same unit; do not convert units or compute new numbers.
+State only what `source_blocks` state: do not add causes, reasons, or consequences they do not state, and keep their conditions, exceptions, scope limits, and modality.
 When splitting one broad evidence claim, use `replace` with multiple atomic evidence items.
+Every evidence claim keeps an `id` unique within its chunk. When replacing an evidence claim keep its `id`; when splitting it, the first item keeps the original `id` and each other item gets a new `id` not used in that chunk.
+Observations do not restate facts in `claims`. They list the ids of evidence claims in the same chunk in `evidence_refs`, using `chunk_evidence_claims` for the ids that already exist; add an evidence claim first when an observation needs a fact that has none.
 When demoting a core concept, remove it from `core_concepts` and add the corrected item to `section_candidates` or `mentions`.
 
 Return exactly:

@@ -107,6 +107,33 @@ def reconcile_active_cluster_invalidations(
     )
 
 
+def restore_archived_cluster_sections(
+    active: str,
+    archived: str,
+    entries: list[dict[str, Any]],
+) -> tuple[str, str, list[str], list[str]]:
+    """lint가 보관한 원래 섹션을 active로 되돌리고 그 보관 항목을 archived에서 지운다.
+
+    active에 같은 id의 클러스터가 이미 있으면(lint 뒤에 새로 생김) 덮어쓰지 않고 건너뛴 id로 돌려준다.
+    """
+    sections = cluster_sections_by_id(active)
+    restored: list[str] = []
+    skipped: list[str] = []
+    for entry in entries:
+        cluster_id = str(entry["cluster_id"])
+        if cluster_id in sections:
+            skipped.append(cluster_id)
+            continue
+        sections[cluster_id] = str(entry["section"])
+        archived = archived.replace(str(entry["archived_section"]), "", 1)
+        restored.append(cluster_id)
+    if not restored:
+        return active, archived, restored, skipped
+    lines = ["# Active Meaning Clusters", *(sections[cluster_id].strip() for cluster_id in sorted(sections))]
+    archived = re.sub(r"\n{3,}", "\n\n", archived).strip()
+    return "\n\n".join(lines) + "\n", archived + "\n" if archived else "", restored, skipped
+
+
 def cluster_sections_by_id(markdown: str) -> dict[str, str]:
     sections: dict[str, str] = {}
     current_id = ""
@@ -129,6 +156,19 @@ def cluster_sections_by_id(markdown: str) -> dict[str, str]:
 def refs_in_text(text: str) -> list[str]:
     ref_pattern = r"[A-Za-z0-9_.-]+:B\d{4}"
     return _unique_keep_order(re.findall(ref_pattern, text))
+
+
+# 승격은 여러 문서에 반복해 나오는 용어를 개념으로 올린다. 근거 문서가 이보다 적은 클러스터는 승격 후보가 될 수 없다.
+MIN_PROMOTION_SOURCE_DOCUMENTS = 2
+
+
+def source_document_ids(refs: list[str]) -> set[str]:
+    """`문서ID:블록ID` 근거에서 문서 ID만 모은다."""
+    return {ref.split(":", 1)[0] for ref in refs if ":" in ref}
+
+
+def cluster_source_document_ids(section: str) -> set[str]:
+    return source_document_ids([ref for claim in cluster_claims(section) for ref in claim["refs"]])
 
 
 def cluster_claims(section: str) -> list[dict[str, str]]:

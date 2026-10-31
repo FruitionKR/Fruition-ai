@@ -155,6 +155,7 @@ def test_restoring_source_page_to_earlier_ingest_keeps_filename_title(scoped_dsn
         read_text=lambda key: stored[key],
         write_text=write,
         apply_current_state_and_cleanup=lambda *_args: [],
+        restore_archived_clusters=lambda *_args: {},
     ).restore_source_page(
         "restore-1",
         "op-1",

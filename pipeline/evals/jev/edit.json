@@ -1,0 +1,1174 @@
+[
+ {
+  "id": "edit-01",
+  "category": "replace/target/selection",
+  "edit_goal": "cleanup",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-k8s-deployment.md",
+  "source_lines": [
+   615,
+   637
+  ],
+  "markdown": "## 디플로이먼트 스케일링\n\n다음 명령어를 사용해서 디플로이먼트의 스케일을 할 수 있다.\n\n```shell\nkubectl scale deployment/nginx-deployment --replicas=10\n```\n이와 유사하게 출력된다.\n```\ndeployment.apps/nginx-deployment scaled\n```\n\n가령 클러스터에서 [horizontal Pod autoscaling](/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)을 설정\n한 경우 디플로이먼트에 대한 오토스케일러를 설정할 수 있다. 그리고 기존 파드의 CPU 사용률을 기준으로\n실행할 최소 파드 및 최대 파드의 수를 선택할 수 있다.\n\n```shell\nkubectl autoscale deployment/nginx-deployment --min=10 --max=15 --cpu-percent=80%\n```\n이와 유사하게 출력된다.\n```\ndeployment.apps/nginx-deployment scaled\n```",
+  "target": {
+   "type": "selection",
+   "start_line": 13,
+   "end_line": 15
+  },
+  "instruction": "이 문단 줄바꿈이 중간에 이상하게 끊겨 있어. 자연스럽게 이어지게 정리해줘. 링크는 그대로 두고.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "[horizontal Pod autoscaling](/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)"
+   ],
+   "must_contain": [],
+   "must_not_contain": [
+    "설정\n한 경우"
+   ],
+   "format": null
+  },
+  "criteria": [
+   "'설정'과 '한 경우' 사이의 잘못된 줄바꿈이 사라지고 문장이 자연스럽게 이어져야 한다.",
+   "링크 텍스트와 주소가 원문과 글자 하나 다르지 않아야 한다.",
+   "문장의 의미(최소·최대 파드 수, CPU 사용률 기준)가 바뀌거나 내용이 추가되면 실패다.",
+   "선택 영역 밖의 코드 블록은 그대로여야 한다."
+  ],
+  "acceptable_notes": "한 줄로 합치거나 문장 단위로 줄을 나눠도 된다. 사소한 띄어쓰기 수정은 허용.",
+  "note": "어려운 케이스: 링크 보존 + 최소 정리. 선택 범위가 코드 블록 경계를 건드리지 않는다."
+ },
+ {
+  "id": "edit-02",
+  "category": "replace/target/selection",
+  "edit_goal": "style_change",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-privacy-act-excerpt.md",
+  "source_lines": [
+   3,
+   40
+  ],
+  "markdown": "##### 제2조 (정의)\n\n이 법에서 사용하는 용어의 뜻은 다음과 같다. <개정 2014.3.24, 2020.2.4, 2023.3.14, 2026.9.8>\n\n  1. \"개인정보\"란 살아 있는 개인에 관한 정보로서 다음 각 목의 어느 하나에 해당하는 정보를 말한다.\n    가. 성명, 주민등록번호 및 영상 등을 통하여 개인을 알아볼 수 있는 정보\n    나. 해당 정보만으로는 특정 개인을 알아볼 수 없더라도 다른 정보와 쉽게 결합하여 알아볼 수 있는 정보. 이 경우 쉽게 결합할 수 있는지 여부는 다른 정보의 입수 가능성 등 개인을 알아보는 데 소요되는 시간, 비용, 기술 등을 합리적으로 고려하여야 한다.\n    다. 가목 또는 나목을 제1호의2에 따라 가명처리함으로써 원래의 상태로 복원하기 위한 추가 정보의 사용ㆍ결합 없이는 특정 개인을 알아볼 수 없는 정보(이하 \"가명정보\"라 한다)\n  1의2. \"가명처리\"란 개인정보의 일부를 삭제하거나 일부 또는 전부를 대체하는 등의 방법으로 추가 정보가 없이는 특정 개인을 알아볼 수 없도록 처리하는 것을 말한다.\n  2. \"처리\"란 개인정보의 수집, 생성, 연계, 연동, 기록, 저장, 보유, 가공, 편집, 검색, 출력, 정정(訂正), 복구, 이용, 제공, 공개, 파기(破棄), 그 밖에 이와 유사한 행위를 말한다.\n  3. \"정보주체\"란 처리되는 정보에 의하여 알아볼 수 있는 사람으로서 그 정보의 주체가 되는 사람을 말한다.\n  4. \"개인정보파일\"이란 개인정보를 쉽게 검색할 수 있도록 일정한 규칙에 따라 체계적으로 배열하거나 구성한 개인정보의 집합물(集合物)을 말한다.\n  5. \"개인정보처리자\"란 업무를 목적으로 개인정보파일을 운용하기 위하여 스스로 또는 다른 사람을 통하여 개인정보를 처리하는 공공기관, 법인, 단체 및 개인 등을 말한다.\n  6. \"공공기관\"이란 다음 각 목의 기관을 말한다.\n    가. 국회, 법원, 헌법재판소, 중앙선거관리위원회의 행정사무를 처리하는 기관, 중앙행정기관(대통령 소속 기관과 국무총리 소속 기관을 포함한다) 및 그 소속 기관, 지방자치단체\n    나. 그 밖의 국가기관 및 공공단체 중 대통령령으로 정하는 기관\n  7. \"고정형 영상정보처리기기\"란 일정한 공간에 설치되어 지속적 또는 주기적으로 사람 또는 사물의 영상 등을 촬영하거나 이를 유ㆍ무선망을 통하여 전송하는 장치로서 대통령령으로 정하는 장치를 말한다.\n  7의2. \"이동형 영상정보처리기기\"란 사람이 신체에 착용 또는 휴대하거나 이동 가능한 물체에 부착 또는 거치(据置)하여 사람 또는 사물의 영상 등을 촬영하거나 이를 유ㆍ무선망을 통하여 전송하는 장치로서 대통령령으로 정하는 장치를 말한다.\n  8. \"과학적 연구\"란 기술의 개발과 실증, 기초연구, 응용연구 및 민간 투자 연구 등 과학적 방법을 적용하는 연구를 말한다.\n  9. \"인공지능기술\"이란 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」 제2조제3호에 따른 인공지능기술을 말한다.\n\n##### 제3조 (개인정보 보호 원칙)\n\n**①** 개인정보처리자는 개인정보의 처리 목적을 명확하게 하여야 하고 그 목적에 필요한 범위에서 최소한의 개인정보만을 적법하고 정당하게 수집하여야 한다.\n\n**②** 개인정보처리자는 개인정보의 처리 목적에 필요한 범위에서 적합하게 개인정보를 처리하여야 하며, 그 목적 외의 용도로 활용하여서는 아니 된다.\n\n**③** 개인정보처리자는 개인정보의 처리 목적에 필요한 범위에서 개인정보의 정확성, 완전성 및 최신성이 보장되도록 하여야 한다.\n\n**④** 개인정보처리자는 개인정보의 처리 방법 및 종류 등에 따라 정보주체의 권리가 침해받을 가능성과 그 위험 정도를 고려하여 개인정보를 안전하게 관리하여야 한다.\n\n**⑤** 개인정보처리자는 제30조에 따른 개인정보 처리방침 등 개인정보의 처리에 관한 사항을 공개하여야 하며, 열람청구권 등 정보주체의 권리를 보장하여야 한다. <개정 2023.3.14>\n\n**⑥** 개인정보처리자는 정보주체의 사생활 침해를 최소화하는 방법으로 개인정보를 처리하여야 한다.\n\n**⑦** 개인정보처리자는 개인정보를 익명 또는 가명으로 처리하여도 개인정보 수집목적을 달성할 수 있는 경우 익명처리가 가능한 경우에는 익명에 의하여, 익명처리로 목적을 달성할 수 없는 경우에는 가명에 의하여 처리될 수 있도록 하여야 한다. <개정 2020.2.4>\n\n**⑧** 개인정보처리자는 이 법 및 관계 법령에서 규정하고 있는 책임과 의무를 준수하고 실천함으로써 정보주체의 신뢰를 얻기 위하여 노력하여야 한다.",
+  "target": {
+   "type": "selection",
+   "start_line": 24,
+   "end_line": 24
+  },
+  "instruction": "이 문장만 일반인 대상 안내문처럼 '~해야 합니다' 존댓말로 바꿔줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "**①**"
+   ],
+   "must_contain": [
+    "합니다"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "제3조 ① 문장이 '~합니다'체 존댓말로 바뀌어야 한다.",
+   "처리 목적 명확화, 최소한의 수집, 적법·정당한 수집이라는 의미 요소가 모두 남아야 한다.",
+   "항 번호 ①이 유지돼야 하며 다른 항(②~⑧)은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "표현을 조금 풀어 쓰는 것은 허용. **①** 표기는 유지.",
+  "note": "단일 줄 선택에 대한 문체 변경."
+ },
+ {
+  "id": "edit-03",
+  "category": "replace/target/selection",
+  "edit_goal": "translate",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": "ko",
+  "source_id": "en-postgres-mvcc.md",
+  "source_lines": [
+   89,
+   113
+  ],
+  "markdown": "### 13.2.2. Repeatable Read Isolation Level #\n\nThe Repeatable Read isolation level only sees data committed before the transaction began; it never sees either uncommitted data or changes committed by concurrent transactions during the transaction's execution. (However, each query does see the effects of previous updates executed within its own transaction, even though they are not yet committed.) This is a stronger guarantee than is required by the SQL standard for this isolation level, and prevents all of the phenomena described in Table 13.1 except for serialization anomalies. As mentioned above, this is specifically allowed by the standard, which only describes the minimum protections each isolation level must provide.\n\nThis level is different from Read Committed in that a query in a repeatable read transaction sees a snapshot as of the start of the first non-transaction-control statement in the transaction , not as of the start of the current statement within the transaction. Thus, successive SELECT commands within a single transaction see the same data, i.e., they do not see changes made by other transactions that committed after their own transaction started.\n\nApplications using this level must be prepared to retry transactions due to serialization failures.\n\nUPDATE , DELETE , MERGE , SELECT FOR UPDATE , and SELECT FOR SHARE commands behave the same as SELECT in terms of searching for target rows: they will only find target rows that were committed as of the transaction start time. However, such a target row might have already been updated (or deleted or locked) by another concurrent transaction by the time it is found. In this case, the repeatable read transaction will wait for the first updating transaction to commit or roll back (if it is still in progress). If the first updater rolls back, then its effects are negated and the repeatable read transaction can proceed with updating the originally found row. But if the first updater commits (and actually updated or deleted the row, not just locked it) then the repeatable read transaction will be rolled back with the message\n\nERROR: could not serialize access due to concurrent update\n\nbecause a repeatable read transaction cannot modify or lock rows changed by other transactions after the repeatable read transaction began.\n\nWhen an application receives this error message, it should abort the current transaction and retry the whole transaction from the beginning. The second time through, the transaction will see the previously-committed change as part of its initial view of the database, so there is no logical conflict in using the new version of the row as the starting point for the new transaction's update.\n\nNote that only updating transactions might need to be retried; read-only transactions will never have serialization conflicts.\n\nThe Repeatable Read mode provides a rigorous guarantee that each transaction sees a completely stable view of the database. However, this view will not necessarily always be consistent with some serial (one at a time) execution of concurrent transactions of the same level. For example, even a read-only transaction at this level may see a control record updated to show that a batch has been completed but not see one of the detail records which is logically part of the batch because it read an earlier revision of the control record. Attempts to enforce business rules by transactions running at this isolation level are not likely to work correctly without careful use of explicit locks to block conflicting transactions.\n\nThe Repeatable Read isolation level is implemented using a technique known in academic database literature and in some other database products as Snapshot Isolation . Differences in behavior and performance may be observed when compared with systems that use a traditional locking technique that reduces concurrency. Some other systems may even offer Repeatable Read and Snapshot Isolation as distinct isolation levels with different behavior. The permitted phenomena that distinguish the two techniques were not formalized by database researchers until after the SQL standard was developed, and are outside the scope of this manual. For a full treatment, please see [berenson95] .\n\n### Note\n\nPrior to PostgreSQL version 9.1, a request for the Serializable transaction isolation level provided exactly the same behavior described here. To retain the legacy Serializable behavior, Repeatable Read should now be requested.",
+  "target": {
+   "type": "selection",
+   "start_line": 11,
+   "end_line": 13
+  },
+  "instruction": "선택한 부분 한국어로 번역해줘. 에러 메시지는 원문 그대로 둬.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "ERROR: could not serialize access due to concurrent update"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "설명 문장('because a repeatable read transaction ...')이 한국어로 번역돼야 한다.",
+   "에러 메시지 줄은 영어 원문 그대로 남아야 한다.",
+   "선택 영역 밖의 영어 문단은 번역되거나 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "에러 메시지를 코드 표기(`...`)로 감싸도 문자열이 그대로면 허용.",
+  "note": "en→ko 부분 번역 + 원문 고정 문자열 보존."
+ },
+ {
+  "id": "edit-04",
+  "category": "replace/target/selection",
+  "edit_goal": "style_change",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   137,
+   177
+  ],
+  "markdown": "##### 제60조 (연차 유급휴가)\n\n**①** 사용자는 1년간 80퍼센트 이상 출근한 근로자에게 15일의 유급휴가를 주어야 한다. <개정 2012.2.1>\n\n**②** 사용자는 계속하여 근로한 기간이 1년 미만인 근로자 또는 1년간 80퍼센트 미만 출근한 근로자에게 1개월 개근 시 1일의 유급휴가를 주어야 한다. <개정 2012.2.1>\n\n**③** 삭제 <2017.11.28>\n\n**④** 사용자는 3년 이상 계속하여 근로한 근로자에게는 제1항에 따른 휴가에 최초 1년을 초과하는 계속 근로 연수 매 2년에 대하여 1일을 가산한 유급휴가를 주어야 한다. 이 경우 가산휴가를 포함한 총 휴가 일수는 25일을 한도로 한다.\n\n**⑤** 사용자는 근로자가 제1항ㆍ제2항 및 제4항에 따른 유급휴가를 대통령령으로 정하는 시간단위 및 일수의 범위에서 분할하여 청구한 때에는 이를 부여하여야 한다. <신설 2026.6.9>\n\n**⑥** 사용자는 제1항ㆍ제2항ㆍ제4항 및 제5항에 따른 휴가를 근로자가 청구한 시기에 주어야 하고, 그 기간에 대하여는 취업규칙 등에서 정하는 통상임금 또는 평균임금을 지급하여야 한다. 다만, 근로자가 청구한 시기에 휴가를 주는 것이 사업 운영에 막대한 지장이 있는 경우에는 그 시기를 변경할 수 있다. <개정 2026.6.9>\n\n**⑦** 제1항 및 제2항을 적용하는 경우 다음 각 호의 어느 하나에 해당하는 기간은 출근한 것으로 본다. <개정 2012.2.1, 2017.11.28, 2024.10.22, 2026.2.19, 2026.6.9>\n\n  1. 근로자가 업무상의 부상 또는 질병으로 휴업한 기간\n  2. 임신 중의 여성이 제74조제1항부터 제3항까지의 규정에 따른 휴가로 휴업한 기간\n  3. 「남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률」 제19조에 따른 육아휴직으로 휴업한 기간\n  4. 「남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률」 제19조의2제1항에 따른 육아기 근로시간 단축을 사용하여 단축된 근로시간\n  5. 제74조제7항에 따른 임신기 근로시간 단축을 사용하여 단축된 근로시간\n\n**⑧** 제1항ㆍ제2항 및 제4항에 따른 휴가는 1년간(계속하여 근로한 기간이 1년 미만인 근로자의 제2항에 따른 유급휴가는 최초 1년의 근로가 끝날 때까지의 기간을 말한다) 행사하지 아니하면 소멸된다. 다만, 사용자의 귀책사유로 사용하지 못한 경우에는 그러하지 아니하다. <개정 2020.3.31, 2026.6.9>\n\n**⑨** 사용자는 제1항ㆍ제2항ㆍ제4항 및 제5항에 따른 유급휴가의 청구 또는 사용을 이유로 근로자를 해고하거나 그 밖의 불리한 처우를 하여서는 아니 된다. <신설 2026.6.9>\n\n##### 제61조 (연차 유급휴가의 사용 촉진)\n\n**①** 사용자가 제60조제1항ㆍ제2항 및 제4항에 따른 유급휴가(계속하여 근로한 기간이 1년 미만인 근로자의 제60조제2항에 따른 유급휴가는 제외한다)의 사용을 촉진하기 위하여 다음 각 호의 조치를 하였음에도 불구하고 근로자가 휴가를 사용하지 아니하여 제60조제8항 본문에 따라 소멸된 경우에는 사용자는 그 사용하지 아니한 휴가에 대하여 보상할 의무가 없고, 제60조제8항 단서에 따른 사용자의 귀책사유에 해당하지 아니하는 것으로 본다. <개정 2012.2.1, 2017.11.28, 2020.3.31, 2026.6.9>\n\n  1. 제60조제8항 본문에 따른 기간이 끝나기 6개월 전을 기준으로 10일 이내에 사용자가 근로자별로 사용하지 아니한 휴가 일수를 알려주고, 근로자가 그 사용 시기를 정하여 사용자에게 통보하도록 서면으로 촉구할 것\n  2. 제1호에 따른 촉구에도 불구하고 근로자가 촉구를 받은 때부터 10일 이내에 사용하지 아니한 휴가의 전부 또는 일부의 사용 시기를 정하여 사용자에게 통보하지 아니하면 제60조제8항 본문에 따른 기간이 끝나기 2개월 전까지 사용자가 사용하지 아니한 휴가의 사용 시기를 정하여 근로자에게 서면으로 통보할 것\n\n**②** 사용자가 계속하여 근로한 기간이 1년 미만인 근로자의 제60조제2항에 따른 유급휴가의 사용을 촉진하기 위하여 다음 각 호의 조치를 하였음에도 불구하고 근로자가 휴가를 사용하지 아니하여 제60조제8항 본문에 따라 소멸된 경우에는 사용자는 그 사용하지 아니한 휴가에 대하여 보상할 의무가 없고, 같은 항 단서에 따른 사용자의 귀책사유에 해당하지 아니하는 것으로 본다. <신설 2020.3.31, 2026.6.9>\n\n  1. 최초 1년의 근로기간이 끝나기 3개월 전을 기준으로 10일 이내에 사용자가 근로자별로 사용하지 아니한 휴가 일수를 알려주고, 근로자가 그 사용 시기를 정하여 사용자에게 통보하도록 서면으로 촉구할 것. 다만, 사용자가 서면 촉구한 후 발생한 휴가에 대해서는 최초 1년의 근로기간이 끝나기 1개월 전을 기준으로 5일 이내에 촉구하여야 한다.\n  2. 제1호에 따른 촉구에도 불구하고 근로자가 촉구를 받은 때부터 10일 이내에 사용하지 아니한 휴가의 전부 또는 일부의 사용 시기를 정하여 사용자에게 통보하지 아니하면 최초 1년의 근로기간이 끝나기 1개월 전까지 사용자가 사용하지 아니한 휴가의 사용 시기를 정하여 근로자에게 서면으로 통보할 것. 다만, 제1호 단서에 따라 촉구한 휴가에 대해서는 최초 1년의 근로기간이 끝나기 10일 전까지 서면으로 통보하여야 한다.\n\n##### 제62조 (유급휴가의 대체)\n\n사용자는 근로자대표와의 서면 합의에 따라 제60조에 따른 연차 유급휴가일을 갈음하여 특정한 근로일에 근로자를 휴무시킬 수 있다.",
+  "target": {
+   "type": "selection",
+   "start_line": 9,
+   "end_line": 9
+  },
+  "instruction": "이 항을 일반 직원이 이해하기 쉬운 말로 풀어서 써줘. 숫자는 바꾸지 마.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "3년",
+    "1년",
+    "2년",
+    "1일",
+    "25일"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "제60조 ④의 내용이 쉬운 문장으로 다시 쓰여야 한다.",
+   "3년 이상 근속, 최초 1년 초과 후 매 2년마다 1일 가산, 총 25일 한도라는 내용과 숫자가 그대로 유지돼야 한다.",
+   "숫자를 바꾸거나 예시 계산 등 원문에 없는 수치를 단정적으로 추가하면 실패다.",
+   "다른 항은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "**④** 표기를 유지하거나 문장 속에 녹여도 된다. 여러 문장으로 나눠도 된다.",
+  "note": "어려운 케이스: '숫자 그대로' 제약이 있는 문체 변경."
+ },
+ {
+  "id": "edit-05",
+  "category": "replace/target/selection",
+  "edit_goal": "bullet_list",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-ir.md",
+  "source_lines": [
+   1,
+   24
+  ],
+  "markdown": "# 정보 검색\n\n정보 검색(情報檢索, information retrieval)은 집합적인 정보로부터 원하는 내용과 관련이 있는 부분을 얻어 내는 행위를 말한다. 이를 위해 메타데이터나 색인이 사용될 수 있다.\n자동화된 정보 검색 시스템은 소위 ‘정보 과부하’라 불리는 상태를 완화시키기 위해 사용된다. 많은 대학 및 공공 도서관들이 보유 서적 및 저널, 각종 문서들에 대한 접근성을 제공하기 위해 정보 검색 시스템을 구축한다. 웹 검색 엔진은 일상적으로 가장 쉽게 접할 수 있는 정보 검색 시스템 중 하나이다.\n\n\n## 역사\n\n정보를 검색하기 위해 컴퓨터를 사용한다는 아이디어는 1945년 버니바 부시가 디 애틀랜틱 지에 기고한 '우리가 생각하는 대로(As We May Think)'를 통해 대중화되었다. 최초의 자동화 정보 검색 시스템은 1950~1960년대에 도입되었다. 1970년까지 수 천 개 문서의 모음인 크랜필드 콜렉션(Cranfield collection)과 같은 소규모 말뭉치를 대상으로 하는 몇몇 방법들이 학계에 소개되었다. 록히드 다이얼로그 시스템(Lockheed Dialog system)과 같은 대규모 검색 시스템은 1970년대 초부터 사용되기 시작하였다.\n1992년 미국 국방부는 미국 국립표준기술연구소(NIST)와 함께 텍스트 검색 컨퍼런스(Text Retrieval Conference, TREC)를 후원하였으며, 이것은 TIPSTER 텍스트 프로그램의 일부였다. 이 프로그램의 목적은 대규모 텍스트를 위한 텍스트 검색 방법론의 성능 측정에 필요한 제반 시설을 지원함으로써 정보 검색 관련 학계를 후원하는 것이었다. 이를 통해 매우 큰 말뭉치에 적용 가능한 확장성 높은 검색 방법에 대한 연구가 촉진되었다. 그리고 웹 검색 엔진의 등장으로 인해 이러한 대규모 검색 시스템에 대한 요구는 더욱 커지게 되었다.\n\n\n## 정보 검색 요소\n오늘날의 정보검색시스템은 크게 데이터집합, 색인, 랭킹, 표현, 사용자 피드백이라는 다섯 가지 요소로 구성되어 있다.\n\n데이터집합: 검색의 대상이 되는 데이터로서 크게 DB형 데이터와 문서형 데이터로 구분될 수 있다. DB형 데이터는 날씨, 주가, 기차시간표 등과 같이 일정한 스키마를 갖고 DB에 저장되어 있는 데이터인 반면, 문서형 데이터는 제목과 본문, 생성날짜 등으로 구성된 데이터를 말한다. 문서형데이터는 다시 정형적 문서형데이터와 비정형적 문서형데이터로 나뉘는데, 정형적 문서형데이터는 지식검색데이터나 블로그데이터와 같이 비교적 나름대로의 서식을 갖추고 있는 데이터이고, 비정형적 문서형데이터는 웹문서와 같이 상대적으로 자유로운 형식의 데이터를 의미한다.\n색인: 색인(indexing)은 문서형데이터집합에 대하여, 각 단어별 문서리스트를 생성한 것을 의미하며, 흔히 역문서리스트(inverted list)라는 용어로도 표현된다. 한편 색인방식에 따라 데이터집합을 한꺼번에 색인하는 일괄색인(batch indexing)과 점증색인(incremental indexing)으로 구분될 수 있는데, 뉴스검색은 대표적으로 점증색인을 적용하는 분야이다. 정보검색을 위한 색인과정에서 중요한 것은 주어진 문서에서 색인어를 추출하는 과정인데, 언어적 특성과 상관없이 적용될 수 있는 n-gram 방식과, 자연언어처리의 형태소분석을 통한 방식이 존재한다.\n랭킹: 랭킹(ranking)은 입력된 질의(query)에 대하여 가장 적합한 순으로 문서형데이터들을 나열하는 작업을 의미하며, 이를 위한 다양한 검색알고리즘들이 존재한다. 여기서 적합성(relevance)은 질의와 문서와의 유사성(similarity), 문서의 최신성(freshness), 문서 고유의 품질(quality), 그리고 사용자 검색로그를 포함한 기타 여러 정보가 적절히 혼합되어 판단될 수 있다. 구글의 페이지랭크는 질의와는 상관없이 문서 고유의 품질을 문서간의 링크관계에 따라 규정하는 대표적인 품질측정 알고리즘이라 할 수 있다.\n표현: 검색의 결과는 구글과 같이 단순리스트형식으로 사용자에게 제시될 수도 있고, 유사한 결과들이 그룹화되어 제시될 수도 있으며, 데이터의 종류(이미지, 블로그, 웹문서)등으로 구분지어 제시될 수도 있다.\n사용자 피드백: 사용자피드백은 검색의 품질을 개선하는 데 활용되는 것으로, 사용자가 직접 검색결과에 피드백을 주는 명시적 피드백(explicit feedback)과 사용자의 검색행위를 기록해놓은 검색로그가 대표적인 암묵적 피드백(implicit feedback)으로 구분될 수 있다. 최근에는 암묵적 피드백 정보를 활용하여 검색결과를 개선하려는 연구가 활발히 진행되고 있다.\n\n\n## 정보 검색 모델\n정보 검색 모델에는 불리안 모델(boolean model), 벡터 모델(vector model) 등이 있다. 불리안 모델은 한 개의 질의어에 있는 두 개 이상의 키워드가 and, or, not에 의하여 연결되어 있는 경우, 이들을 논리곱의 합의 형태로 변환하여, 각각의 논리곱이 각 문서에 존재하는지를 체크하는 방법이다. 벡터 모델은 질의어와 각각의 문서를 모든 색인어에 대한 벡터 형태로 나타낸 후, 질의어와 각 문서의 벡터곱을 유사도로 이용하여 문서들을 랭킹하는 방법이다.",
+  "target": {
+   "type": "selection",
+   "start_line": 16,
+   "end_line": 20
+  },
+  "instruction": "이 다섯 줄 불릿 리스트로 바꿔줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "데이터집합",
+    "색인",
+    "랭킹",
+    "표현",
+    "사용자 피드백",
+    "inverted list"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "bullet_list"
+  },
+  "criteria": [
+   "다섯 요소(데이터집합, 색인, 랭킹, 표현, 사용자 피드백)가 각각 불릿 항목이 돼야 한다.",
+   "각 항목의 설명 내용이 빠지거나 바뀌면 안 된다(요약 요청이 아님).",
+   "다른 문단은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "항목 이름을 굵게 하거나 하위 불릿으로 나눠도 된다. '-'나 '*' 모두 허용.",
+  "note": "줄 단위 문단을 불릿으로 변환, 내용 보존 확인."
+ },
+ {
+  "id": "edit-06",
+  "category": "replace/target/selection",
+  "edit_goal": "convert_format",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-rag.md",
+  "source_lines": [
+   88,
+   109
+  ],
+  "markdown": "## 변형과 확장\n검색 증강 생성(RAG)은 초기 제안 이후 다양한 변형과 확장이 등장하였다.\n\n사전학습 결합형 (REALM) — 구우 등은 사전학습(pre-training) 단계에서 검색기를 통합하여, 마스킹 언어 모델 목적을 통해 검색기까지 공동으로 학습하도록 하였다.\n대규모 외부 메모리형 (RETRO) — 보르제우드 등은 수조(trillions) 토큰 규모의 데이터베이스에서 조각 단위 검색을 수행하여, 상대적으로 작은 파라미터 수로도 거대 모델과 경쟁할 수 있음을 보였다.\n자기비평형 (Self-RAG) — 아사이 등은 검색·생성·자기평가 단계를 통합해, 모델이 필요 시 검색을 수행하고 생성된 답변에 대해 스스로 비평하며, 사실성과 인용 정확도를 높이는 방식을 제안하였다.\n그래프 기반 확장 (Graph RAG) — 펭 등은 텍스트 단락 대신 엔티티·관계 중심의 지식 그래프를 활용해 검색 및 융합 과정을 구조화함으로써, 생성 응답의 사실성과 추론력을 높이는 방법을 제시하였다.\n\n\n## 한계\n검색 증강 생성(RAG)은 대형 언어 모델의 사실성 및 최신성을 강화하지만, 여러 가지 기술적·보안적 한계를 가진다.\n\n회수 오류와 다단계 추론 문제 — 관련 문서가 검색되지 않거나 잘못 검색되면 환각(hallucination)이 발생할 수 있다. 또한 다중 문서에 걸친 멀티홉 추론은 여전히 해결되지 않은 과제다.\n컨텍스트 예산 제한 — 입력 컨텍스트 창의 길이 한계 때문에 검색된 문서를 충분히 반영하지 못하거나, 과도한 문서를 포함할 경우 잡음과 연산 비용이 증가할 수 있다.\n보안 및 안전 문제 — 프롬프트 인젝션(prompt injection), 민감정보 유출, 검색된 출처의 독성(toxicity) 전이 등 보안적 위험이 존재한다. OWASP는 대형 언어 모델 응용의 위협을 정리한 보안 지침을 발표하였다.\n데이터 관리와 최신성 — 외부 지식 인덱스는 지속적인 업데이트와 비식별화, 접근 통제가 필요하다. 최신성이 보장되지 않으면 응답 품질이 떨어지고, 데이터 주권 문제도 발생할 수 있다.\n\n\n## 도전 과제\nRAG는 LLM의 환각 문제에 대한 완전한 해결책이 아니다. 아르스 테크니카에 따르면, \"LLM이 응답에서 원본 자료 주변을 여전히 환각할 수 있기 때문에 직접적인 해결책은 아니다.\"\nRAG는 대형 언어 모델(LLM)의 정확도를 향상시키지만, 모든 문제를 제거하지는 않는다. 한 가지 한계는 RAG가 잦은 모델 재훈련의 필요성을 줄이지만, 완전히 제거하지는 않는다는 것이다. 또한 LLM은 신뢰할 수 있는 응답을 제공하기에 충분한 정보가 부족할 때 이를 인식하는 데 어려움을 겪을 수 있다. 특정 훈련 없이는 모델이 불확실성을 나타내야 할 때에도 답변을 생성할 수 있다. IBM에 따르면, 이 문제는 모델이 자신의 지식 한계를 평가할 능력이 부족할 때 발생할 수 있다.\nRAG 시스템은 사실적으로 올바르지만 오해의 소지가 있는 출처를 검색하여 해석 오류를 일으킬 수 있다. 어떤 경우에는 LLM이 출처의 문맥을 고려하지 않고 진술을 추출하여 잘못된 결론을 내릴 수 있다. 또한, 상충되는 정보에 직면했을 때 RAG 모델은 어떤 출처가 정확한지 판단하는 데 어려움을 겪을 수 있으며, 여러 출처의 세부 정보를 결합하여 오래된 정보와 업데이트된 정보를 오해의 소지가 있는 방식으로 결합한 응답을 생성할 수 있다. MIT 테크놀로지 리뷰에 따르면, 이러한 문제는 RAG 시스템이 검색한 데이터를 잘못 해석할 수 있기 때문에 발생한다.",
+  "target": {
+   "type": "selection",
+   "start_line": 4,
+   "end_line": 7
+  },
+  "instruction": "이 네 줄을 표로 바꿔줘. 열은 유형, 대표 모델, 설명으로.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "REALM",
+    "RETRO",
+    "Self-RAG",
+    "Graph RAG"
+   ],
+   "must_contain": [
+    "유형",
+    "대표 모델",
+    "설명"
+   ],
+   "must_not_contain": [],
+   "format": "table"
+  },
+  "criteria": [
+   "유형/대표 모델/설명 세 열을 가진 Markdown 표가 돼야 하고 네 행이 있어야 한다.",
+   "각 행의 유형명과 모델명이 원문과 일치해야 한다(예: 자기비평형-Self-RAG).",
+   "설명은 원문 내용에서 나와야 하며 새로운 사실을 추가하면 실패다.",
+   "선택 영역 밖(서론 문장, 한계 섹션)은 그대로여야 한다."
+  ],
+  "acceptable_notes": "설명을 줄여 쓰거나 연구자 이름을 설명에 넣어도 된다.",
+  "note": "열 이름이 지정된 표 변환."
+ },
+ {
+  "id": "edit-07",
+  "category": "replace/target/current_section",
+  "edit_goal": "convert_format",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   84,
+   109
+  ],
+  "markdown": "##### 제54조 (휴게)\n\n**①** 사용자는 근로시간이 4시간인 경우에는 30분 이상, 8시간인 경우에는 1시간 이상의 휴게시간을 근로시간 도중에 주어야 한다. 다만, 근로시간이 4시간인 경우로서 근로자가 휴게시간을 이용하지 아니할 것을 명시적으로 요청한 때에는 그러하지 아니하다. <개정 2026.6.9>\n\n**②** 휴게시간은 근로자가 자유롭게 이용할 수 있다.\n\n##### 제55조 (휴일)\n\n**①** 사용자는 근로자에게 1주에 평균 1회 이상의 유급휴일을 보장하여야 한다. <개정 2018.3.20>\n\n**②** 사용자는 근로자에게 대통령령으로 정하는 휴일을 유급으로 보장하여야 한다. 다만, 근로자대표와 서면으로 합의한 경우 특정한 근로일로 대체할 수 있다. <신설 2018.3.20>\n\n##### 제56조 (연장ㆍ야간 및 휴일 근로)\n\n**①** 사용자는 연장근로(제53조ㆍ제59조 및 제69조 단서에 따라 연장된 시간의 근로를 말한다)에 대하여는 통상임금의 100분의 50 이상을 가산하여 근로자에게 지급하여야 한다. <개정 2018.3.20>\n\n**②** 제1항에도 불구하고 사용자는 휴일근로에 대하여는 다음 각 호의 기준에 따른 금액 이상을 가산하여 근로자에게 지급하여야 한다. <신설 2018.3.20>\n\n  1. 8시간 이내의 휴일근로: 통상임금의 100분의 50\n  2. 8시간을 초과한 휴일근로: 통상임금의 100분의 100\n\n**③** 사용자는 야간근로(오후 10시부터 다음 날 오전 6시 사이의 근로를 말한다)에 대하여는 통상임금의 100분의 50 이상을 가산하여 근로자에게 지급하여야 한다. <신설 2018.3.20>\n\n##### 제57조 (보상 휴가제)\n\n사용자는 근로자대표와의 서면 합의에 따라 제51조의3, 제52조제2항제2호 및 제56조에 따른 연장근로ㆍ야간근로 및 휴일근로 등에 대하여 임금을 지급하는 것을 갈음하여 휴가를 줄 수 있다. <개정 2021.1.5>",
+  "target": {
+   "type": "current_section",
+   "start_line": 13,
+   "end_line": 22
+  },
+  "instruction": "제56조 가산임금 기준을 표로 정리해줘. 숫자는 그대로.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "제56조",
+    "100분의 50",
+    "100분의 100",
+    "오후 10시",
+    "오전 6시"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "table"
+  },
+  "criteria": [
+   "연장근로, 8시간 이내 휴일근로, 8시간 초과 휴일근로, 야간근로의 가산 기준이 표로 정리돼야 한다.",
+   "가산율(100분의 50, 100분의 100)과 야간 시간대(오후 10시~오전 6시)가 원문과 같아야 한다.",
+   "제54조, 제55조, 제57조는 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "조문 제목(##### 제56조 ...)을 유지하고 아래에 표를 두는 것이 바람직하나 제목을 표 위에 다른 형태로 둬도 된다. 개정 표기(<신설 ...>)는 생략 가능.",
+  "note": "섹션 단위 표 변환 + 숫자 보존."
+ },
+ {
+  "id": "edit-08",
+  "category": "replace/target/current_section",
+  "edit_goal": "cleanup",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-k8s-deployment.md",
+  "source_lines": [
+   1302,
+   1347
+  ],
+  "markdown": "### 진행 기한 시간(초)\n\n`.spec.progressDeadlineSeconds`는 디플로이먼트가 진행되기를 기다리는 시간(초)을\n지정하는 선택적 필드이며, 시스템은 지정된 시간 안에 디플로이먼트가 진행되지 않으면\n[진행 실패](#디플로이먼트-실패)를 `type: Progressing`, `status: \"False\"`인 컨디션으로 나타낸다.\n그리고 리소스 상태에 `reason: ProgressDeadlineExceeded`를 표시한다. 디플로이먼트 컨트롤러는 디플로이먼트를 계속\n재시도한다. 기본값은 600이다.\n\n만약 명시된다면 이 필드는 `.spec.minReadySeconds` 보다 커야 한다.\n\n### 최소 대기 시간(초)\n\n`.spec.minReadySeconds` 는 새롭게 생성된 파드의 컨테이너가 어떤 것과도 충돌하지 않고 사\n용할 수 있도록 준비되어야 하는 최소 시간(초)을 지정하는 선택적 필드이다.\n이 기본 값은 0이다(파드는 준비되는 즉시 사용할 수 있는 것으로 간주됨).\n파드가 준비되었다고 간주되는 시기에 대한 자세한 내용은 [컨테이너 프로브](/docs/concepts/workloads/pods/pod-lifecycle/#컨테이너-프로브-probe)를 참조한다.\n\n### 파드 종료\n\n\n\n종료 중인 파드는 `DeploymentReplicaSetTerminatingReplicas`\n[기능 게이트](/docs/reference/command-line-tools-reference/feature-gates/)가 활성화된 경우에만 확인할 수 있다.\n이 기능 게이트는 [API 서버](/docs/reference/command-line-tools-reference/kube-apiserver/)\n및 [kube-controller-manager](/docs/reference/command-line-tools-reference/kube-controller-manager/)에서 활성화해야 한다.\n\n삭제나 스케일 다운으로 인해 Terminating 상태가 된 파드는 종료까지 오랜 시간이 걸릴 수 있으며, \n그 기간 동안 추가적인 리소스를 사용할 수 있다. 그 결과 전체 파드 수가 일시적으로 \n`.spec.replicas` 값을 초과할 수 있다. 종료 중인 상태의 파드는 디플로이먼트의 `.status.terminatingReplicas` 필드를 통해 추적할 수 있다.\n\n### 수정 버전 기록 제한\n\n디플로이먼트의 수정 버전 기록은 자신이 컨트롤하는 레플리카셋에 저장된다.\n\n`.spec.revisionHistoryLimit` 은 롤백을 허용하기 위해 보존할 이전 레플리카셋의 수를 지정하는 선택적 필드이다.\n이 이전 레플리카셋은 `etcd` 의 리소스를 소비하고, `kubectl get rs` 의 결과를 가득차게 만든다. 각 디플로이먼트의 구성은 디플로이먼트의 레플리카셋에 저장된다. 이전 레플리카셋이 삭제되면 해당 디플로이먼트 수정 버전으로 롤백할 수 있는 기능이 사라진다. 기본적으로 10개의 기존 레플리카셋이 유지되지만 이상적인 값은 새로운 디플로이먼트의 빈도와 안정성에 따라 달라진다.\n\n더욱 구체적으로 이 필드를 0으로 설정하면 레플리카가 0이 되며 이전 레플리카셋이 정리된다.\n이 경우, 새로운 디플로이먼트 롤아웃을 취소할 수 없다. 새로운 디플로이먼트 롤아웃은 수정 버전 이력이 정리되기 때문이다.\n\n### 일시 정지\n\n`.spec.paused` 는 디플로이먼트를 일시 중지나 재개하기 위한 선택적 부울 필드이다.\n일시 중지 된 디플로이먼트와 일시 중지 되지 않은 디플로이먼트 사이의 유일한 차이점은\n일시 중지된 디플로이먼트는 PodTemplateSpec에 대한 변경 사항이 일시중지 된 경우 새 롤아웃을 트리거 하지 않는다.\n디플로이먼트는 생성시 기본적으로 일시 중지되지 않는다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 11,
+   "end_line": 16
+  },
+  "instruction": "이 섹션 문장이 중간에 끊겨 있는데 정리해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "`.spec.minReadySeconds`",
+    "[컨테이너 프로브](/docs/concepts/workloads/pods/pod-lifecycle/#컨테이너-프로브-probe)",
+    "### 최소 대기 시간(초)"
+   ],
+   "must_contain": [],
+   "must_not_contain": [
+    "사\n용할"
+   ],
+   "format": null
+  },
+  "criteria": [
+   "'사'와 '용할' 사이의 잘린 단어가 '사용할'로 이어져야 한다.",
+   "필드명, 기본값 0, 링크가 그대로 남아야 한다.",
+   "다른 섹션(진행 기한 시간, 파드 종료 등)은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "줄 나눔 방식은 자유. 문장 순서는 유지하는 것이 바람직.",
+  "note": "코드 표기·링크가 섞인 섹션 정리."
+ },
+ {
+  "id": "edit-09",
+  "category": "replace/target/current_section",
+  "edit_goal": "checklist",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-privacy-act-excerpt.md",
+  "source_lines": [
+   230,
+   254
+  ],
+  "markdown": "##### 제34조 (개인정보 유출등의 통지ㆍ신고)\n\n**①** 개인정보처리자는 개인정보가 유출등이 되었음을 알게 되었을 때에는 지체 없이 해당 정보주체에게 다음 각 호의 사항을 알려야 한다. 다만, 정보주체의 연락처를 알 수 없는 경우 등 정당한 사유가 있는 경우에는 대통령령으로 정하는 바에 따라 통지를 갈음하는 조치를 취할 수 있다. <개정 2023.3.14, 2026.3.10>\n\n  1. 유출등이 된 개인정보의 항목\n  2. 유출등이 된 시점과 그 경위\n  3. 유출등으로 인하여 발생할 수 있는 피해를 최소화하기 위하여 정보주체가 할 수 있는 방법 등에 관한 구체적인 정보\n  4. 개인정보처리자의 대응조치 및 피해 구제절차\n  5. 정보주체에게 피해가 발생한 경우 신고 등을 접수할 수 있는 담당부서 및 연락처\n  6. 개인정보 유출등으로 인한 제39조에 따른 손해배상과 제39조의2에 따른 법정손해배상의 청구 및 제43조에 따른 분쟁조정 등 피해를 입은 정보주체의 법적 권리와 그 행사 방법 등에 관한 정보\n  7. 그 밖에 개인정보가 유출등이 된 정보주체의 보호를 위하여 대통령령으로 정하는 사항\n\n**②** 제1항에도 불구하고 개인정보의 유형, 정보주체에게 미치는 영향 및 유출등의 위험 정도를 고려하여 대통령령으로 정하는 유출등의 가능성이 있음을 알게 되었을 때에는 지체 없이 유출등의 가능성이 있는 모든 정보주체에게 피해를 최소화하기 위한 정보 등 대통령령으로 정하는 사항을 알려야 한다. <신설 2026.3.10>\n\n**③** 개인정보처리자는 개인정보가 유출등이 된 경우에는 해당 개인정보의 회수ㆍ삭제 등 피해 확산을 방지하기 위한 조치를 포함하여 피해를 최소화하기 위한 대책을 마련하고 필요한 조치를 하여야 한다. <개정 2023.3.14, 2026.3.10>\n\n**④** 개인정보처리자는 개인정보의 유출등이 있음을 알게 되었을 때에는 개인정보의 유형, 유출등의 경로 및 규모 등을 고려하여 대통령령으로 정하는 바에 따라 제1항 각 호의 사항을 지체 없이 보호위원회 또는 대통령령으로 정하는 전문기관에 신고하여야 한다. 이 경우 보호위원회 또는 대통령령으로 정하는 전문기관은 피해 확산방지, 피해 복구 등을 위한 기술을 지원할 수 있다. <개정 2013.3.23, 2014.11.19, 2017.7.26, 2020.2.4, 2023.3.14, 2026.3.10>\n\n**⑤** 제1항ㆍ제2항에 따른 통지 및 제4항에 따른 유출등의 신고의 시기, 방법, 절차 등에 필요한 사항은 대통령령으로 정한다. <개정 2023.3.14, 2026.3.10>\n\n##### 제34조의2 (노출된 개인정보의 삭제ㆍ차단)\n\n**①** 개인정보처리자는 고유식별정보, 계좌정보, 신용카드정보 등 개인정보가 정보통신망을 통하여 공중(公衆)에 노출되지 아니하도록 하여야 한다. <개정 2023.3.14>\n\n**②** 개인정보처리자는 공중에 노출된 개인정보에 대하여 보호위원회 또는 대통령령으로 지정한 전문기관의 요청이 있는 경우에는 해당 정보를 삭제하거나 차단하는 등 필요한 조치를 하여야 한다. <개정 2023.3.14>",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 19
+  },
+  "instruction": "제34조를 유출 사고 대응 체크리스트로 바꿔줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "제34조"
+   ],
+   "must_contain": [
+    "- [ ]"
+   ],
+   "must_not_contain": [],
+   "format": "checklist"
+  },
+  "criteria": [
+   "제34조의 의무가 '- [ ]' 체크리스트 항목으로 바뀌어야 한다.",
+   "①의 통지 항목 7가지, ② 유출 가능성 통지, ③ 피해 최소화 조치, ④ 보호위원회 또는 전문기관 신고가 빠지지 않아야 한다.",
+   "원문에 없는 기한(예: 72시간)이나 절차를 추가하면 실패다.",
+   "제34조의2는 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "조문 제목은 유지하는 것이 바람직. 통지 항목을 하위 체크리스트로 묶어도 된다.",
+  "note": "법 조문을 체크리스트로 변환, 외부 지식 삽입 금지."
+ },
+ {
+  "id": "edit-10",
+  "category": "replace/target/current_section",
+  "edit_goal": "bullet_list",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-rag.md",
+  "source_lines": [
+   65,
+   85
+  ],
+  "markdown": "### 청킹\n청킹은 검색기가 세부 정보를 찾을 수 있도록 데이터를 벡터로 분할하는 다양한 전략을 포함한다.\n\n세 가지 유형의 청킹 전략은 다음과 같다:\n\n중첩된 고정 길이. 이것은 빠르고 쉽다. 연속적인 청크를 중첩하면 청크 간의 의미론적 맥락을 유지하는 데 도움이 된다.\n구문 기반 청크는 문서를 문장으로 나눌 수 있다. spaCy 또는 NLTK와 같은 라이브러리도 도움이 될 수 있다.\n파일 형식 기반 청킹. 특정 파일 형식에는 내장된 자연 청크가 있으며, 이를 존중하는 것이 가장 좋다. 예를 들어, 코드 파일은 전체 함수 또는 클래스로 청크 및 벡터화하는 것이 가장 좋다. HTML 파일은 <table> 또는 base64로 인코딩된 <img> 요소를 그대로 두어야 한다. PDF 파일에도 유사한 고려 사항을 적용해야 한다. Unstructured 또는 Langchain과 같은 라이브러리가 이 방법을 지원할 수 있다.\n\n\n### 지식 그래프\n문서를 벡터화하고 검색하는 소스로 사용하는 대신 지식 그래프를 사용할 수 있다. 문서, 책 또는 다른 텍스트 모음을 사용하여 언어 모델을 포함한 여러 방법 중 하나를 사용하여 지식 그래프로 변환할 수 있다. 지식 그래프가 생성되면 서브그래프를 벡터화하고 벡터 데이터베이스에 저장하여 일반 RAG처럼 검색에 사용할 수 있다. 여기서 장점은 그래프가 텍스트 문자열보다 더 인식 가능한 구조를 가지고 있으며 이 구조가 생성에 더 관련성 있는 사실을 검색하는 데 도움이 될 수 있다는 것이다. 때로는 이 접근 방식을 GraphRAG라고 부른다.\n\n\n### 하이브리드 검색\n때때로 벡터 데이터베이스 검색은 사용자의 질문에 답하는 데 필요한 핵심 사실을 놓칠 수 있다. 이를 완화하는 한 가지 방법은 전통적인 텍스트 검색을 수행하고, 그 결과를 벡터 검색에서 검색된 벡터에 연결된 텍스트 청크에 추가하고, 결합된 하이브리드 텍스트를 언어 모델에 공급하여 생성을 수행하는 것이다.\n\n\n### 평가 및 벤치마크\nRAG 시스템은 검색 정확도와 생성 품질을 모두 테스트하도록 설계된 벤치마크를 사용하여 일반적으로 평가된다. 인기 있는 데이터 세트로는 다양한 도메인의 정보 검색 작업을 포괄하는 BEIR, 그리고 개방 도메인 QA를 위한 Natural Questions 또는 Google QA가 있다.\n법률 및 의료와 같이 중요도가 높은 도메인에서는 도메인 특정 벤치마크가 점점 더 많이 사용되고 있다. 예를 들어, LegalBench-RAG는 법률 문서에 대한 검색 품질을 테스트하도록 설계된 오픈 소스 벤치마크이다. 이는 실제 법률 질문 및 문서를 사용하여 다양한 RAG 파이프라인에 대한 재현율과 정확도를 평가한다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 8
+  },
+  "instruction": "청킹 섹션에서 세 가지 전략을 불릿으로 정리해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "### 청킹",
+    "spaCy",
+    "NLTK"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "bullet_list"
+  },
+  "criteria": [
+   "세 가지 청킹 전략(중첩된 고정 길이, 구문 기반, 파일 형식 기반)이 각각 불릿 항목이어야 한다.",
+   "각 전략의 설명 내용이 유지돼야 한다.",
+   "지식 그래프, 하이브리드 검색, 평가 섹션은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "도입 문장 두 개는 유지하거나 하나로 합쳐도 된다.",
+  "note": "섹션 내 일부 문단의 불릿 변환."
+ },
+ {
+  "id": "edit-11",
+  "category": "replace/target/current_section",
+  "edit_goal": "cleanup",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-ai-ethics.md",
+  "source_lines": [
+   19,
+   51
+  ],
+  "markdown": "### ① 인간 존엄성 원칙 \n\n- 인간은 신체와 이성이 있는 생명체로 인공지능을 포함하여 인간을 위해 개발된 기계 \n\n- 제품과는 교환 불가능한 가치가 있다. \n\n- 인공지능은 인간의 생명은 물론 정신적 및 신체적 건강에 해가 되지 않는 범위에서 개발 \n\n- 및 활용되어야 한다. \n\n- 인공지능 개발 및 활용은 안전성과 견고성을 갖추어 인간에게 해가 되지 않도록 해야 한다. \n\n### ② 사회의 공공선 원칙 \n\n- 공동체로서 사회는 가능한 한 많은 사람의 안녕과 행복이라는 가치를 추구한다. \n\n- 인공지능은 지능정보사회에서 소외되기 쉬운 사회적 약자와 취약 계층의 접근성을 \n\n- 보장하도록 개발 및 활용되어야 한다. \n\n- 공익 증진을 위한 인공지능 개발 및 활용은 사회적, 국가적나아가, 글로벌 관점에서 \n\n- 인류의 보편적 복지를 향상시킬 수 있어야 한다. \n\n### ③ 기술의 합목적성 원칙 \n\n- 인공지능 기술은 인류의 삶에 필요한 도구라는 목적과 의도에 부합되게 개발 및 \n\n- 활용되어야 하며 그 과정도 윤리적이어야 한다. \n\n- \n\n- 인류의 삶과 번영을 위한 인공지능 개발 및 활용을 장려하여 진흥해야 한다. ",
+  "target": {
+   "type": "current_section",
+   "start_line": 13,
+   "end_line": 23
+  },
+  "instruction": "문장이 줄마다 끊겨서 불릿이 쪼개져 있어. 원래 문장대로 합쳐서 정리해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "사회의 공공선 원칙"
+   ],
+   "must_contain": [],
+   "must_not_contain": [
+    "- 보장하도록",
+    "- 인류의 보편적"
+   ],
+   "format": null
+  },
+  "criteria": [
+   "끊어진 불릿이 합쳐져 원칙의 세 문장(안녕과 행복 추구, 사회적 약자 접근성 보장, 인류의 보편적 복지 향상)이 각각 온전한 불릿이 돼야 한다.",
+   "문장의 단어를 바꾸거나 내용을 추가하면 실패다(띄어쓰기·명백한 오탈자 교정 정도는 허용).",
+   "① 인간 존엄성 원칙과 ③ 기술의 합목적성 원칙은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "'사회적, 국가적나아가,' 같은 PDF 추출 오류를 '사회적, 국가적, 나아가'로 고쳐도 된다.",
+  "note": "PDF 추출로 깨진 불릿 복원."
+ },
+ {
+  "id": "edit-12",
+  "category": "replace/target/current_section",
+  "edit_goal": "shorten",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": "en",
+  "source_id": "en-postgres-mvcc.md",
+  "source_lines": [
+   89,
+   113
+  ],
+  "markdown": "### 13.2.2. Repeatable Read Isolation Level #\n\nThe Repeatable Read isolation level only sees data committed before the transaction began; it never sees either uncommitted data or changes committed by concurrent transactions during the transaction's execution. (However, each query does see the effects of previous updates executed within its own transaction, even though they are not yet committed.) This is a stronger guarantee than is required by the SQL standard for this isolation level, and prevents all of the phenomena described in Table 13.1 except for serialization anomalies. As mentioned above, this is specifically allowed by the standard, which only describes the minimum protections each isolation level must provide.\n\nThis level is different from Read Committed in that a query in a repeatable read transaction sees a snapshot as of the start of the first non-transaction-control statement in the transaction , not as of the start of the current statement within the transaction. Thus, successive SELECT commands within a single transaction see the same data, i.e., they do not see changes made by other transactions that committed after their own transaction started.\n\nApplications using this level must be prepared to retry transactions due to serialization failures.\n\nUPDATE , DELETE , MERGE , SELECT FOR UPDATE , and SELECT FOR SHARE commands behave the same as SELECT in terms of searching for target rows: they will only find target rows that were committed as of the transaction start time. However, such a target row might have already been updated (or deleted or locked) by another concurrent transaction by the time it is found. In this case, the repeatable read transaction will wait for the first updating transaction to commit or roll back (if it is still in progress). If the first updater rolls back, then its effects are negated and the repeatable read transaction can proceed with updating the originally found row. But if the first updater commits (and actually updated or deleted the row, not just locked it) then the repeatable read transaction will be rolled back with the message\n\nERROR: could not serialize access due to concurrent update\n\nbecause a repeatable read transaction cannot modify or lock rows changed by other transactions after the repeatable read transaction began.\n\nWhen an application receives this error message, it should abort the current transaction and retry the whole transaction from the beginning. The second time through, the transaction will see the previously-committed change as part of its initial view of the database, so there is no logical conflict in using the new version of the row as the starting point for the new transaction's update.\n\nNote that only updating transactions might need to be retried; read-only transactions will never have serialization conflicts.\n\nThe Repeatable Read mode provides a rigorous guarantee that each transaction sees a completely stable view of the database. However, this view will not necessarily always be consistent with some serial (one at a time) execution of concurrent transactions of the same level. For example, even a read-only transaction at this level may see a control record updated to show that a batch has been completed but not see one of the detail records which is logically part of the batch because it read an earlier revision of the control record. Attempts to enforce business rules by transactions running at this isolation level are not likely to work correctly without careful use of explicit locks to block conflicting transactions.\n\nThe Repeatable Read isolation level is implemented using a technique known in academic database literature and in some other database products as Snapshot Isolation . Differences in behavior and performance may be observed when compared with systems that use a traditional locking technique that reduces concurrency. Some other systems may even offer Repeatable Read and Snapshot Isolation as distinct isolation levels with different behavior. The permitted phenomena that distinguish the two techniques were not formalized by database researchers until after the SQL standard was developed, and are outside the scope of this manual. For a full treatment, please see [berenson95] .\n\n### Note\n\nPrior to PostgreSQL version 9.1, a request for the Serializable transaction isolation level provided exactly the same behavior described here. To retain the legacy Serializable behavior, Repeatable Read should now be requested.",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 21
+  },
+  "instruction": "Cut this section down to about half its length. Keep the ERROR message line exactly as it is.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [
+    "### 13.2.2. Repeatable Read Isolation Level #",
+    "ERROR: could not serialize access due to concurrent update"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "english"
+  },
+  "criteria": [
+   "섹션이 대략 절반 수준으로 짧아져야 한다.",
+   "트랜잭션 시작 전에 커밋된 데이터만 본다는 점, 직렬화 실패 시 재시도 필요, 읽기 전용 트랜잭션은 충돌하지 않음, Snapshot Isolation 구현이라는 핵심이 남아야 한다.",
+   "에러 메시지 줄은 원문 그대로여야 한다.",
+   "### Note 섹션은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "어느 문장을 합치고 뺄지는 자유. 50%±20% 길이는 허용.",
+  "note": "영어 지시 + 영어 문서 축약 + 고정 문자열 보존."
+ },
+ {
+  "id": "edit-13",
+  "category": "replace/target/whole_document",
+  "edit_goal": "cleanup",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-rag.md",
+  "source_lines": [
+   1,
+   34
+  ],
+  "markdown": "# 검색증강생성\n\n검색 증강 생성(Retrieval-augmented generation, RAG)은 대형 언어 모델 (LLM)이 새로운 정보를 검색하고 통합할 수 있도록 하는 기술이다. RAG를 사용하면 LLM은 지정된 문서 집합을 참조할 때까지 사용자 쿼리에 응답하지 않는다. 이 문서들은 LLM의 기존 훈련 데이터의 정보를 보완한다. 이를 통해 LLM은 훈련 데이터에서 사용할 수 없는 도메인 특정 및 업데이트된 정보를 사용할 수 있다. 예를 들어, 이는 LLM 기반 챗봇이 내부 회사 데이터에 접근하거나 권위 있는 출처를 기반으로 응답을 생성하는 데 도움이 된다.\nRAG는 응답을 생성하기 전에 정보 검색을 통합하여 대형 언어 모델 (LLM)을 개선한다. 정적 훈련 데이터에 의존하는 기존 LLM과 달리 RAG는 데이터베이스, 업로드된 문서 또는 웹 소스에서 관련 텍스트를 가져온다. 아르스 테크니카에 따르면 \"RAG는 LLM 프로세스를 웹 검색 또는 기타 문서 조회 프로세스와 혼합하여 LLM이 사실에 충실하도록 돕는 방식으로 LLM 성능을 향상시키는 방법이다.\" 이 방법은 챗봇이 존재하지 않는 정책을 설명하거나 변호사에게 주장을 뒷받침할 인용문으로 존재하지 않는 법적 사례를 추천하는 원인으로 지목된 환각 (인공지능)을 줄이는 데 도움이 된다.\nRAG는 또한 새로운 데이터로 LLM을 재훈련할 필요성을 줄여 계산 및 재정 비용을 절감한다. 효율성 향상 외에도 RAG는 LLM이 응답에 출처를 포함할 수 있도록 하여 사용자가 인용된 출처를 확인할 수 있도록 한다. 이는 사용자가 검색된 콘텐츠를 교차 확인하여 정확성과 관련성을 확인할 수 있으므로 투명성이 향상된다.\nRAG라는 용어는 2020년 메타의 연구 논문에서 처음 소개되었다.\n\n\n## RAG와 LLM의 한계\nLLM은 잘못된 정보를 제공할 수 있다. 예를 들어, 구글이 LLM 도구인 \"구글 바드\"를 처음 시연했을 때, LLM은 제임스 웹 우주망원경에 대해 잘못된 정보를 제공했다. 이 오류로 인해 회사 주식 가치가 1,000억 달러 감소했다. RAG는 이러한 오류를 방지하는 데 사용되지만, 모든 문제를 해결하지는 못한다. 예를 들어, LLM은 문맥을 잘못 해석하면 사실적으로 올바른 출처에서 정보를 가져와도 잘못된 정보를 생성할 수 있다. MIT 테크놀로지 리뷰는 \"미국에는 버락 후세인 오바마라는 한 명의 무슬림 대통령이 있었다\"는 AI 생성 응답의 예를 든다. 모델은 \"버락 후세인 오바마: 미국의 첫 무슬림 대통령?\"이라는 수사학적 제목의 학술 서적에서 이 정보를 가져왔다. LLM은 제목의 문맥을 \"알거나\" \"이해\"하지 못하여 잘못된 진술을 생성했다.\nRAG가 적용된 LLM은 새로운 정보를 우선시하도록 프로그래밍되어 있다. 이 기술을 \"프롬프트 스터핑\"이라고 부른다. \"프롬프트 스터핑\"이 없으면 LLM의 입력은 사용자가 생성하지만, 프롬프트 스터핑을 사용하면 모델의 응답을 안내하기 위해 이 입력에 추가 관련 컨텍스트가 추가된다. 이 접근 방식은 LLM에 프롬프트 초기에 핵심 정보를 제공하여 기존 훈련 지식보다 제공된 데이터를 우선시하도록 유도한다.\n\n\n## 과정\n검색 증강 생성(RAG)은 모델이 원래 훈련 세트를 넘어 추가 데이터에 접근하고 활용할 수 있도록 하는 정보 검색 메커니즘을 통합하여 대형 언어 모델(LLM)을 향상시킨다. AWS는 \"RAG는 LLM이 외부 데이터 소스에서 관련 정보를 검색하여 더 정확하고 문맥적으로 관련성 있는 응답을 생성할 수 있도록 한다\" (색인화). 이 접근 방식은 빠르게 구식이 될 수 있는 정적 데이터 세트에 대한 의존도를 줄인다. 사용자가 쿼리를 제출하면 RAG는 문서 검색기를 사용하여 사용 가능한 소스에서 관련 콘텐츠를 검색한 후 검색된 정보를 모델의 응답에 통합한다 (검색). 아르스 테크니카는 \"새로운 정보가 사용 가능해질 때, 모델을 재훈련하는 대신, 모델의 외부 지식 기반을 업데이트된 정보로 증강하기만 하면 된다\" (증강)고 언급한다. 관련 데이터를 동적으로 통합함으로써 RAG는 LLM이 더 많은 정보를 기반으로 하고 문맥적으로 근거 있는 응답을 생성할 수 있도록 한다 (생성). IBM은 \"생성 단계에서 LLM은 증강된 프롬프트와 훈련 데이터의 내부 표현을 활용하여 사용자에게 맞춤화된 매력적인 답변을 즉시 합성한다\"고 말한다.\n\n\n### RAG 주요 단계\n\n\n#### 색인화\n일반적으로 참조할 데이터는 LLM 임베딩, 즉 거대한 벡터 공간 형태의 수치 표현으로 변환된다. RAG는 비정형(주로 텍스트), 반정형 또는 정형 데이터(예: 지식 그래프)에 사용될 수 있다. 이 임베딩은 벡터 데이터베이스에 저장되어 문서 검색을 허용한다.\n\n\n#### 검색\n사용자 쿼리가 주어지면, 먼저 문서 검색기가 호출되어 쿼리를 증강하는 데 사용될 가장 관련성 높은 문서를 선택한다. 이 비교는 사용된 색인 유형에 따라 다양한 방법을 사용하여 수행할 수 있다.\n\n\n#### 증강\n모델은 검색된 관련 정보를 사용자의 원래 쿼리에 대한 프롬프트 엔지니어링을 통해 LLM에 공급한다. 새로운 구현(2023년 기준)은 쿼리를 여러 도메인으로 확장하고 이전 검색에서 학습하기 위한 메모리 및 자체 개선 기능을 사용하는 등 특정 증강 모듈을 통합할 수도 있다.\n\n\n#### 생성\n마지막으로, LLM은 쿼리와 검색된 문서를 기반으로 출력을 생성할 수 있다. 일부 모델은 검색된 정보의 재순위화, 컨텍스트 선택, 미세 조정과 같은 추가 단계를 포함하여 출력을 개선한다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 34
+  },
+  "instruction": "빈 줄이 두세 줄씩 들어가 있어서 지저분해. 내용은 건드리지 말고 형식만 정리해줘.",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "# 검색증강생성",
+    "## RAG와 LLM의 한계",
+    "## 과정",
+    "### RAG 주요 단계",
+    "#### 색인화",
+    "#### 검색",
+    "#### 증강",
+    "#### 생성",
+    "2020년 메타의 연구 논문"
+   ],
+   "must_contain": [],
+   "must_not_contain": [
+    "\n\n\n"
+   ],
+   "format": null
+  },
+  "criteria": [
+   "연속된 여러 빈 줄이 한 줄로 정리돼야 한다.",
+   "모든 제목과 본문 문장이 그대로 남아야 하며 문장을 바꾸거나 줄이면 실패다.",
+   "제목 계층(#~####)이 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "제목 뒤 빈 줄 유무는 자유. 서문의 여러 줄을 문단으로 나누는 정도는 허용.",
+  "note": "전체 문서 형식 정리, 내용 무변경."
+ },
+ {
+  "id": "edit-14",
+  "category": "replace/target/whole_document",
+  "edit_goal": "translate",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": "en",
+  "source_id": "ko-k8s-pod.md",
+  "source_lines": [
+   18,
+   49
+  ],
+  "markdown": "## 파드란 무엇인가?\n\n\n클러스터의 각 노드에 [컨테이너 런타임](/docs/setup/production-environment/container-runtimes/)을\n설치해야 노드에서 파드가 실행될 수 있다.\n\n\n파드의 공유 컨텍스트는 리눅스 네임스페이스, 컨트롤 그룹(cgroups) 및\n컨테이너를 격리하는 것과 같이 잠재적으로 다른 격리 요소들이다.\n파드의 컨텍스트 내에서 개별 애플리케이션은 추가적으로 하위 격리가 적용된다.\n\n파드는 공유 네임스페이스와 공유 파일 시스템 볼륨이 있는 컨테이너 집합과 비슷하다.\n\n쿠버네티스 클러스터의 파드는 크게 두 가지 방식으로 사용된다.\n\n* **단일 컨테이너를 실행하는 파드**: \"파드당 컨테이너 1개(one-container-per-Pod)\" 모델은\n  쿠버네티스에서 가장 흔한 사용 사례이다. 이 경우 파드는 단일 컨테이너를 감싸는\n  래퍼(wrapper)처럼 볼 수 있으며, 쿠버네티스는 컨테이너 자체가 아니라\n  파드를 관리한다.\n* **함께 동작해야 하는 여러 컨테이너를 실행하는 파드**: 파드는 서로 긴밀하게\n  결합되어 리소스를 공유해야 하는 [여러 개의 컨테이너](#how-pods-manage-multiple-containers)로\n  구성된 애플리케이션을\n  캡슐화할 수 있다. 이렇게 함께 배치되고 공동 관리되는\n  컨테이너들은 하나의 응집력 있는 단위를 이룬다.\n\n  여러 개의 컨테이너를 하나의 파드 안에 두고 관리하여 그룹화하는 것은 상대적으로\n  고급 사용 사례이다. 컨테이너들이 긴밀히 결합되어 있는 특정한 상황에서만 이\n  패턴을 사용하는 것을 권장한다.\n\n  (복원성 또는 용량으로 인해) 복제를 제공하는 여러 컨테이너를 실행할 필요는 없다.\n  여러 복제가 필요하다면,\n  [워크로드 관리](/docs/concepts/workloads/controllers/)를 참고한다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 32
+  },
+  "instruction": "문서 전체를 영어로 번역해줘. 링크 주소는 바꾸지 마.",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "(/docs/setup/production-environment/container-runtimes/)",
+    "(#how-pods-manage-multiple-containers)",
+    "(/docs/concepts/workloads/controllers/)"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "english"
+  },
+  "criteria": [
+   "제목과 본문이 모두 영어로 번역돼야 한다.",
+   "세 링크의 주소(괄호 안)는 원문 그대로여야 한다. 링크 텍스트는 번역해도 된다.",
+   "두 가지 파드 사용 방식 불릿 구조가 유지돼야 한다.",
+   "원문에 없는 설명을 추가하면 실패다."
+  ],
+  "acceptable_notes": "'one-container-per-Pod' 같은 용어 표기는 자유. 줄바꿈 위치는 달라도 된다.",
+  "note": "ko→en 전체 번역 + 링크 보존."
+ },
+ {
+  "id": "edit-15",
+  "category": "replace/target/whole_document",
+  "edit_goal": "translate",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": "ko",
+  "source_id": "en-postgres-mvcc.md",
+  "source_lines": [
+   61,
+   87
+  ],
+  "markdown": "### 13.2.1. Read Committed Isolation Level #\n\nRead Committed is the default isolation level in PostgreSQL . When a transaction uses this isolation level, a SELECT query (without a FOR UPDATE/SHARE clause) sees only data committed before the query began; it never sees either uncommitted data or changes committed by concurrent transactions during the query's execution. In effect, a SELECT query sees a snapshot of the database as of the instant the query begins to run. However, SELECT does see the effects of previous updates executed within its own transaction, even though they are not yet committed. Also note that two successive SELECT commands can see different data, even though they are within a single transaction, if other transactions commit changes after the first SELECT starts and before the second SELECT starts.\n\nUPDATE , DELETE , SELECT FOR UPDATE , and SELECT FOR SHARE commands behave the same as SELECT in terms of searching for target rows: they will only find target rows that were committed as of the command start time. However, such a target row might have already been updated (or deleted or locked) by another concurrent transaction by the time it is found. In this case, the would-be updater will wait for the first updating transaction to commit or roll back (if it is still in progress). If the first updater rolls back, then its effects are negated and the second updater can proceed with updating the originally found row. If the first updater commits, the second updater will ignore the row if the first updater deleted it, otherwise it will attempt to apply its operation to the updated version of the row. The search condition of the command (the WHERE clause) is re-evaluated to see if the updated version of the row still matches the search condition. If so, the second updater proceeds with its operation using the updated version of the row. In the case of SELECT FOR UPDATE and SELECT FOR SHARE , this means it is the updated version of the row that is locked and returned to the client.\n\nINSERT with an ON CONFLICT DO UPDATE clause behaves similarly. In Read Committed mode, each row proposed for insertion will either insert or update. Unless there are unrelated errors, one of those two outcomes is guaranteed. If a conflict originates in another transaction whose effects are not yet visible to the INSERT , the UPDATE clause will affect that row, even though possibly no version of that row is conventionally visible to the command.\n\nINSERT with an ON CONFLICT DO NOTHING clause may have insertion not proceed for a row due to the outcome of another transaction whose effects are not visible to the INSERT snapshot. Again, this is only the case in Read Committed mode.\n\nMERGE allows the user to specify various combinations of INSERT , UPDATE and DELETE subcommands. A MERGE command with both INSERT and UPDATE subcommands looks similar to INSERT with an ON CONFLICT DO UPDATE clause but does not guarantee that either INSERT or UPDATE will occur. If MERGE attempts an UPDATE or DELETE and the row is concurrently updated but the join condition still passes for the current target and the current source tuple, then MERGE will behave the same as the UPDATE or DELETE commands and perform its action on the updated version of the row. However, because MERGE can specify several actions and they can be conditional, the conditions for each action are re-evaluated on the updated version of the row, starting from the first action, even if the action that had originally matched appears later in the list of actions. On the other hand, if the row is concurrently updated so that the join condition fails, then MERGE will evaluate the command's NOT MATCHED BY SOURCE and NOT MATCHED [BY TARGET] actions next, and execute the first one of each kind that succeeds. If the row is concurrently deleted, then MERGE will evaluate the command's NOT MATCHED [BY TARGET] actions, and execute the first one that succeeds. If MERGE attempts an INSERT and a unique index is present and a duplicate row is concurrently inserted, then a uniqueness violation error is raised; MERGE does not attempt to avoid such errors by restarting evaluation of MATCHED conditions.\n\nBecause of the above rules, it is possible for an updating command to see an inconsistent snapshot: it can see the effects of concurrent updating commands on the same rows it is trying to update, but it does not see effects of those commands on other rows in the database. This behavior makes Read Committed mode unsuitable for commands that involve complex search conditions; however, it is just right for simpler cases. For example, consider transferring $100 from one account to another:\n\nBEGIN; UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 12345; UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 7534; COMMIT;\n\nIf another transaction concurrently tries to change the balance of account 7534, we clearly want the second statement to start with the updated version of the account's row. Because each command is affecting only a predetermined row, letting it see the updated version of the row does not create any troublesome inconsistency.\n\nMore complex usage can produce undesirable results in Read Committed mode. For example, consider a DELETE command operating on data that is being both added and removed from its restriction criteria by another command, e.g., assume website is a two-row table with website.hits equaling 9 and 10 :\n\nBEGIN; UPDATE website SET hits = hits + 1; -- run from another session: DELETE FROM website WHERE hits = 10; COMMIT;\n\nThe DELETE will have no effect even though there is a website.hits = 10 row before and after the UPDATE . This occurs because the pre-update row value 9 is skipped, and when the UPDATE completes and DELETE obtains a lock, the new row value is no longer 10 but 11 , which no longer matches the criteria.\n\nBecause Read Committed mode starts each command with a new snapshot that includes all transactions committed up to that instant, subsequent commands in the same transaction will see the effects of the committed concurrent transaction in any case. The point at issue above is whether or not a single command sees an absolutely consistent view of the database.\n\nThe partial transaction isolation provided by Read Committed mode is adequate for many applications, and this mode is fast and simple to use; however, it is not sufficient for all cases. Applications that do complex queries and updates might require a more rigorously consistent view of the database than Read Committed mode provides.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 27
+  },
+  "instruction": "이 문서 한국어로 번역해줘. SQL 문장은 그대로 둬.",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "### 13.2.1.",
+    "BEGIN; UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 12345; UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 7534; COMMIT;",
+    "BEGIN; UPDATE website SET hits = hits + 1; -- run from another session: DELETE FROM website WHERE hits = 10; COMMIT;",
+    "SELECT FOR UPDATE",
+    "ON CONFLICT DO UPDATE"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "korean"
+  },
+  "criteria": [
+   "모든 설명 문단이 한국어로 번역돼야 한다.",
+   "두 개의 BEGIN; ... COMMIT; SQL 줄은 원문과 정확히 같아야 한다.",
+   "SELECT, UPDATE, ON CONFLICT 같은 SQL 키워드는 영어로 남아야 한다.",
+   "문단이 빠지거나 요약되면 실패다."
+  ],
+  "acceptable_notes": "SQL 줄을 코드 블록으로 감싸도 문자열이 그대로면 허용. 'Read Committed' 같은 용어는 영어 병기 가능.",
+  "note": "어려운 케이스: en→ko 번역 + 코드 보존."
+ },
+ {
+  "id": "edit-16",
+  "category": "replace/target/whole_document",
+  "edit_goal": "shorten",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   3,
+   24
+  ],
+  "markdown": "##### 제50조 (근로시간)\n\n**①** 1주 간의 근로시간은 휴게시간을 제외하고 40시간을 초과할 수 없다.\n\n**②** 1일의 근로시간은 휴게시간을 제외하고 8시간을 초과할 수 없다.\n\n**③** 제1항 및 제2항에 따라 근로시간을 산정하는 경우 작업을 위하여 근로자가 사용자의 지휘ㆍ감독 아래에 있는 대기시간 등은 근로시간으로 본다. <신설 2012.2.1, 2020.5.26>\n\n##### 제51조 (3개월 이내의 탄력적 근로시간제)\n\n**①** 사용자는 취업규칙(취업규칙에 준하는 것을 포함한다)에서 정하는 바에 따라 2주 이내의 일정한 단위기간을 평균하여 1주 간의 근로시간이 제50조제1항의 근로시간을 초과하지 아니하는 범위에서 특정한 주에 제50조제1항의 근로시간을, 특정한 날에 제50조제2항의 근로시간을 초과하여 근로하게 할 수 있다. 다만, 특정한 주의 근로시간은 48시간을 초과할 수 없다.\n\n**②** 사용자는 근로자대표와의 서면 합의에 따라 다음 각 호의 사항을 정하면 3개월 이내의 단위기간을 평균하여 1주 간의 근로시간이 제50조제1항의 근로시간을 초과하지 아니하는 범위에서 특정한 주에 제50조제1항의 근로시간을, 특정한 날에 제50조제2항의 근로시간을 초과하여 근로하게 할 수 있다. 다만, 특정한 주의 근로시간은 52시간을, 특정한 날의 근로시간은 12시간을 초과할 수 없다.\n\n  1. 대상 근로자의 범위\n  2. 단위기간(3개월 이내의 일정한 기간으로 정하여야 한다)\n  3. 단위기간의 근로일과 그 근로일별 근로시간\n  4. 그 밖에 대통령령으로 정하는 사항\n\n**③** 제1항과 제2항은 15세 이상 18세 미만의 근로자와 임신 중인 여성 근로자에 대하여는 적용하지 아니한다.\n\n**④** 사용자는 제1항 및 제2항에 따라 근로자를 근로시킬 경우에는 기존의 임금 수준이 낮아지지 아니하도록 임금보전방안(賃金補塡方案)을 강구하여야 한다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 22
+  },
+  "instruction": "제50조, 제51조 핵심만 남기게 요약해줘. 숫자와 조항 번호는 그대로.",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "제50조",
+    "제51조",
+    "40시간",
+    "8시간"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "두 조문의 핵심(주 40시간·일 8시간 한도, 대기시간 근로시간 인정, 2주/3개월 단위 탄력적 근로시간제, 적용 제외, 임금보전)이 짧게 남아야 한다.",
+   "남긴 숫자와 조항 번호(제50조제1항 등)는 원문과 같아야 한다.",
+   "원문보다 확실히 짧아야 한다.",
+   "원문에 없는 해석이나 숫자를 추가하면 실패다."
+  ],
+  "acceptable_notes": "개정 이력(<신설 ...>)이나 세부 단서, 서면 합의로 정할 사항 목록(각 호) 같은 세부 조건은 빠져도 된다. 조문 제목 형태는 자유.",
+  "note": "어려운 케이스: '숫자와 조항 번호는 그대로' 제약이 있는 요약."
+ },
+ {
+  "id": "edit-17",
+  "category": "replace/target/whole_document",
+  "edit_goal": "template_transform",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-ai-ethics.md",
+  "source_lines": [
+   71,
+   111
+  ],
+  "markdown": "### ② 프라이버시 보호 \n\n- \n\n- \n\n- 인공지능을 개발하고 활용하는 전 과정에서 개인의 프라이버시를 보호해야 한다. \n\n- 인공지능 전 생애주기에 걸쳐 개인 정보의 오용을 최소화하도록 노력해야 한다. \n\n### ③ 다양성 존중 \n\n- · \n\n- - 인공지능 개발 및 활용 전 단계에서 사용자의 다양성과 대표성을 반영해야 하며성, 별 연령 · · · · \n\n- 장애 지역인종종교국가 등 개인 특성에 따른 편향과 차별을 최소화하고, 상용화된 인공지능은 모든 사람에게 공정하게 적용되어야 한다. \n\n- 사회적 약자 및 취약 계층의 인공지능 기술 및 서비스에 대한 접근성을 보장하고, 인공지능이 \n\n- 주는 혜택은 특정 집단이 아닌 모든 사람에게 골고루 분배되도록 노력해야 한다. \n\n### ④ 침해금지 \n\n- \n\n   - 인공지능을 인간에게 직간접적인 해를 입히는 목적으로 활용해서는 안 된다 \n\n- 인공지능이 야기할 수 있는 위험과 부정적 결과에 대응 방안을 마련하도록 노력해야 한다. \n\n- ⑤ 공공성 \n\n- 인공지능은 개인적 행복 추구 뿐만 아니라 사회적 공공성 증진과 인류의 공동 이익을 위해 \n\n- 활용해야한다. \n\n- \n\n   - 인공지능은 긍정적 사회변화를 이끄는 방향으로 활용되어야 한다. \n\n- 인공지능의 순기능을 극대화하고 역기능을 최소화하기 위한 교육을 다방면으로 시행하여야 한다. ",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 41
+  },
+  "instruction": "각 요건을 아래 양식으로 바꿔줘.\n### (번호) 요건명\n- 요약: 한 문장\n- 세부 내용: 원문 문장들",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "프라이버시 보호",
+    "다양성 존중",
+    "침해금지",
+    "공공성"
+   ],
+   "must_contain": [
+    "- 요약:",
+    "- 세부 내용:"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "②프라이버시 보호, ③다양성 존중, ④침해금지, ⑤공공성 네 요건이 모두 양식대로 바뀌어야 한다(⑤는 원문에서 불릿으로만 표시돼 있음).",
+   "각 요건의 '세부 내용'은 원문 문장에서 와야 하며 빈 불릿은 제거해도 된다.",
+   "요약은 해당 요건 원문 내용만 반영해야 하고 외부 지식이 들어가면 실패다."
+  ],
+  "acceptable_notes": "번호 기호(②, 2.)는 자유. 깨진 문장을 자연스럽게 이어 써도 된다.",
+  "note": "템플릿 적용 + 숨겨진 요건(⑤) 인식."
+ },
+ {
+  "id": "edit-18",
+  "category": "replace/target/whole_document",
+  "edit_goal": "style_change",
+  "edit_operation": "replace",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-ir.md",
+  "source_lines": [
+   1,
+   24
+  ],
+  "markdown": "# 정보 검색\n\n정보 검색(情報檢索, information retrieval)은 집합적인 정보로부터 원하는 내용과 관련이 있는 부분을 얻어 내는 행위를 말한다. 이를 위해 메타데이터나 색인이 사용될 수 있다.\n자동화된 정보 검색 시스템은 소위 ‘정보 과부하’라 불리는 상태를 완화시키기 위해 사용된다. 많은 대학 및 공공 도서관들이 보유 서적 및 저널, 각종 문서들에 대한 접근성을 제공하기 위해 정보 검색 시스템을 구축한다. 웹 검색 엔진은 일상적으로 가장 쉽게 접할 수 있는 정보 검색 시스템 중 하나이다.\n\n\n## 역사\n\n정보를 검색하기 위해 컴퓨터를 사용한다는 아이디어는 1945년 버니바 부시가 디 애틀랜틱 지에 기고한 '우리가 생각하는 대로(As We May Think)'를 통해 대중화되었다. 최초의 자동화 정보 검색 시스템은 1950~1960년대에 도입되었다. 1970년까지 수 천 개 문서의 모음인 크랜필드 콜렉션(Cranfield collection)과 같은 소규모 말뭉치를 대상으로 하는 몇몇 방법들이 학계에 소개되었다. 록히드 다이얼로그 시스템(Lockheed Dialog system)과 같은 대규모 검색 시스템은 1970년대 초부터 사용되기 시작하였다.\n1992년 미국 국방부는 미국 국립표준기술연구소(NIST)와 함께 텍스트 검색 컨퍼런스(Text Retrieval Conference, TREC)를 후원하였으며, 이것은 TIPSTER 텍스트 프로그램의 일부였다. 이 프로그램의 목적은 대규모 텍스트를 위한 텍스트 검색 방법론의 성능 측정에 필요한 제반 시설을 지원함으로써 정보 검색 관련 학계를 후원하는 것이었다. 이를 통해 매우 큰 말뭉치에 적용 가능한 확장성 높은 검색 방법에 대한 연구가 촉진되었다. 그리고 웹 검색 엔진의 등장으로 인해 이러한 대규모 검색 시스템에 대한 요구는 더욱 커지게 되었다.\n\n\n## 정보 검색 요소\n오늘날의 정보검색시스템은 크게 데이터집합, 색인, 랭킹, 표현, 사용자 피드백이라는 다섯 가지 요소로 구성되어 있다.\n\n데이터집합: 검색의 대상이 되는 데이터로서 크게 DB형 데이터와 문서형 데이터로 구분될 수 있다. DB형 데이터는 날씨, 주가, 기차시간표 등과 같이 일정한 스키마를 갖고 DB에 저장되어 있는 데이터인 반면, 문서형 데이터는 제목과 본문, 생성날짜 등으로 구성된 데이터를 말한다. 문서형데이터는 다시 정형적 문서형데이터와 비정형적 문서형데이터로 나뉘는데, 정형적 문서형데이터는 지식검색데이터나 블로그데이터와 같이 비교적 나름대로의 서식을 갖추고 있는 데이터이고, 비정형적 문서형데이터는 웹문서와 같이 상대적으로 자유로운 형식의 데이터를 의미한다.\n색인: 색인(indexing)은 문서형데이터집합에 대하여, 각 단어별 문서리스트를 생성한 것을 의미하며, 흔히 역문서리스트(inverted list)라는 용어로도 표현된다. 한편 색인방식에 따라 데이터집합을 한꺼번에 색인하는 일괄색인(batch indexing)과 점증색인(incremental indexing)으로 구분될 수 있는데, 뉴스검색은 대표적으로 점증색인을 적용하는 분야이다. 정보검색을 위한 색인과정에서 중요한 것은 주어진 문서에서 색인어를 추출하는 과정인데, 언어적 특성과 상관없이 적용될 수 있는 n-gram 방식과, 자연언어처리의 형태소분석을 통한 방식이 존재한다.\n랭킹: 랭킹(ranking)은 입력된 질의(query)에 대하여 가장 적합한 순으로 문서형데이터들을 나열하는 작업을 의미하며, 이를 위한 다양한 검색알고리즘들이 존재한다. 여기서 적합성(relevance)은 질의와 문서와의 유사성(similarity), 문서의 최신성(freshness), 문서 고유의 품질(quality), 그리고 사용자 검색로그를 포함한 기타 여러 정보가 적절히 혼합되어 판단될 수 있다. 구글의 페이지랭크는 질의와는 상관없이 문서 고유의 품질을 문서간의 링크관계에 따라 규정하는 대표적인 품질측정 알고리즘이라 할 수 있다.\n표현: 검색의 결과는 구글과 같이 단순리스트형식으로 사용자에게 제시될 수도 있고, 유사한 결과들이 그룹화되어 제시될 수도 있으며, 데이터의 종류(이미지, 블로그, 웹문서)등으로 구분지어 제시될 수도 있다.\n사용자 피드백: 사용자피드백은 검색의 품질을 개선하는 데 활용되는 것으로, 사용자가 직접 검색결과에 피드백을 주는 명시적 피드백(explicit feedback)과 사용자의 검색행위를 기록해놓은 검색로그가 대표적인 암묵적 피드백(implicit feedback)으로 구분될 수 있다. 최근에는 암묵적 피드백 정보를 활용하여 검색결과를 개선하려는 연구가 활발히 진행되고 있다.\n\n\n## 정보 검색 모델\n정보 검색 모델에는 불리안 모델(boolean model), 벡터 모델(vector model) 등이 있다. 불리안 모델은 한 개의 질의어에 있는 두 개 이상의 키워드가 and, or, not에 의하여 연결되어 있는 경우, 이들을 논리곱의 합의 형태로 변환하여, 각각의 논리곱이 각 문서에 존재하는지를 체크하는 방법이다. 벡터 모델은 질의어와 각각의 문서를 모든 색인어에 대한 벡터 형태로 나타낸 후, 질의어와 각 문서의 벡터곱을 유사도로 이용하여 문서들을 랭킹하는 방법이다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 24
+  },
+  "instruction": "전체를 보고서 개조식(~함, ~임)으로 바꿔줘.",
+  "checks": {
+   "outside_target_unchanged": false,
+   "preserve": [
+    "# 정보 검색",
+    "## 역사",
+    "## 정보 검색 요소",
+    "## 정보 검색 모델",
+    "1945년",
+    "1992년",
+    "TREC"
+   ],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "본문 문장 끝이 '~함', '~임' 같은 개조식으로 바뀌어야 한다.",
+   "연도, 인명, 기관명, 용어 등 사실 내용이 유지돼야 한다.",
+   "제목 구조가 유지돼야 한다.",
+   "내용이 크게 빠지거나 새 사실이 추가되면 실패다."
+  ],
+  "acceptable_notes": "불릿으로 쪼개는 것도 개조식으로 허용. 다소 간결해지는 것은 허용.",
+  "note": "전체 문체 변경."
+ },
+ {
+  "id": "edit-19",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "other",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   137,
+   177
+  ],
+  "markdown": "##### 제60조 (연차 유급휴가)\n\n**①** 사용자는 1년간 80퍼센트 이상 출근한 근로자에게 15일의 유급휴가를 주어야 한다. <개정 2012.2.1>\n\n**②** 사용자는 계속하여 근로한 기간이 1년 미만인 근로자 또는 1년간 80퍼센트 미만 출근한 근로자에게 1개월 개근 시 1일의 유급휴가를 주어야 한다. <개정 2012.2.1>\n\n**③** 삭제 <2017.11.28>\n\n**④** 사용자는 3년 이상 계속하여 근로한 근로자에게는 제1항에 따른 휴가에 최초 1년을 초과하는 계속 근로 연수 매 2년에 대하여 1일을 가산한 유급휴가를 주어야 한다. 이 경우 가산휴가를 포함한 총 휴가 일수는 25일을 한도로 한다.\n\n**⑤** 사용자는 근로자가 제1항ㆍ제2항 및 제4항에 따른 유급휴가를 대통령령으로 정하는 시간단위 및 일수의 범위에서 분할하여 청구한 때에는 이를 부여하여야 한다. <신설 2026.6.9>\n\n**⑥** 사용자는 제1항ㆍ제2항ㆍ제4항 및 제5항에 따른 휴가를 근로자가 청구한 시기에 주어야 하고, 그 기간에 대하여는 취업규칙 등에서 정하는 통상임금 또는 평균임금을 지급하여야 한다. 다만, 근로자가 청구한 시기에 휴가를 주는 것이 사업 운영에 막대한 지장이 있는 경우에는 그 시기를 변경할 수 있다. <개정 2026.6.9>\n\n**⑦** 제1항 및 제2항을 적용하는 경우 다음 각 호의 어느 하나에 해당하는 기간은 출근한 것으로 본다. <개정 2012.2.1, 2017.11.28, 2024.10.22, 2026.2.19, 2026.6.9>\n\n  1. 근로자가 업무상의 부상 또는 질병으로 휴업한 기간\n  2. 임신 중의 여성이 제74조제1항부터 제3항까지의 규정에 따른 휴가로 휴업한 기간\n  3. 「남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률」 제19조에 따른 육아휴직으로 휴업한 기간\n  4. 「남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률」 제19조의2제1항에 따른 육아기 근로시간 단축을 사용하여 단축된 근로시간\n  5. 제74조제7항에 따른 임신기 근로시간 단축을 사용하여 단축된 근로시간\n\n**⑧** 제1항ㆍ제2항 및 제4항에 따른 휴가는 1년간(계속하여 근로한 기간이 1년 미만인 근로자의 제2항에 따른 유급휴가는 최초 1년의 근로가 끝날 때까지의 기간을 말한다) 행사하지 아니하면 소멸된다. 다만, 사용자의 귀책사유로 사용하지 못한 경우에는 그러하지 아니하다. <개정 2020.3.31, 2026.6.9>\n\n**⑨** 사용자는 제1항ㆍ제2항ㆍ제4항 및 제5항에 따른 유급휴가의 청구 또는 사용을 이유로 근로자를 해고하거나 그 밖의 불리한 처우를 하여서는 아니 된다. <신설 2026.6.9>\n\n##### 제61조 (연차 유급휴가의 사용 촉진)\n\n**①** 사용자가 제60조제1항ㆍ제2항 및 제4항에 따른 유급휴가(계속하여 근로한 기간이 1년 미만인 근로자의 제60조제2항에 따른 유급휴가는 제외한다)의 사용을 촉진하기 위하여 다음 각 호의 조치를 하였음에도 불구하고 근로자가 휴가를 사용하지 아니하여 제60조제8항 본문에 따라 소멸된 경우에는 사용자는 그 사용하지 아니한 휴가에 대하여 보상할 의무가 없고, 제60조제8항 단서에 따른 사용자의 귀책사유에 해당하지 아니하는 것으로 본다. <개정 2012.2.1, 2017.11.28, 2020.3.31, 2026.6.9>\n\n  1. 제60조제8항 본문에 따른 기간이 끝나기 6개월 전을 기준으로 10일 이내에 사용자가 근로자별로 사용하지 아니한 휴가 일수를 알려주고, 근로자가 그 사용 시기를 정하여 사용자에게 통보하도록 서면으로 촉구할 것\n  2. 제1호에 따른 촉구에도 불구하고 근로자가 촉구를 받은 때부터 10일 이내에 사용하지 아니한 휴가의 전부 또는 일부의 사용 시기를 정하여 사용자에게 통보하지 아니하면 제60조제8항 본문에 따른 기간이 끝나기 2개월 전까지 사용자가 사용하지 아니한 휴가의 사용 시기를 정하여 근로자에게 서면으로 통보할 것\n\n**②** 사용자가 계속하여 근로한 기간이 1년 미만인 근로자의 제60조제2항에 따른 유급휴가의 사용을 촉진하기 위하여 다음 각 호의 조치를 하였음에도 불구하고 근로자가 휴가를 사용하지 아니하여 제60조제8항 본문에 따라 소멸된 경우에는 사용자는 그 사용하지 아니한 휴가에 대하여 보상할 의무가 없고, 같은 항 단서에 따른 사용자의 귀책사유에 해당하지 아니하는 것으로 본다. <신설 2020.3.31, 2026.6.9>\n\n  1. 최초 1년의 근로기간이 끝나기 3개월 전을 기준으로 10일 이내에 사용자가 근로자별로 사용하지 아니한 휴가 일수를 알려주고, 근로자가 그 사용 시기를 정하여 사용자에게 통보하도록 서면으로 촉구할 것. 다만, 사용자가 서면 촉구한 후 발생한 휴가에 대해서는 최초 1년의 근로기간이 끝나기 1개월 전을 기준으로 5일 이내에 촉구하여야 한다.\n  2. 제1호에 따른 촉구에도 불구하고 근로자가 촉구를 받은 때부터 10일 이내에 사용하지 아니한 휴가의 전부 또는 일부의 사용 시기를 정하여 사용자에게 통보하지 아니하면 최초 1년의 근로기간이 끝나기 1개월 전까지 사용자가 사용하지 아니한 휴가의 사용 시기를 정하여 근로자에게 서면으로 통보할 것. 다만, 제1호 단서에 따라 촉구한 휴가에 대해서는 최초 1년의 근로기간이 끝나기 10일 전까지 서면으로 통보하여야 한다.\n\n##### 제62조 (유급휴가의 대체)\n\n사용자는 근로자대표와의 서면 합의에 따라 제60조에 따른 연차 유급휴가일을 갈음하여 특정한 근로일에 근로자를 휴무시킬 수 있다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 25
+  },
+  "instruction": "제60조 바로 아래에 휴가 일수 기준만 한 줄 요약으로 덧붙여줘. 조문에 있는 내용으로만.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "15일",
+    "25일"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "제60조 끝(⑨ 다음)과 제61조 사이에 짧은 요약이 추가돼야 한다.",
+   "요약은 80% 이상 출근 시 15일, 1년 미만 등은 1개월 개근 시 1일, 3년 이상 근속 시 매 2년 1일 가산 최대 25일 등 조문 숫자만 사용해야 한다.",
+   "원문에 없는 기준(예: 회사 관행, 다른 법)이 들어가면 실패다.",
+   "기존 줄은 하나도 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "한두 줄이어도 허용. 인용(>)이나 굵은 글씨 형식 자유.",
+  "note": "어려운 케이스: 추가 내용이 문서에서만 나와야 함."
+ },
+ {
+  "id": "edit-20",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "other",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-k8s-deployment.md",
+  "source_lines": [
+   1302,
+   1347
+  ],
+  "markdown": "### 진행 기한 시간(초)\n\n`.spec.progressDeadlineSeconds`는 디플로이먼트가 진행되기를 기다리는 시간(초)을\n지정하는 선택적 필드이며, 시스템은 지정된 시간 안에 디플로이먼트가 진행되지 않으면\n[진행 실패](#디플로이먼트-실패)를 `type: Progressing`, `status: \"False\"`인 컨디션으로 나타낸다.\n그리고 리소스 상태에 `reason: ProgressDeadlineExceeded`를 표시한다. 디플로이먼트 컨트롤러는 디플로이먼트를 계속\n재시도한다. 기본값은 600이다.\n\n만약 명시된다면 이 필드는 `.spec.minReadySeconds` 보다 커야 한다.\n\n### 최소 대기 시간(초)\n\n`.spec.minReadySeconds` 는 새롭게 생성된 파드의 컨테이너가 어떤 것과도 충돌하지 않고 사\n용할 수 있도록 준비되어야 하는 최소 시간(초)을 지정하는 선택적 필드이다.\n이 기본 값은 0이다(파드는 준비되는 즉시 사용할 수 있는 것으로 간주됨).\n파드가 준비되었다고 간주되는 시기에 대한 자세한 내용은 [컨테이너 프로브](/docs/concepts/workloads/pods/pod-lifecycle/#컨테이너-프로브-probe)를 참조한다.\n\n### 파드 종료\n\n\n\n종료 중인 파드는 `DeploymentReplicaSetTerminatingReplicas`\n[기능 게이트](/docs/reference/command-line-tools-reference/feature-gates/)가 활성화된 경우에만 확인할 수 있다.\n이 기능 게이트는 [API 서버](/docs/reference/command-line-tools-reference/kube-apiserver/)\n및 [kube-controller-manager](/docs/reference/command-line-tools-reference/kube-controller-manager/)에서 활성화해야 한다.\n\n삭제나 스케일 다운으로 인해 Terminating 상태가 된 파드는 종료까지 오랜 시간이 걸릴 수 있으며, \n그 기간 동안 추가적인 리소스를 사용할 수 있다. 그 결과 전체 파드 수가 일시적으로 \n`.spec.replicas` 값을 초과할 수 있다. 종료 중인 상태의 파드는 디플로이먼트의 `.status.terminatingReplicas` 필드를 통해 추적할 수 있다.\n\n### 수정 버전 기록 제한\n\n디플로이먼트의 수정 버전 기록은 자신이 컨트롤하는 레플리카셋에 저장된다.\n\n`.spec.revisionHistoryLimit` 은 롤백을 허용하기 위해 보존할 이전 레플리카셋의 수를 지정하는 선택적 필드이다.\n이 이전 레플리카셋은 `etcd` 의 리소스를 소비하고, `kubectl get rs` 의 결과를 가득차게 만든다. 각 디플로이먼트의 구성은 디플로이먼트의 레플리카셋에 저장된다. 이전 레플리카셋이 삭제되면 해당 디플로이먼트 수정 버전으로 롤백할 수 있는 기능이 사라진다. 기본적으로 10개의 기존 레플리카셋이 유지되지만 이상적인 값은 새로운 디플로이먼트의 빈도와 안정성에 따라 달라진다.\n\n더욱 구체적으로 이 필드를 0으로 설정하면 레플리카가 0이 되며 이전 레플리카셋이 정리된다.\n이 경우, 새로운 디플로이먼트 롤아웃을 취소할 수 없다. 새로운 디플로이먼트 롤아웃은 수정 버전 이력이 정리되기 때문이다.\n\n### 일시 정지\n\n`.spec.paused` 는 디플로이먼트를 일시 중지나 재개하기 위한 선택적 부울 필드이다.\n일시 중지 된 디플로이먼트와 일시 중지 되지 않은 디플로이먼트 사이의 유일한 차이점은\n일시 중지된 디플로이먼트는 PodTemplateSpec에 대한 변경 사항이 일시중지 된 경우 새 롤아웃을 트리거 하지 않는다.\n디플로이먼트는 생성시 기본적으로 일시 중지되지 않는다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 9
+  },
+  "instruction": "이 섹션 끝에 '요약' 소제목 달고 기본값이랑 조건만 정리해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "요약",
+    "600"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "진행 기한 시간 섹션 끝(최소 대기 시간 섹션 앞)에 '요약' 소제목과 정리가 추가돼야 한다.",
+   "기본값 600과 '.spec.minReadySeconds보다 커야 한다'는 조건이 포함돼야 한다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "소제목 수준(####, 굵은 글씨)은 자유.",
+  "note": "섹션 끝 구조 요소 추가."
+ },
+ {
+  "id": "edit-21",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "checklist",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-privacy-act-excerpt.md",
+  "source_lines": [
+   3,
+   40
+  ],
+  "markdown": "##### 제2조 (정의)\n\n이 법에서 사용하는 용어의 뜻은 다음과 같다. <개정 2014.3.24, 2020.2.4, 2023.3.14, 2026.9.8>\n\n  1. \"개인정보\"란 살아 있는 개인에 관한 정보로서 다음 각 목의 어느 하나에 해당하는 정보를 말한다.\n    가. 성명, 주민등록번호 및 영상 등을 통하여 개인을 알아볼 수 있는 정보\n    나. 해당 정보만으로는 특정 개인을 알아볼 수 없더라도 다른 정보와 쉽게 결합하여 알아볼 수 있는 정보. 이 경우 쉽게 결합할 수 있는지 여부는 다른 정보의 입수 가능성 등 개인을 알아보는 데 소요되는 시간, 비용, 기술 등을 합리적으로 고려하여야 한다.\n    다. 가목 또는 나목을 제1호의2에 따라 가명처리함으로써 원래의 상태로 복원하기 위한 추가 정보의 사용ㆍ결합 없이는 특정 개인을 알아볼 수 없는 정보(이하 \"가명정보\"라 한다)\n  1의2. \"가명처리\"란 개인정보의 일부를 삭제하거나 일부 또는 전부를 대체하는 등의 방법으로 추가 정보가 없이는 특정 개인을 알아볼 수 없도록 처리하는 것을 말한다.\n  2. \"처리\"란 개인정보의 수집, 생성, 연계, 연동, 기록, 저장, 보유, 가공, 편집, 검색, 출력, 정정(訂正), 복구, 이용, 제공, 공개, 파기(破棄), 그 밖에 이와 유사한 행위를 말한다.\n  3. \"정보주체\"란 처리되는 정보에 의하여 알아볼 수 있는 사람으로서 그 정보의 주체가 되는 사람을 말한다.\n  4. \"개인정보파일\"이란 개인정보를 쉽게 검색할 수 있도록 일정한 규칙에 따라 체계적으로 배열하거나 구성한 개인정보의 집합물(集合物)을 말한다.\n  5. \"개인정보처리자\"란 업무를 목적으로 개인정보파일을 운용하기 위하여 스스로 또는 다른 사람을 통하여 개인정보를 처리하는 공공기관, 법인, 단체 및 개인 등을 말한다.\n  6. \"공공기관\"이란 다음 각 목의 기관을 말한다.\n    가. 국회, 법원, 헌법재판소, 중앙선거관리위원회의 행정사무를 처리하는 기관, 중앙행정기관(대통령 소속 기관과 국무총리 소속 기관을 포함한다) 및 그 소속 기관, 지방자치단체\n    나. 그 밖의 국가기관 및 공공단체 중 대통령령으로 정하는 기관\n  7. \"고정형 영상정보처리기기\"란 일정한 공간에 설치되어 지속적 또는 주기적으로 사람 또는 사물의 영상 등을 촬영하거나 이를 유ㆍ무선망을 통하여 전송하는 장치로서 대통령령으로 정하는 장치를 말한다.\n  7의2. \"이동형 영상정보처리기기\"란 사람이 신체에 착용 또는 휴대하거나 이동 가능한 물체에 부착 또는 거치(据置)하여 사람 또는 사물의 영상 등을 촬영하거나 이를 유ㆍ무선망을 통하여 전송하는 장치로서 대통령령으로 정하는 장치를 말한다.\n  8. \"과학적 연구\"란 기술의 개발과 실증, 기초연구, 응용연구 및 민간 투자 연구 등 과학적 방법을 적용하는 연구를 말한다.\n  9. \"인공지능기술\"이란 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」 제2조제3호에 따른 인공지능기술을 말한다.\n\n##### 제3조 (개인정보 보호 원칙)\n\n**①** 개인정보처리자는 개인정보의 처리 목적을 명확하게 하여야 하고 그 목적에 필요한 범위에서 최소한의 개인정보만을 적법하고 정당하게 수집하여야 한다.\n\n**②** 개인정보처리자는 개인정보의 처리 목적에 필요한 범위에서 적합하게 개인정보를 처리하여야 하며, 그 목적 외의 용도로 활용하여서는 아니 된다.\n\n**③** 개인정보처리자는 개인정보의 처리 목적에 필요한 범위에서 개인정보의 정확성, 완전성 및 최신성이 보장되도록 하여야 한다.\n\n**④** 개인정보처리자는 개인정보의 처리 방법 및 종류 등에 따라 정보주체의 권리가 침해받을 가능성과 그 위험 정도를 고려하여 개인정보를 안전하게 관리하여야 한다.\n\n**⑤** 개인정보처리자는 제30조에 따른 개인정보 처리방침 등 개인정보의 처리에 관한 사항을 공개하여야 하며, 열람청구권 등 정보주체의 권리를 보장하여야 한다. <개정 2023.3.14>\n\n**⑥** 개인정보처리자는 정보주체의 사생활 침해를 최소화하는 방법으로 개인정보를 처리하여야 한다.\n\n**⑦** 개인정보처리자는 개인정보를 익명 또는 가명으로 처리하여도 개인정보 수집목적을 달성할 수 있는 경우 익명처리가 가능한 경우에는 익명에 의하여, 익명처리로 목적을 달성할 수 없는 경우에는 가명에 의하여 처리될 수 있도록 하여야 한다. <개정 2020.2.4>\n\n**⑧** 개인정보처리자는 이 법 및 관계 법령에서 규정하고 있는 책임과 의무를 준수하고 실천함으로써 정보주체의 신뢰를 얻기 위하여 노력하여야 한다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 22,
+   "end_line": 38
+  },
+  "instruction": "제3조 아래에 개인정보처리자가 지켜야 할 원칙을 체크리스트로 붙여줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "- [ ]"
+   ],
+   "must_not_contain": [],
+   "format": "checklist"
+  },
+  "criteria": [
+   "제3조 끝에 '- [ ]' 체크리스트가 추가돼야 한다.",
+   "①~⑧ 원칙이 모두 체크 항목으로 반영돼야 한다.",
+   "제2조와 제3조 기존 줄은 바뀌면 안 된다.",
+   "원문에 없는 의무를 추가하면 실패다."
+  ],
+  "acceptable_notes": "항목 문구는 줄여도 되며 항 번호 표기는 자유.",
+  "note": "섹션 아래 체크리스트 추가."
+ },
+ {
+  "id": "edit-22",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "template_transform",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   84,
+   109
+  ],
+  "markdown": "##### 제54조 (휴게)\n\n**①** 사용자는 근로시간이 4시간인 경우에는 30분 이상, 8시간인 경우에는 1시간 이상의 휴게시간을 근로시간 도중에 주어야 한다. 다만, 근로시간이 4시간인 경우로서 근로자가 휴게시간을 이용하지 아니할 것을 명시적으로 요청한 때에는 그러하지 아니하다. <개정 2026.6.9>\n\n**②** 휴게시간은 근로자가 자유롭게 이용할 수 있다.\n\n##### 제55조 (휴일)\n\n**①** 사용자는 근로자에게 1주에 평균 1회 이상의 유급휴일을 보장하여야 한다. <개정 2018.3.20>\n\n**②** 사용자는 근로자에게 대통령령으로 정하는 휴일을 유급으로 보장하여야 한다. 다만, 근로자대표와 서면으로 합의한 경우 특정한 근로일로 대체할 수 있다. <신설 2018.3.20>\n\n##### 제56조 (연장ㆍ야간 및 휴일 근로)\n\n**①** 사용자는 연장근로(제53조ㆍ제59조 및 제69조 단서에 따라 연장된 시간의 근로를 말한다)에 대하여는 통상임금의 100분의 50 이상을 가산하여 근로자에게 지급하여야 한다. <개정 2018.3.20>\n\n**②** 제1항에도 불구하고 사용자는 휴일근로에 대하여는 다음 각 호의 기준에 따른 금액 이상을 가산하여 근로자에게 지급하여야 한다. <신설 2018.3.20>\n\n  1. 8시간 이내의 휴일근로: 통상임금의 100분의 50\n  2. 8시간을 초과한 휴일근로: 통상임금의 100분의 100\n\n**③** 사용자는 야간근로(오후 10시부터 다음 날 오전 6시 사이의 근로를 말한다)에 대하여는 통상임금의 100분의 50 이상을 가산하여 근로자에게 지급하여야 한다. <신설 2018.3.20>\n\n##### 제57조 (보상 휴가제)\n\n사용자는 근로자대표와의 서면 합의에 따라 제51조의3, 제52조제2항제2호 및 제56조에 따른 연장근로ㆍ야간근로 및 휴일근로 등에 대하여 임금을 지급하는 것을 갈음하여 휴가를 줄 수 있다. <개정 2021.1.5>",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 5
+  },
+  "instruction": "제54조 밑에 이 형식으로 정리해서 붙여줘.\n**한 줄 요약:** \n**예외:** ",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "**한 줄 요약:**",
+    "**예외:**",
+    "30분",
+    "1시간"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "제54조와 제55조 사이에 두 줄 양식이 채워져 추가돼야 한다.",
+   "한 줄 요약에 4시간-30분 이상, 8시간-1시간 이상 휴게가 들어가야 한다.",
+   "예외에는 4시간 근로자가 휴게 미사용을 명시적으로 요청한 경우가 들어가야 한다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "휴게시간 자유 이용 내용을 요약에 넣어도 된다.",
+  "note": "지정 양식 채우기 삽입."
+ },
+ {
+  "id": "edit-23",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "other",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-wiki-rag.md",
+  "source_lines": [
+   65,
+   85
+  ],
+  "markdown": "### 청킹\n청킹은 검색기가 세부 정보를 찾을 수 있도록 데이터를 벡터로 분할하는 다양한 전략을 포함한다.\n\n세 가지 유형의 청킹 전략은 다음과 같다:\n\n중첩된 고정 길이. 이것은 빠르고 쉽다. 연속적인 청크를 중첩하면 청크 간의 의미론적 맥락을 유지하는 데 도움이 된다.\n구문 기반 청크는 문서를 문장으로 나눌 수 있다. spaCy 또는 NLTK와 같은 라이브러리도 도움이 될 수 있다.\n파일 형식 기반 청킹. 특정 파일 형식에는 내장된 자연 청크가 있으며, 이를 존중하는 것이 가장 좋다. 예를 들어, 코드 파일은 전체 함수 또는 클래스로 청크 및 벡터화하는 것이 가장 좋다. HTML 파일은 <table> 또는 base64로 인코딩된 <img> 요소를 그대로 두어야 한다. PDF 파일에도 유사한 고려 사항을 적용해야 한다. Unstructured 또는 Langchain과 같은 라이브러리가 이 방법을 지원할 수 있다.\n\n\n### 지식 그래프\n문서를 벡터화하고 검색하는 소스로 사용하는 대신 지식 그래프를 사용할 수 있다. 문서, 책 또는 다른 텍스트 모음을 사용하여 언어 모델을 포함한 여러 방법 중 하나를 사용하여 지식 그래프로 변환할 수 있다. 지식 그래프가 생성되면 서브그래프를 벡터화하고 벡터 데이터베이스에 저장하여 일반 RAG처럼 검색에 사용할 수 있다. 여기서 장점은 그래프가 텍스트 문자열보다 더 인식 가능한 구조를 가지고 있으며 이 구조가 생성에 더 관련성 있는 사실을 검색하는 데 도움이 될 수 있다는 것이다. 때로는 이 접근 방식을 GraphRAG라고 부른다.\n\n\n### 하이브리드 검색\n때때로 벡터 데이터베이스 검색은 사용자의 질문에 답하는 데 필요한 핵심 사실을 놓칠 수 있다. 이를 완화하는 한 가지 방법은 전통적인 텍스트 검색을 수행하고, 그 결과를 벡터 검색에서 검색된 벡터에 연결된 텍스트 청크에 추가하고, 결합된 하이브리드 텍스트를 언어 모델에 공급하여 생성을 수행하는 것이다.\n\n\n### 평가 및 벤치마크\nRAG 시스템은 검색 정확도와 생성 품질을 모두 테스트하도록 설계된 벤치마크를 사용하여 일반적으로 평가된다. 인기 있는 데이터 세트로는 다양한 도메인의 정보 검색 작업을 포괄하는 BEIR, 그리고 개방 도메인 QA를 위한 Natural Questions 또는 Google QA가 있다.\n법률 및 의료와 같이 중요도가 높은 도메인에서는 도메인 특정 벤치마크가 점점 더 많이 사용되고 있다. 예를 들어, LegalBench-RAG는 법률 문서에 대한 검색 품질을 테스트하도록 설계된 오픈 소스 벤치마크이다. 이는 실제 법률 질문 및 문서를 사용하여 다양한 RAG 파이프라인에 대한 재현율과 정확도를 평가한다.",
+  "target": {
+   "type": "current_section",
+   "start_line": 15,
+   "end_line": 16
+  },
+  "instruction": "여기 하이브리드 검색 부분 좀 알기 쉽게 밑에 하나 덧붙여줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "하이브리드 검색 섹션 끝(평가 및 벤치마크 앞)에 이해를 돕는 내용(예: 단계 목록, 쉬운 풀이)이 추가돼야 한다.",
+   "추가 내용은 이 섹션의 내용(벡터 검색이 사실을 놓칠 수 있음 → 텍스트 검색 결과를 청크에 추가 → 결합 텍스트로 생성)만 사용해야 한다.",
+   "BM25 등 원문에 없는 기법이나 수치를 넣으면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "형식(불릿, 단계 번호, 짧은 문단)은 자유.",
+  "note": "어려운 케이스: 모호하지만 합리적인 요청."
+ },
+ {
+  "id": "edit-24",
+  "category": "insert_after/target/current_section",
+  "edit_goal": "bullet_list",
+  "edit_operation": "insert_after",
+  "edit_destination": "target",
+  "output_language": null,
+  "source_id": "ko-ai-ethics.md",
+  "source_lines": [
+   19,
+   51
+  ],
+  "markdown": "### ① 인간 존엄성 원칙 \n\n- 인간은 신체와 이성이 있는 생명체로 인공지능을 포함하여 인간을 위해 개발된 기계 \n\n- 제품과는 교환 불가능한 가치가 있다. \n\n- 인공지능은 인간의 생명은 물론 정신적 및 신체적 건강에 해가 되지 않는 범위에서 개발 \n\n- 및 활용되어야 한다. \n\n- 인공지능 개발 및 활용은 안전성과 견고성을 갖추어 인간에게 해가 되지 않도록 해야 한다. \n\n### ② 사회의 공공선 원칙 \n\n- 공동체로서 사회는 가능한 한 많은 사람의 안녕과 행복이라는 가치를 추구한다. \n\n- 인공지능은 지능정보사회에서 소외되기 쉬운 사회적 약자와 취약 계층의 접근성을 \n\n- 보장하도록 개발 및 활용되어야 한다. \n\n- 공익 증진을 위한 인공지능 개발 및 활용은 사회적, 국가적나아가, 글로벌 관점에서 \n\n- 인류의 보편적 복지를 향상시킬 수 있어야 한다. \n\n### ③ 기술의 합목적성 원칙 \n\n- 인공지능 기술은 인류의 삶에 필요한 도구라는 목적과 의도에 부합되게 개발 및 \n\n- 활용되어야 하며 그 과정도 윤리적이어야 한다. \n\n- \n\n- 인류의 삶과 번영을 위한 인공지능 개발 및 활용을 장려하여 진흥해야 한다. ",
+  "target": {
+   "type": "current_section",
+   "start_line": 1,
+   "end_line": 11
+  },
+  "instruction": "① 원칙 밑에 핵심 내용을 불릿 세 개로 정리해서 추가해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": "bullet_list"
+  },
+  "criteria": [
+   "① 인간 존엄성 원칙 섹션 끝(② 앞)에 불릿 세 개가 추가돼야 한다.",
+   "내용은 교환 불가능한 인간 가치, 생명·건강에 해가 되지 않는 개발, 안전성·견고성이어야 한다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "작은 제목을 붙여도 된다. 3개가 아닌 경우는 감점.",
+  "note": "섹션 아래 불릿 요약 삽입."
+ },
+ {
+  "id": "edit-25",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "other",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": null,
+  "source_id": "ko-wiki-rag.md",
+  "source_lines": [
+   88,
+   109
+  ],
+  "markdown": "## 변형과 확장\n검색 증강 생성(RAG)은 초기 제안 이후 다양한 변형과 확장이 등장하였다.\n\n사전학습 결합형 (REALM) — 구우 등은 사전학습(pre-training) 단계에서 검색기를 통합하여, 마스킹 언어 모델 목적을 통해 검색기까지 공동으로 학습하도록 하였다.\n대규모 외부 메모리형 (RETRO) — 보르제우드 등은 수조(trillions) 토큰 규모의 데이터베이스에서 조각 단위 검색을 수행하여, 상대적으로 작은 파라미터 수로도 거대 모델과 경쟁할 수 있음을 보였다.\n자기비평형 (Self-RAG) — 아사이 등은 검색·생성·자기평가 단계를 통합해, 모델이 필요 시 검색을 수행하고 생성된 답변에 대해 스스로 비평하며, 사실성과 인용 정확도를 높이는 방식을 제안하였다.\n그래프 기반 확장 (Graph RAG) — 펭 등은 텍스트 단락 대신 엔티티·관계 중심의 지식 그래프를 활용해 검색 및 융합 과정을 구조화함으로써, 생성 응답의 사실성과 추론력을 높이는 방법을 제시하였다.\n\n\n## 한계\n검색 증강 생성(RAG)은 대형 언어 모델의 사실성 및 최신성을 강화하지만, 여러 가지 기술적·보안적 한계를 가진다.\n\n회수 오류와 다단계 추론 문제 — 관련 문서가 검색되지 않거나 잘못 검색되면 환각(hallucination)이 발생할 수 있다. 또한 다중 문서에 걸친 멀티홉 추론은 여전히 해결되지 않은 과제다.\n컨텍스트 예산 제한 — 입력 컨텍스트 창의 길이 한계 때문에 검색된 문서를 충분히 반영하지 못하거나, 과도한 문서를 포함할 경우 잡음과 연산 비용이 증가할 수 있다.\n보안 및 안전 문제 — 프롬프트 인젝션(prompt injection), 민감정보 유출, 검색된 출처의 독성(toxicity) 전이 등 보안적 위험이 존재한다. OWASP는 대형 언어 모델 응용의 위협을 정리한 보안 지침을 발표하였다.\n데이터 관리와 최신성 — 외부 지식 인덱스는 지속적인 업데이트와 비식별화, 접근 통제가 필요하다. 최신성이 보장되지 않으면 응답 품질이 떨어지고, 데이터 주권 문제도 발생할 수 있다.\n\n\n## 도전 과제\nRAG는 LLM의 환각 문제에 대한 완전한 해결책이 아니다. 아르스 테크니카에 따르면, \"LLM이 응답에서 원본 자료 주변을 여전히 환각할 수 있기 때문에 직접적인 해결책은 아니다.\"\nRAG는 대형 언어 모델(LLM)의 정확도를 향상시키지만, 모든 문제를 제거하지는 않는다. 한 가지 한계는 RAG가 잦은 모델 재훈련의 필요성을 줄이지만, 완전히 제거하지는 않는다는 것이다. 또한 LLM은 신뢰할 수 있는 응답을 제공하기에 충분한 정보가 부족할 때 이를 인식하는 데 어려움을 겪을 수 있다. 특정 훈련 없이는 모델이 불확실성을 나타내야 할 때에도 답변을 생성할 수 있다. IBM에 따르면, 이 문제는 모델이 자신의 지식 한계를 평가할 능력이 부족할 때 발생할 수 있다.\nRAG 시스템은 사실적으로 올바르지만 오해의 소지가 있는 출처를 검색하여 해석 오류를 일으킬 수 있다. 어떤 경우에는 LLM이 출처의 문맥을 고려하지 않고 진술을 추출하여 잘못된 결론을 내릴 수 있다. 또한, 상충되는 정보에 직면했을 때 RAG 모델은 어떤 출처가 정확한지 판단하는 데 어려움을 겪을 수 있으며, 여러 출처의 세부 정보를 결합하여 오래된 정보와 업데이트된 정보를 오해의 소지가 있는 방식으로 결합한 응답을 생성할 수 있다. MIT 테크놀로지 리뷰에 따르면, 이러한 문제는 RAG 시스템이 검색한 데이터를 잘못 해석할 수 있기 때문에 발생한다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 22
+  },
+  "instruction": "문서 끝에 '## 핵심 정리' 섹션 추가해줘. 위에 있는 내용만으로.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "## 핵심 정리"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "문서 맨 끝에 '## 핵심 정리' 제목과 정리 내용이 추가돼야 한다.",
+   "변형(REALM·RETRO·Self-RAG·Graph RAG), 한계, 도전 과제의 내용을 반영해야 한다.",
+   "원문에 없는 사실이 들어가면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "불릿이나 문단 형식 자유.",
+  "note": "문서 끝 섹션 추가."
+ },
+ {
+  "id": "edit-26",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "checklist",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": null,
+  "source_id": "ko-privacy-act-excerpt.md",
+  "source_lines": [
+   230,
+   254
+  ],
+  "markdown": "##### 제34조 (개인정보 유출등의 통지ㆍ신고)\n\n**①** 개인정보처리자는 개인정보가 유출등이 되었음을 알게 되었을 때에는 지체 없이 해당 정보주체에게 다음 각 호의 사항을 알려야 한다. 다만, 정보주체의 연락처를 알 수 없는 경우 등 정당한 사유가 있는 경우에는 대통령령으로 정하는 바에 따라 통지를 갈음하는 조치를 취할 수 있다. <개정 2023.3.14, 2026.3.10>\n\n  1. 유출등이 된 개인정보의 항목\n  2. 유출등이 된 시점과 그 경위\n  3. 유출등으로 인하여 발생할 수 있는 피해를 최소화하기 위하여 정보주체가 할 수 있는 방법 등에 관한 구체적인 정보\n  4. 개인정보처리자의 대응조치 및 피해 구제절차\n  5. 정보주체에게 피해가 발생한 경우 신고 등을 접수할 수 있는 담당부서 및 연락처\n  6. 개인정보 유출등으로 인한 제39조에 따른 손해배상과 제39조의2에 따른 법정손해배상의 청구 및 제43조에 따른 분쟁조정 등 피해를 입은 정보주체의 법적 권리와 그 행사 방법 등에 관한 정보\n  7. 그 밖에 개인정보가 유출등이 된 정보주체의 보호를 위하여 대통령령으로 정하는 사항\n\n**②** 제1항에도 불구하고 개인정보의 유형, 정보주체에게 미치는 영향 및 유출등의 위험 정도를 고려하여 대통령령으로 정하는 유출등의 가능성이 있음을 알게 되었을 때에는 지체 없이 유출등의 가능성이 있는 모든 정보주체에게 피해를 최소화하기 위한 정보 등 대통령령으로 정하는 사항을 알려야 한다. <신설 2026.3.10>\n\n**③** 개인정보처리자는 개인정보가 유출등이 된 경우에는 해당 개인정보의 회수ㆍ삭제 등 피해 확산을 방지하기 위한 조치를 포함하여 피해를 최소화하기 위한 대책을 마련하고 필요한 조치를 하여야 한다. <개정 2023.3.14, 2026.3.10>\n\n**④** 개인정보처리자는 개인정보의 유출등이 있음을 알게 되었을 때에는 개인정보의 유형, 유출등의 경로 및 규모 등을 고려하여 대통령령으로 정하는 바에 따라 제1항 각 호의 사항을 지체 없이 보호위원회 또는 대통령령으로 정하는 전문기관에 신고하여야 한다. 이 경우 보호위원회 또는 대통령령으로 정하는 전문기관은 피해 확산방지, 피해 복구 등을 위한 기술을 지원할 수 있다. <개정 2013.3.23, 2014.11.19, 2017.7.26, 2020.2.4, 2023.3.14, 2026.3.10>\n\n**⑤** 제1항ㆍ제2항에 따른 통지 및 제4항에 따른 유출등의 신고의 시기, 방법, 절차 등에 필요한 사항은 대통령령으로 정한다. <개정 2023.3.14, 2026.3.10>\n\n##### 제34조의2 (노출된 개인정보의 삭제ㆍ차단)\n\n**①** 개인정보처리자는 고유식별정보, 계좌정보, 신용카드정보 등 개인정보가 정보통신망을 통하여 공중(公衆)에 노출되지 아니하도록 하여야 한다. <개정 2023.3.14>\n\n**②** 개인정보처리자는 공중에 노출된 개인정보에 대하여 보호위원회 또는 대통령령으로 지정한 전문기관의 요청이 있는 경우에는 해당 정보를 삭제하거나 차단하는 등 필요한 조치를 하여야 한다. <개정 2023.3.14>",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 25
+  },
+  "instruction": "맨 아래에 유출 통지할 때 빠뜨리면 안 되는 항목 체크리스트 붙여줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "- [ ]"
+   ],
+   "must_not_contain": [],
+   "format": "checklist"
+  },
+  "criteria": [
+   "문서 끝에 '- [ ]' 체크리스트가 추가돼야 한다.",
+   "제34조 ①의 통지 항목 7가지가 모두 들어가야 한다.",
+   "원문에 없는 항목을 추가하면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "제목을 달아도 된다. ②의 유출 가능성 통지를 추가 항목으로 넣어도 허용.",
+  "note": "문서 끝 체크리스트 추가."
+ },
+ {
+  "id": "edit-27",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "convert_format",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": null,
+  "source_id": "ko-labor-standards-ch4.md",
+  "source_lines": [
+   3,
+   24
+  ],
+  "markdown": "##### 제50조 (근로시간)\n\n**①** 1주 간의 근로시간은 휴게시간을 제외하고 40시간을 초과할 수 없다.\n\n**②** 1일의 근로시간은 휴게시간을 제외하고 8시간을 초과할 수 없다.\n\n**③** 제1항 및 제2항에 따라 근로시간을 산정하는 경우 작업을 위하여 근로자가 사용자의 지휘ㆍ감독 아래에 있는 대기시간 등은 근로시간으로 본다. <신설 2012.2.1, 2020.5.26>\n\n##### 제51조 (3개월 이내의 탄력적 근로시간제)\n\n**①** 사용자는 취업규칙(취업규칙에 준하는 것을 포함한다)에서 정하는 바에 따라 2주 이내의 일정한 단위기간을 평균하여 1주 간의 근로시간이 제50조제1항의 근로시간을 초과하지 아니하는 범위에서 특정한 주에 제50조제1항의 근로시간을, 특정한 날에 제50조제2항의 근로시간을 초과하여 근로하게 할 수 있다. 다만, 특정한 주의 근로시간은 48시간을 초과할 수 없다.\n\n**②** 사용자는 근로자대표와의 서면 합의에 따라 다음 각 호의 사항을 정하면 3개월 이내의 단위기간을 평균하여 1주 간의 근로시간이 제50조제1항의 근로시간을 초과하지 아니하는 범위에서 특정한 주에 제50조제1항의 근로시간을, 특정한 날에 제50조제2항의 근로시간을 초과하여 근로하게 할 수 있다. 다만, 특정한 주의 근로시간은 52시간을, 특정한 날의 근로시간은 12시간을 초과할 수 없다.\n\n  1. 대상 근로자의 범위\n  2. 단위기간(3개월 이내의 일정한 기간으로 정하여야 한다)\n  3. 단위기간의 근로일과 그 근로일별 근로시간\n  4. 그 밖에 대통령령으로 정하는 사항\n\n**③** 제1항과 제2항은 15세 이상 18세 미만의 근로자와 임신 중인 여성 근로자에 대하여는 적용하지 아니한다.\n\n**④** 사용자는 제1항 및 제2항에 따라 근로자를 근로시킬 경우에는 기존의 임금 수준이 낮아지지 아니하도록 임금보전방안(賃金補塡方案)을 강구하여야 한다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 22
+  },
+  "instruction": "문서 끝에 제51조 ①항이랑 ②항 비교표 추가해줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "2주",
+    "3개월"
+   ],
+   "must_not_contain": [],
+   "format": "table"
+  },
+  "criteria": [
+   "문서 끝에 Markdown 표가 추가돼야 한다.",
+   "비교 항목에 단위기간(2주 이내 vs 3개월 이내), 근거(취업규칙 vs 근로자대표와의 서면 합의), 특정 주 상한(48시간 vs 52시간, ②는 1일 12시간) 등 원문에서 나온 차이가 들어가야 한다.",
+   "원문에 없는 기준이 들어가면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "서면 합의 사항(각 호) 행은 있어도 없어도 된다. 표 위에 제목 추가 허용.",
+  "note": "문서 끝 비교표 추가."
+ },
+ {
+  "id": "edit-28",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "translate",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": "ko",
+  "source_id": "en-postgres-mvcc.md",
+  "source_lines": [
+   9,
+   55
+  ],
+  "markdown": "## 13.2. Transaction Isolation #\n\n13.2.1. Read Committed Isolation Level\n\n13.2.2. Repeatable Read Isolation Level\n\n13.2.3. Serializable Isolation Level\n\nThe SQL standard defines four levels of transaction isolation. The most strict is Serializable, which is defined by the standard in a paragraph which says that any concurrent execution of a set of Serializable transactions is guaranteed to produce the same effect as running them one at a time in some order. The other three levels are defined in terms of phenomena, resulting from interaction between concurrent transactions, which must not occur at each level. The standard notes that due to the definition of Serializable, none of these phenomena are possible at that level. (This is hardly surprising -- if the effect of the transactions must be consistent with having been run one at a time, how could you see any phenomena caused by interactions?)\n\nThe phenomena which are prohibited at various levels are:\n\ndirty read\n\nA transaction reads data written by a concurrent uncommitted transaction.\n\nnonrepeatable read\n\nA transaction re-reads data it has previously read and finds that data has been modified by another transaction (that committed since the initial read).\n\nphantom read\n\nA transaction re-executes a query returning a set of rows that satisfy a search condition and finds that the set of rows satisfying the condition has changed due to another recently-committed transaction.\n\nserialization anomaly\n\nThe result of successfully committing a group of transactions is inconsistent with all possible orderings of running those transactions one at a time.\n\nThe SQL standard and PostgreSQL-implemented transaction isolation levels are described in Table 13.1 .\n\nTable 13.1. Transaction Isolation Levels\n\nIsolation Level | Dirty Read | Nonrepeatable Read | Phantom Read | Serialization Anomaly\n\nRead uncommitted | Allowed, but not in PG | Possible | Possible | Possible\n\nRead committed | Not possible | Possible | Possible | Possible\n\nRepeatable read | Not possible | Not possible | Allowed, but not in PG | Possible\n\nSerializable | Not possible | Not possible | Not possible | Not possible\n\nIn PostgreSQL , you can request any of the four standard transaction isolation levels, but internally only three distinct isolation levels are implemented, i.e., PostgreSQL's Read Uncommitted mode behaves like Read Committed. This is because it is the only sensible way to map the standard isolation levels to PostgreSQL's multiversion concurrency control architecture.\n\nThe table also shows that PostgreSQL's Repeatable Read implementation does not allow phantom reads. This is acceptable under the SQL standard because the standard specifies which anomalies must not occur at certain isolation levels; higher guarantees are acceptable. The behavior of the available isolation levels is detailed in the following subsections.\n\nTo set the transaction isolation level of a transaction, use the command SET TRANSACTION .",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 47
+  },
+  "instruction": "At the end, add Korean translations of the four phenomena definitions. Keep the English terms in parentheses.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "dirty read",
+    "nonrepeatable read",
+    "phantom read",
+    "serialization anomaly"
+   ],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "문서 끝에 네 현상(dirty read, nonrepeatable read, phantom read, serialization anomaly)의 정의가 한국어로 추가돼야 한다.",
+   "각 영어 용어가 괄호 등으로 함께 표기돼야 한다.",
+   "정의 번역이 원문 의미와 달라지면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "제목, 목록, 표 형식 모두 허용.",
+  "note": "영어 지시로 한국어 번역 추가(insert + translate)."
+ },
+ {
+  "id": "edit-29",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "template_transform",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": null,
+  "source_id": "ko-k8s-deployment.md",
+  "source_lines": [
+   1302,
+   1347
+  ],
+  "markdown": "### 진행 기한 시간(초)\n\n`.spec.progressDeadlineSeconds`는 디플로이먼트가 진행되기를 기다리는 시간(초)을\n지정하는 선택적 필드이며, 시스템은 지정된 시간 안에 디플로이먼트가 진행되지 않으면\n[진행 실패](#디플로이먼트-실패)를 `type: Progressing`, `status: \"False\"`인 컨디션으로 나타낸다.\n그리고 리소스 상태에 `reason: ProgressDeadlineExceeded`를 표시한다. 디플로이먼트 컨트롤러는 디플로이먼트를 계속\n재시도한다. 기본값은 600이다.\n\n만약 명시된다면 이 필드는 `.spec.minReadySeconds` 보다 커야 한다.\n\n### 최소 대기 시간(초)\n\n`.spec.minReadySeconds` 는 새롭게 생성된 파드의 컨테이너가 어떤 것과도 충돌하지 않고 사\n용할 수 있도록 준비되어야 하는 최소 시간(초)을 지정하는 선택적 필드이다.\n이 기본 값은 0이다(파드는 준비되는 즉시 사용할 수 있는 것으로 간주됨).\n파드가 준비되었다고 간주되는 시기에 대한 자세한 내용은 [컨테이너 프로브](/docs/concepts/workloads/pods/pod-lifecycle/#컨테이너-프로브-probe)를 참조한다.\n\n### 파드 종료\n\n\n\n종료 중인 파드는 `DeploymentReplicaSetTerminatingReplicas`\n[기능 게이트](/docs/reference/command-line-tools-reference/feature-gates/)가 활성화된 경우에만 확인할 수 있다.\n이 기능 게이트는 [API 서버](/docs/reference/command-line-tools-reference/kube-apiserver/)\n및 [kube-controller-manager](/docs/reference/command-line-tools-reference/kube-controller-manager/)에서 활성화해야 한다.\n\n삭제나 스케일 다운으로 인해 Terminating 상태가 된 파드는 종료까지 오랜 시간이 걸릴 수 있으며, \n그 기간 동안 추가적인 리소스를 사용할 수 있다. 그 결과 전체 파드 수가 일시적으로 \n`.spec.replicas` 값을 초과할 수 있다. 종료 중인 상태의 파드는 디플로이먼트의 `.status.terminatingReplicas` 필드를 통해 추적할 수 있다.\n\n### 수정 버전 기록 제한\n\n디플로이먼트의 수정 버전 기록은 자신이 컨트롤하는 레플리카셋에 저장된다.\n\n`.spec.revisionHistoryLimit` 은 롤백을 허용하기 위해 보존할 이전 레플리카셋의 수를 지정하는 선택적 필드이다.\n이 이전 레플리카셋은 `etcd` 의 리소스를 소비하고, `kubectl get rs` 의 결과를 가득차게 만든다. 각 디플로이먼트의 구성은 디플로이먼트의 레플리카셋에 저장된다. 이전 레플리카셋이 삭제되면 해당 디플로이먼트 수정 버전으로 롤백할 수 있는 기능이 사라진다. 기본적으로 10개의 기존 레플리카셋이 유지되지만 이상적인 값은 새로운 디플로이먼트의 빈도와 안정성에 따라 달라진다.\n\n더욱 구체적으로 이 필드를 0으로 설정하면 레플리카가 0이 되며 이전 레플리카셋이 정리된다.\n이 경우, 새로운 디플로이먼트 롤아웃을 취소할 수 없다. 새로운 디플로이먼트 롤아웃은 수정 버전 이력이 정리되기 때문이다.\n\n### 일시 정지\n\n`.spec.paused` 는 디플로이먼트를 일시 중지나 재개하기 위한 선택적 부울 필드이다.\n일시 중지 된 디플로이먼트와 일시 중지 되지 않은 디플로이먼트 사이의 유일한 차이점은\n일시 중지된 디플로이먼트는 PodTemplateSpec에 대한 변경 사항이 일시중지 된 경우 새 롤아웃을 트리거 하지 않는다.\n디플로이먼트는 생성시 기본적으로 일시 중지되지 않는다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 46
+  },
+  "instruction": "문서 끝에 필드 정리 표 추가해줘. 형식은 | 필드 | 기본값 | 설명 | 으로.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [
+    "기본값",
+    "progressDeadlineSeconds",
+    "minReadySeconds",
+    "revisionHistoryLimit",
+    "paused"
+   ],
+   "must_not_contain": [],
+   "format": "table"
+  },
+  "criteria": [
+   "문서 끝에 필드/기본값/설명 열의 표가 추가돼야 한다.",
+   "기본값은 문서에 적힌 값(600, 0, 10개, 일시 중지 안 됨)만 써야 한다.",
+   "기본값이 문서에 없는 항목(예: terminatingReplicas)을 넣는다면 기본값을 비우거나 명시 없음으로 둬야 하며 지어내면 실패다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "필드명에 .spec. 접두어 유무는 자유. 파드 종료 행은 빠져도 된다.",
+  "note": "어려운 케이스 보조: 템플릿 + 문서 근거만 사용."
+ },
+ {
+  "id": "edit-30",
+  "category": "insert_after/document_end/whole_document",
+  "edit_goal": "shorten",
+  "edit_operation": "insert_after",
+  "edit_destination": "document_end",
+  "output_language": null,
+  "source_id": "ko-wiki-ir.md",
+  "source_lines": [
+   1,
+   24
+  ],
+  "markdown": "# 정보 검색\n\n정보 검색(情報檢索, information retrieval)은 집합적인 정보로부터 원하는 내용과 관련이 있는 부분을 얻어 내는 행위를 말한다. 이를 위해 메타데이터나 색인이 사용될 수 있다.\n자동화된 정보 검색 시스템은 소위 ‘정보 과부하’라 불리는 상태를 완화시키기 위해 사용된다. 많은 대학 및 공공 도서관들이 보유 서적 및 저널, 각종 문서들에 대한 접근성을 제공하기 위해 정보 검색 시스템을 구축한다. 웹 검색 엔진은 일상적으로 가장 쉽게 접할 수 있는 정보 검색 시스템 중 하나이다.\n\n\n## 역사\n\n정보를 검색하기 위해 컴퓨터를 사용한다는 아이디어는 1945년 버니바 부시가 디 애틀랜틱 지에 기고한 '우리가 생각하는 대로(As We May Think)'를 통해 대중화되었다. 최초의 자동화 정보 검색 시스템은 1950~1960년대에 도입되었다. 1970년까지 수 천 개 문서의 모음인 크랜필드 콜렉션(Cranfield collection)과 같은 소규모 말뭉치를 대상으로 하는 몇몇 방법들이 학계에 소개되었다. 록히드 다이얼로그 시스템(Lockheed Dialog system)과 같은 대규모 검색 시스템은 1970년대 초부터 사용되기 시작하였다.\n1992년 미국 국방부는 미국 국립표준기술연구소(NIST)와 함께 텍스트 검색 컨퍼런스(Text Retrieval Conference, TREC)를 후원하였으며, 이것은 TIPSTER 텍스트 프로그램의 일부였다. 이 프로그램의 목적은 대규모 텍스트를 위한 텍스트 검색 방법론의 성능 측정에 필요한 제반 시설을 지원함으로써 정보 검색 관련 학계를 후원하는 것이었다. 이를 통해 매우 큰 말뭉치에 적용 가능한 확장성 높은 검색 방법에 대한 연구가 촉진되었다. 그리고 웹 검색 엔진의 등장으로 인해 이러한 대규모 검색 시스템에 대한 요구는 더욱 커지게 되었다.\n\n\n## 정보 검색 요소\n오늘날의 정보검색시스템은 크게 데이터집합, 색인, 랭킹, 표현, 사용자 피드백이라는 다섯 가지 요소로 구성되어 있다.\n\n데이터집합: 검색의 대상이 되는 데이터로서 크게 DB형 데이터와 문서형 데이터로 구분될 수 있다. DB형 데이터는 날씨, 주가, 기차시간표 등과 같이 일정한 스키마를 갖고 DB에 저장되어 있는 데이터인 반면, 문서형 데이터는 제목과 본문, 생성날짜 등으로 구성된 데이터를 말한다. 문서형데이터는 다시 정형적 문서형데이터와 비정형적 문서형데이터로 나뉘는데, 정형적 문서형데이터는 지식검색데이터나 블로그데이터와 같이 비교적 나름대로의 서식을 갖추고 있는 데이터이고, 비정형적 문서형데이터는 웹문서와 같이 상대적으로 자유로운 형식의 데이터를 의미한다.\n색인: 색인(indexing)은 문서형데이터집합에 대하여, 각 단어별 문서리스트를 생성한 것을 의미하며, 흔히 역문서리스트(inverted list)라는 용어로도 표현된다. 한편 색인방식에 따라 데이터집합을 한꺼번에 색인하는 일괄색인(batch indexing)과 점증색인(incremental indexing)으로 구분될 수 있는데, 뉴스검색은 대표적으로 점증색인을 적용하는 분야이다. 정보검색을 위한 색인과정에서 중요한 것은 주어진 문서에서 색인어를 추출하는 과정인데, 언어적 특성과 상관없이 적용될 수 있는 n-gram 방식과, 자연언어처리의 형태소분석을 통한 방식이 존재한다.\n랭킹: 랭킹(ranking)은 입력된 질의(query)에 대하여 가장 적합한 순으로 문서형데이터들을 나열하는 작업을 의미하며, 이를 위한 다양한 검색알고리즘들이 존재한다. 여기서 적합성(relevance)은 질의와 문서와의 유사성(similarity), 문서의 최신성(freshness), 문서 고유의 품질(quality), 그리고 사용자 검색로그를 포함한 기타 여러 정보가 적절히 혼합되어 판단될 수 있다. 구글의 페이지랭크는 질의와는 상관없이 문서 고유의 품질을 문서간의 링크관계에 따라 규정하는 대표적인 품질측정 알고리즘이라 할 수 있다.\n표현: 검색의 결과는 구글과 같이 단순리스트형식으로 사용자에게 제시될 수도 있고, 유사한 결과들이 그룹화되어 제시될 수도 있으며, 데이터의 종류(이미지, 블로그, 웹문서)등으로 구분지어 제시될 수도 있다.\n사용자 피드백: 사용자피드백은 검색의 품질을 개선하는 데 활용되는 것으로, 사용자가 직접 검색결과에 피드백을 주는 명시적 피드백(explicit feedback)과 사용자의 검색행위를 기록해놓은 검색로그가 대표적인 암묵적 피드백(implicit feedback)으로 구분될 수 있다. 최근에는 암묵적 피드백 정보를 활용하여 검색결과를 개선하려는 연구가 활발히 진행되고 있다.\n\n\n## 정보 검색 모델\n정보 검색 모델에는 불리안 모델(boolean model), 벡터 모델(vector model) 등이 있다. 불리안 모델은 한 개의 질의어에 있는 두 개 이상의 키워드가 and, or, not에 의하여 연결되어 있는 경우, 이들을 논리곱의 합의 형태로 변환하여, 각각의 논리곱이 각 문서에 존재하는지를 체크하는 방법이다. 벡터 모델은 질의어와 각각의 문서를 모든 색인어에 대한 벡터 형태로 나타낸 후, 질의어와 각 문서의 벡터곱을 유사도로 이용하여 문서들을 랭킹하는 방법이다.",
+  "target": {
+   "type": "whole_document",
+   "start_line": 1,
+   "end_line": 24
+  },
+  "instruction": "맨 아래에 이 문서 내용을 3줄로 요약해서 붙여줘.",
+  "checks": {
+   "outside_target_unchanged": true,
+   "preserve": [],
+   "must_contain": [],
+   "must_not_contain": [],
+   "format": null
+  },
+  "criteria": [
+   "문서 끝에 약 3줄 분량의 요약이 추가돼야 한다.",
+   "정의, 역사(1945년, TREC 등), 다섯 요소, 검색 모델 중 핵심이 원문 내용만으로 요약돼야 한다.",
+   "기존 줄은 바뀌면 안 된다."
+  ],
+  "acceptable_notes": "요약 제목을 달아도 된다. 2~4줄 허용.",
+  "note": "문서 끝 요약 추가(router 규칙상 요약은 shorten)."
+ }
+]

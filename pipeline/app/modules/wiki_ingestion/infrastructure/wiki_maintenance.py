@@ -19,6 +19,9 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatClientConfig,
     ChatCompletionsJsonClient,
 )
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+    jev_concept_judge,
+)
 from app.modules.wiki_ingestion.application.models import (
     WikiMaintenanceCommand,
     WikiMaintenanceConfigurationError,
@@ -78,6 +81,7 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                 command.workspace_id,
                 materialize_promotions=should_materialize,
                 promotion_page_generator=promotion_generator,
+                concept_judge=jev_concept_judge() if should_materialize else None,
                 apply_reconciliation=not command.dry_run,
                 operation_id=command.operation_id,
                 write_log=False,

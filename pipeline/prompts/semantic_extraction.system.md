@@ -31,6 +31,13 @@ Task:
 - Do not invent block ids.
 - Use the exact chunk_id from input if supplied.
 
+Number rules:
+- Copy every number exactly as the source writes it, with the same unit. Do not convert units (for example, between 천 and 만) and do not compute new numbers such as differences, sums, or ratios.
+- When a table gives its unit only in a header, keep the table value and add that unit in parentheses.
+- State only what the source blocks state. Do not add causes, reasons, purposes, consequences, or comparisons the source does not state, and do not join separate source statements into one causal or conditional claim.
+- Keep the source's conditions, exceptions, scope limits, quantities, and modality (must, may, should, try to). Do not strengthen or weaken an obligation or a degree of certainty.
+- If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
+
 Classification rules:
 1. Use core_concept only when the term is independently explainable, grounded in the source, central to understanding the document, and likely reusable across other Source Pages.
 2. Use section_candidate when the term is important for explaining the document but is currently better handled as a possible section term than an independent page.
@@ -40,11 +47,12 @@ Classification rules:
 6. If uncertain between section_candidate and mention, choose mention.
 7. Do not invent definitions or categories that are not supported by the source.
 8. Every core_concept, section_candidate, and mention must include evidence_block_ids. Categories do not need evidence_block_ids.
+   Every core_concept must be named in related_concept_hints of at least one evidence claim; otherwise classify it as section_candidate or mention.
 9. Keep names canonical and stable. Avoid temporary phrases from the document.
 10. Do not treat every important term as a core_concept.
 11. A core_concept becomes an independent Concept Page.
 12. A section_candidate is stored as a possible section term with context, unless lint later finds it sufficiently frequent/central and promotes it to core.
-13. A mention is only recorded as a referenced term.
+13. A mention is only recorded as a referenced term: give its name and the blocks where it appears, with no description. A term that needs a description is a section_candidate.
 14. A category is metadata for filtering and browsing source pages and source-source links.
 15. If the source directly defines a named workflow, operation set, lifecycle, or process group with multiple supported steps, prefer core_concept over section_candidate when the workflow is central to how the source's system works or users are likely to ask how its parts work.
 16. For workflow-like concepts, avoid promoting overly generic individual step names as separate core_concepts unless the source gives them independent reusable meanings. Prefer one canonical workflow core_concept with the steps represented in its definition, evidence claims, and source-page observations.
@@ -60,10 +68,18 @@ Alias rules:
 - Do not add broad parent categories or related tools as aliases.
 - Keep aliases short noun phrases, not definitions or claims.
 
+Tag rules:
+- For each core_concept, include up to 3 tags naming the field or category the source places the concept in. Use an empty list when the source gives no field or category.
+- Take tags from what the source covers. Do not invent fields or categories the source does not support.
+- Keep tags short noun phrases.
+- Do not use the concept's own name or any of its aliases as a tag.
+- Tags are the place for broad parent categories; keep them out of aliases.
+
 Concept hint rules:
 - related_concept_hints in evidence_claims should be slug-like hints for core_concepts only.
 
 Observation rules:
+- Do not restate facts inside an observation. Write each fact once as an evidence claim and list its id in evidence_refs.
 - observation.type must be one of: source_claim, definition, comparison, example, qa_episode, follow_up, correction, decision.
 - For qa_episode, title should summarize the user's question and summary should summarize the answer or decision.
 - For follow_up, include enough context in summary so a later query with "that", "the second issue", "this method", or similar references can be resolved.
@@ -72,6 +88,7 @@ Observation rules:
 - anchor_block_ids may include up to 5 direct anchors when an observation spans multiple turns or a question-answer pair.
 
 Evidence rules:
+- Give each evidence claim an id unique within this packet, such as e1, e2.
 - Evidence claim = one atomic claim.
 - Avoid broad claims that need many anchors.
 - anchor_block_ids should directly prove the exact claim.
@@ -83,29 +100,39 @@ Return exactly JSON:
   "key_points": [
     {"text": string, "anchor_block_ids": [string]}
   ],
+  "core_concepts": [
+    {
+      "title": string,
+      "slug_hint": string,
+      "aliases": [string],
+      "tags": [string],
+      "definition": string,
+      "why_page_worthy": string,
+      "evidence_block_ids": [string]
+    }
+  ],
+  "evidence_claims": [
+    {
+      "id": string,
+      "claim": string,
+      "anchor_block_ids": [string],
+      "related_concept_hints": [string],
+      "confidence": number
+    }
+  ],
   "observations": [
     {
       "type": string,
       "title": string,
       "query_text": string|null,
       "summary": string,
-      "claims": [string],
+      "evidence_refs": [string],
       "related_concept_hints": [string],
       "anchor_block_ids": [string]
     }
   ],
   "categories": [
     {"name": string}
-  ],
-  "core_concepts": [
-    {
-      "title": string,
-      "slug_hint": string,
-      "aliases": [string],
-      "definition": string,
-      "why_page_worthy": string,
-      "evidence_block_ids": [string]
-    }
   ],
   "section_candidates": [
     {
@@ -119,16 +146,7 @@ Return exactly JSON:
     {
       "name": string,
       "slug_hint": string,
-      "context": string,
       "evidence_block_ids": [string]
-    }
-  ],
-  "evidence_claims": [
-    {
-      "claim": string,
-      "anchor_block_ids": [string],
-      "related_concept_hints": [string],
-      "confidence": number
     }
   ],
   "needs_neighbor_context": boolean,

@@ -1,0 +1,2496 @@
+{
+ "existing_concepts": [
+  {
+   "slug": "retrieval-augmented-generation",
+   "title": "Retrieval-Augmented Generation",
+   "aliases": [
+    "RAG"
+   ],
+   "definition": "A method that retrieves relevant documents from an external index and conditions a language model's generation on them, combining parametric and non-parametric memory."
+  },
+  {
+   "slug": "dense-passage-retrieval",
+   "title": "Dense Passage Retrieval",
+   "aliases": [
+    "DPR"
+   ],
+   "definition": "A retriever that encodes questions and passages into dense vectors with BERT encoders and retrieves passages by maximum inner product search."
+  },
+  {
+   "slug": "bm25",
+   "title": "BM25",
+   "aliases": [],
+   "definition": "A sparse ranking function that scores documents by term frequency and inverse document frequency of query words with document length normalization."
+  },
+  {
+   "slug": "maximum-inner-product-search",
+   "title": "Maximum Inner Product Search",
+   "aliases": [
+    "MIPS"
+   ],
+   "definition": "Finding the vectors in an index whose inner product with a query vector is largest; used for dense retrieval."
+  },
+  {
+   "slug": "hallucination",
+   "title": "환각 (인공지능)",
+   "aliases": [
+    "hallucination"
+   ],
+   "definition": "언어 모델이 사실이 아니거나 근거 없는 내용을 그럴듯하게 생성하는 현상."
+  },
+  {
+   "slug": "chunking",
+   "title": "청킹",
+   "aliases": [],
+   "definition": "검색기가 세부 정보를 찾을 수 있도록 문서를 일정 단위의 조각으로 나누는 작업."
+  },
+  {
+   "slug": "hybrid-search",
+   "title": "하이브리드 검색",
+   "aliases": [],
+   "definition": "키워드 기반 텍스트 검색 결과와 벡터 검색 결과를 결합해 언어 모델에 제공하는 검색 방식."
+  },
+  {
+   "slug": "inverted-index",
+   "title": "역색인",
+   "aliases": [
+    "역문서리스트"
+   ],
+   "definition": "각 단어별로 그 단어가 등장하는 문서 목록을 만든 색인 구조."
+  },
+  {
+   "slug": "knowledge-graph",
+   "title": "지식 그래프",
+   "aliases": [],
+   "definition": "엔티티와 그 사이의 관계를 그래프 구조로 표현한 지식 표현 방식."
+  },
+  {
+   "slug": "graphrag",
+   "title": "GraphRAG",
+   "aliases": [],
+   "definition": "문서를 지식 그래프로 변환하고 서브그래프를 검색해 생성에 사용하는 RAG 변형."
+  },
+  {
+   "slug": "prompt-injection",
+   "title": "프롬프트 인젝션",
+   "aliases": [],
+   "definition": "입력이나 검색된 문서에 악의적인 지시를 넣어 언어 모델이 의도하지 않은 동작을 하게 만드는 공격."
+  },
+  {
+   "slug": "pod",
+   "title": "파드",
+   "aliases": [
+    "Pod"
+   ],
+   "definition": "쿠버네티스에서 생성하고 관리할 수 있는 배포 가능한 가장 작은 컴퓨팅 단위로, 스토리지와 네트워크를 공유하는 하나 이상의 컨테이너 그룹."
+  },
+  {
+   "slug": "deployment",
+   "title": "디플로이먼트",
+   "aliases": [],
+   "definition": "파드와 레플리카셋에 대한 선언적 업데이트를 제공하는 쿠버네티스 워크로드 리소스."
+  },
+  {
+   "slug": "replicaset",
+   "title": "레플리카셋",
+   "aliases": [],
+   "definition": "지정한 수의 동일한 파드 복제본이 항상 실행되도록 유지하는 쿠버네티스 리소스."
+  },
+  {
+   "slug": "statefulset",
+   "title": "스테이트풀셋",
+   "aliases": [],
+   "definition": "파드마다 고유한 식별자와 영구 저장소를 유지하며 상태가 있는 애플리케이션을 관리하는 쿠버네티스 워크로드 리소스."
+  },
+  {
+   "slug": "rolling-update",
+   "title": "롤링 업데이트",
+   "aliases": [],
+   "definition": "기존 파드를 점진적으로 새 파드로 교체해 중단 없이 애플리케이션을 갱신하는 배포 전략."
+  },
+  {
+   "slug": "init-container",
+   "title": "초기화 컨테이너",
+   "aliases": [],
+   "definition": "파드의 앱 컨테이너가 시작되기 전에 먼저 실행되어 완료되어야 하는 컨테이너."
+  },
+  {
+   "slug": "postmortem",
+   "title": "Postmortem",
+   "aliases": [],
+   "definition": "A written record of an incident, its impact, the actions taken to mitigate or resolve it, the root causes, and follow-up actions to prevent recurrence."
+  },
+  {
+   "slug": "blameless-postmortem",
+   "title": "Blameless Postmortem",
+   "aliases": [],
+   "definition": "A postmortem that focuses on contributing causes without indicting any individual or team, assuming everyone acted with good intentions."
+  },
+  {
+   "slug": "root-cause-analysis",
+   "title": "Root Cause Analysis",
+   "aliases": [],
+   "definition": "Techniques for identifying the underlying causes of an incident so that preventive actions can address them."
+  },
+  {
+   "slug": "on-call",
+   "title": "On-call",
+   "aliases": [],
+   "definition": "A rotation in which engineers are responsible for responding to production alerts and incidents during a given period."
+  },
+  {
+   "slug": "mvcc",
+   "title": "Multiversion Concurrency Control",
+   "aliases": [
+    "MVCC"
+   ],
+   "definition": "A concurrency control model in which each statement sees a snapshot of data as of some point in time, so reads do not block writes and writes do not block reads."
+  },
+  {
+   "slug": "read-committed",
+   "title": "Read Committed",
+   "aliases": [],
+   "definition": "PostgreSQL's default isolation level, where each statement sees only data committed before that statement began."
+  },
+  {
+   "slug": "repeatable-read",
+   "title": "Repeatable Read",
+   "aliases": [],
+   "definition": "An isolation level where all statements in a transaction see a snapshot taken at the start of the transaction's first statement."
+  },
+  {
+   "slug": "serializable-isolation",
+   "title": "Serializable",
+   "aliases": [],
+   "definition": "The strictest isolation level, which guarantees that concurrent transactions have the same effect as running them one at a time in some order."
+  },
+  {
+   "slug": "snapshot-isolation",
+   "title": "Snapshot Isolation",
+   "aliases": [],
+   "definition": "A technique where a transaction reads from a consistent snapshot taken at its start; PostgreSQL implements Repeatable Read with it."
+  },
+  {
+   "slug": "phantom-read",
+   "title": "Phantom Read",
+   "aliases": [],
+   "definition": "A phenomenon where re-running a query with a search condition returns a different set of rows because another transaction committed in between."
+  },
+  {
+   "slug": "dirty-read",
+   "title": "Dirty Read",
+   "aliases": [],
+   "definition": "A phenomenon where a transaction reads data written by a concurrent uncommitted transaction."
+  },
+  {
+   "slug": "predicate-lock",
+   "title": "Predicate Lock",
+   "aliases": [],
+   "definition": "A lock that records which data a transaction read so that writes affecting that read can be detected; in PostgreSQL it does not block."
+  },
+  {
+   "slug": "pseudonymization",
+   "title": "가명처리",
+   "aliases": [],
+   "definition": "개인정보의 일부를 삭제하거나 대체해 추가 정보 없이는 특정 개인을 알아볼 수 없도록 처리하는 것."
+  },
+  {
+   "slug": "pseudonymous-information",
+   "title": "가명정보",
+   "aliases": [],
+   "definition": "가명처리로 원래 상태로 복원하기 위한 추가 정보의 사용·결합 없이는 특정 개인을 알아볼 수 없는 정보."
+  },
+  {
+   "slug": "anonymization",
+   "title": "익명처리",
+   "aliases": [],
+   "definition": "더 이상 특정 개인을 알아볼 수 없도록 개인정보를 처리하는 것으로, 추가 정보를 사용해도 복원할 수 없다."
+  },
+  {
+   "slug": "personal-information",
+   "title": "개인정보",
+   "aliases": [],
+   "definition": "살아 있는 개인에 관한 정보로서 성명, 주민등록번호, 영상 등으로 개인을 알아볼 수 있거나 다른 정보와 쉽게 결합해 알아볼 수 있는 정보."
+  },
+  {
+   "slug": "data-subject",
+   "title": "정보주체",
+   "aliases": [],
+   "definition": "처리되는 정보에 의하여 알아볼 수 있는 사람으로서 그 정보의 주체가 되는 사람."
+  },
+  {
+   "slug": "personal-information-controller",
+   "title": "개인정보처리자",
+   "aliases": [],
+   "definition": "업무를 목적으로 개인정보파일을 운용하기 위해 스스로 또는 다른 사람을 통해 개인정보를 처리하는 공공기관, 법인, 단체 및 개인."
+  },
+  {
+   "slug": "cross-border-transfer",
+   "title": "개인정보의 국외 이전",
+   "aliases": [],
+   "definition": "개인정보를 국외로 제공(조회 포함)·처리위탁·보관하는 것."
+  },
+  {
+   "slug": "privacy-policy",
+   "title": "개인정보 처리방침",
+   "aliases": [],
+   "definition": "개인정보처리자가 처리 목적, 보유 기간, 제3자 제공 등 처리에 관한 사항을 정해 공개하는 방침."
+  },
+  {
+   "slug": "data-breach-notification",
+   "title": "개인정보 유출 통지",
+   "aliases": [],
+   "definition": "개인정보가 유출되었음을 알게 된 개인정보처리자가 지체 없이 정보주체에게 유출 항목, 경위, 대응조치 등을 알리는 것."
+  },
+  {
+   "slug": "annual-paid-leave",
+   "title": "연차 유급휴가",
+   "aliases": [],
+   "definition": "1년간 80퍼센트 이상 출근한 근로자에게 주는 15일의 유급휴가로, 근속에 따라 가산되며 최대 25일이다."
+  },
+  {
+   "slug": "flexible-working-hours",
+   "title": "탄력적 근로시간제",
+   "aliases": [],
+   "definition": "일정 단위기간을 평균해 1주 40시간을 넘지 않는 범위에서 특정 주·날에 법정 근로시간을 넘겨 일하게 하는 제도."
+  },
+  {
+   "slug": "selective-working-hours",
+   "title": "선택적 근로시간제",
+   "aliases": [],
+   "definition": "업무의 시작과 종료 시각을 근로자가 결정하도록 맡기고, 정산기간을 평균해 1주 40시간을 넘지 않게 하는 제도."
+  },
+  {
+   "slug": "overtime-work",
+   "title": "연장근로",
+   "aliases": [],
+   "definition": "당사자 합의로 법정 근로시간(1주 40시간, 1일 8시간)을 넘겨 일하는 것으로, 1주 12시간이 한도이다."
+  },
+  {
+   "slug": "night-work",
+   "title": "야간근로",
+   "aliases": [],
+   "definition": "오후 10시부터 다음 날 오전 6시 사이의 근로로, 통상임금의 50% 이상을 가산해 지급한다."
+  },
+  {
+   "slug": "compensatory-leave",
+   "title": "보상 휴가제",
+   "aliases": [],
+   "definition": "근로자대표와 서면 합의로 연장·야간·휴일근로에 대한 임금 지급 대신 휴가를 주는 제도."
+  },
+  {
+   "slug": "employment-rate",
+   "title": "고용률",
+   "aliases": [],
+   "definition": "15세 이상 인구 중 취업자가 차지하는 비율."
+  },
+  {
+   "slug": "unemployment-rate",
+   "title": "실업률",
+   "aliases": [],
+   "definition": "경제활동인구 중 실업자가 차지하는 비율."
+  },
+  {
+   "slug": "economically-active-population",
+   "title": "경제활동인구",
+   "aliases": [],
+   "definition": "만 15세 이상 인구 중 조사대상기간에 수입 있는 일을 한 취업자와 구직활동을 한 실업자를 합한 인구."
+  },
+  {
+   "slug": "discouraged-worker",
+   "title": "구직단념자",
+   "aliases": [],
+   "definition": "취업을 희망하고 가능했지만 노동시장적 사유로 일자리를 구하지 않은 사람 중 지난 1년 내 구직 경험이 있었던 사람."
+  },
+  {
+   "slug": "extended-unemployment-rate",
+   "title": "고용보조지표3",
+   "aliases": [
+    "확장실업률"
+   ],
+   "definition": "실업자 외에 시간관련 추가취업가능자와 잠재경제활동인구까지 포함해 노동 저활용을 가장 넓게 보는 보조지표."
+  },
+  {
+   "slug": "seasonal-adjustment",
+   "title": "계절조정",
+   "aliases": [],
+   "definition": "명절, 기후 등 계절 요인에 따른 변동을 제거해 전월과 비교할 수 있게 한 통계 계열."
+  },
+  {
+   "slug": "ai-ethics-standard",
+   "title": "인공지능 윤리기준",
+   "aliases": [],
+   "definition": "모든 사회 구성원이 인공지능 개발·활용 전 단계에서 지켜야 할 원칙과 요건을 제시한 2020년 정부 기준으로, 인간성을 최고 가치로 둔다."
+  },
+  {
+   "slug": "explainability",
+   "title": "설명 가능성",
+   "aliases": [],
+   "definition": "인공지능의 판단 근거와 과정을 사람이 이해할 수 있도록 설명할 수 있는 정도."
+  },
+  {
+   "slug": "transparency",
+   "title": "투명성",
+   "aliases": [],
+   "definition": "인공지능의 활용 내용과 위험 등 유의사항을 사전에 알리고 상황에 맞는 수준으로 작동 방식을 드러내는 것."
+  },
+  {
+   "slug": "data-bias",
+   "title": "데이터 편향성",
+   "aliases": [],
+   "definition": "수집·활용되는 데이터가 특정 집단이나 특성에 치우쳐 인공지능 결과에 편향과 차별을 낳는 문제."
+  },
+  {
+   "slug": "information-retrieval",
+   "title": "정보 검색",
+   "aliases": [],
+   "definition": "집합적인 정보로부터 원하는 내용과 관련이 있는 부분을 얻어 내는 행위."
+  },
+  {
+   "slug": "vector-space-model",
+   "title": "벡터 모델",
+   "aliases": [],
+   "definition": "질의어와 문서를 색인어에 대한 벡터로 나타내고 벡터곱을 유사도로 써서 문서를 랭킹하는 정보 검색 모델."
+  },
+  {
+   "slug": "boolean-model",
+   "title": "불리안 모델",
+   "aliases": [],
+   "definition": "and, or, not으로 연결된 키워드 질의를 논리식으로 바꿔 각 문서에 해당 조건이 있는지 확인하는 정보 검색 모델."
+  },
+  {
+   "slug": "pagerank",
+   "title": "페이지랭크",
+   "aliases": [],
+   "definition": "질의와 무관하게 문서 간 링크 관계로 문서 고유의 품질을 측정하는 알고리즘."
+  }
+ ],
+ "cases": [
+  {
+   "id": "syn-ko-en-01",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "geomsaek-jeunggang-saengseong",
+    "title": "검색 증강 생성",
+    "definition": "외부 문서 집합에서 관련 정보를 검색해 대형 언어 모델의 응답 생성에 반영하는 기술. RAG라고도 한다."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "retrieval-augmented-generation"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "graphrag",
+    "information-retrieval",
+    "hybrid-search"
+   ],
+   "reachable_by_jev": false,
+   "note": "한국어 제목 ↔ 영어 제목"
+  },
+  {
+   "id": "syn-ko-en-02",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "miljip-passage-geomsaek",
+    "title": "밀집 패시지 검색",
+    "definition": "질문과 문단을 BERT 인코더로 밀집 벡터로 바꾸고 내적이 큰 문단을 찾는 검색기(DPR)."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "dense-passage-retrieval"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "hybrid-search",
+    "vector-space-model",
+    "dense-passage-retrieval"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-03",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "hallucination-ai",
+    "title": "Hallucination (AI)",
+    "definition": "When a language model generates plausible-sounding content that is false or not grounded in any source."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "hallucination"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "blameless-postmortem",
+    "mvcc",
+    "retrieval-augmented-generation"
+   ],
+   "reachable_by_jev": false,
+   "note": "기존 개념은 한국어 정의"
+  },
+  {
+   "id": "syn-ko-en-04",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "chunking-en",
+    "title": "Chunking",
+    "definition": "Splitting documents into smaller pieces so that a retriever can find detailed information."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "chunking"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "predicate-lock",
+    "dense-passage-retrieval",
+    "root-cause-analysis"
+   ],
+   "reachable_by_jev": false,
+   "note": "기존 개념은 한국어 정의, 별칭 없음"
+  },
+  {
+   "id": "syn-ko-en-05",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "hybrid-search-en",
+    "title": "Hybrid Search",
+    "definition": "Combining keyword-based text search results with vector search results before passing them to the language model."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "hybrid-search"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "maximum-inner-product-search",
+    "phantom-read",
+    "retrieval-augmented-generation"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-06",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "inverted-index-en",
+    "title": "Inverted Index",
+    "definition": "An index that maps each term to the list of documents containing it, also called an inverted list."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "inverted-index"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "postmortem",
+    "retrieval-augmented-generation",
+    "maximum-inner-product-search"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-07",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "prompt-injection-en",
+    "title": "Prompt Injection",
+    "definition": "An attack that hides malicious instructions in the input or retrieved documents so the language model behaves in unintended ways."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "prompt-injection"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "repeatable-read",
+    "retrieval-augmented-generation",
+    "root-cause-analysis"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-08",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "kubernetes-pod-en",
+    "title": "Pod (Kubernetes)",
+    "definition": "The smallest deployable unit of computing in Kubernetes: a group of one or more containers that share storage and network."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "pod"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "postmortem",
+    "serializable-isolation",
+    "repeatable-read"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-09",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "rolling-update-en",
+    "title": "Rolling Update",
+    "definition": "A deployment strategy that gradually replaces old pods with new ones so the application is updated without downtime."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "rolling-update"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "blameless-postmortem",
+    "maximum-inner-product-search",
+    "predicate-lock"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-10",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "poseuteumoteom",
+    "title": "포스트모템",
+    "definition": "장애의 영향, 완화·해결 조치, 근본 원인, 재발 방지를 위한 후속 조치를 기록한 문서."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "postmortem"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "pseudonymous-information"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-11",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "binan-eomneun-poseuteumoteom",
+    "title": "비난 없는 포스트모템",
+    "definition": "개인이나 팀을 탓하지 않고 장애의 기여 원인을 찾는 데 집중하는 포스트모템. 관련자 모두 선의로 행동했다고 가정한다."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "blameless-postmortem"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "pseudonymous-information",
+    "hallucination",
+    "personal-information"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-12",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "dajung-beojeon-dongsiseong-jeeo",
+    "title": "다중 버전 동시성 제어",
+    "definition": "각 SQL 문이 특정 시점의 데이터 스냅샷을 보게 해 읽기와 쓰기가 서로 막지 않게 하는 동시성 제어 방식(MVCC)."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "mvcc"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "data-bias",
+    "selective-working-hours",
+    "flexible-working-hours"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-13",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "phantom-ridu",
+    "title": "팬텀 리드",
+    "definition": "검색 조건으로 쿼리를 다시 실행했을 때 다른 트랜잭션의 커밋 때문에 조건을 만족하는 행 집합이 달라지는 현상."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "phantom-read"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "boolean-model",
+    "hybrid-search",
+    "hallucination"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-14",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "pseudonymization-en",
+    "title": "Pseudonymization",
+    "definition": "Processing personal data by deleting or replacing part of it so that a specific individual cannot be identified without additional information."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "pseudonymization"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "predicate-lock",
+    "blameless-postmortem",
+    "dirty-read"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-15",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "annual-paid-leave-en",
+    "title": "Annual Paid Leave",
+    "definition": "Fifteen days of paid leave for workers who attended at least 80% of the year, increasing with tenure up to 25 days."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "annual-paid-leave"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "postmortem",
+    "root-cause-analysis",
+    "repeatable-read"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-ko-en-16",
+   "category": "synonym_ko_en",
+   "incoming": {
+    "slug": "unemployment-rate-en",
+    "title": "Unemployment Rate",
+    "definition": "The share of unemployed persons in the economically active population."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "unemployment-rate"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "repeatable-read",
+    "serializable-isolation",
+    "postmortem"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-01",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "rag",
+    "title": "RAG",
+    "definition": "Conditioning a large language model on documents retrieved from an external index at generation time."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "retrieval-augmented-generation"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "retrieval-augmented-generation",
+    "snapshot-isolation",
+    "repeatable-read"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-02",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "dpr",
+    "title": "DPR",
+    "definition": "BERT 기반 질문·문단 인코더로 밀집 벡터를 만들어 내적으로 문단을 검색하는 방식."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "dense-passage-retrieval"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "hybrid-search",
+    "dense-passage-retrieval",
+    "vector-space-model"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-03",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "mips",
+    "title": "MIPS",
+    "definition": "질의 벡터와의 내적이 가장 큰 벡터를 인덱스에서 찾는 검색."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "maximum-inner-product-search"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "vector-space-model",
+    "pagerank",
+    "extended-unemployment-rate"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-04",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "mvcc-abbr",
+    "title": "MVCC",
+    "definition": "Each statement reads from a snapshot, so reads never block writes and writes never block reads."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "mvcc"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "mvcc",
+    "snapshot-isolation",
+    "predicate-lock"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-05",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "rca",
+    "title": "RCA",
+    "definition": "Analysis that identifies the underlying causes of an incident so that preventive actions can target them."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "root-cause-analysis"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "root-cause-analysis",
+    "postmortem",
+    "predicate-lock"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-06",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "kg",
+    "title": "KG",
+    "definition": "A representation of entities and the relations between them as a graph."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "knowledge-graph"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "serializable-isolation",
+    "mvcc",
+    "postmortem"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-07",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "si",
+    "title": "SI",
+    "definition": "트랜잭션 시작 시점에 찍은 일관된 스냅샷에서 데이터를 읽는 기법. PostgreSQL은 Repeatable Read를 이 기법으로 구현한다."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "snapshot-isolation"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "snapshot-isolation",
+    "data-bias",
+    "predicate-lock"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-08",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "rc-isolation",
+    "title": "RC 격리 수준",
+    "definition": "각 문장이 그 문장이 시작되기 전에 커밋된 데이터만 보는 PostgreSQL 기본 격리 수준."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "read-committed"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "init-container",
+    "inverted-index",
+    "data-bias"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-09",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "hwakjang-sireopryul",
+    "title": "확장실업률",
+    "definition": "실업자에 시간관련 추가취업가능자와 잠재경제활동인구를 더해 노동 저활용을 가장 넓게 측정한 지표."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "extended-unemployment-rate"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "extended-unemployment-rate",
+    "unemployment-rate",
+    "pod"
+   ],
+   "reachable_by_jev": true,
+   "note": "기존 개념의 별칭과 제목이 같다"
+  },
+  {
+   "id": "syn-abbr-10",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "gyeonghwal-ingu",
+    "title": "경활인구",
+    "definition": "15세 이상 인구 중 취업자와 실업자를 합한 인구."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "economically-active-population"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "economically-active-population",
+    "employment-rate",
+    "unemployment-rate"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-11",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "ir",
+    "title": "IR",
+    "definition": "Obtaining the parts of a collection of information that are relevant to an information need."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "information-retrieval"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "postmortem",
+    "root-cause-analysis",
+    "repeatable-read"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "syn-abbr-12",
+   "category": "synonym_abbrev",
+   "incoming": {
+    "slug": "rs-k8s",
+    "title": "RS",
+    "definition": "지정한 수의 파드 복제본이 항상 실행되도록 유지하는 쿠버네티스 리소스."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "replicaset"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "replicaset",
+    "deployment",
+    "statefulset"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-01",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "cheongkeu-bunhal",
+    "title": "청크 분할",
+    "definition": "검색 정확도를 위해 문서를 작은 조각으로 쪼개는 작업."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "chunking"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "chunking",
+    "vector-space-model",
+    "hybrid-search"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-02",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "yeok-index",
+    "title": "역인덱스",
+    "definition": "단어마다 그 단어가 나오는 문서 목록을 만들어 둔 색인."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "inverted-index"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "inverted-index",
+    "knowledge-graph",
+    "pagerank"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-03",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "prompt-juip",
+    "title": "프롬프트 주입",
+    "definition": "검색된 문서나 입력에 숨긴 지시로 언어 모델을 조작하는 공격."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "prompt-injection"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "prompt-injection",
+    "hallucination",
+    "vector-space-model"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-04",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "deployment-resource",
+    "title": "Deployment 리소스",
+    "definition": "레플리카셋과 파드를 선언적으로 업데이트하는 쿠버네티스 워크로드 리소스."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "deployment"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "deployment",
+    "replicaset",
+    "statefulset"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-05",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "replica-set",
+    "title": "레플리카 세트",
+    "definition": "같은 파드 복제본을 지정한 개수만큼 계속 실행되게 유지하는 쿠버네티스 리소스."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "replicaset"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "replicaset",
+    "deployment",
+    "statefulset"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-06",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "stateful-set",
+    "title": "스테이트풀 세트",
+    "definition": "파드별 고유 식별자와 영구 저장소를 유지해 상태가 있는 앱을 관리하는 쿠버네티스 워크로드 리소스."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "statefulset"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "statefulset",
+    "deployment",
+    "replicaset"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-07",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "rolling-eopdeiteu",
+    "title": "롤링업데이트",
+    "definition": "파드를 조금씩 새 버전으로 교체해 서비스 중단 없이 업데이트하는 배포 방식."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "rolling-update"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "rolling-update",
+    "pod",
+    "knowledge-graph"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-08",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "post-mortem",
+    "title": "Post-mortem",
+    "definition": "A document capturing an incident's impact, mitigation, root causes, and follow-up actions to prevent recurrence."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "postmortem"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "postmortem",
+    "root-cause-analysis",
+    "retrieval-augmented-generation"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-09",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "yeoncha-hyuga",
+    "title": "연차휴가",
+    "definition": "1년간 80% 이상 출근한 근로자에게 주는 15일의 유급휴가로, 오래 근속하면 최대 25일까지 늘어난다."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "annual-paid-leave"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "annual-paid-leave",
+    "compensatory-leave",
+    "selective-working-hours"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-10",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "tanryeok-geunloje",
+    "title": "탄력근로제",
+    "definition": "단위기간을 평균해 1주 40시간을 맞추면서 특정 주나 날에 법정 근로시간보다 더 일하게 하는 제도."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "flexible-working-hours"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "flexible-working-hours",
+    "selective-working-hours",
+    "overtime-work"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-11",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "yeonjang-geunro",
+    "title": "연장 근로",
+    "definition": "법정 근로시간을 넘겨 일하는 것으로, 당사자가 합의하면 1주 12시간까지 할 수 있다."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "overtime-work"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "overtime-work",
+    "flexible-working-hours",
+    "anonymization"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "syn-var-12",
+   "category": "synonym_variant",
+   "incoming": {
+    "slug": "privacy-policy-spacing",
+    "title": "개인정보 처리 방침",
+    "definition": "처리 목적, 보유 기간, 제3자 제공 등 개인정보 처리에 관한 사항을 정해 공개하는 개인정보처리자의 방침."
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "privacy-policy"
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": null,
+   "bm25_candidates": [
+    "privacy-policy",
+    "cross-border-transfer",
+    "personal-information-controller"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "dist-scope-01",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "serializable-snapshot-isolation",
+    "title": "Serializable Snapshot Isolation",
+    "definition": "A technique that builds on snapshot isolation by adding checks for serialization anomalies; PostgreSQL uses it to implement the Serializable level."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "snapshot-isolation",
+    "also_link": [
+     "mvcc",
+     "phantom-read",
+     "predicate-lock",
+     "repeatable-read",
+     "serializable-isolation"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "snapshot-isolation",
+   "bm25_candidates": [
+    "snapshot-isolation",
+    "serializable-isolation",
+    "repeatable-read"
+   ],
+   "reachable_by_jev": true,
+   "note": "Snapshot Isolation·Serializable과 관련되지만 구현 기법"
+  },
+  {
+   "id": "dist-scope-02",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "transaction-isolation-level",
+    "title": "트랜잭션 격리 수준",
+    "definition": "동시에 실행되는 트랜잭션 사이에서 어떤 현상을 허용할지 정한 단계로, SQL 표준은 네 단계를 정의한다."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "read-committed",
+    "also_link": [
+     "dirty-read",
+     "mvcc",
+     "phantom-read",
+     "repeatable-read",
+     "serializable-isolation",
+     "snapshot-isolation"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "read-committed",
+   "bm25_candidates": [
+    "transparency"
+   ],
+   "reachable_by_jev": false,
+   "note": "Read Committed 등의 상위 개념"
+  },
+  {
+   "id": "dist-scope-03",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "workload-resource",
+    "title": "워크로드 리소스",
+    "definition": "디플로이먼트, 잡, 데몬셋처럼 사용자를 대신해 파드를 생성하고 관리하는 쿠버네티스 리소스의 총칭."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "deployment",
+    "also_link": [
+     "pod",
+     "replicaset",
+     "statefulset"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "deployment",
+   "bm25_candidates": [
+    "deployment",
+    "statefulset",
+    "replicaset"
+   ],
+   "reachable_by_jev": true,
+   "note": "디플로이먼트의 상위 개념"
+  },
+  {
+   "id": "dist-scope-04",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "dense-retrieval",
+    "title": "Dense Retrieval",
+    "definition": "Retrieval that represents queries and documents as dense vectors and ranks documents by vector similarity."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "dense-passage-retrieval",
+    "also_link": [
+     "information-retrieval",
+     "maximum-inner-product-search",
+     "retrieval-augmented-generation",
+     "vector-space-model"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "dense-passage-retrieval",
+   "bm25_candidates": [
+    "dense-passage-retrieval",
+    "bm25",
+    "retrieval-augmented-generation"
+   ],
+   "reachable_by_jev": true,
+   "note": "DPR의 상위 개념"
+  },
+  {
+   "id": "dist-scope-05",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "sparse-retrieval",
+    "title": "Sparse Retrieval",
+    "definition": "Retrieval based on term-matching representations such as inverted lists; BM25 is a common example."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "bm25",
+    "also_link": [
+     "boolean-model",
+     "dense-passage-retrieval",
+     "hybrid-search",
+     "information-retrieval",
+     "inverted-index",
+     "retrieval-augmented-generation",
+     "vector-space-model"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "bm25",
+   "bm25_candidates": [
+    "bm25",
+    "dense-passage-retrieval",
+    "maximum-inner-product-search"
+   ],
+   "reachable_by_jev": true,
+   "note": "BM25의 상위 개념"
+  },
+  {
+   "id": "dist-scope-06",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "gamyeong-jeongbo-gyeolhap",
+    "title": "가명정보 결합",
+    "definition": "서로 다른 개인정보처리자가 가진 가명정보를 보호위원회 등이 지정한 전문기관이 결합하는 것."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "pseudonymous-information",
+    "also_link": [
+     "personal-information",
+     "personal-information-controller",
+     "pseudonymization"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "pseudonymous-information",
+   "bm25_candidates": [
+    "pseudonymous-information",
+    "personal-information-controller",
+    "data-breach-notification"
+   ],
+   "reachable_by_jev": true,
+   "note": "가명정보의 하위 절차"
+  },
+  {
+   "id": "dist-scope-07",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "hyuil-geunro-gasan",
+    "title": "휴일근로 가산임금",
+    "definition": "휴일근로에 대해 8시간 이내는 통상임금의 50%, 8시간 초과분은 100%를 가산해 지급하는 것."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "overtime-work",
+    "also_link": [
+     "compensatory-leave"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "overtime-work",
+   "bm25_candidates": [
+    "night-work",
+    "overtime-work",
+    "compensatory-leave"
+   ],
+   "reachable_by_jev": true,
+   "note": "연장근로와 다른 가산 대상 / 연결 허용 추가: 휴일근로 가산임금 대신 주는 보상 휴가제와 직접 관련 (2026-10-30 결과 검토)"
+  },
+  {
+   "id": "dist-scope-08",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "cheongnyeon-sireopryul",
+    "title": "청년층 실업률",
+    "definition": "15~29세 경제활동인구 중 실업자가 차지하는 비율."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "unemployment-rate",
+    "also_link": [
+     "economically-active-population",
+     "employment-rate"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "unemployment-rate",
+   "bm25_candidates": [
+    "unemployment-rate",
+    "employment-rate",
+    "economically-active-population"
+   ],
+   "reachable_by_jev": true,
+   "note": "실업률의 하위 지표"
+  },
+  {
+   "id": "dist-scope-09",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "gyejeoljojeong-sireopryul",
+    "title": "계절조정 실업률",
+    "definition": "계절 요인을 제거해 전월과 비교할 수 있게 만든 실업률."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "unemployment-rate",
+    "also_link": [
+     "seasonal-adjustment",
+     "economically-active-population"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "unemployment-rate",
+   "bm25_candidates": [
+    "seasonal-adjustment",
+    "unemployment-rate",
+    "inverted-index"
+   ],
+   "reachable_by_jev": true,
+   "note": "실업률·계절조정의 조합"
+  },
+  {
+   "id": "dist-scope-10",
+   "category": "distinct_scope",
+   "incoming": {
+    "slug": "rag-token",
+    "title": "RAG-Token",
+    "definition": "A RAG variant that can use a different retrieved passage when generating each token."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "retrieval-augmented-generation",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "retrieval-augmented-generation",
+   "bm25_candidates": [
+    "predicate-lock",
+    "phantom-read",
+    "retrieval-augmented-generation"
+   ],
+   "reachable_by_jev": true,
+   "note": "RAG의 하위 변형"
+  },
+  {
+   "id": "dist-rel-01",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "nonrepeatable-read",
+    "title": "Nonrepeatable Read",
+    "definition": "A transaction re-reads data it read before and finds it modified by another transaction that committed in between."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "repeatable-read",
+    "also_link": [
+     "serializable-isolation",
+     "mvcc",
+     "snapshot-isolation"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "phantom-read",
+   "bm25_candidates": [
+    "predicate-lock",
+    "phantom-read",
+    "dirty-read"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 이 현상을 막는 격리 수준·방법과 연결"
+  },
+  {
+   "id": "dist-rel-02",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "daemonset",
+    "title": "데몬셋",
+    "definition": "모든 노드 또는 일부 노드마다 파드 사본을 하나씩 실행하도록 보장하는 쿠버네티스 워크로드 리소스."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "pod",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "deployment",
+   "bm25_candidates": [
+    "deployment",
+    "statefulset",
+    "replicaset"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 파드를 실행하는 워크로드 리소스라 파드와 연결"
+  },
+  {
+   "id": "dist-rel-03",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "ephemeral-container",
+    "title": "임시 컨테이너",
+    "definition": "디버깅을 위해 실행 중인 파드에 일시적으로 삽입하는 컨테이너."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "pod",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "init-container",
+   "bm25_candidates": [
+    "init-container",
+    "pod",
+    "rolling-update"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 파드 안에서 도는 컨테이너라 파드와 연결"
+  },
+  {
+   "id": "dist-rel-04",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "anonymous-information",
+    "title": "익명정보",
+    "definition": "시간·비용·기술을 합리적으로 고려해도 다른 정보를 써서 더 이상 특정 개인을 알아볼 수 없는 정보."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "anonymization",
+    "also_link": [
+     "personal-information",
+     "pseudonymization",
+     "pseudonymous-information"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "anonymization",
+   "bm25_candidates": [
+    "anonymization",
+    "pseudonymous-information",
+    "personal-information"
+   ],
+   "reachable_by_jev": true,
+   "note": "익명처리(과정)와 결과 정보는 구분. 가명정보와도 다름"
+  },
+  {
+   "id": "dist-rel-05",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "incident-commander",
+    "title": "Incident Commander",
+    "definition": "The person who coordinates the overall response while an incident is in progress."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "on-call",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "on-call",
+   "bm25_candidates": [
+    "postmortem",
+    "root-cause-analysis",
+    "maximum-inner-product-search"
+   ],
+   "reachable_by_jev": false,
+   "note": "On-call과 관련된 다른 역할 / 허용 답 추가: 두 정의가 서로를 언급하지 않고 같은 흐름에만 속해, 같은 흐름만으로는 연결하지 않는 규칙(#168)상 keep_new도 타당 (2026-10-31)",
+   "acceptable": [
+    {
+     "decision": "keep_new"
+    }
+   ]
+  },
+  {
+   "id": "dist-rel-06",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "wheel-of-misfortune",
+    "title": "Wheel of Misfortune",
+    "definition": "A training exercise in which a past postmortem is reenacted with engineers playing the roles described in it."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "postmortem",
+    "also_link": [
+     "blameless-postmortem"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "postmortem",
+   "bm25_candidates": [
+    "on-call",
+    "maximum-inner-product-search",
+    "phantom-read"
+   ],
+   "reachable_by_jev": false,
+   "note": "Postmortem을 쓰는 훈련"
+  },
+  {
+   "id": "dist-rel-07",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "jaeryang-geunro",
+    "title": "재량근로",
+    "definition": "업무 수행 방법을 근로자 재량에 맡기고, 근로자대표와 서면 합의로 정한 시간을 근로한 것으로 보는 제도."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "flexible-working-hours",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "selective-working-hours",
+   "bm25_candidates": [
+    "compensatory-leave",
+    "selective-working-hours",
+    "overtime-work"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 유연근로시간제의 한 종류라 상위 개념과 연결"
+  },
+  {
+   "id": "dist-rel-08",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "goyong-bojojipyo-1",
+    "title": "고용보조지표1",
+    "definition": "실업자와 시간관련 추가취업가능자를 경제활동인구로 나눈 보조지표."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "economically-active-population",
+    "also_link": [
+     "unemployment-rate"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "extended-unemployment-rate",
+   "bm25_candidates": [
+    "extended-unemployment-rate",
+    "unemployment-rate",
+    "economically-active-population"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 정의에 쓰는 경제활동인구, 변형 관계인 실업률과 연결"
+  },
+  {
+   "id": "dist-rel-09",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "gyeongje-hwaldong-chamgayul",
+    "title": "경제활동참가율",
+    "definition": "15세 이상 인구 중 경제활동인구가 차지하는 비율."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "economically-active-population",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "employment-rate",
+   "bm25_candidates": [
+    "employment-rate",
+    "unemployment-rate",
+    "economically-active-population"
+   ],
+   "reachable_by_jev": true,
+   "note": "형제 개념은 연결하지 않음(2026-10-30, #168): 정의에 쓰는 경제활동인구와 연결"
+  },
+  {
+   "id": "dist-rel-10",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "privacy-protection-ai",
+    "title": "프라이버시 보호 (AI 윤리 요건)",
+    "definition": "인공지능 개발·활용 전 과정에서 개인의 프라이버시를 보호하고 개인정보 오용을 최소화하는 요건."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "transparency",
+    "also_link": [
+     "ai-ethics-standard",
+     "personal-information",
+     "anonymization",
+     "data-breach-notification",
+     "data-subject",
+     "privacy-policy",
+     "pseudonymization",
+     "pseudonymous-information"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "transparency",
+   "bm25_candidates": [
+    "ai-ethics-standard",
+    "transparency",
+    "personal-information"
+   ],
+   "reachable_by_jev": true,
+   "note": "투명성·데이터 편향성과 다른 요건 / 연결 허용 추가: AI 윤리 요건이라 윤리기준, 개인정보 오용 최소화라 개인정보와도 직접 관련 (2026-10-30 결과 검토)"
+  },
+  {
+   "id": "dist-rel-11",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "retrieval-collapse",
+    "title": "Retrieval Collapse",
+    "definition": "When a retriever learns to return the same documents regardless of the input, so the generator learns to ignore them."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "retrieval-augmented-generation",
+    "also_link": [
+     "information-retrieval"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "retrieval-augmented-generation",
+   "bm25_candidates": [
+    "postmortem",
+    "root-cause-analysis",
+    "serializable-isolation"
+   ],
+   "reachable_by_jev": false,
+   "note": "RAG 관련 실패 현상"
+  },
+  {
+   "id": "dist-rel-12",
+   "category": "distinct_related",
+   "incoming": {
+    "slug": "query-expansion",
+    "title": "Query Expansion",
+    "definition": "Adding related terms to a query to improve retrieval recall."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "hybrid-search",
+    "also_link": [
+     "information-retrieval",
+     "bm25"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "hybrid-search",
+   "bm25_candidates": [
+    "postmortem",
+    "on-call",
+    "phantom-read"
+   ],
+   "reachable_by_jev": false,
+   "note": "하이브리드 검색과 다른 기법 / 연결 허용 추가: 질의 확장은 정보 검색 기법의 한 종류 (2026-10-30 결과 검토)"
+  },
+  {
+   "id": "dist-comp-01",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "mvcc-vs-locking",
+    "title": "MVCC와 락 비교",
+    "definition": "MVCC는 읽기와 쓰기가 서로 막지 않는 반면 테이블·행 락은 충돌 지점을 명시적으로 관리한다는 비교."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "mvcc",
+    "also_link": [
+     "predicate-lock",
+     "dirty-read",
+     "repeatable-read",
+     "snapshot-isolation"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "mvcc",
+   "bm25_candidates": [
+    "mvcc",
+    "flexible-working-hours"
+   ],
+   "reachable_by_jev": true,
+   "note": "MVCC를 포함한 비교 개념 / 연결 허용 추가: MVCC와 비교하는 락 쪽 개념 (2026-10-30 결과 검토)"
+  },
+  {
+   "id": "dist-comp-02",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "postmortem-review-process",
+    "title": "Postmortem Review Process",
+    "definition": "Sharing a postmortem draft with senior engineers for a completeness review, then publishing it broadly and adding it to a repository."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "postmortem",
+    "also_link": [
+     "blameless-postmortem",
+     "root-cause-analysis"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "postmortem",
+   "bm25_candidates": [
+    "postmortem",
+    "on-call",
+    "blameless-postmortem"
+   ],
+   "reachable_by_jev": true,
+   "note": "Postmortem을 다루는 절차"
+  },
+  {
+   "id": "dist-comp-03",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "rag-benchmarks",
+    "title": "RAG 평가 벤치마크",
+    "definition": "BEIR, Natural Questions처럼 검색 정확도와 생성 품질을 함께 평가하는 데이터셋 모음."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "retrieval-augmented-generation",
+    "also_link": [
+     "graphrag",
+     "information-retrieval"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "retrieval-augmented-generation",
+   "bm25_candidates": [
+    "graphrag",
+    "hybrid-search",
+    "pagerank"
+   ],
+   "reachable_by_jev": false,
+   "note": ""
+  },
+  {
+   "id": "dist-comp-04",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "gasan-imgeum",
+    "title": "연장·야간·휴일근로 가산임금",
+    "definition": "연장근로·야간근로·휴일근로 각각에 대해 통상임금의 일정 비율을 더해 주는 임금 규정 전체."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "overtime-work",
+    "also_link": [
+     "night-work",
+     "compensatory-leave"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "overtime-work",
+   "bm25_candidates": [
+    "compensatory-leave",
+    "night-work",
+    "overtime-work"
+   ],
+   "reachable_by_jev": true,
+   "note": "연장근로·야간근로를 묶은 상위 규정"
+  },
+  {
+   "id": "dist-comp-05",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "gamyeong-anjeonjochi",
+    "title": "가명정보 안전조치의무",
+    "definition": "가명정보를 처리할 때 복원용 추가 정보를 분리 보관하는 등 기술적·관리적·물리적 조치를 할 의무."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "pseudonymous-information",
+    "also_link": [
+     "personal-information",
+     "personal-information-controller",
+     "pseudonymization"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "pseudonymous-information",
+   "bm25_candidates": [
+    "pseudonymous-information",
+    "pseudonymization",
+    "anonymization"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "dist-comp-06",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "deployment-rollback",
+    "title": "디플로이먼트 롤백",
+    "definition": "디플로이먼트를 이전 수정 버전으로 되돌리는 작업(kubectl rollout undo)."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "deployment",
+    "also_link": [
+     "rolling-update"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "deployment",
+   "bm25_candidates": [
+    "deployment",
+    "cross-border-transfer"
+   ],
+   "reachable_by_jev": true,
+   "note": "디플로이먼트에 대한 작업"
+  },
+  {
+   "id": "dist-comp-07",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "cheongnyeon-goyong-donghyang",
+    "title": "청년 고용 동향",
+    "definition": "청년층 고용률과 실업률의 변화 추이를 함께 본 분석."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "employment-rate",
+    "also_link": [
+     "unemployment-rate"
+    ]
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "employment-rate",
+   "bm25_candidates": [
+    "unemployment-rate",
+    "employment-rate"
+   ],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "dist-comp-08",
+   "category": "distinct_composite",
+   "incoming": {
+    "slug": "ai-ethics-principles",
+    "title": "AI 윤리 3대 기본원칙",
+    "definition": "인간 존엄성, 사회의 공공선, 기술의 합목적성으로 이루어진 인공지능 윤리기준의 기본원칙."
+   },
+   "expected": {
+    "decision": "link_to",
+    "canonical_slug": "ai-ethics-standard",
+    "also_link": []
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "ai-ethics-standard",
+   "bm25_candidates": [
+    "ai-ethics-standard",
+    "hallucination",
+    "explainability"
+   ],
+   "reachable_by_jev": true,
+   "note": "윤리기준의 일부"
+  },
+  {
+   "id": "dist-unrel-01",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "learning-rate-warmup",
+    "title": "Learning Rate Warmup",
+    "definition": "Gradually increasing the learning rate from zero to its target value over the first training steps."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "dense-passage-retrieval",
+   "bm25_candidates": [
+    "postmortem",
+    "repeatable-read",
+    "serializable-isolation"
+   ],
+   "reachable_by_jev": true,
+   "note": "같은 기계학습 분야일 뿐"
+  },
+  {
+   "id": "dist-unrel-02",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "write-ahead-logging",
+    "title": "Write-Ahead Logging",
+    "definition": "A technique that records changes in a log before applying them to data files, so the database can recover by replaying the log after a crash."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "mvcc",
+   "bm25_candidates": [
+    "predicate-lock",
+    "serializable-isolation",
+    "postmortem"
+   ],
+   "reachable_by_jev": true,
+   "note": "동시성 제어가 아닌 장애 복구 기법"
+  },
+  {
+   "id": "dist-unrel-03",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "connection-pooling",
+    "title": "커넥션 풀링",
+    "definition": "데이터베이스 연결을 미리 만들어 두고 요청마다 재사용해 연결 생성 비용을 줄이는 기법."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "read-committed",
+   "bm25_candidates": [
+    "graphrag"
+   ],
+   "reachable_by_jev": true,
+   "note": "격리 수준과 무관"
+  },
+  {
+   "id": "dist-unrel-04",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "infrastructure-as-code",
+    "title": "Infrastructure as Code",
+    "definition": "Defining servers, networks and other infrastructure in version-controlled code and provisioning them automatically."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "on-call",
+   "bm25_candidates": [
+    "retrieval-augmented-generation",
+    "mvcc",
+    "serializable-isolation"
+   ],
+   "reachable_by_jev": true,
+   "note": "같은 운영 분야일 뿐"
+  },
+  {
+   "id": "dist-unrel-05",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "kubectl",
+    "title": "kubectl",
+    "definition": "쿠버네티스 API 서버에 명령을 보내 클러스터를 조회하고 조작하는 명령줄 도구."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "deployment",
+   "bm25_candidates": [
+    "deployment",
+    "replicaset",
+    "statefulset"
+   ],
+   "reachable_by_jev": true,
+   "note": "리소스가 아니라 도구",
+   "acceptable": [
+    {
+     "decision": "link_to",
+     "canonical_slug": "deployment",
+     "also_link": [
+      "pod",
+      "rolling-update"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "dist-unrel-06",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "minimum-wage",
+    "title": "최저임금",
+    "definition": "국가가 정한 임금의 최저 수준으로, 사용자는 근로자에게 그 이상의 임금을 지급해야 한다."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "night-work",
+   "bm25_candidates": [
+    "compensatory-leave",
+    "annual-paid-leave",
+    "transparency"
+   ],
+   "reachable_by_jev": true,
+   "note": "근로시간 제도와 무관"
+  },
+  {
+   "id": "dist-unrel-07",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "model-quantization",
+    "title": "모델 양자화",
+    "definition": "모델 가중치를 낮은 정밀도의 수로 바꿔 메모리와 연산량을 줄이는 경량화 기법."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "explainability",
+   "bm25_candidates": [
+    "boolean-model",
+    "hallucination",
+    "hybrid-search"
+   ],
+   "reachable_by_jev": true,
+   "note": "같은 인공지능 분야일 뿐"
+  },
+  {
+   "id": "dist-unrel-08",
+   "category": "distinct_unrelated",
+   "incoming": {
+    "slug": "ai-training-data-copyright",
+    "title": "AI 학습 데이터 저작권",
+    "definition": "인공지능 학습에 쓰는 저작물의 이용 허락과 공정 이용 범위에 관한 문제."
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": true,
+   "ineligible_reason": null,
+   "confuser_slug": "data-bias",
+   "bm25_candidates": [
+    "data-bias",
+    "privacy-policy",
+    "ai-ethics-standard"
+   ],
+   "reachable_by_jev": true,
+   "note": "윤리기준 요건이 아님"
+  },
+  {
+   "id": "nodef-01",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "rag-nodef",
+    "title": "RAG",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "retrieval-augmented-generation"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": "이름만 보면 같은 개념"
+  },
+  {
+   "id": "nodef-02",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "pa-deu",
+    "title": "파드",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "pod"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-03",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "mvcc-nodef",
+    "title": "MVCC",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "mvcc"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-04",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "yeoncha",
+    "title": "연차",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "annual-paid-leave"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-05",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "poseuteumoteom-nodef",
+    "title": "포스트모템",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "postmortem"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-06",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "yeoksaegin-nodef",
+    "title": "역색인",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "merge_into",
+    "canonical_slug": "inverted-index"
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-07",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "rag-sequence",
+    "title": "RAG-Sequence",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": "retrieval-augmented-generation",
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": "RAG의 하위 변형 / RAG의 하위 변형이라 RAG에 연결하는 것도 허용 (2026-10-30 결과 검토)",
+   "acceptable": [
+    {
+     "decision": "link_to",
+     "canonical_slug": "retrieval-augmented-generation",
+     "also_link": []
+    }
+   ]
+  },
+  {
+   "id": "nodef-08",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "job-k8s",
+    "title": "잡(Job)",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": "deployment",
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": "디플로이먼트와 다른 워크로드 / 같은 워크로드 리소스인 디플로이먼트·스테이트풀셋에 연결하는 것도 허용 (2026-10-30 결과 검토)",
+   "acceptable": [
+    {
+     "decision": "link_to",
+     "canonical_slug": "deployment",
+     "also_link": [
+      "statefulset"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "nodef-09",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "cheongnyeon-15-34",
+    "title": "청년고용촉진특별법상 청년",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  },
+  {
+   "id": "nodef-10",
+   "category": "no_definition",
+   "incoming": {
+    "slug": "fast-decoding",
+    "title": "Fast Decoding",
+    "definition": ""
+   },
+   "expected": {
+    "decision": "keep_new",
+    "canonical_slug": null
+   },
+   "jev_eligible": false,
+   "ineligible_reason": "정의가 없어 Jev에 보내지 않음",
+   "confuser_slug": null,
+   "bm25_candidates": [],
+   "reachable_by_jev": true,
+   "note": ""
+  }
+ ]
+}

@@ -44,7 +44,7 @@ class RunPipelineUseCase:
         finished = False
 
         def finish_after_heavy_phase(
-            build_manifest: Callable[[], dict[str, Any]],
+            build_manifest: Callable[[list[dict[str, Any]]], dict[str, Any]],
         ) -> dict[str, Any]:
             nonlocal finished, page_ids
             self._ensure_active(run_id)
@@ -52,7 +52,10 @@ class RunPipelineUseCase:
             with self._repository.concept_write_lock(command.workspace_id, run_id):
                 self._ensure_active(run_id)
                 self._ensure_current_source(command)
-                manifest = build_manifest()
+                # 개념 판정은 잠금을 잡은 뒤의 개념 목록으로 한다. 동시에 편입한 문서가 먼저 저장한 개념도 본다.
+                manifest = build_manifest(
+                    self._repository.list_active_concept_index(command.workspace_id, use_cache=False)
+                )
                 self._ensure_active(run_id)
                 self._ensure_current_source(command)
                 page_ids = self._repository.finish(
@@ -83,7 +86,7 @@ class RunPipelineUseCase:
                     )
                     finished = True
                 else:
-                    manifest = finish_after_heavy_phase(lambda: manifest)
+                    manifest = finish_after_heavy_phase(lambda _concepts: manifest)
             self._embedding_job.start(run_id, page_ids)
             return manifest
         except Exception as exc:

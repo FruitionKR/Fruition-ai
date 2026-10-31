@@ -105,7 +105,9 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         requested_operation = request.edit_operation
         source_range_plan = build_source_range_plan(scoped_request)
         if source_range_plan is not None:
-            return self._generate_source_range_edit(scoped_request, source_range_plan, scope)
+            source_range_result = self._generate_source_range_edit(scoped_request, source_range_plan, scope)
+            if source_range_result is not None:
+                return source_range_result
 
         protected = protect_markdown(scoped_request)
         payload = {
@@ -178,7 +180,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         request: MarkdownEditRequest,
         plan: MarkdownSourceRangePlan,
         scope: MarkdownTargetScope,
-    ) -> MarkdownEditResult:
+    ) -> MarkdownEditResult | None:
         payload = {
             "instruction": request.instruction,
             "edit_goal": request.edit_goal,
@@ -206,37 +208,15 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             None,
         )
         try:
-            result, failures, raw = self._complete_source_range_edit(system_prompt, payload, request, plan)
+            result, failures, _ = self._complete_source_range_edit(system_prompt, payload, request, plan)
         except JsonParseError:
-            result = None
-            failures = [JSON_OBJECT_CONTRACT_FAILURE]
-            raw = None
+            result, failures = None, [JSON_OBJECT_CONTRACT_FAILURE]
         if result is not None and not failures:
             return result
+        # 원문 범위 편집은 Markdown 구조를 그대로 둔 채 구간 텍스트만 바꾼다. 끊긴 줄·목록 합치기나 번역 중 줄 재배치처럼
+        # 구조가 바뀌어야 하는 요청은 이 방식으로 다시 시도해도 통과하지 못하므로, 실패하면 일반 편집으로 넘긴다.
         _log_contract_failures("source_range_edit", 1, request, failures)
-
-        publish_query_event(
-            self._event_publisher, "agent.retrying",
-            "검사에서 보완할 부분을 발견해 다시 작성하고 있어요.",
-        )
-        retry_payload = {
-            **payload,
-            "contract_failures": failures,
-            "retry_instruction": "Correct every contract failure and return the source range JSON object again.",
-        }
-        if raw is not None:
-            retry_payload["previous_source_range_response"] = raw
-        if result is not None:
-            retry_payload["previous_assembled_markdown"] = result.edit.replacement_markdown
-        try:
-            retried, retry_failures, _ = self._complete_source_range_edit(system_prompt, retry_payload, request, plan)
-        except JsonParseError as exc:
-            _log_contract_failures("source_range_edit", 2, request, [JSON_OBJECT_CONTRACT_FAILURE])
-            raise MarkdownOutputContractError([JSON_OBJECT_CONTRACT_FAILURE], "") from exc
-        if retry_failures:
-            _log_contract_failures("source_range_edit", 2, request, retry_failures)
-            raise MarkdownOutputContractError(retry_failures, retried.edit.replacement_markdown)
-        return retried
+        return None
 
     def _complete_source_range_edit(
         self,
@@ -615,6 +595,16 @@ def _normalize_actual_target(
     )
 
 
+def _nonblank_range(lines: list[str], target: MarkdownEditTarget) -> tuple[int, int]:
+    """요청 범위에서 앞뒤 빈 줄을 뺀 범위. 현재 섹션은 다음 제목 앞 빈 줄까지 오므로 모델이 그 줄을 빼도 내용은 다 덮는다."""
+    start, end = target.start_line, target.end_line
+    while start < end and not lines[start - 1].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return start, end
+
+
 def _actual_target_request(
     request: MarkdownEditRequest,
     actual_target: MarkdownEditTarget,
@@ -638,11 +628,12 @@ def _actual_target_request(
         failures.append("actual_target.end_line must be greater than or equal to actual_target.start_line")
     if actual_target.end_line > len(lines):
         failures.append("actual_target.end_line must not exceed the Markdown line count")
+    required_start, required_end = _nonblank_range(lines, request.target)
     if (
         not appends_to_document
         and (
-            actual_target.start_line > request.target.start_line
-            or actual_target.end_line < request.target.end_line
+            actual_target.start_line > required_start
+            or actual_target.end_line < required_end
         )
     ):
         failures.append("actual_target must contain requested_target")

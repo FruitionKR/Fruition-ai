@@ -1,0 +1,99 @@
+{
+ "frozen_at": "2026-10-29",
+ "note": "검수 페이지(K2YHXDB7z946bCiUSE4X5h) 검수 반영 후 확정. 기대 답은 바꾸지 않는다. 결과 검토에서 타당한 답이 보이면 허용 답만 더하고 revisions에 사례와 이유를 남긴 뒤 sha256을 다시 계산한다.",
+ "files": {
+  "routing.jsonl": {
+   "sha256": "66b1bd9d126dcc96a170ffea2cd971d6bccc8f036c209ce8ca7ff7361663cdbc",
+   "cases": 102
+  },
+  "rag.json": {
+   "sha256": "7d6500d5de9e440310431669e8c52eb2bb6aae863ebd44b5c4b01c0cdc3b5b9c",
+   "cases": 100
+  },
+  "concept.json": {
+   "sha256": "998ff80c76124010ca5e158b0c44dc4ba57c1596b46db837b0b0698d20a1fe42",
+   "cases": 88
+  },
+  "corpus": {
+   "en-postgres-mvcc.md": "f70f963f47d44babb18327c39d389b8032090b3258c633c01b7f09ef4e2aa1d3",
+   "en-rag-paper.md": "8f25ec73a5dcfeca772c16ffe06525f05f14b5a419c59fdc826808fe380e7686",
+   "en-sre-postmortem.md": "6b7be765426e1ea7d849b7771e2f21eaa73f6f72827c365347950304d9578c79",
+   "ko-ai-ethics.md": "09cf5c24e0be8cca152d104346462fbc660e60abea4dac8bc3d6092fb5ac8d4a",
+   "ko-employment-2026-09.md": "823e00b93b12255d34782bc467cf5f3d3831886b5dc49207c3091a8b52331462",
+   "ko-k8s-deployment.md": "cb1f8e06a2cc0f58236129515bb5b7d3d3ca55fe315bc51319b28e2a3d448ff8",
+   "ko-k8s-pod.md": "f851361e7a936a293ca94921ba1c063870f22f0ffccc84f083841452a2e18ed9",
+   "ko-labor-standards-ch4.md": "7478116f5a0ac7c56ba07bc3e3295b66f0fbeb28556e338d4db58fdcfbb80c2f",
+   "ko-privacy-act-excerpt.md": "e20a109b5543d302edc524d1240ed56ec93019600a3fef3bd1613c64a8cb914c",
+   "ko-wiki-ir.md": "c7a6a0b22805fe658d538af346afdbf9a8f4a721221ff2cfc6326a2a1cacf593",
+   "ko-wiki-rag.md": "6c99be413c1fb04a5d821a1647eeadcf476cb3648ddeb93d7ce323f392598812"
+  },
+  "edit.json": {
+   "sha256": "d057654a326c4020cc46491d8238a3e8d3e4e7cbb66345cfcc1338fdc3dbf209",
+   "cases": 30
+  },
+  "organize.json": {
+   "sha256": "bf7121b735e3d0ce0d6122e5cbdb9d5d96bdcd91b1d6cbddd8465e49fc4b11bd",
+   "cases": 26
+  },
+  "skill.json": {
+   "sha256": "837be16b4e9d09bd4914218816b317a865e48230faf3a98ab9c7b9441aa4ec1d",
+   "cases": 24
+  }
+ },
+ "revisions": [
+  {
+   "date": "2026-10-30",
+   "file": "routing.jsonl",
+   "change": "chat-04, edit-05, edit-10, edit-11, ind-04, ind-10, pair-01b에 허용 답 추가",
+   "reason": "1차 결과 검토에서 정답과 다르지만 문맥상 타당한 답을 사용자와 확인. 기대 답은 그대로 두고 허용 답만 더했다."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "concept.json",
+   "change": "dist-rel-10, dist-rel-03, dist-scope-07, dist-rel-12, dist-comp-01에 also_link 추가, nodef-07, nodef-08에 허용 답 추가",
+   "reason": "결과 검토에서 정의상 직접 관련이 있는 연결 대상이 정답 범위 밖이던 사례를 사용자 원칙(타당한 답은 정답)에 따라 보정. 기대 답은 유지."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "rag.json",
+   "change": "law-08, emp-01, emp-07, paper-01, x-rag-01, emp-10, x-09, k8s-06에 acceptable_answers 추가",
+   "reason": "질문이 묻는 범위보다 기대 답이 좁았던 문항. 채점기는 기대 답과 허용 답 중 하나를 말하면 정답으로 본다."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "concept.json",
+   "change": "link_to 24건(dist-scope-01~09, dist-rel-01~12, dist-comp-01~06 중 해당 사례)의 also_link에 타당 판정 연결 대상 추가, dist-unrel-05(kubectl)에 link_to 허용 답 추가",
+   "reason": "정답 밖 추가 연결 88쌍(자기 연결 제외)을 켬/끔을 가리고 Codex로 채점해 정의상 직접 관계가 있는 valid 73쌍을 허용 연결로 보정. weak 15쌍은 추가 연결로 남김. 기대 답은 유지."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "edit.json, organize.json, skill.json",
+   "change": "AI 기능 평가셋 추가: 문서 편집 30, 문서 관리 26(정리 20·조회 6), Skill 24(의도 12·작성 6·시험 실행 6)",
+   "reason": "검수 페이지(LscCDpAeMrUSJSA58HQsc8) 사용자 검수 반영(승인 77·수정 3). look-03 설명 보강, org-10 기대 답을 되묻기로 바꾸고 원래 계획은 허용 답, org-18 요약에 기존 폴더 사용 안내 검사 추가, st-01 보존 문자열을 핵심 용어로 축소."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "edit.json",
+   "change": "edit-16 acceptable_notes에 서면 합의 사항 목록(각 호) 같은 세부 조건 생략 허용을 명시",
+   "reason": "'핵심만 남기게 요약' 요청은 세부 조건 생략이 정상이다. 편집 평가자 규칙(#166)과 같은 기준으로 맞춤. 기대 기준(criteria)은 유지."
+  },
+  {
+   "date": "2026-10-30",
+   "file": "concept.json",
+   "change": "형제 연결을 정답으로 둔 distinct_related 6건(dist-rel-01·02·03·07·08·09)의 기대 답에서 형제 대상을 빼고 상위 개념·직접 관련 개념으로 바꿈",
+   "reason": "개념 판정 규칙에서 형제 연결을 뺐다(#168, 사용자 결정). 형제끼리 전부 이어져 평가 워크스페이스에서 개념 198개에 링크 981개의 완전그래프가 생겼다. 기대 답을 바꾸는 예외라 사례와 이유를 남긴다."
+  },
+  {
+   "date": "2026-10-31",
+   "file": "concept.json",
+   "change": "dist-rel-05에 허용 답 keep_new 추가(기대 답 link_to on-call은 유지)",
+   "reason": "incident-commander와 on-call의 정의는 서로를 언급하지 않고 같은 인시던트 대응 흐름에만 속한다. 같은 흐름·주제만 공유하면 연결하지 않는 판정 규칙(#168)과 맞춘다. 정답만 두면 평가가 같은 흐름 개념을 잇는 쪽으로 규칙을 되돌리게 만든다."
+  },
+  {
+   "date": "2026-10-31",
+   "file": "concept.json",
+   "change": "dist-unrel-05 허용 답 link_to deployment의 also_link에서 형제 개념 replicaset, statefulset 제외",
+   "reason": "replicaset, statefulset은 deployment와 같은 상위 개념(워크로드 리소스) 아래의 형제다. 형제는 연결하지 않는 판정 규칙(#168)과 맞춘다."
+  }
+ ]
+}

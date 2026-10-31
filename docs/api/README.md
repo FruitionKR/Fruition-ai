@@ -83,6 +83,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`) | `POST /internal/wiki/contributions` | 같은 파일 52 |
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`) | `POST /internal/agent/skill-authoring/references/read` | `app/modules/skill/infrastructure/backend_skill_reference_reader.py`:27 |
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (Agent turn의 폴더 원문 Skill) | `app/modules/agent/infrastructure/backend_folder_source_reader.py` |
+| document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/folder-lookup/tree` (Agent turn의 폴더 내용 조회 `folder_lookup`) | `app/modules/agent/infrastructure/backend_folder_tree_reader.py` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (agent_worker의 폴더 정리 본문 중복 확인) | `pipeline/agent_worker.py`의 `_build_folder_content_reader` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}` | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:27,51 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |

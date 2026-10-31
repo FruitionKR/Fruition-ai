@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from typing import Any
 
+from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
+
+logger = logging.getLogger(__name__)
+# (판정할 개념, 후보 pool) → incoming slug별 판정. JevConceptResolver.judge_concepts와 같은 계약이다.
+PairJudge = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, dict[str, Any]]]
 
 
 def judge_meaning_cluster_candidates(
@@ -40,7 +47,7 @@ Schema:
 }
 """
     payload = {
-        "existing_active_clusters": existing_active_markdown[-24000:],
+        "existing_active_clusters": existing_active_markdown,
         "incoming_candidates": [
             {
                 "candidate_id": item["candidate_id"],
@@ -215,9 +222,21 @@ def judge_concept_update_candidates(
     completion: JsonCompletionPort,
     concepts: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
+    judge_pairs: PairJudge | None = None,
 ) -> list[dict[str, Any]]:
+    """섹션 후보·언급이 기존·이번 문서 개념과 같은지 판정한다. 개념은 이름·별칭·정의만 본다.
+
+    judge_pairs가 있으면 개념 병합과 같은 쌍별 판정(이름 일치 → 후보 100개 → Jev)을 쓰고,
+    없거나 쓸 수 없으면 LLM 한 번에 판정한다.
+    """
     if not concepts or not candidates:
         return []
+    identities = [_concept_identity(concept) for concept in concepts if concept.get("slug")]
+    if judge_pairs is not None:
+        try:
+            return _pair_judged_updates(judge_pairs, identities, concepts, candidates)
+        except JevUnavailable as exc:
+            logger.warning("[개념 갱신 후보 Jev 대체] %s", exc)
     system_prompt = """Stage=ConceptUpdateCandidateJudge.
 You decide whether section/mention evidence claims already belong to or have an evidence-backed relation with an existing/current core concept.
 
@@ -243,19 +262,9 @@ Schema:
   ]
 }
 """
+    # ponytail: LLM 대체 경로는 개념 전부를 한 요청에 담는다. 개념당 약 400자라 Gemini 한도에서 수천 개까지 든다.
     payload = {
-        "concepts": [
-            {
-                "slug": concept.get("slug"),
-                "title": concept.get("title"),
-                "aliases": concept.get("aliases", []),
-                "definition": concept.get("definition", ""),
-                "evidence": concept.get("evidence", []),
-                "why_page_worthy": concept.get("why_page_worthy", ""),
-            }
-            for concept in concepts
-            if concept.get("slug")
-        ],
+        "concepts": identities,
         "incoming_candidates": [
             {
                 "candidate_id": item["candidate_id"],
@@ -270,10 +279,56 @@ Schema:
     }
     raw = completion.complete_json(
         system_prompt,
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
     return normalize_concept_update_decisions(
         {"concept_update_decisions": raw.get("decisions", [])},
+        concepts=concepts,
+        candidates=candidates,
+    )
+
+
+def _concept_identity(concept: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slug": concept["slug"],
+        "title": concept.get("title"),
+        "aliases": list(concept.get("aliases") or []),
+        # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다.
+        "definition": concept.get("definition") or concept.get("summary") or "",
+    }
+
+
+def _pair_judged_updates(
+    judge_pairs: PairJudge,
+    identities: list[dict[str, Any]],
+    concepts: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # 후보는 근거 문장을 정의 자리에 둔 개념처럼 판정한다. same이면 같은 개념, related면 관계 후보다.
+    incoming = [
+        {"slug": item["candidate_id"], "title": item["term"], "aliases": [item["slug"]], "definition": item["claim"]}
+        for item in candidates
+    ]
+    resolutions = judge_pairs(incoming, [concept for concept in identities if str(concept["definition"]).strip()])
+    decisions = []
+    for item in candidates:
+        resolution = resolutions.get(item["candidate_id"]) or {}
+        if resolution.get("decision") == "merge_into":
+            decision, relation = "same_concept", ""
+        elif resolution.get("decision") == "link_to":
+            decision, relation = "relation_candidate", "related_evidence"
+        else:
+            decision, relation = "not_same_concept", ""
+        decisions.append(
+            {
+                "candidate_id": item["candidate_id"],
+                "decision": decision,
+                "concept_slug": resolution.get("canonical_slug") or "",
+                "relation": relation,
+            }
+        )
+    return normalize_concept_update_decisions(
+        {"concept_update_decisions": decisions},
         concepts=concepts,
         candidates=candidates,
     )

@@ -147,6 +147,7 @@ def test_lint_merge_does_not_overwrite_previous_operation_snapshot(
                 "refs": ["doc-A:B0001"],
             }
         ],
+        aliases=[],
     )
 
     assert writes[0][0] == "wiki/ws/concepts/shared.md"
@@ -183,6 +184,7 @@ def test_promotion_merge_neutralizes_external_links_in_claims(monkeypatch) -> No
         "ws",
         "shared",
         [{"id": "claim-1", "claim": "lint 근거 [안내](https://attacker.example)", "refs": ["doc-A:B0001"]}],
+        aliases=[],
     )
 
     assert change is not None
@@ -219,11 +221,9 @@ back electromotive force, BEMF
     assert "summary" not in concept
     assert concept["definition"] == "Back EMF는 회전 전동기에서 유기되는 역기전력이다. [doc_a:B0001]"
     assert concept["why_page_worthy"] == "전동기 성능 평가에 필요하다."
-    assert concept["aliases"] == ["back electromotive force, BEMF"]
-    assert concept["evidence"] == [
-        "Back EMF는 토크 리플 및 코깅 토크와 함께 최적화 대상이다. [doc_a:B0002]",
-        "제조 공차는 Back EMF 응답에 영향을 준다. [doc_b:B0003]",
-    ]
+    assert concept["aliases"] == ["back electromotive force", "BEMF"]
+    # 개념 판정은 이름·별칭·정의만 보므로 근거 목록은 읽지 않는다.
+    assert "evidence" not in concept
 
 
 def test_append_concept_evidence_replaces_placeholder_and_deduplicates() -> None:
@@ -600,10 +600,11 @@ def test_lint_materialize_keeps_concurrent_ingest_updates(monkeypatch) -> None:
 
 ### Evidence Claims
 - claim_001: 기존 근거 [doc-1:B0001]
+- claim_003: 다른 문서 근거 [doc-3:B0001]
 
 ### Promotion
 status: candidate
-source_refs: [doc-1]
+source_refs: [doc-1, doc-3]
 """
     }
     concept_indexes = iter(({}, {"shared": "page-shared"}))
@@ -847,6 +848,61 @@ source_refs: [doc_1]
     assert result["needs_review"] == ["stale-cluster"]
 
 
+def test_lint_promotes_only_candidates_with_evidence_from_multiple_documents(monkeypatch) -> None:
+    active_markdown = """# Active Meaning Clusters
+
+## cluster: single-doc
+
+### Evidence Claims
+- claim_001: 한 문서에만 나온 용어다. [doc_1:B0001]
+- claim_002: 같은 문서의 다른 근거다. [doc_1:B0002]
+
+### Promotion
+status: candidate
+source_refs: [doc_1]
+
+## cluster: multi-doc
+
+### Evidence Claims
+- claim_003: 첫 문서 근거다. [doc_1:B0003]
+- claim_004: 다른 문서 근거다. [doc_2:B0001]
+
+### Promotion
+status: candidate
+source_refs: [doc_1, doc_2]
+
+## cluster: concept-match
+
+### Evidence Claims
+- claim_005: 다른 문서의 핵심 개념과 같다. [doc_1:B0004]
+
+### Promotion
+status: candidate
+source_refs: [doc_1]
+target: concept:shared-concept
+"""
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda _path: active_markdown)
+    monkeypatch.setattr(repository, "_orphan_source_refs", lambda _refs: [])
+    monkeypatch.setattr(repository, "_list_reconciliation_candidates", lambda *_args: [])
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(repository, "connect", FakeConnection)
+
+    result = repository.lint_wiki_workspace("user_1", "workspace_1", write_log=False)
+
+    # 근거 문서가 하나뿐인 후보는 승격하지 않고 이유를 남긴다. 핵심 개념과 맞춘 후보는 편입 때 다른 문서를 확인했다.
+    assert result["promotion_candidates"] == ["multi-doc", "concept-match"]
+    assert {"cluster_id": "single-doc", "reason": "promotion candidate has evidence from a single source document"} in result[
+        "invalid_promotions"
+    ]
+
+
 def test_lint_does_not_block_claim_regenerated_by_latest_reingest(
     monkeypatch,
 ) -> None:
@@ -856,10 +912,11 @@ def test_lint_does_not_block_claim_regenerated_by_latest_reingest(
 
 ### Evidence Claims
 - claim_002: 수정 후 최신 주장이다. [doc_1:B0002]
+- claim_003: 다른 문서의 같은 주장이다. [doc_2:B0001]
 
 ### Promotion
 status: candidate
-source_refs: [doc_1]
+source_refs: [doc_1, doc_2]
 """
     monkeypatch.setattr(
         repository,
@@ -1081,3 +1138,272 @@ def test_delete_source_related_links_is_scoped_to_workspace() -> None:
     assert "user_id" not in conn.calls[0][0]
     assert "DELETE FROM wiki_page_links" in conn.calls[0][0]
     assert "from_page.workspace_id = %s" in conn.calls[0][0]
+
+
+class _FakeConceptJudge:
+    def __init__(self, resolutions=None, error=None) -> None:
+        self.resolutions = resolutions or {}
+        self.error = error
+        self.calls = []
+
+    def judge_concepts(self, concepts, pool):
+        self.calls.append((concepts, pool))
+        if self.error:
+            raise self.error
+        return self.resolutions
+
+
+def _materialize_with_judge(monkeypatch, judge, page_slug="orchid-lease", representative="Orchid Lease"):
+    upserts = []
+    links = []
+    active = f"""# Active Meaning Clusters
+
+## cluster: orchid-lease
+
+representative: {representative}
+
+### Evidence Claims
+- claim_001: Orchid Lease는 공급 계약이다. [doc-1:B0001]
+- claim_002: Orchid Lease는 다른 계약서에도 나온다. [doc-2:B0001]
+
+### Promotion
+status: candidate
+source_refs: [doc-1, doc-2]
+"""
+
+    class Result:
+        def fetchone(self):
+            return {
+                "id": "page-supply",
+                "title": "공급 계약",
+                "summary": "공급 조건을 정한 계약",
+                "markdown_uri": "wiki/ws/concepts/supply-contract.md",
+            }
+
+    class Connection:
+        def execute(self, _query, _params):
+            return Result()
+
+    monkeypatch.setattr(repository, "_load_existing_concept_ids_by_slug", lambda *_args: {"supply-contract": "page-supply"})
+    monkeypatch.setattr(repository, "_source_blocks_for_refs", lambda *_args: [])
+    monkeypatch.setattr(repository, "_lock_concept_persistence", lambda *_args: None)
+    monkeypatch.setattr(
+        repository,
+        "_read_optional_text_object",
+        lambda path: active
+        if path.endswith("clusters/active.md")
+        else "# 공급 계약\n\n## Aliases\n-\n\n## Evidence\n- 기존 근거\n",
+    )
+    monkeypatch.setattr(
+        repository,
+        "list_active_concept_index",
+        lambda _workspace_id: [
+            {"slug": "supply-contract", "title": "공급 계약", "aliases": [], "definition": "공급 조건을 정한 계약"},
+            {"slug": "draft", "title": "초안", "aliases": [], "definition": ""},
+        ],
+    )
+    monkeypatch.setattr(repository, "_resolve_or_create_wiki_page_id", lambda *_args: "page-orchid")
+    monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *args: upserts.append(args))
+    monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
+    monkeypatch.setattr(repository, "_upsert_wiki_page_link", lambda *args: links.append(args[1:]))
+    page = {
+        "slug": page_slug,
+        "title": "Orchid Lease",
+        "markdown": "# Orchid Lease\n\n## Definition\nOrchid Lease는 공급 계약이다.\n\n## Aliases\n-\n",
+    }
+    result = repository._materialize_promotion_candidates(
+        Connection(),
+        "user-1",
+        "ws",
+        parse_active_cluster_lint(active),
+        active,
+        lambda _cluster: page,
+        concept_judge=judge,
+        operation_id="lint-op-1",
+    )
+    return result, upserts, links
+
+
+def test_lint_promotion_judged_same_merges_into_existing_concept(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+    [(concepts, pool)] = judge.calls
+    assert concepts == [
+        {"slug": "orchid-lease", "title": "Orchid Lease", "aliases": [], "definition": "Orchid Lease는 공급 계약이다."}
+    ]
+    assert [concept["slug"] for concept in pool] == ["supply-contract"]
+    assert result["promotions"] == []
+    assert result["merged_promotions"] == [
+        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
+    ]
+    assert [upsert[1] for upsert in upserts] == ["page-supply"]
+    assert links == []
+    assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
+
+
+def test_lint_judged_merge_adds_cluster_representative_to_concept_aliases(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge)
+
+    # 클러스터 id는 대표명과 대소문자·하이픈만 달라 한 번만 넣는다.
+    [merged] = result["page_changes"]
+    concept = _concept_index_from_markdown("supply-contract", "공급 계약", "uri", merged["markdown"])
+    assert concept["aliases"] == ["Orchid Lease"]
+    assert merged["aliases"] == ["Orchid Lease"]
+    assert "- 기존 근거" in merged["markdown"]
+
+
+def test_lint_judged_merge_keeps_representative_and_cluster_id_as_separate_aliases(monkeypatch) -> None:
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge, representative="오키드 리스")
+
+    # 대표명과 클러스터 id가 다르면 별칭 두 개로 읽혀야 다음 편입의 이름 일치가 둘 다 찾는다.
+    [merged] = result["page_changes"]
+    concept = _concept_index_from_markdown("supply-contract", "공급 계약", "uri", merged["markdown"])
+    assert concept["aliases"] == ["오키드 리스", "orchid-lease"]
+
+
+def test_lint_promotion_judged_related_creates_page_and_links(monkeypatch) -> None:
+    from app.modules.wiki_ingestion.domain.lint_operation_recovery import calculate_lint_link_changes
+
+    judge = _FakeConceptJudge(
+        {
+            "orchid-lease": {
+                "incoming_slug": "orchid-lease",
+                "decision": "link_to",
+                "canonical_slug": "supply-contract",
+                "link_targets": ["supply-contract", "missing"],
+                "link_confidences": {"supply-contract": 0.7, "missing": 0.6},
+            }
+        }
+    )
+
+    result, _upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+    assert result["promotions"] == [{"cluster_id": "orchid-lease", "concept_slug": "orchid-lease", "page_id": "page-orchid"}]
+    assert links == [("page-orchid", "page-supply", "concept_related_to", None, 0.7, "ws")]
+    assert result["relations"] == [
+        {"from": "orchid-lease", "to": "supply-contract", "relation": "concept_related_to", "confidence": 0.7}
+    ]
+
+    # 판정 링크는 lint 기록의 added_links에 들어가고, 복원 시 지지하는 근거가 없으면 지운다.
+    writes = []
+    monkeypatch.setattr(repository, "write_text_object", lambda key, text, content_type: writes.append((key, text)) or key)
+    repository.persist_lint_operation_result(
+        "ws",
+        "lint-op-1",
+        {"_lint_page_changes": result["page_changes"], "materialized_relations": result["relations"]},
+    )
+    contribution = json.loads(next(text for key, text in writes if key.endswith(".json")))
+    link = {"source": "concept:orchid-lease", "target": "concept:supply-contract", "relation": "concept_related_to"}
+    assert contribution["added_links"] == [link]
+    assert calculate_lint_link_changes([contribution], [])["removed_links"] == [link]
+
+
+def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:
+    from app.core.jev_client import JevUnavailable
+
+    for judge in (None, _FakeConceptJudge(error=JevUnavailable("down"))):
+        result, _upserts, links = _materialize_with_judge(monkeypatch, judge)
+
+        assert [item["concept_slug"] for item in result["promotions"]] == ["orchid-lease"]
+        assert result["merged_promotions"] == []
+        assert links == []
+
+
+def test_lint_promotion_merges_when_generated_slug_is_existing_concept(monkeypatch) -> None:
+    # 생성한 페이지의 slug가 클러스터 id와 달라도 기존 개념과 같으면 덮어쓰지 않고 그 개념에 병합한다.
+    result, upserts, _links = _materialize_with_judge(monkeypatch, None, page_slug="Supply Contract")
+
+    assert result["promotions"] == []
+    assert result["merged_promotions"] == [
+        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
+    ]
+    [upsert] = upserts
+    assert upsert[2:5] == ("concept", "공급 계약", "supply-contract")
+    assert result["page_changes"][0]["content_action"] == "append_evidence"
+    assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
+
+
+def test_lint_restore_returns_archived_cluster_to_active(monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    from app.modules.wiki_ingestion.application.models import LintOperationRestoreCommand
+    from app.modules.wiki_ingestion.application.restore_wiki_pages import RestoreWikiPagesUseCase
+    from app.modules.wiki_ingestion.infrastructure.wiki_page_restore import ObjectStorageWikiPageRestore
+
+    judge = _FakeConceptJudge(
+        {"orchid-lease": {"incoming_slug": "orchid-lease", "decision": "merge_into", "canonical_slug": "supply-contract"}}
+    )
+    result, _upserts, _links = _materialize_with_judge(monkeypatch, judge)
+    objects = {"wiki/ws/clusters/active.md": result["active_markdown"]}
+    monkeypatch.setattr(
+        repository,
+        "write_text_object",
+        lambda key, text, content_type="": objects.__setitem__(key, text) or key,
+    )
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+    monkeypatch.setattr(repository, "concept_write_lock", lambda *_args: nullcontext())
+    repository.persist_lint_operation_result("ws", "lint-op-1", {"_lint_page_changes": result["page_changes"]})
+    repository.apply_lint_object_changes(
+        {
+            "workspace_id": "ws",
+            "_lint_object_changes": {
+                "active_path": "wiki/ws/clusters/active.md",
+                "active_markdown": result["active_markdown"],
+                "archived_sections": result["archived_sections"],
+            },
+        }
+    )
+    # 이후 다른 클러스터가 보관돼도 그 항목은 남긴다.
+    objects["wiki/ws/clusters/archived.md"] += "\n## cluster: other\n\n### Archived\nmerged_to: concept:x\n"
+    assert "orchid-lease" not in objects["wiki/ws/clusters/active.md"]
+
+    use_case = RestoreWikiPagesUseCase(
+        ObjectStorageWikiPageRestore(
+            objects.__getitem__,
+            lambda key, text, content_type: objects.__setitem__(key, text) or key,
+            lambda *_args: [],
+            repository.restore_archived_clusters,
+        )
+    )
+
+    def restore(operation_id: str) -> dict:
+        return use_case.execute_lint(
+            LintOperationRestoreCommand(
+                operation_id=operation_id,
+                target_operation_id="lint-op-1",
+                workspace_id="ws",
+                rebuild_pages=(),
+                deleted_pages=("page-supply",),
+            )
+        )
+
+    assert restore("restore-1")["cluster_changes"] == {
+        "written_object_keys": ["wiki/ws/clusters/active.md", "wiki/ws/clusters/archived.md"],
+        "restored_cluster_ids": ["orchid-lease"],
+        "skipped_cluster_ids": [],
+    }
+    assert parse_active_cluster_lint(objects["wiki/ws/clusters/active.md"])[0]["promotion_status"] == "candidate"
+    assert "orchid-lease" not in objects["wiki/ws/clusters/archived.md"]
+    assert "## cluster: other" in objects["wiki/ws/clusters/archived.md"]
+
+    # 같은 id의 클러스터가 다시 생겼으면 덮어쓰지 않고 건너뛴 id를 알린다.
+    objects["wiki/ws/clusters/archived.md"] += "\n\n" + result["archived_sections"][0] + "\n"
+    objects["wiki/ws/clusters/active.md"] = "# Active Meaning Clusters\n\n## cluster: orchid-lease\n\nrepresentative: 새 클러스터\n"
+    assert restore("restore-2")["cluster_changes"] == {
+        "written_object_keys": [],
+        "restored_cluster_ids": [],
+        "skipped_cluster_ids": ["orchid-lease"],
+    }
+    assert "새 클러스터" in objects["wiki/ws/clusters/active.md"]

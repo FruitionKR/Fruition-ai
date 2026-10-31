@@ -35,6 +35,8 @@ If no evidence supports any useful part of the answer, do not answer from genera
 Do not create examples, analogies, or fictional cases that are not present in the context.
 If an example is needed, use only entities or cases that appear in the evidence.
 Do not add information from outside the context.
+Do not infer causes, reasons, calculations, or conclusions that the evidence does not state.
+Keep the evidence's conditions, exceptions, and modality; do not turn "try to" into "must".
 """
 
 CONVERSATION_SUMMARY_SYSTEM_PROMPT = """최근 대화를 누적 요약으로 갱신한다.

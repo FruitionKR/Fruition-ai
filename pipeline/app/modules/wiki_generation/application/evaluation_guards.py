@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -11,7 +12,11 @@ def apply_generation_evaluation_guards(
     evaluation: GenerationEvaluation,
     normalized: dict[str, Any],
     source_block_ids: list[str] | None = None,
+    source_texts: list[str] | None = None,
 ) -> None:
+    # 코드 검증 문제만 남은 평가를 나중에 풀어 줄 때 평가자 자신의 판정으로 되돌린다.
+    evaluation.setdefault("evaluator_passed", bool(evaluation.get("passed")))
+    evaluation.setdefault("evaluator_issues", deepcopy(evaluation.get("issues", [])))
     if not evaluation.get("passed"):
         evaluation["retry_recommended"] = True
     _apply_reference_guards(evaluation, normalized, source_block_ids)
@@ -39,6 +44,9 @@ def apply_generation_evaluation_guards(
             },
         )
     _apply_observation_evaluation_guards(evaluation, normalized)
+    _apply_core_concept_evidence_guard(evaluation, normalized)
+    if source_texts is not None:
+        _apply_number_guard(evaluation, normalized, source_texts)
     if evaluation.get("issues"):
         evaluation["passed"] = False
         evaluation["retry_recommended"] = True
@@ -47,6 +55,236 @@ def apply_generation_evaluation_guards(
             scores["overall"] = min(float(scores["overall"]), 0.74)
         feedbacks = [str(issue.get("feedback")) for issue in evaluation.get("issues", []) if issue.get("feedback")]
         evaluation["retry_feedback"] = " ".join(_unique(feedbacks))
+
+
+# 번호 붙은 서지 항목의 시작: "[7] Christopher Clark and ...," 꼴.
+_REFERENCE_ENTRY = re.compile(r"\[\d{1,3}\]\s+[A-Z][\w-]+(?:\s+[A-Z]\.)*\s+[A-Z]?[\w-]+,")
+# 참고문헌 블록은 1,000자에 서지 항목이 1.8~3.2개, 본문에 참고문헌 시작이 섞인 블록은 1.3개였다(Jev 평가 corpus).
+_REFERENCE_ENTRIES_PER_1K_CHARS = 1.5
+
+
+def reference_list_refs(blocks: list[Any]) -> set[str]:
+    """서지 항목이 몰린 참고문헌 블록의 ref. 서지 정보만으로는 핵심 개념을 뒷받침하지 못한다."""
+    # ponytail: "[n] 저자," 번호 형식만 본다. 저자-연도·각주 형식 참고문헌은 못 잡는다.
+    refs: set[str] = set()
+    for block in blocks:
+        entries = len(_REFERENCE_ENTRY.findall(block.text))
+        if entries >= 2 and entries * 1000 >= _REFERENCE_ENTRIES_PER_1K_CHARS * len(block.text):
+            refs.update({block.block_id, block.source_reference_id})
+    return refs
+
+
+def unsupported_core_concept_slugs(normalized: dict[str, Any], reference_refs: set[str] = frozenset()) -> list[str]:
+    """뒷받침하는 근거 주장이 하나도 없는 핵심 개념. 평가 기준상 핵심 개념이 될 수 없다.
+
+    참고문헌 블록에만 걸린 근거 주장은 서지 정보라 뒷받침으로 치지 않는다.
+    """
+    # 제목·별칭으로 쓴 근거 힌트는 정규화가 개념 slug로 바꿔 두므로, 근거를 붙이는 곳과 같게 slug만 본다.
+    supported = {
+        str(slug)
+        for item in normalized.get("evidence_units", [])
+        if not _only_reference_list(item, reference_refs)
+        for slug in item.get("related_concept_slugs", [])
+    }
+    return [
+        str(concept["slug"])
+        for concept in normalized.get("concept_ledger", [])
+        if concept.get("slug") and str(concept["slug"]) not in supported
+    ]
+
+
+def _only_reference_list(item: dict[str, Any], reference_refs: set[str]) -> bool:
+    refs = {str(ref).split(":", 1)[-1] for ref in item.get("anchor_reference_ids", [])}
+    return bool(refs) and refs <= reference_refs
+
+
+def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
+    """섹션 후보로 내려 해결된 근거 없음 문제를 마지막 평가에서 지운다."""
+    demoted_slugs = set(demoted)
+    clear_resolved_issues(
+        evaluation,
+        lambda issue: (
+            issue.get("type") == "section_or_mention_should_not_be_core"
+            and bool(issue.get("target"))
+            and set(map(str, issue["target"])) <= demoted_slugs
+        ),
+    )
+
+
+def clear_resolved_issues(evaluation: GenerationEvaluation, resolved: Callable[[dict[str, Any]], bool]) -> None:
+    """편입 뒤 코드가 해결한 문제를 마지막 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
+    issues = [issue for issue in evaluation.get("issues", []) if not resolved(issue)]
+    if len(issues) == len(evaluation.get("issues", [])):
+        return
+    evaluation["issues"] = issues
+    evaluation["retry_feedback"] = " ".join(_unique([str(issue["feedback"]) for issue in issues if issue.get("feedback")]))
+    # 평가자가 합격했거나, 평가자가 올린 문제가 모두 해결됐으면 합격으로 되돌린다.
+    evaluator_issues = evaluation.get("evaluator_issues", [])
+    evaluator_resolved = bool(evaluator_issues) and all(resolved(issue) for issue in evaluator_issues)
+    if not issues and (evaluation.get("evaluator_passed") or evaluator_resolved):
+        evaluation["passed"] = True
+        evaluation["retry_recommended"] = False
+
+
+def _apply_core_concept_evidence_guard(evaluation: GenerationEvaluation, normalized: dict[str, Any]) -> None:
+    for slug in unsupported_core_concept_slugs(normalized):
+        _append_eval_issue(
+            evaluation,
+            {
+                "metric": "concept_groundedness",
+                "type": "section_or_mention_should_not_be_core",
+                "severity": "high",
+                "target": [slug],
+                "reason": "이 핵심 개념을 related_concept_hints로 가리키는 evidence claim이 없습니다.",
+                "feedback": f"{slug}: 이 개념을 직접 뒷받침하는 evidence claim을 추가하거나, 근거가 없으면 section_candidate 또는 mention으로 낮추세요.",
+            },
+        )
+
+
+# 숫자와 바로 뒤의 만·천·억 단위. 영문자·숫자 바로 뒤의 숫자(B0036, BM25)는 식별자라 보지 않는다.
+_NUMBER = re.compile(r"(?<![A-Za-z0-9.,])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(만|천|억))?")
+_NUMBER_TEXT_FIELDS = ("title", "text", "summary", "query_text", "claim", "definition", "context")
+# 페이지가 따로 있는 개념은 빼지 않고 평가 문제로만 남긴다.
+_NUMBER_DROP_COLLECTIONS = ("observations", "section_candidates", "mentions", "evidence_units")
+
+
+def number_tokens(text: str) -> set[str]:
+    """쉼표를 뺀 숫자와 붙은 단위. 단위를 바꿔 쓴 숫자(25만 3천 → 253만)는 다른 토큰이 된다."""
+    tokens = set()
+    for whole, fraction, unit in _NUMBER.findall(text):
+        number = whole.replace(",", "") + fraction
+        # 한 자리 정수는 목록 번호처럼 흔해서 단위가 붙을 때만 본다.
+        if unit or len(number) > 1:
+            tokens.add(number + unit)
+    return tokens
+
+
+def unsupported_numbers(item: dict[str, Any], source_numbers: set[str]) -> list[str]:
+    texts = [str(item.get(field) or "") for field in _NUMBER_TEXT_FIELDS]
+    texts += [str(claim) for claim in item.get("claims") or []]
+    return sorted(set().union(*map(number_tokens, texts)) - source_numbers)
+
+
+def _source_numbers(source_texts: list[str]) -> set[str]:
+    return set().union(*map(number_tokens, source_texts))
+
+
+def _number_checked_items(normalized: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    # 노트의 관찰은 최상위 observations와 같은 내용이라 한 번만 본다.
+    return [
+        *((collection, item) for collection in ("concept_ledger", *_NUMBER_DROP_COLLECTIONS) for item in normalized.get(collection, [])),
+        *(("key_points", item) for note in normalized.get("semantic_notes", []) for item in note.get("key_points", [])),
+    ]
+
+
+def _number_issue_target(collection: str, item: dict[str, Any]) -> list[str]:
+    # 핵심 문장은 ID가 없어 근거 블록으로 재시도 대상을 가리킨다.
+    return _item_refs(item) if collection == "key_points" else [_item_target(item, collection)]
+
+
+def _apply_number_guard(evaluation: GenerationEvaluation, normalized: dict[str, Any], source_texts: list[str]) -> None:
+    source_numbers = _source_numbers(source_texts)
+    for collection, item in _number_checked_items(normalized):
+        missing = unsupported_numbers(item, source_numbers)
+        target = _number_issue_target(collection, item)
+        if not missing or not target:
+            continue
+        _append_eval_issue(
+            evaluation,
+            {
+                "metric": "source_faithfulness",
+                "type": "unsupported_number",
+                "severity": "high",
+                "target": target,
+                "reason": f"원문에 없는 숫자를 씁니다: {', '.join(missing)}",
+                "feedback": f"{target[0]}: 원문에 없는 숫자({', '.join(missing)})를 원문 표기와 단위 그대로 고치거나 빼세요.",
+            },
+        )
+
+
+def drop_unsupported_number_items(normalized: dict[str, Any], source_texts: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """재시도 뒤에도 원문에 없는 숫자를 쓰는 항목을 뺀다. 개념은 평가 문제로 남는다."""
+    source_numbers = _source_numbers(source_texts)
+
+    def keep(item: dict[str, Any]) -> bool:
+        return not unsupported_numbers(item, source_numbers)
+
+    dropped = [
+        _item_target(item, collection)
+        for collection, item in _number_checked_items(normalized)
+        if collection != "concept_ledger" and not keep(item)
+    ]
+    if not dropped:
+        return normalized, []
+    kept_evidence_ids = {str(item.get("evidence_id")) for item in normalized.get("evidence_units", []) if keep(item)}
+    return {
+        **normalized,
+        **{collection: [item for item in normalized.get(collection, []) if keep(item)] for collection in _NUMBER_DROP_COLLECTIONS},
+        # 뺀 근거 주장을 개념이 계속 가리키지 않게 한다.
+        "concept_ledger": [
+            {**concept, "evidence_claim_ids": [ev for ev in concept.get("evidence_claim_ids", []) if ev in kept_evidence_ids]}
+            for concept in normalized.get("concept_ledger", [])
+        ],
+        "semantic_notes": [
+            {
+                **note,
+                "key_points": [item for item in note.get("key_points", []) if keep(item)],
+                "observations": [item for item in note.get("observations", []) if keep(item)],
+            }
+            for note in normalized.get("semantic_notes", [])
+        ],
+    }, dropped
+
+
+def clear_resolved_number_issues(evaluation: GenerationEvaluation, normalized: dict[str, Any], source_texts: list[str]) -> None:
+    """뺀 항목의 숫자 문제를 지운다. 남은 개념의 숫자 문제는 그대로 둔다."""
+    source_numbers = _source_numbers(source_texts)
+    remaining = {
+        tuple(_number_issue_target(collection, item))
+        for collection, item in _number_checked_items(normalized)
+        if unsupported_numbers(item, source_numbers)
+    }
+    clear_resolved_issues(
+        evaluation,
+        lambda issue: issue.get("type") == "unsupported_number" and tuple(map(str, issue.get("target") or [])) not in remaining,
+    )
+
+
+def demote_unsupported_core_concepts(
+    normalized: dict[str, Any], reference_refs: set[str] = frozenset()
+) -> tuple[dict[str, Any], list[str]]:
+    """재시도 뒤에도 근거 주장이 없는(참고문헌에만 있는) 핵심 개념을 섹션 후보로 내린다. 개념 페이지 대신 클러스터 판정으로 간다."""
+    slugs = set(unsupported_core_concept_slugs(normalized, reference_refs))
+    if not slugs:
+        return normalized, []
+    sections = {str(item.get("slug")): dict(item) for item in normalized.get("section_candidates", [])}
+    for concept in normalized["concept_ledger"]:
+        if concept["slug"] not in slugs:
+            continue
+        section = sections.setdefault(
+            concept["slug"],
+            {
+                "term": concept.get("title") or concept["slug"],
+                "title": concept.get("title") or concept["slug"],
+                "slug": concept["slug"],
+                # 클러스터 후보는 문맥이 없으면 버려지므로 정의가 없으면 제목을 둔다.
+                "context": concept.get("definition") or concept.get("title") or concept["slug"],
+                "anchor_reference_ids": [],
+            },
+        )
+        section["anchor_reference_ids"] = _unique([*section.get("anchor_reference_ids", []), *concept.get("anchor_reference_ids", [])])
+    demoted = sorted(slugs)
+    return {
+        **normalized,
+        "concept_ledger": [concept for concept in normalized["concept_ledger"] if concept["slug"] not in slugs],
+        # 강등한 개념은 페이지가 없으므로 별칭 분리로 만든 개념 사이 링크에서도 뺀다.
+        "alias_concept_links": [
+            link
+            for link in normalized.get("alias_concept_links", [])
+            if link["source"] not in slugs and link["target"] not in slugs
+        ],
+        "section_candidates": sorted(sections.values(), key=lambda item: str(item.get("slug", ""))),
+    }, demoted
 
 
 def _apply_reference_guards(
@@ -318,6 +556,7 @@ def repair_notes_from_evaluation(
     repaired_notes = deepcopy(notes)
     observations_by_id: dict[str, dict[str, Any]] = {}
     observation_ids_by_location: dict[tuple[int, int], str] = {}
+    note_index_by_id: dict[str, int] = {}
     for note_index, note in enumerate(repaired_notes):
         for item_index, observation in enumerate(note.get("observations", []) or []):
             if not isinstance(observation, dict):
@@ -327,6 +566,7 @@ def repair_notes_from_evaluation(
             observation_id = f"O{len(observations_by_id) + 1:03d}"
             observations_by_id[observation_id] = observation
             observation_ids_by_location[(note_index, item_index)] = observation_id
+            note_index_by_id[observation_id] = note_index
 
     remove_ids: set[str] = set()
     duplicate_groups: list[list[str]] = []
@@ -346,6 +586,7 @@ def repair_notes_from_evaluation(
         if len(candidates) < 2:
             continue
         keeper = _select_observation_keeper(candidates)
+        keeper_id = next(observation_id for observation_id in ids if observations_by_id.get(observation_id) is keeper)
         for observation_id in ids:
             if observation_id in remove_ids:
                 continue
@@ -353,6 +594,12 @@ def repair_notes_from_evaluation(
             if candidate is None or candidate is keeper:
                 continue
             _merge_observation(keeper, candidate)
+            _merge_evidence_refs(
+                repaired_notes[note_index_by_id[keeper_id]],
+                keeper,
+                repaired_notes[note_index_by_id[observation_id]],
+                candidate,
+            )
             remove_ids.add(observation_id)
 
     for note_index, note in enumerate(repaired_notes):
@@ -364,13 +611,35 @@ def repair_notes_from_evaluation(
     return repaired_notes
 
 
+def _merge_evidence_refs(
+    keeper_note: dict[str, Any],
+    keeper: dict[str, Any],
+    incoming_note: dict[str, Any],
+    incoming: dict[str, Any],
+) -> None:
+    """병합되는 관찰이 가리키던 근거를 keeper가 가리키게 한다. 근거 id는 노트 안에서만 유효하다."""
+    refs = [str(ref) for ref in incoming.get("evidence_refs", []) or [] if str(ref)]
+    if not refs:
+        return
+    if keeper_note is incoming_note:
+        keeper["evidence_refs"] = _unique([*(keeper.get("evidence_refs") or []), *refs])
+        return
+    # 다른 노트의 근거 id는 keeper 노트에서 뜻이 달라, 근거 행을 늘리지 않고 문장과 블록만 keeper로 옮긴다.
+    evidence_by_id = {str(item.get("id")): item for item in incoming_note.get("evidence_claims", []) or [] if item.get("id")}
+    carried = [evidence_by_id[ref] for ref in refs if ref in evidence_by_id]
+    keeper["claims"] = _unique([*(keeper.get("claims") or []), *(str(item.get("claim") or "").strip() for item in carried if str(item.get("claim") or "").strip())])
+    anchor_field = "anchor_reference_ids" if "anchor_reference_ids" in keeper else "anchor_block_ids"
+    keeper[anchor_field] = _unique([*_observation_anchors(keeper), *(ref for item in carried for ref in item.get("anchor_block_ids", []) or [])])
+
+
 def _select_observation_keeper(observations: list[dict[str, Any]]) -> dict[str, Any]:
     return max(
         observations,
         key=lambda item: (
             len(_observation_anchors(item)),
             len(str(item.get("summary") or "")),
-            len(item.get("claims", []) or []),
+            # 정규화 전 노트의 관찰은 claims 대신 evidence_refs로 근거를 가리킨다.
+            len(item.get("evidence_refs") or item.get("claims") or []),
         ),
     )
 

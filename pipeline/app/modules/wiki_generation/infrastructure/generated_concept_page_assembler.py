@@ -57,6 +57,7 @@ class GeneratedConceptPageAssembler:
             "mention_count": concept.get("mention_count", 0),
             "importance_score": concept.get("importance_score", 0),
             "aliases": concept.get("aliases", []),
+            "tags": concept.get("tags", []),
             "display_reference_ids": concept.get("display_reference_ids", []),
         }
         for i, kp in enumerate(raw_page.get("key_points", []) or [], start=1):
@@ -97,6 +98,7 @@ class GeneratedConceptPageAssembler:
 type: concept
 slug: {page['slug']}
 sources: {', '.join(page.get('source_document_ids', []))}
+tags: {', '.join(page.get('tags', []))}
 mention_count: {page.get('mention_count', 0)}
 importance_score: {round(page.get('importance_score', 0), 2)}
 generated_by: llm_concept_page_generation
@@ -178,6 +180,7 @@ confidence: {page.get('confidence', 0.0)}
 type: concept
 slug: {slug}
 sources: {', '.join(ledger.get('source_document_ids', []))}
+tags: {', '.join(ledger.get('tags', []))}
 mention_count: {ledger.get('mention_count', 0)}
 importance_score: {round(ledger.get('importance_score', 0), 2)}
 llm_confidence: {confidence}

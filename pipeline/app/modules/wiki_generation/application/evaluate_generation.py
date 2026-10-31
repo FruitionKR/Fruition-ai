@@ -25,6 +25,33 @@ NORMALIZED_LIST_KEYS = (
     "observations",
     "evidence_units",
 )
+# 노트 안의 추출 항목은 정규화 때 최상위 목록으로 펼쳐지므로, 평가 입력에서는 노트에서 빼고 한 번만 보낸다.
+NOTE_ITEM_KEYS = (
+    "observations",
+    "categories",
+    "core_concepts",
+    "concept_candidates",
+    "section_candidates",
+    "mentions",
+    "evidence_claims",
+)
+# 평가 판단에 쓰지 않는 필드: 단일 문서라 항목마다 같은 문서 ID, 집계값, 다른 쪽 목록에 이미 있는 역방향 ID.
+EVALUATION_OMITTED_ITEM_KEYS = {
+    "source_document_id",
+    "source_document_ids",
+    "mention_count",
+    "importance_score",
+    "display_reference_ids",
+    "mention_reference_ids",
+    "evidence_claim_ids",
+}
+# 평가자 프롬프트의 합격 점수. 높음 심각도 문제가 없고 이 점수를 넘으면 합격이다.
+PASS_SCORE_THRESHOLDS = {
+    "source_excerpt_fidelity": 4,
+    "concept_groundedness": 4,
+    "relation_faithfulness": 0.75,
+    "evidence_relevance": 0.75,
+}
 
 
 def evaluate_generation(
@@ -34,10 +61,11 @@ def evaluate_generation(
     document: Any,
     blocks: list[Any],
     normalized: dict[str, Any],
+    previous_requests: list[dict[str, Any]],
 ) -> GenerationEvaluation:
     windows = _block_windows(blocks, EVALUATION_WINDOW_CHARS)
     if len(windows) == 1:
-        evaluation = _evaluate_window(completion, evaluator_prompt, document, blocks, normalized)
+        evaluation = _evaluate_window(completion, evaluator_prompt, document, blocks, normalized, previous_requests)
     else:
         subsets = _normalized_by_window(normalized, windows)
         with ThreadPoolExecutor(max_workers=min(EVALUATION_MAX_WORKERS, len(windows))) as executor:
@@ -50,6 +78,7 @@ def evaluate_generation(
                     document,
                     window,
                     subset,
+                    previous_requests,
                 )
                 for window, subset in zip(windows, subsets, strict=True)
             ]
@@ -59,6 +88,8 @@ def evaluate_generation(
         evaluation,
         normalized,
         source_block_ids=[block.block_id for block in blocks],
+        # ponytail: 재편입은 바뀐 블록만 받아 그대로인 블록의 숫자도 문제로 본다. 편입 뒤 제거는 전체 블록 기준이다.
+        source_texts=[block.text for block in blocks],
     )
     return evaluation
 
@@ -69,6 +100,7 @@ def _evaluate_window(
     document: Any,
     blocks: list[Any],
     normalized: dict[str, Any],
+    previous_requests: list[dict[str, Any]],
 ) -> GenerationEvaluation:
     payload = {
         "document": asdict(document),
@@ -77,16 +109,54 @@ def _evaluate_window(
             for block in blocks
         ],
         "normalized": {
-            **{key: normalized.get(key, []) for key in NORMALIZED_LIST_KEYS},
+            **{
+                key: [_evaluation_item(item) for item in normalized.get(key, [])]
+                for key in NORMALIZED_LIST_KEYS
+                if key != "semantic_notes"
+            },
+            "semantic_notes": [
+                {key: value for key, value in note.items() if key not in NOTE_ITEM_KEYS}
+                for note in normalized.get("semantic_notes", [])
+            ],
             "warnings": normalized.get("warnings", []),
         },
+        "previous_requests": previous_requests,
     }
     evaluation: GenerationEvaluation = completion.complete_json(
         evaluator_prompt,
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
     _normalize_evaluation(evaluation)
+    _apply_blocking_rule(evaluation)
     return evaluation
+
+
+def _apply_blocking_rule(evaluation: GenerationEvaluation) -> None:
+    """중간·낮음 심각도 문제는 경고로 옮겨, 그것만으로는 불합격·재시도하지 않게 한다. 심각도가 없으면 막는 문제로 본다."""
+    blocking = [issue for issue in evaluation["issues"] if issue.get("severity") not in {"medium", "low"}]
+    if len(blocking) == len(evaluation["issues"]):
+        return
+    evaluation["warnings"] = [*evaluation["warnings"], *(issue for issue in evaluation["issues"] if issue not in blocking)]
+    evaluation["issues"] = blocking
+    # 평가자가 옮긴 문제 때문에 불합격시켰을 수 있어, 남은 문제가 없으면 점수 기준으로 다시 판정한다.
+    evaluation["passed"] = not blocking and all(
+        isinstance(evaluation["scores"].get(metric), int | float) and evaluation["scores"][metric] >= threshold
+        for metric, threshold in PASS_SCORE_THRESHOLDS.items()
+    )
+    evaluation["retry_recommended"] = not evaluation["passed"]
+    evaluation["retry_feedback"] = " ".join(
+        dict.fromkeys(str(issue["feedback"]) for issue in blocking if issue.get("feedback"))
+    )
+
+
+def _evaluation_item(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    omitted = set(EVALUATION_OMITTED_ITEM_KEYS)
+    # term은 정규화가 name/title을 복사해 둔 값이라, 같으면 한 번만 보낸다.
+    if item.get("term") is not None and item.get("term") in (item.get("name"), item.get("title")):
+        omitted.add("term")
+    return {key: value for key, value in item.items() if key not in omitted}
 
 
 def _block_windows(blocks: list[Any], max_chars: int) -> list[list[Any]]:

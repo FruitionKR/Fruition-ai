@@ -35,7 +35,7 @@ def test_source_extraction_artifact_uses_embedding_friendly_terms(tmp_path: Path
                     "title": "검색 인덱스의 역할 질문",
                     "query_text": "검색 인덱스가 왜 필요해?",
                     "summary": "검색 인덱스는 문서를 검색 가능한 구조로 바꿔 후속 질의의 후보가 된다.",
-                    "claims": ["검색 인덱스는 후속 질의 후보를 찾는 데 쓰인다."],
+                    "evidence_refs": ["e1"],
                     "related_concept_hints": ["search-index"],
                     "anchor_block_ids": ["B0001", "B0002"],
                 }
@@ -67,7 +67,15 @@ def test_source_extraction_artifact_uses_embedding_friendly_terms(tmp_path: Path
                     "evidence_block_ids": ["B0003"],
                 }
             ],
-            "evidence_claims": [],
+            "evidence_claims": [
+                {
+                    "id": "e1",
+                    "claim": "검색 인덱스는 후속 질의 후보를 찾는 데 쓰인다.",
+                    "anchor_block_ids": ["B0001"],
+                    "related_concept_hints": ["search-index"],
+                    "confidence": 0.9,
+                }
+            ],
             "needs_neighbor_context": False,
             "context_problem": None,
         }
@@ -436,3 +444,208 @@ def test_link_builder_does_not_materialize_weak_concept_edges() -> None:
     links = LinkBuilder().build(normalized)
 
     assert {link["relation"] for link in links} == {"source_mentions_concept"}
+
+
+def test_link_builder_links_concepts_judged_link_to_including_existing_ones() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_page_sections import concept_related_lines
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트"}],
+        "existing_concept_index": [{"slug": "deployment", "title": "Deployment"}],
+        "concept_resolutions": [
+            {"incoming_slug": "rolling-update", "decision": "link_to", "canonical_slug": "rolling-update",
+             "link_targets": ["deployment"], "confidence": 0.0},
+        ],
+    }
+
+    links = LinkBuilder().build(normalized)
+
+    concept_links = [link for link in links if link["relation"] == "concept_related_to"]
+    assert [(link["source"], link["target"]) for link in concept_links] == [("concept:rolling-update", "concept:deployment")]
+    # 다른 문서의 기존 개념도 본문 Related Concepts에 제목과 함께 적는다.
+    assert concept_related_lines("rolling-update", normalized, {"rolling-update": normalized["concept_ledger"][0]}) == [
+        "- [[deployment|Deployment]]"
+    ]
+
+
+def test_link_to_resolution_keeps_the_concept_and_links_it_through_the_ingest_steps() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트", "aliases": []}],
+        "evidence_units": [],
+    }
+    existing = [{"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."}]
+    raw = {"resolutions": [{"incoming_slug": "rolling-update", "decision": "link_to", "canonical_slug": "deployment"}]}
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    resolved = apply_concept_resolutions(normalized, resolutions, existing)
+    links = LinkBuilder().build(resolved)
+
+    assert [c["slug"] for c in resolved["concept_ledger"]] == ["rolling-update"]
+    assert ("concept:rolling-update", "concept:deployment") in {
+        (link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"
+    }
+
+
+def test_link_confidences_of_validated_targets_reach_concept_links() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [{"slug": "rolling-update", "title": "롤링 업데이트", "aliases": []}],
+        "evidence_units": [],
+    }
+    existing = [
+        {"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."},
+        {"slug": "replica-set", "title": "ReplicaSet", "definition": "파드 복제본 수를 유지한다."},
+    ]
+    raw = {"resolutions": [{
+        "incoming_slug": "rolling-update",
+        "decision": "link_to",
+        "canonical_slug": "deployment",
+        "link_targets": ["deployment", "replica-set", "missing"],
+        "link_confidences": {"deployment": 0.8, "replica-set": 0.6, "missing": 0.9},
+    }]}
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    links = LinkBuilder().build(apply_concept_resolutions(normalized, resolutions, existing))
+
+    assert resolutions[0]["link_confidences"] == {"deployment": 0.8, "replica-set": 0.6}
+    assert {
+        link["target"]: link["confidence"] for link in links if link["relation"] == "concept_related_to"
+    } == {"concept:deployment": 0.8, "concept:replica-set": 0.6}
+
+
+def test_merge_resolution_with_null_link_targets_is_normalized() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import normalize_resolution_output
+
+    existing = [{"slug": "deployment", "title": "Deployment", "definition": "파드 업데이트를 선언적으로 관리한다."}]
+    raw = {"resolutions": [{
+        "incoming_slug": "deploy",
+        "decision": "merge_into",
+        "canonical_slug": "deployment",
+        "link_targets": None,
+    }]}
+
+    resolutions = normalize_resolution_output(raw, [{"slug": "deploy", "title": "Deploy"}], existing, [])
+
+    assert resolutions[0]["decision"] == "merge_into"
+    assert resolutions[0]["canonical_slug"] == "deployment"
+    assert resolutions[0]["link_targets"] == []
+
+
+def test_link_to_a_concept_merged_in_the_same_ingest_links_the_merged_concept() -> None:
+    from app.modules.wiki_generation.infrastructure.concept_resolution import (
+        apply_concept_resolutions,
+        normalize_resolution_output,
+    )
+
+    normalized = {
+        "document": {"document_id": "doc_b"},
+        "concept_ledger": [
+            {"slug": "weighted-mean", "title": "가중 평균", "aliases": []},
+            {"slug": "average", "title": "평균", "aliases": []},
+        ],
+        "evidence_units": [],
+    }
+    existing = [{"slug": "mean", "title": "Mean", "definition": "합을 개수로 나눈 값이다."}]
+    raw = {
+        "resolutions": [
+            {"incoming_slug": "weighted-mean", "decision": "link_to", "canonical_slug": "average"},
+            {"incoming_slug": "average", "decision": "merge_into", "canonical_slug": "mean"},
+        ]
+    }
+
+    from app.modules.wiki_generation.infrastructure.concept_page_sections import concept_related_lines
+
+    resolutions = normalize_resolution_output(raw, normalized["concept_ledger"], existing, [])
+    resolved = apply_concept_resolutions(normalized, resolutions, existing)
+    resolved["existing_concept_index"] = existing
+    links = LinkBuilder().build(resolved)
+
+    assert [(link["source"], link["target"]) for link in links if link["relation"] == "concept_related_to"] == [
+        ("concept:weighted-mean", "concept:mean")
+    ]
+    # 본문 Related Concepts도 병합된 개념을 적는다.
+    ledger_by_slug = {c["slug"]: c for c in resolved["concept_ledger"]}
+    assert concept_related_lines("weighted-mean", resolved, ledger_by_slug) == ["- [[mean|Mean]]"]
+
+
+def test_alias_that_names_another_core_concept_becomes_a_link() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [SourceBlock("doc_test", "B0001", "ref_b0001", "RAG와 RAG-Token을 설명한다.", 1, 1)]
+    note = {
+        "chunk_id": "chunk_0001",
+        "core_concepts": [
+            {"title": "RAG", "slug_hint": "rag", "aliases": ["RAG-Token", "검색 증강 생성"], "definition": "검색 증강 생성", "evidence_block_ids": ["B0001"]},
+            {"title": "RAG-Token", "slug_hint": "rag-token", "aliases": [], "definition": "토큰마다 문서를 고른다", "evidence_block_ids": ["B0001"]},
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    rag = next(c for c in normalized["concept_ledger"] if c["slug"] == "rag")
+    links = LinkBuilder().build(normalized)
+
+    assert "RAG-Token" not in rag["aliases"]
+    assert "검색 증강 생성" in rag["aliases"]
+    assert {"source": "concept:rag", "target": "concept:rag-token", "relation": "concept_related_to", "decided_by": "alias_overlap"} in links
+
+
+def test_concepts_naming_each_other_keep_aliases_for_name_match() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [SourceBlock("doc_test", "B0001", "ref_b0001", "RAG는 검색 증강 생성이다.", 1, 1)]
+    note = {
+        "chunk_id": "chunk_0001",
+        "core_concepts": [
+            {"title": "RAG", "slug_hint": "rag", "aliases": ["Retrieval-Augmented Generation"], "definition": "정의", "evidence_block_ids": ["B0001"]},
+            {"title": "Retrieval-Augmented Generation", "slug_hint": "retrieval-augmented-generation", "aliases": ["RAG"], "definition": "정의", "evidence_block_ids": ["B0001"]},
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+
+    assert normalized["alias_concept_links"] == []
+    assert "Retrieval-Augmented Generation" in next(c for c in normalized["concept_ledger"] if c["slug"] == "rag")["aliases"]
+
+
+def test_observation_claims_come_from_referenced_evidence_claims() -> None:
+    document = SourceDocument("doc_test", "테스트 문서", "test.md", "abc123")
+    blocks = [
+        SourceBlock("doc_test", "B0001", "ref_b0001", "검색 인덱스는 후보를 찾는다.", 1, 1),
+        SourceBlock("doc_test", "B0002", "ref_b0002", "BM25는 점수를 매긴다.", 2, 2),
+    ]
+    note = {
+        "chunk_id": "chunk_0001",
+        "evidence_claims": [
+            {"id": "e1", "claim": "검색 인덱스는 후보를 찾는다.", "anchor_block_ids": ["B0001"]},
+            {"id": "e2", "claim": "BM25는 점수를 매긴다.", "anchor_block_ids": ["B0002"]},
+        ],
+        "observations": [
+            {
+                "type": "source_claim",
+                "title": "검색 흐름",
+                "summary": "후보를 찾고 점수를 매긴다.",
+                "evidence_refs": ["e2", "missing", "e1"],
+                "anchor_block_ids": ["B0001"],
+            }
+        ],
+    }
+
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    observation = normalized["observations"][0]
+
+    assert observation["claims"] == ["BM25는 점수를 매긴다.", "검색 인덱스는 후보를 찾는다."]
+    assert "evidence_ids" not in observation
+    assert observation["anchor_reference_ids"] == ["B0001", "B0002"]
+    assert "evidence_refs" not in observation
+    assert [e["claim"] for e in normalized["evidence_units"]] == ["검색 인덱스는 후보를 찾는다.", "BM25는 점수를 매긴다."]
+    assert "unknown observation evidence_ref: missing" in normalized["warnings"]

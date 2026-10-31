@@ -4,7 +4,7 @@
 - 후보: workspace embedding unit을 (본문, block ref, 문서)로 묶고 BGE-M3 0.75 + BM25 0.25 점수 상위 300개
 - 입력: 순위 단서가 되지 않도록 섞은 순서. 후보 필드는 평가와 같고, 운영 unit에 없는 PDF 쪽번호(pages)만 뺀다.
 - 묶음: cl100k 기준 요청 28,000 토큰·80개 이하, 최대 4개 묶음 동시 요청
-- 결과: include 확률이 높은 순으로 상위 근거
+- 결과: include 확률이 높은 순으로 상위 근거. 이미 고른 근거의 블록만 가리키는 근거는 건너뛴다
 Jev를 쓸 수 없으면 기존 선택기로 처리한다.
 """
 
@@ -17,13 +17,10 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
-import tiktoken
-
-from app.core.jev_client import JEV_MODEL, JevClient, JevUnavailable, choice_probability
-from app.core.llm_prompt import with_llm_security_boundary
+from app.core.jev_batches import MAX_BATCH_TOKENS, token_batches
+from app.core.jev_client import JevClient, JevUnavailable, choice_probability
 from app.modules.query.application.ports import (
     EmbeddingSearchPort,
     EvidenceSelectorPort,
@@ -44,9 +41,6 @@ EVIDENCE_POLICY = """질문에 답하는 데 직접 필요한 근거를 선택�
 EVIDENCE_CRITERIA = {"include": "질문에 직접 필요한 근거", "exclude": "필요한 근거가 아님"}
 # 평가 후보 점수(prepare_jev_controlled.common_candidates)의 BGE-M3 비중이다.
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
-# Jev는 state와 가장 긴 질문 합계에 32k 제한이 있어 tokenizer 차이 여유를 둔다.
-MAX_BATCH_TOKENS = 28_000
-BATCH_TOKEN_MARGIN = 64
 logger = logging.getLogger(__name__)
 
 
@@ -165,28 +159,28 @@ class JevEvidenceSelector(EvidenceSelectorPort):
             ]
             probabilities = {unit_id: score for future in futures for unit_id, score in future.result().items()}
         units_by_id = {candidate.unit.id: candidate.unit for candidate in candidates}
-        selected = sorted(probabilities, key=lambda unit_id: (-probabilities[unit_id], unit_id))
-        return [
-            _snippet(rank, units_by_id[unit_id])
-            for rank, unit_id in enumerate(selected[: self._max_evidence_snippets], start=1)
-        ]
+        # 한 원문 블록이 원문·핵심 문장·관찰·개념 정의 unit으로 여러 번 저장되므로,
+        # 이미 고른 근거의 블록만 가리키는 unit은 건너뛰어 같은 블록이 자리를 여러 번 차지하지 않게 한다.
+        selected: list[WikiEmbeddingUnit] = []
+        covered: set[str] = set()
+        for unit_id in sorted(probabilities, key=lambda unit_id: (-probabilities[unit_id], unit_id)):
+            unit = units_by_id[unit_id]
+            blocks = set(unit.source_block_ids)
+            if blocks <= covered:
+                continue
+            selected.append(unit)
+            covered |= blocks
+            if len(selected) == self._max_evidence_snippets:
+                break
+        return [_snippet(rank, unit) for rank, unit in enumerate(selected, start=1)]
 
     def _batches(self, question: str, candidates: list[_Candidate]) -> list[list[_Candidate]]:
-        """평가 실행기(run_jev_controlled.batches)와 같이 요청 토큰을 추정해 묶는다."""
-        header = _tokens(_request(question, [])) + BATCH_TOKEN_MARGIN
-        batches: list[list[_Candidate]] = []
-        current: list[_Candidate] = []
-        estimate = header
-        for candidate in candidates:
-            size = _tokens(_request(question, [candidate])) + BATCH_TOKEN_MARGIN
-            if current and (len(current) >= self._max_batch_candidates or estimate + size > self._max_batch_tokens):
-                batches.append(current)
-                current, estimate = [], header
-            current.append(candidate)
-            estimate += size
-        if current:
-            batches.append(current)
-        return batches
+        return token_batches(
+            candidates,
+            lambda batch: _request(question, batch),
+            max_tokens=self._max_batch_tokens,
+            max_items=self._max_batch_candidates,
+        )
 
     def _judge_batch(self, question: str, batch: list[_Candidate]) -> dict[str, float]:
         request = _request(question, batch)
@@ -208,28 +202,13 @@ def _request(question: str, batch: list[_Candidate]) -> dict[str, Any]:
         "questions": {
             candidate.unit.id: {
                 "type": "choice",
-                # 평가와 같은 문구다. 보안 경계가 이미 있으면 클라이언트가 다시 붙이지 않는다.
-                "instructions": with_llm_security_boundary(EVIDENCE_POLICY) + f"\n판정할 후보 ID: {candidate.unit.id}",
+                # 평가와 같은 문구다. 보안 경계는 클라이언트가 state에 한 번 넣는다.
+                "instructions": EVIDENCE_POLICY + f"\n판정할 후보 ID: {candidate.unit.id}",
                 "criteria": EVIDENCE_CRITERIA,
             }
             for candidate in batch
         },
     }
-
-
-def _tokens(request: dict[str, Any]) -> int:
-    """평가 실행기와 같이 model을 포함한 요청 본문 전체를 cl100k_base로 센다."""
-    try:
-        encoding = _encoding()
-    except Exception as exc:  # tokenizer 파일을 못 읽으면 크기를 알 수 없어 Jev를 쓰지 않는다.
-        raise JevUnavailable(f"tokenizer를 불러오지 못했습니다: {type(exc).__name__}") from None
-    body = {"model": JEV_MODEL, **request}
-    return len(encoding.encode(json.dumps(body, ensure_ascii=False, sort_keys=True)))
-
-
-@lru_cache(maxsize=1)
-def _encoding() -> tiktoken.Encoding:
-    return tiktoken.get_encoding("cl100k_base")
 
 
 def _snippet(rank: int, unit: WikiEmbeddingUnit) -> EvidenceSnippet:

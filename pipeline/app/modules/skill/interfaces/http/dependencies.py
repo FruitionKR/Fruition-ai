@@ -16,6 +16,7 @@ from app.modules.skill.infrastructure.chat_completions_skill_authoring_generator
 from app.modules.skill.infrastructure.chat_completions_skill_draft_generator import (
     build_skill_draft_generator,
 )
+from app.modules.skill.infrastructure.jev_skill_intent_classifier import with_jev_skill_intent
 from app.modules.skill.infrastructure.postgres_skill_repository import PostgresSkillRepository
 
 
@@ -35,7 +36,7 @@ def get_propose_skill_draft_use_case(*, provider: str, model: str) -> ProposeSki
 
 def get_author_skill_use_case(*, provider: str, model: str, parent_run_id: str | None = None) -> AuthorSkillUseCase:
     return AuthorSkillUseCase(
-        build_skill_authoring_generator(provider=provider, model=model),
+        with_jev_skill_intent(build_skill_authoring_generator(provider=provider, model=model)),
         build_skill_reference_reader(),
         ManageSkillUseCase(PostgresSkillRepository(parent_run_id=parent_run_id)),
     )
