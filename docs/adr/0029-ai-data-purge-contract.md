@@ -7,6 +7,8 @@ Accepted
 
 개정 2026-10-12: 파기와 겹친 에이전트 checkpoint 쓰기와 로컬 임시 폴더 잔존을 닫았다(Consequences).
 
+개정 2026-10-30: 파기의 S3 단계와 DB 단계 사이에 진행 중이던 작업이 쓴 위키 객체가 남던 경합을 닫았다(Consequences).
+
 개정 2026-10-11(ADR 0033): 위키 객체 키가 `wiki/{workspace_id}/` 하나로 통일돼, S3 목록으로 사용자 prefix를 찾던 결정과 그 비용 결과를 대체했다.
 
 ## Context
@@ -34,4 +36,5 @@ Accepted
 - 파기가 지운 S3 객체(위키·산출물)도 flatform PR #77의 이전 버전 만료가 적용돼야 약 30일 뒤 실제로 사라진다. 적용 전 파기는 DB와 현재 버전만 지운 상태다.
 - 배포 순서는 flatform(lifecycle·권한) → AI(이 변경) → Document#88 → Access#29다.
 - 파기와 겹치는 에이전트 실행이 checkpoint를 남기던 경합을 닫았다. 이전에는 파기가 checkpoint를 지운 뒤 실행 중이던 worker가 `durability="sync"`로 다시 쓰면 `agent_runs`가 없는 checkpoint(대화 상태, 개인정보)가 남았다. 이제 파기는 `agent_runs`를 먼저 지운 뒤 checkpoint를 지우고, checkpoint 테이블 3종은 run 행이 없으면 삽입을 거부한다(`FOR KEY SHARE`). 겹친 쓰기는 파기가 기다렸다 지우거나 거부된다. 거부된 에이전트 작업은 일반 DB 오류로 실패 처리되고, 해당 run이 이미 지워졌으므로 남는 기록이 없다. 산출물 S3 객체는 DB 삭제 뒤 한 번 더 지운다.
+- 위키 객체(`wiki/{workspace_id}/`) 쓰기는 작업 안팎 모두 워크스페이스 advisory 잠금을 공유로 쥔 채 끝나고(`write_fence`), 파기 표시는 같은 잠금을 배타로 잡는다. 표시 전에 시작한 쓰기는 표시가 기다려 S3 삭제 전에 끝나고, 표시 뒤의 쓰기와 rollback 복원은 `ScopePurgedError`로 거절된다. 이전에는 S3 삭제와 DB 삭제 사이에 끝난 쓰기의 객체가 추적 행 없이 남았다. 삭제는 막지 않는다. 클라이언트가 실패로 본 뒤 S3가 늦게 반영한 PUT, 회의 전사 checkpoint 직접 쓰기는 이 잠금 밖이다.
 - 위키 편입의 `runs/api_{run_id}` 로컬 폴더는 실행 종료 시 지운다. HTTP 요청의 `out` 필드는 임의 경로를 `rmtree`하게 만들 수 있어 제거했다(CLI `run_lab --out`은 유지). 이전에는 요청마다 폴더가 pod 디스크에 쌓였고 `save_debug_json` 요청이면 원문 JSON이 함께 남았다. 프로세스가 강제 종료되면 폴더가 남을 수 있으나 pod 재기동 때 디스크와 함께 사라진다.

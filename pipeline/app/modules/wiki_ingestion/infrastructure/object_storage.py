@@ -78,13 +78,15 @@ def write_text_object(
         from app.modules.task_cancellation.infrastructure.object_change_journal import change_object
         change_object(task_run_id.get(), minio_client, bucket, key, {"text": text, "content_type": content_type})
         return storage_uri(key, bucket)
-    minio_client.put_object(
-        bucket,
-        key,
-        BytesIO(data),
-        length=len(data),
-        content_type=content_type,
-    )
+    from app.modules.task_cancellation.infrastructure.object_change_journal import write_fence
+    with write_fence(key, text):
+        minio_client.put_object(
+            bucket,
+            key,
+            BytesIO(data),
+            length=len(data),
+            content_type=content_type,
+        )
     return storage_uri(key, bucket)
 
 

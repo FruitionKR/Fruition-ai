@@ -93,6 +93,12 @@ def workspace_purged(conn, workspace_id: str) -> bool:
                         (str(workspace_id),)).fetchone() is not None
 
 
+def lock_workspace_writes(conn, workspace_id: str, shared: bool) -> None:
+    """위키 객체 쓰기(공유)와 워크스페이스 파기 표시(배타)가 같은 트랜잭션 advisory 잠금을 잡는다(object_change_journal.write_fence)."""
+    function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    conn.execute(f"SELECT {function}(hashtextextended(%s, 0))", ("ai-workspace-write:" + str(workspace_id),))
+
+
 def active(run_id: str) -> bool:
     with connect() as conn:
         row = conn.execute("SELECT status FROM ai_task_runs WHERE id = %s", (run_id,)).fetchone()
@@ -185,10 +191,12 @@ def _undo_changes(run_id: str) -> bool:
                 undo_object(change)
             else:
                 undo_row(change)
-    except (ValueError, psycopg.Error, S3Error, OSError) as exc:
+    except (ValueError, ScopePurgedError, psycopg.Error, S3Error, OSError) as exc:
+        # 파기된 워크스페이스로 객체를 되살리지 않는다(write_fence). 남은 기록은 파기의 DB 삭제가 지운다.
         with connect() as conn:
             conn.execute("UPDATE ai_task_runs SET status = 'rollback_failed', error_code = %s, updated_at = now() WHERE id = %s",
-                         ("rollback_conflict" if isinstance(exc, ValueError) else "rollback_database_error", run_id))
+                         ("rollback_conflict" if isinstance(exc, (ValueError, ScopePurgedError)) else "rollback_database_error",
+                          run_id))
         return False
     return True
 
