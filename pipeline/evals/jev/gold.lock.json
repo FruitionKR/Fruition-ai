@@ -28,7 +28,7 @@
    "ko-wiki-rag.md": "6c99be413c1fb04a5d821a1647eeadcf476cb3648ddeb93d7ce323f392598812"
   },
   "edit.json": {
-   "sha256": "d057654a326c4020cc46491d8238a3e8d3e4e7cbb66345cfcc1338fdc3dbf209",
+   "sha256": "c2d262c0484af5fa9e8f22a83343874d2f08e8631d7c7bc2f78adbe3434e5a1a",
    "cases": 30
   },
   "organize.json": {
@@ -94,6 +94,12 @@
    "file": "concept.json",
    "change": "dist-unrel-05 허용 답 link_to deployment의 also_link에서 형제 개념 replicaset, statefulset 제외",
    "reason": "replicaset, statefulset은 deployment와 같은 상위 개념(워크로드 리소스) 아래의 형제다. 형제는 연결하지 않는 판정 규칙(#168)과 맞춘다."
+  },
+  {
+   "date": "2026-10-31",
+   "file": "edit.json",
+   "change": "edit-30, edit-23 허용 설명(acceptable_notes) 추가(기대 답·코드 검사·판정 기준은 유지)",
+   "reason": "edit-30: '3줄로 요약'에 세 문장 한 문단을 쓴 결과를 줄 수로 실패시켰다. edit-23: '알기 쉽게 덧붙여'에 섹션 내용만으로 만든 가상의 질문 예시를 원문에 없는 내용으로 실패시켰다. 둘 다 요청의 합리적인 해석이다."
   }
  ]
 }
