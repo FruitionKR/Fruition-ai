@@ -557,13 +557,14 @@ class MarkdownOutputContractTest(unittest.TestCase):
             edit_goal="shorten",
         )
 
-        failures = validate_markdown_output(request, "설정을 설명한다.\nTTL은 짧다.")
+        failures = validate_markdown_output(request, "설정을 설명한다.\nTTL은 5분이다.")
 
         self.assertIn("one-sentence shortening must stay on one line", failures)
-        self.assertIn("shortening must preserve literal anchor: API", failures)
-        self.assertIn("shortening must preserve literal anchor: 10분", failures)
+        self.assertIn("shortening must not add or alter literal anchor: 5분", failures)
+        # 줄이면서 원문 고정어(API, 10분)가 빠지는 것은 실패가 아니다.
+        self.assertFalse(any("literal anchor: API" in failure or "literal anchor: 10분" in failure for failure in failures))
 
-    def test_shorten_ignores_short_unitless_numbers_only(self) -> None:
+    def test_shorten_allows_dropped_anchors_and_flags_altered_ones(self) -> None:
         request = MarkdownEditRequest(
             instruction="짧게 줄여줘.",
             markdown=(
@@ -579,14 +580,16 @@ class MarkdownOutputContractTest(unittest.TestCase):
             "NTP, MQTT, TLS 1.3과 1.2.3으로 5분마다 30초 동안 8883 포트에 연결하고 retry_count 값을 기록한다.",
         )
         missing_failures = validate_markdown_output(request, "연결 설정과 내부 순번을 기록한다.")
+        altered_failures = validate_markdown_output(request, "NTP, MQTT, TLS 1.4로 10분마다 8884 포트에 연결하고 retry_cnt 값을 기록한다.")
 
         self.assertEqual(failures, [])
-        for anchor in ("NTP", "MQTT", "TLS", "1.3", "1.2.3", "5분", "30초", "8883", "retry_count"):
-            self.assertIn(f"shortening must preserve literal anchor: {anchor}", missing_failures)
-        for anchor in ("1.2", "123", "02", "3", "64"):
-            self.assertNotIn(f"shortening must preserve literal anchor: {anchor}", missing_failures)
+        self.assertEqual(missing_failures, [])
+        for anchor in ("1.4", "10분", "8884", "retry_cnt"):
+            self.assertIn(f"shortening must not add or alter literal anchor: {anchor}", altered_failures)
+        for anchor in ("NTP", "MQTT", "TLS"):
+            self.assertNotIn(f"shortening must not add or alter literal anchor: {anchor}", altered_failures)
 
-    def test_shorten_preserves_independent_decimal_number(self) -> None:
+    def test_shorten_detects_altered_independent_decimal_number(self) -> None:
         request = MarkdownEditRequest(
             instruction="짧게 줄여줘.",
             markdown="독립 소수 1.2를 사용한다.",
@@ -595,9 +598,10 @@ class MarkdownOutputContractTest(unittest.TestCase):
         )
 
         self.assertEqual(validate_markdown_output(request, "소수 1.2를 사용한다."), [])
-        missing_failures = validate_markdown_output(request, "독립 소수를 사용한다.")
+        self.assertEqual(validate_markdown_output(request, "독립 소수를 사용한다."), [])
+        altered_failures = validate_markdown_output(request, "독립 소수 1.3을 사용한다.")
 
-        self.assertIn("shortening must preserve literal anchor: 1.2", missing_failures)
+        self.assertIn("shortening must not add or alter literal anchor: 1.3", altered_failures)
 
     def test_rejects_unexpected_han_characters_in_korean_cleanup(self) -> None:
         request = MarkdownEditRequest(
