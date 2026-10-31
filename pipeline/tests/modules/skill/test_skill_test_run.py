@@ -102,6 +102,7 @@ def test_edit_test_run_reports_changed_and_untouched_sections_without_saving():
     # 초안 지침이 Agent markdown_edit와 같은 요청 필드로 들어간다.
     assert editor.edit_requests[0].skill_instructions == "'연구 개요' 섹션만 고친다."
     assert editor.edit_requests[0].target == target
+    assert editor.edit_requests[0].instruction == "'research-summary' Skill의 지침을 선택한 부분에 적용해 주세요."
     assert generator.generate_count == 1
     assert repository.method_calls == []
 
@@ -116,6 +117,7 @@ def test_edit_test_run_defaults_to_whole_document():
     result = run(use_case)
 
     assert editor.edit_requests[0].target == MarkdownEditTarget(type="whole_document", start_line=1, end_line=7)
+    assert editor.edit_requests[0].instruction == "'research-summary' Skill의 지침을 이 문서에 적용해 주세요."
     assert result.result_markdown == editor.replacement
 
 
