@@ -75,6 +75,9 @@ class FakeRepository:
     def fail(self, run_id: str, error: str) -> None:
         self.calls.append(("fail", run_id, error))
 
+    def list_active_concept_index(self, workspace_id: str, *, use_cache: bool = True) -> list[dict[str, object]]:
+        return []
+
     def touch(self, run_id: str) -> bool:
         self.calls.append(("touch", run_id))
         if self.active_results:
@@ -353,6 +356,8 @@ class RunPipelineUseCaseTest(unittest.TestCase):
         heavy_runs: list[str] = []
         active = ""
         seen_active: list[tuple[str, str]] = []
+        seen_concepts: list[tuple[str, list[str]]] = []
+        index_reads: list[bool] = []
         calls: list[object] = []
         state_lock = Lock()
         workspace_lock = Lock()
@@ -376,13 +381,18 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                     active += run_id
                 return super().finish(run_id, manifest, expected_source_hash)
 
+            def list_active_concept_index(self, workspace_id: str, *, use_cache: bool = True):
+                index_reads.append(use_cache)
+                # 먼저 저장한 편입의 개념이 목록에 있다.
+                return [{"slug": f"concept-{run_id}"} for run_id in ("run-1", "run-2") if run_id in active]
+
         class DeferredRunner:
             def run(
                 self,
                 command: PipelineRunCommand,
                 progress_callback: Callable[[], None] | None = None,
                 finalization_callback: Callable[
-                    [Callable[[], dict[str, object]]], dict[str, object]
+                    [Callable[[list[dict[str, object]]], dict[str, object]]], dict[str, object]
                 ] | None = None,
             ) -> dict[str, object]:
                 with state_lock:
@@ -391,9 +401,10 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                         both_heavy.set()
                 assert release_heavy.wait(timeout=2)
 
-                def build_manifest() -> dict[str, object]:
+                def build_manifest(concepts: list[dict[str, object]]) -> dict[str, object]:
                     with state_lock:
                         seen_active.append((str(command.run_id), active))
+                        seen_concepts.append((str(command.run_id), [str(c["slug"]) for c in concepts]))
                     return {"run": command.run_id}
 
                 assert finalization_callback is not None
@@ -439,6 +450,11 @@ class RunPipelineUseCaseTest(unittest.TestCase):
         self.assertEqual(set(heavy_runs), {"run-1", "run-2"})
         self.assertEqual(seen_active[0][1], "")
         self.assertEqual(seen_active[1][1], "run-1" if seen_active[1][0] == "run-2" else "run-2")
+        # 무거운 단계는 함께 돌았어도, 뒤에 잠금을 잡은 편입의 개념 판정은 먼저 저장한 편입의 개념을 본다.
+        first, second = seen_concepts
+        self.assertEqual(first[1], [])
+        self.assertEqual(second[1], [f"concept-{first[0]}"])
+        self.assertEqual(index_reads, [False, False])
 
     def test_deferred_cancellation_skips_finish_and_shared_write(self) -> None:
         calls: list[object] = []
@@ -453,11 +469,11 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                 command: PipelineRunCommand,
                 progress_callback: Callable[[], None] | None = None,
                 finalization_callback: Callable[
-                    [Callable[[], dict[str, object]]], dict[str, object]
+                    [Callable[[list[dict[str, object]]], dict[str, object]]], dict[str, object]
                 ] | None = None,
             ) -> dict[str, object]:
                 assert finalization_callback is not None
-                return finalization_callback(lambda: {"run": command.run_id})
+                return finalization_callback(lambda _concepts: {"run": command.run_id})
 
         repository = CancelledRepository(calls, active_results=[True, True, True, False])
         use_case = RunPipelineUseCase(
@@ -497,11 +513,11 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                 command: PipelineRunCommand,
                 progress_callback: Callable[[], None] | None = None,
                 finalization_callback: Callable[
-                    [Callable[[], dict[str, object]]], dict[str, object]
+                    [Callable[[list[dict[str, object]]], dict[str, object]]], dict[str, object]
                 ] | None = None,
             ) -> dict[str, object]:
                 assert finalization_callback is not None
-                return finalization_callback(lambda: {"run": command.run_id})
+                return finalization_callback(lambda _concepts: {"run": command.run_id})
 
         repository = StaleRepository(calls)
         use_case = RunPipelineUseCase(

@@ -16,7 +16,7 @@ class RunLabPipelineRunner:
         command: PipelineRunCommand,
         progress_callback: Callable[[], bool | None] | None = None,
         finalization_callback: Callable[
-            [Callable[[], dict[str, Any]]], dict[str, Any]
+            [Callable[[list[dict[str, Any]]], dict[str, Any]]], dict[str, Any]
         ]
         | None = None,
     ) -> dict[str, Any]:
@@ -32,7 +32,9 @@ class PostgresPipelineRunRepository:
         workspace_id: str,
         run_id: str,
     ) -> ContextManager[None]:
-        return database.concept_write_lock(workspace_id, run_id)
+        # 편입 반영 단계는 개념 판정까지 잠금 안에서 하므로, 동시에 끝난 편입들이 차례를 오래 기다릴 수 있다.
+        # 10분이면 30분인 ingest worker max_poll_interval 안에서 문서 편입과 대기가 끝난다.
+        return database.concept_write_lock(workspace_id, run_id, lock_timeout="10min")
 
     def create(
         self,
@@ -77,8 +79,10 @@ class PostgresPipelineRunRepository:
     def list_active_concept_index(
         self,
         workspace_id: str,
+        *,
+        use_cache: bool = True,
     ) -> list[dict[str, Any]]:
-        return database.list_active_concept_index(workspace_id)
+        return database.list_active_concept_index(workspace_id, use_cache=use_cache)
 
     def latest_source_page_context(
         self,

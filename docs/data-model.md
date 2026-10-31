@@ -19,7 +19,7 @@
 | agent_approvals·agent_jobs·agent_tool_executions·agent_run_artifacts | ai-svc | 승인·lease/retry·Tool 멱등 실행·비동기 artifact | run/plan/operation FK, Tool 호출 수 40회 제한. 부분 승인은 `agent_approvals.operation_ids`에 고른 작업을 남기고 나머지 operation을 `skipped`(`not_selected`)로 둔다 |
 | checkpoint_migrations·checkpoints·checkpoint_blobs·checkpoint_writes | ai-svc | LangGraph Agent 중단·재개 상태 | `PostgresSaver`가 `AI_DATABASE_URL`로 사용 |
 
-Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다.
+Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다. 문서 편입의 개념 판정은 워크스페이스 `concept_write_lock`을 잡은 뒤 이 캐시를 거치지 않고 DB에서 다시 읽은 목록으로 한다.
 
 Concept 페이지 frontmatter의 `tags`는 추출 단계가 원문 근거로 붙인 분야·분류 태그(최대 3개, 제목·별칭과 중복 제외)를 `sources`처럼 쉼표로 이어 쓴 값이며, 없으면 빈 값이다. 기존 개념 목록은 이 값을 `tags` 목록으로 노출한다. 태그는 개념 후보 사전 필터링용 색인이며, 같은 개념인지 판정하는 근거로 쓰지 않는다. lint 승격 페이지는 태그 없이 만들어진다.
 
