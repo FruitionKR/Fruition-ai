@@ -1311,13 +1311,15 @@ def get_pipeline_run(run_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def list_active_concept_index(workspace_id: str = "local-workspace") -> list[dict[str, Any]]:
-    try:
-        cached = get_concept_index(workspace_id)
-        if cached is not None:
-            return cached
-    except Exception:
-        logger.warning("concept index cache read failed", exc_info=True)
+def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cache: bool = True) -> list[dict[str, Any]]:
+    # 개념 잠금 안에서는 캐시를 건너뛴다. 잠금 밖 조회가 앞선 편입 저장 전 목록을 캐시에 다시 넣을 수 있다.
+    if use_cache:
+        try:
+            cached = get_concept_index(workspace_id)
+            if cached is not None:
+                return cached
+        except Exception:
+            logger.warning("concept index cache read failed", exc_info=True)
     with connect() as conn:
         rows = conn.execute(
             """

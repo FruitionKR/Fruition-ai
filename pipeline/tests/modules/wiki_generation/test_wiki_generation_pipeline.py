@@ -248,9 +248,10 @@ class WikiGenerationPipelineTest(unittest.TestCase):
             "run_lab.with_jev_concept_merge", return_value=NameMatchConceptResolver(jev)
         ), patch("run_lab.judge_concept_update_candidates", side_effect=fake_update_check):
             _resolve_pipeline_concepts(
-                SimpleNamespace(existing_concept_index=[], existing_wiki_dir=None, save_debug_json=False),
+                SimpleNamespace(save_debug_json=False),
                 api_client=FakeConceptResolutionClient(),  # type: ignore[arg-type]
                 concept_resolution_prompt="resolve",
+                existing_concepts=[],
                 normalized={
                     "concept_ledger": [{"slug": "concept-a", "title": "Concept A", "aliases": [], "definition": "정의", "anchor_reference_ids": ["B0001"]}],
                     "document": {"document_id": "doc-1"},
@@ -271,13 +272,10 @@ class WikiGenerationPipelineTest(unittest.TestCase):
             client = FakeConceptResolutionClient()
             log_path = Path(tmp_dir) / "pipeline.log"
             normalized = _resolve_pipeline_concepts(
-                SimpleNamespace(
-                    existing_concept_index=[],
-                    existing_wiki_dir=None,
-                    save_debug_json=False,
-                ),
+                SimpleNamespace(save_debug_json=False),
                 api_client=client,  # type: ignore[arg-type]
                 concept_resolution_prompt="resolve",
+                existing_concepts=[],
                 normalized={
                     "concept_ledger": [
                         {

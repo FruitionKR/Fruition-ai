@@ -19,7 +19,7 @@ class PipelineRunnerPort(Protocol):
         command: PipelineRunCommand,
         progress_callback: Callable[[], bool | None] | None = None,
         finalization_callback: Callable[
-            [Callable[[], dict[str, Any]]], dict[str, Any]
+            [Callable[[list[dict[str, Any]]], dict[str, Any]]], dict[str, Any]
         ]
         | None = None,
     ) -> dict[str, Any]: ...
@@ -61,6 +61,8 @@ class PipelineRunRepositoryPort(Protocol):
     def list_active_concept_index(
         self,
         workspace_id: str,
+        *,
+        use_cache: bool = True,
     ) -> list[dict[str, Any]]: ...
 
     def latest_source_page_context(
