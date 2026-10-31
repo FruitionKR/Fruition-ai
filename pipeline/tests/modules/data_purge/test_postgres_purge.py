@@ -29,6 +29,17 @@ class FakeStorage:
         assert bucket == BUCKET
         self.objects.discard(key)
 
+    def bucket_exists(self, bucket):
+        return True
+
+    def get_object(self, bucket, key):
+        from minio.error import S3Error
+        # 늦은 쓰기 대상은 새 객체다. minio 버전마다 위치 인자 순서가 달라 이름으로 넘긴다.
+        raise S3Error(code="NoSuchKey", message="missing", resource="", request_id="", host_id="", response=None)
+
+    def put_object(self, bucket, key, data, length, content_type):
+        self.objects.add(key)
+
 
 @pytest.fixture
 def database(monkeypatch):
@@ -263,6 +274,72 @@ def test_artifact_registered_during_purge_is_swept(database, storage, monkeypatc
     purge.purge_workspace("ws")
 
     assert late not in storage.objects
+
+
+LATE = {"text": "늦은 본문", "content_type": "text/markdown"}
+
+
+def test_wiki_write_in_flight_when_purge_starts_is_removed(database, storage, monkeypatch):
+    """파기 시작 때 S3에 쓰는 중이던 위키 객체는 파기가 기다렸다가 S3 단계에서 함께 지운다."""
+    import threading
+    from app.modules.task_cancellation.infrastructure import object_change_journal as objects
+
+    with database() as conn:
+        seed(conn)
+    entered, release, result = threading.Event(), threading.Event(), {}
+    real_put = storage.put_object
+
+    def blocking_put(bucket, key, data, length, content_type):
+        entered.set()
+        assert release.wait(10)
+        real_put(bucket, key, data, length, content_type)
+        result["written"] = key in storage.objects
+
+    monkeypatch.setattr(storage, "put_object", blocking_put)
+    writer = threading.Thread(target=lambda: objects.change_object("task-ws", storage, BUCKET, "wiki/ws/sources/late.md", LATE))
+    writer.start()
+    assert entered.wait(10)
+    purger = threading.Thread(target=lambda: result.update(purge.purge_workspace("ws")))
+    purger.start()
+    purger.join(timeout=1)
+    assert purger.is_alive()  # 파기 표시가 진행 중인 쓰기의 공유 잠금을 기다린다.
+    release.set()
+    writer.join(timeout=10)
+    purger.join(timeout=10)
+
+    assert not writer.is_alive() and not purger.is_alive()
+    assert result["written"] and result["ai_task_runs"] == 1  # 쓰기는 성공한 뒤 파기가 지웠다.
+    assert not {key for key in storage.objects if key.startswith("wiki/ws/")}
+
+
+def test_wiki_write_after_purge_mark_is_rejected(database, storage, monkeypatch):
+    """S3 삭제와 DB 삭제 사이에 도착한 쓰기와 파기 뒤의 쓰기는 거절되고, 다른 워크스페이스 쓰기는 그대로 된다."""
+    from app.modules.task_cancellation.infrastructure import object_change_journal as objects
+
+    with database() as conn:
+        seed(conn)
+    real = purge._delete_objects
+    rejected = []
+
+    def delete_then_write(prefixes, keys):
+        removed = real(prefixes, keys)
+        if not rejected:
+            with pytest.raises(ScopePurgedError):
+                objects.change_object("task-ws", storage, BUCKET, "wiki/ws/sources/late.md", LATE)
+            rejected.append(True)
+        return removed
+
+    monkeypatch.setattr(purge, "_delete_objects", delete_then_write)
+    purge.purge_workspace("ws")
+    with pytest.raises(ScopePurgedError):
+        object_storage.write_text_object("wiki/ws/sources/after.md", "늦은 본문")  # 작업 밖 직접 쓰기도 막는다.
+    objects.change_object("task-alice", storage, BUCKET, "wiki/other/sources/new.md", LATE)
+
+    assert rejected
+    assert not {key for key in storage.objects if key.startswith("wiki/ws/")}
+    assert "wiki/other/sources/new.md" in storage.objects
+    with database() as conn:
+        assert ids(conn, "ai_task_changes", "run_id") == {"task-alice", "task-bob"}
 
 
 def test_redelivered_task_in_purged_scope_is_rejected(database, storage):

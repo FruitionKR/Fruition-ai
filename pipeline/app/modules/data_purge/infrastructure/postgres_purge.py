@@ -11,6 +11,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.modules.speech.infrastructure.meeting_storage import CHECKPOINT_ROOT, checkpoint_prefix
+from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 from app.modules.wiki_ingestion.infrastructure import object_storage
 from app.core.ai_database import ai_database_url
 
@@ -48,6 +49,9 @@ def _sweep_artifacts(run_ids: list[str]) -> int:
 def _mark_purged(scope_type: str, scope_id: str) -> None:
     # 삭제보다 먼저 커밋해 파기 중에 들어온 작업도 journal register에서 거절되게 한다.
     with connect() as conn:
+        if scope_type == "workspace":
+            # 진행 중인 위키 객체 쓰기가 끝날 때까지 기다린다. 이 표시 뒤의 쓰기는 write_fence가 거절한다.
+            journal.lock_workspace_writes(conn, scope_id, shared=False)
         conn.execute("INSERT INTO ai_purged_scopes(scope_type, scope_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                      (scope_type, scope_id))
 
