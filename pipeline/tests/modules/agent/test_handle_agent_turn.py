@@ -2832,6 +2832,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
         self.assertEqual(editor.requests[0].target.type, "whole_document")
         self.assertEqual(editor.requests[0].skill_instructions, "핵심 내용을 세 문단 이내로 작성한다.")
         self.assertIn("brief", editor.requests[0].instruction)
+        self.assertIn("이 문서에 적용", editor.requests[0].instruction)
         self.assertIsNotNone(result.edit)
         self.assertIsNotNone(result.source_markdown_sha256)
         self.assertEqual(editor.create_requests, [])
@@ -2860,6 +2861,7 @@ class BareSkillCommandTargetTest(unittest.TestCase):
 
         self.assertEqual(result.action, "markdown_edit")
         self.assertEqual(editor.requests[0].target, selection)
+        self.assertIn("선택한 부분에 적용", editor.requests[0].instruction)
 
     def test_edit_skill_with_folder_only_asks_for_document(self) -> None:
         skill = options_skill(("document-edit",), ("current_document",), "edit")
