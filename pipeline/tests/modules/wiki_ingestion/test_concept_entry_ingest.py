@@ -524,3 +524,38 @@ def test_manually_deleted_reference_stays_deleted_after_next_ingest(scoped_dsn, 
     ])
     assert "[[kubectl|scale]]" not in _section(stored[markdown_uri])
     assert _section(stored[markdown_uri]) == _section(replayed.markdown)
+
+
+def test_reference_from_existing_parent_not_in_this_document_round_trips(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    kubectl = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    deployment = manifest("op-v", _normalized([DEPLOYMENT[0]]))
+    existing = [*_with_kubectl_entry(),
+                {"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "Deployment 정의", "entries": []}]
+    # 이번 문서는 Deployment Scale만 뽑는다. 기존 Deployment 아래 배정되고 kubectl의 scale과 같은 항목이다.
+    scale_doc = manifest("op-x", _normalized([_concept("deployment-scale", "Deployment Scale", "B0009")]), existing,
+                         judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        for document_id, item in (("doc-0", kubectl), ("doc-9", deployment)):
+            persistence.persist_wiki_outputs(conn, document_id, item)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", scale_doc)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()
+        copies = conn.execute("SELECT entry_id, target_slug FROM wiki_page_entry_references WHERE page_id = %s",
+                              (page["id"],)).fetchall()
+
+    reference = [link for link in scale_doc["concept_contributions"]["deployment"]["links"]
+                 if link["relation"] == "entry_reference"]
+    assert [(link["source"], link["target"], link["entry_id"]) for link in reference] == [
+        ("concept:deployment", "concept:kubectl", "e-scale")]
+    assert copies == [{"entry_id": "e-scale", "target_slug": "kubectl"}]
+    history = [_page(page["id"], "op-v", 1, deployment["concept_contributions"]["deployment"]),
+               _page(page["id"], "op-x", 2, scale_doc["concept_contributions"]["deployment"])]
+    replayed = rebuild_concept_page(history)
+    assert _section(stored[page["markdown_uri"]]) == _section(replayed.markdown) == "## Sub-entries\n- [[kubectl|scale]]"
+    # 편입 X를 되돌리면 참조도 함께 빠진다.
+    restored = rebuild_concept_page(plan_page_recovery(history, {"op-x"}).kept_contributions)
+    assert not [link for link in restored.supported_links if link["relation"] == "entry_reference"]
+    assert "## Sub-entries" not in restored.markdown
