@@ -1851,31 +1851,20 @@ def lint_concept_entries(
         ).fetchone()
         since = last["created_at"] if last else None
         deferred = [str(page_id) for page_id in ((last or {}).get("deferred") or [])]
-        changed = {
-            str(row["id"])
-            for row in conn.execute(
-                """
-                SELECT page.id
-                FROM wiki_pages page
-                WHERE page.workspace_id = %s
-                  AND page.page_type = 'concept'
-                  AND page.status = 'active'
-                  AND (%s::timestamptz IS NULL OR page.updated_at > %s OR page.id = ANY(%s))
-                  AND (
-                      EXISTS (SELECT 1 FROM wiki_page_entries entry WHERE entry.page_id = page.id)
-                      OR EXISTS (
-                          SELECT 1 FROM wiki_page_links link
-                          WHERE link.link_type = 'entry_reference'
-                            AND page.id IN (link.from_page_id, link.to_page_id)
-                      )
-                  )
-                """,
-                (workspace_id, since, since, deferred),
-            ).fetchall()
-        }
+        changed_rows = conn.execute(
+            """
+            SELECT page.id, page.slug, page.title, page.summary
+            FROM wiki_pages page
+            WHERE page.workspace_id = %s
+              AND page.page_type = 'concept'
+              AND page.status = 'active'
+              AND (%s::timestamptz IS NULL OR page.updated_at > %s OR page.id = ANY(%s))
+            """,
+            (workspace_id, since, since, deferred),
+        ).fetchall()
         result: dict[str, Any] = {"entry_decisions": [], "deferred_entry_pages": [], "deleted_pages": []}
-        if skip or not changed:
-            result["deferred_entry_pages"] = sorted(changed)
+        if skip or not changed_rows:
+            result["deferred_entry_pages"] = sorted(str(row["id"]) for row in changed_rows)
             return result
         restored = {
             str(page.get("page_id"))
@@ -1893,28 +1882,6 @@ def lint_concept_entries(
             for page in (row["pages"] or [])
             if isinstance(page, dict)
         }
-        # 판정은 바뀐 페이지만 하지만, 참조로 이어진 이웃도 읽어야 승격·참조 정리를 할 수 있다.
-        page_rows = conn.execute(
-            """
-            SELECT page.id, page.slug, page.title, page.summary
-            FROM wiki_pages page
-            WHERE page.workspace_id = %s
-              AND page.page_type = 'concept'
-              AND page.status = 'active'
-              AND (
-                  page.id = ANY(%s)
-                  OR EXISTS (
-                      SELECT 1 FROM wiki_page_links link
-                      WHERE link.link_type = 'entry_reference'
-                        AND (
-                            (link.from_page_id = page.id AND link.to_page_id = ANY(%s))
-                            OR (link.to_page_id = page.id AND link.from_page_id = ANY(%s))
-                        )
-                  )
-              )
-            """,
-            (workspace_id, list(changed), list(changed), list(changed)),
-        ).fetchall()
         active_slugs = {
             str(row["slug"])
             for row in conn.execute(
@@ -1925,11 +1892,21 @@ def lint_concept_entries(
         pages: dict[str, EntryPage] = {}
         summaries: dict[str, str] = {}
         loaded: dict[str, list[PageContribution]] = {}
+        # 바뀐 페이지의 기여(비활성 포함)가 가리킨 참조 대상. 참조가 늘거나 준 집 페이지도 다시 본다.
+        reference_targets: set[str] = set()
 
-        def load(rows: list[dict[str, Any]]) -> None:
+        def load(rows: list[dict[str, Any]], *, history: bool = False) -> None:
             ledger = read_contributions([str(row["id"]) for row in rows], workspace_id)
             for row in rows:
                 page_id = str(row["id"])
+                if history:
+                    for item in ledger:
+                        if str(item.get("page_id")) != page_id or item.get("active"):
+                            continue
+                        contribution = json.loads(read_text_object(
+                            f"wiki/{workspace_id}/pages/{page_id}/ops/{item['ingest_operation_id']}.json"
+                        ))
+                        reference_targets.update(_entry_reference_targets(contribution))
                 kept = sorted(
                     (item for item in ledger if str(item.get("page_id")) == page_id and item.get("active")),
                     key=lambda item: int(item.get("sequence_revision") or 0),
@@ -1956,8 +1933,59 @@ def lint_concept_entries(
                     restored_recently=page_id in restored,
                 )
                 summaries[page_id] = str(row.get("summary") or "")
+                if history:
+                    for item in loaded[page_id]:
+                        reference_targets.update(_entry_reference_targets(item.contribution or {}))
 
-        load(page_rows)
+        load(changed_rows, history=True)
+        # 하위 항목·참조가 있거나 분리로 만든 자식(비었어도 다시 합칠 후보)이거나 지난 lint가 미룬 페이지만 판정한다.
+        changed = {
+            page_id
+            for page_id, page in pages.items()
+            if page.entries
+            or page.split_record
+            or page_id in deferred
+            or any(link.get("relation") == "entry_reference" for link in page.links)
+        } | {
+            page_id for page_id, page in pages.items() if page.ref in reference_targets
+        }
+        missing_targets = {ref.removeprefix("concept:") for ref in reference_targets} - {
+            page.slug for page in pages.values()
+        }
+        if missing_targets:
+            target_rows = conn.execute(
+                """
+                SELECT id, slug, title, summary FROM wiki_pages
+                WHERE workspace_id = %s AND page_type = 'concept' AND status = 'active' AND slug = ANY(%s)
+                """,
+                (workspace_id, sorted(missing_targets)),
+            ).fetchall()
+            load(target_rows)
+            changed |= {str(row["id"]) for row in target_rows if str(row["id"]) in pages}
+        if not changed:
+            return result
+        # 판정은 바뀐 페이지만 하지만, 참조로 이어진 이웃도 읽어야 승격·참조 정리를 할 수 있다.
+        neighbor_rows = conn.execute(
+            """
+            SELECT page.id, page.slug, page.title, page.summary
+            FROM wiki_pages page
+            WHERE page.workspace_id = %s
+              AND page.page_type = 'concept'
+              AND page.status = 'active'
+              AND NOT page.id = ANY(%s)
+              AND EXISTS (
+                  SELECT 1 FROM wiki_page_links link
+                  WHERE link.link_type = 'entry_reference'
+                    AND (
+                        (link.from_page_id = page.id AND link.to_page_id = ANY(%s))
+                        OR (link.to_page_id = page.id AND link.from_page_id = ANY(%s))
+                    )
+              )
+            """,
+            (workspace_id, list(pages), list(changed), list(changed)),
+        ).fetchall()
+        if neighbor_rows:
+            load(neighbor_rows)
         # 자식 페이지의 부모는 참조가 정리돼 이웃이 아닐 수 있다. 다시 합치려면 부모도 읽는다.
         parents = {
             str(page.split_record["split_from"]["page_id"])
@@ -2079,6 +2107,15 @@ def lint_concept_entries(
     return result
 
 
+def _entry_reference_targets(contribution: dict[str, Any]) -> set[str]:
+    return {
+        str(link.get("target"))
+        for field in ("links", "added_links", "removed_links")
+        for link in contribution.get(field, [])
+        if isinstance(link, dict) and link.get("relation") == "entry_reference"
+    }
+
+
 def _page_link_key(link: dict[str, Any]) -> tuple[str, str, str]:
     return (str(link.get("source") or ""), str(link.get("target") or ""), str(link.get("relation") or "related_to"))
 
@@ -2117,12 +2154,15 @@ def _redirect_pages(conn: psycopg.Connection, workspace_id: str, redirects: list
 
 
 def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: list[dict[str, Any]]) -> None:
-    """다시 합치기를 lint 복원할 때 옮겼던 간선을 자식으로 되돌린다. 부모 쪽에 새로 생겼던 간선만 지운다."""
+    """다시 합치기를 lint 복원할 때 옮겼던 간선을 자식으로 되돌린다.
+
+    부모 쪽 간선은 합칠 때 새로 생긴 것이고, 그 뒤 원래 페이지 기록이 직접 잇지도 않을 때만 지운다.
+    """
     for reversal in reversals:
         child, parent = str(reversal["page_id"]), str(reversal["merged_into_page_id"])
         for link in reversal.get("links", []):
             source, link_type = str(link["from_page_id"]), str(link["link_type"])
-            if link.get("created"):
+            if link.get("created") and not _source_supports_link(conn, workspace_id, source, parent, link_type):
                 conn.execute(
                     "DELETE FROM wiki_page_links WHERE from_page_id = %s AND to_page_id = %s AND link_type = %s",
                     (source, parent, link_type),
@@ -2138,6 +2178,44 @@ def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: l
                 """,
                 (source, child, link_type, workspace_id, source),
             )
+
+
+def _source_supports_link(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    source_page_id: str,
+    target_page_id: str,
+    link_type: str,
+) -> bool:
+    """원래 페이지의 활성 기록을 재생해 그 간선을 아직 직접 잇는지 본다. 개념 페이지가 아니면 재생하지 않는다."""
+    rows = conn.execute(
+        "SELECT id, page_type, slug FROM wiki_pages WHERE workspace_id = %s AND id = ANY(%s)",
+        (workspace_id, [source_page_id, target_page_id]),
+    ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+    source, target = by_id.get(source_page_id), by_id.get(target_page_id)
+    if source is None or target is None or source["page_type"] != "concept":
+        return False
+    kept = sorted(
+        (
+            item
+            for item in read_contributions([source_page_id], workspace_id)
+            if str(item.get("page_id")) == source_page_id and item.get("active")
+        ),
+        key=lambda item: int(item.get("sequence_revision") or 0),
+    )
+    if not kept:
+        return False
+    rebuilt = rebuild_concept_page(load_concept_contributions(
+        workspace_id=workspace_id,
+        page_id=source_page_id,
+        keep_contributions=[
+            {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
+        ],
+        read_text=read_text_object,
+    ))
+    key = (f"concept:{source['slug']}", f"{target['page_type']}:{target['slug']}", link_type)
+    return key in {_page_link_key(link) for link in rebuilt.supported_links}
 
 
 def lint_shared_object_keys(workspace_id: str, lint_date: str) -> list[str]:

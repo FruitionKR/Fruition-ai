@@ -534,3 +534,59 @@ def test_lint_restore_of_merge_back_recreates_child_with_its_entries_and_links(w
 
     assert result["link_changes"]["reversed_redirects"][0]["page_id"] == world.page_id("rollout")
     assert world.state() == before
+
+
+def test_lint_restore_of_merge_back_keeps_parent_link_added_later_by_ingest(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-history", "History", "e-rollout", ["B20"])]}})
+    world.lint("lint-split")
+    world.ingest("op-z", "doc-z", {"service": {"title": "Service", "links": [
+        {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
+    ]}})
+    world.restore_ingest("op-x")
+    world.lint("lint-wait")
+    world.lint("lint-merge")
+    # 합친 뒤 다른 편입이 같은 간선을 직접 잇는다.
+    world.ingest("op-q", "doc-q", {"service": {"title": "Service", "links": [
+        {"source": "concept:service", "target": "concept:deployment", "relation": "concept_related_to"},
+    ]}})
+
+    world.restore_lint("lint-merge")
+
+    links = world.state()["links"]
+    assert ("service", "rollout", "concept_related_to") in links
+    assert ("service", "deployment", "concept_related_to") in links
+
+
+def test_references_added_from_two_pages_get_the_untouched_home_promoted(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-selector", "Label Selector", refs=["B1"])]}})
+    world.lint("lint-first")
+    # 집 페이지는 그대로 두고 다른 두 페이지만 참조를 더한다.
+    world.ingest("op-a", "doc-a", {"service": {"title": "Service", "links": [
+        _reference("service", "deployment", "e-selector", "Label Selector")]}})
+    world.ingest("op-b", "doc-b", {"replicaset": {"title": "ReplicaSet", "links": [
+        _reference("replicaset", "deployment", "e-selector", "Label Selector")]}})
+
+    result = world.lint("lint-promote")
+
+    assert [(item["action"], item["entry_id"]) for item in result["entry_decisions"]] == [("promote", "e-selector")]
+    assert "label-selector" in world.state()["pages"]
+
+
+def test_child_emptied_by_restore_is_merged_two_lints_later(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": _thick("e-rollout", "Rollout", 1)}})
+    world.ingest("op-w", "doc-w", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-scale", "Scale", refs=["B30"])]}})
+    world.lint("lint-split")
+    rollout_id = world.page_id("rollout")
+    world.restore_ingest("op-x")
+
+    waited = world.lint("lint-wait")
+    assert waited["deferred_entry_pages"] == [rollout_id]
+    merged = world.lint("lint-merge")
+
+    assert merged["deleted_pages"] == [rollout_id]
+    assert "rollout" not in world.state()["pages"]
+    assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown

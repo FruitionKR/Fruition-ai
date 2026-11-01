@@ -465,7 +465,7 @@ lint가 승격·병합하며 `clusters/archived.md`로 옮긴 클러스터도 �
 자식을 지운다. 지운 자식을 가리키는 기록을 나중에 재생해도 `wiki_pages.merged_into_page_id`를 따라 부모로 잇는다.
 다시 합치기를 되돌리면 자식은 `rebuild_pages`로 재조립돼 다시 활성이 되고(`merged_into_page_id`도 지운다), 자식의 합친 기록
 (`merged_into`·`redirected_links`)으로 `link_changes.reversed_redirects`(`page_id`·`merged_into_page_id`·`links`)를 만들어 부모로
-옮겼던 간선을 자식으로 되돌린다. 부모 쪽 간선은 그때 새로 생긴 것(`created`)만 지운다.
+옮겼던 간선을 자식으로 되돌린다. 부모 쪽 간선은 그때 새로 생겼고(`created`) 원래 페이지의 활성 기록을 재생해도 잇지 않을 때만 지운다.
 
 #### 3. Auth 필요 여부
 
