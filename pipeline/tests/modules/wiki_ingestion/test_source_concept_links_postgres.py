@@ -156,3 +156,30 @@ def test_reingest_dropping_a_concept_unlinks_only_that_document(world: World) ->
         }], set())
 
     assert _links(world) == {("doc-x", "deployment")}
+
+
+def test_manual_intent_survives_the_target_being_merged_away_and_merge_restore(world: World) -> None:
+    for document_id in ("doc-x", "doc-d"):
+        _source(world, document_id)
+    doc_y = _source(world, "doc-y", "# doc-y\n")
+    doc_m = _source(world, "doc-m", "# doc-m\n")
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "concept_refs": _refs(ROLLOUT),
+                                                  "entry_changes": [dict(entry) for entry in ROLLOUT]}})
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["B99"]}})
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "concept_refs": ["B20"],
+                                                  "entry_changes": [_add("e-history", "History", "e-rollout", ["B20"])]}})
+    world.lint("lint-split")
+    world.restore_ingest("op-x")
+    # doc-y는 자동 링크를 사람이 지웠고, doc-m은 근거 없이 사람이 이었다.
+    _manual_edit(world, doc_y, "op-y1", "# doc-y\n[[rollout]]\n")
+    _manual_edit(world, doc_y, "op-y2", "# doc-y\n")
+    _manual_edit(world, doc_m, "op-m1", "# doc-m\n[[rollout]]\n")
+    assert {link for link in _links(world) if link[1] == "rollout"} == {("doc-m", "rollout")}
+
+    world.lint("lint-merge")
+    assert not [link for link in _links(world) if link[1] == "rollout"]
+
+    world.restore_lint("lint-merge")
+
+    # 대상이 다시 살아나면 수동 삭제는 계속 자동보다 우선하고, 수동 전용 링크는 돌아온다.
+    assert {link for link in _links(world) if link[1] == "rollout"} == {("doc-m", "rollout")}

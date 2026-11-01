@@ -192,10 +192,8 @@ def _cleanup_deleted_wiki_pages(
         "DELETE FROM document_wiki_links WHERE wiki_page_id = ANY(%s)",
         (target_ids,),
     )
-    conn.execute(
-        "DELETE FROM wiki_source_manual_links WHERE from_page_id = ANY(%s) OR to_page_id = ANY(%s)",
-        (target_ids, target_ids),
-    )
+    # 수동 링크 의도(wiki_source_manual_links)는 지우지 않는다. 페이지 삭제는 논리 삭제라 합치기 복원 등으로 다시
+    # 살아나면 사람이 쓴 지원·삭제가 그대로 다시 적용돼야 한다(ADR 0042 결정 5). 동기화는 활성 페이지만 잇는다.
     conn.execute(
         "DELETE FROM wiki_page_embeddings WHERE page_id = ANY(%s)",
         (target_ids,),
