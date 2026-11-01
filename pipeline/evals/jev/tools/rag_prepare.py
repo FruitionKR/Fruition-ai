@@ -93,8 +93,13 @@ def main() -> None:
     parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
     parser.add_argument("--sources", help="쉼표로 구분한 corpus 문서 이름만 편입(확인용)")
     parser.add_argument("--concept-judge", choices=("jev", "llm"), default="jev", help="편입·후속 편입의 개념 판정기")
-    parser.add_argument("--model", default=":".join(HAIKU), help="편입 모델 provider:model(개념 크기 모델 비교용, 기본 Haiku)")
+    parser.add_argument("--model", help="편입 모델 provider:model(개념 크기 모델 비교용, 기본 Haiku). --resume이면 저장된 모델을 쓴다")
     args = parser.parse_args()
+    # 재개는 처음 편입한 모델로만 한다. 섞이면 한 모델의 결과로 잘못 보고된다.
+    stored = json.loads(Path(args.resume).read_text()).get("model") if args.resume else None
+    if stored and args.model and args.model != stored:
+        parser.error(f"--resume 워크스페이스는 {stored}로 편입했습니다. --model을 빼거나 같게 주세요")
+    args.model = stored or args.model or ":".join(HAIKU)
     provider, model = args.model.split(":", 1)
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")
