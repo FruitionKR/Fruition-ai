@@ -46,8 +46,14 @@ def replay_supported_links(
     supported: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for artifact in operation_artifacts:
         for link in artifact.get("removed_links", []):
-            if isinstance(link, dict):
+            if not isinstance(link, dict):
+                continue
+            if link.get("entry_id"):
                 supported.pop(_replay_key(link), None)
+            else:
+                # 수동 편집처럼 entry_id 없이 지운 기록은 그 페이지 쌍·relation의 참조를 모두 지운다.
+                for key in [key for key in supported if key[:3] == _link_key(link)]:
+                    del supported[key]
         added = (
             artifact.get("added_links", [])
             if artifact.get("artifact_type") in ("lint", "manual")
