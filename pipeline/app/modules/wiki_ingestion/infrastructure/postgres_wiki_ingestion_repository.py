@@ -71,6 +71,7 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     wikilink_slugs,
 )
 from app.modules.wiki_ingestion.domain.concept_entries import (
+    ENTRY_IDENTITY_FIELDS,
     ENTRY_REFERENCE,
     entry_document_ids,
     new_entry_id,
@@ -754,18 +755,22 @@ def _replace_page_entries(
         conn.execute(
             """
             INSERT INTO wiki_page_entries
-                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs, slugs, aliases, tags)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (workspace_id, entry_id)
             DO UPDATE SET page_id = EXCLUDED.page_id,
                           name = EXCLUDED.name,
                           parent_entry_id = EXCLUDED.parent_entry_id,
                           definition = EXCLUDED.definition,
-                          block_refs = EXCLUDED.block_refs
+                          block_refs = EXCLUDED.block_refs,
+                          slugs = EXCLUDED.slugs,
+                          aliases = EXCLUDED.aliases,
+                          tags = EXCLUDED.tags
             """,
             (
                 workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"],
                 entry.get("definition") or "", list(entry.get("anchor_reference_ids") or []),
+                *(list(entry.get(field) or []) for field in ENTRY_IDENTITY_FIELDS),
             ),
         )
 
@@ -1650,7 +1655,8 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
         # 같은 하위 항목 찾기(ADR 0042)의 후보다. 집 페이지 개념 아래에 둔다.
         entry_rows = conn.execute(
             """
-            SELECT page.slug, entry.entry_id, entry.name, entry.definition, entry.parent_entry_id
+            SELECT page.slug, entry.entry_id, entry.name, entry.definition, entry.parent_entry_id,
+                   entry.slugs, entry.aliases
             FROM wiki_page_entries entry
             JOIN wiki_pages page ON page.id = entry.page_id
             WHERE entry.workspace_id = %s
@@ -1663,7 +1669,7 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
     entries_by_slug: dict[str, list[dict[str, Any]]] = {}
     for row in entry_rows:
         entries_by_slug.setdefault(row["slug"], []).append(
-            {key: row[key] for key in ("entry_id", "name", "definition", "parent_entry_id")}
+            {key: row[key] for key in ("entry_id", "name", "definition", "parent_entry_id", "slugs", "aliases")}
         )
     concepts = []
     for row in rows:

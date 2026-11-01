@@ -18,6 +18,7 @@ from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssem
 from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
 from app.modules.wiki_generation.application.judge_candidates import llm_part_of_judge, llm_same_entry_judge
 from app.modules.wiki_ingestion.application.concept_entry_ingest import PART_OF_CANDIDATE_LIMIT, apply_concept_entries
+from app.modules.wiki_ingestion.domain.concept_entries import replay_concept_entries
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, plan_page_recovery
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import rebuild_concept_page
@@ -213,7 +214,9 @@ def test_same_entry_on_another_page_adds_evidence_there_and_references_it() -> N
     # 기존 항목의 이름·정의·위치를 따르고, 근거는 집 페이지에 더한다.
     assert result["entry_changes"]["kubectl"] == [{
         "op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다", "parent_entry_id": None,
-        "anchor_reference_ids": ["B0009"], "evidence_claim_ids": ["ev-deployment-scale"]}]
+        "anchor_reference_ids": ["B0009"], "evidence_claim_ids": ["ev-deployment-scale"],
+        # 원래 개념의 정체성은 기존 항목에 합쳐도 항목에 남는다.
+        "slug": "deployment-scale", "aliases": ["Deployment Scale"], "tags": []}]
     kubectl = next(concept for concept in result["concept_ledger"] if concept["slug"] == "kubectl")
     assert kubectl["evidence_claim_ids"] == ["ev-deployment-scale"]
     assert result["entry_references"] == [{
@@ -243,6 +246,45 @@ def test_reingest_matches_its_own_entry_by_name_without_judge() -> None:
     assert {name: entry["entry_id"] for name, entry in second.items()} == {
         name: entry["entry_id"] for name, entry in first.items()}
 
+
+
+def test_entry_keeps_the_concept_identity_and_reingest_finds_it_by_its_original_slug() -> None:
+    first = _entries(_apply(_normalized(DEPLOYMENT)), "deployment")
+    rollout = first["Deployment Rollout"]
+    # 원래 개념 slug·별칭·태그는 항목에 남고 집 페이지 개념에는 섞이지 않는다.
+    assert (rollout["slug"], rollout["aliases"], rollout["tags"]) == ("deployment-rollout", ["Deployment Rollout"], [])
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
+        {"entry_id": rollout["entry_id"], "name": "롤아웃", "definition": "다른 정의", "parent_entry_id": None,
+         "slugs": ["deployment-rollout"], "aliases": []}]}]
+
+    # 이름이 달라 이름 일치는 없고 판정기도 없지만, 원래 slug가 같아 같은 항목에 근거를 더한다.
+    second = _entries(_apply(_normalized(DEPLOYMENT, existing), judge_same=None), "deployment")
+
+    assert second["롤아웃"]["entry_id"] == rollout["entry_id"]
+
+
+def test_update_decision_on_a_concept_that_became_an_entry_adds_evidence_to_that_entry() -> None:
+    normalized = _normalized(DEPLOYMENT)
+    normalized["concept_update_decisions"] = [{"decision": "same_concept", "concept_slug": "deployment-rollout",
+                                               "claim_id": "cand-1", "claim": "롤아웃 근거 더", "refs": ["B0007"]}]
+
+    result = _apply(normalized)
+    contributions = build_concept_contributions(
+        operation_id="op-1", normalized=result, links=[],
+        source_blocks=[{"block_id": f"B000{index}", "text": f"블록 {index}"} for index in range(1, 10)],
+        concept_update_decisions=result["concept_update_decisions"],
+    )
+
+    decision = result["concept_update_decisions"][0]
+    rollout = _entries(result, "deployment")["Deployment Rollout"]
+    assert (decision["concept_slug"], decision["entry"]["entry_id"]) == ("deployment", rollout["entry_id"])
+    added = [change for change in contributions["deployment"]["entry_changes"]
+             if change["entry_id"] == rollout["entry_id"] and "op-1:cand-1" in change["evidence_claim_ids"]]
+    assert [(change["name"], change["anchor_reference_ids"]) for change in added] == [
+        ("Deployment Rollout", ["doc-1:B0007"])]
+    replayed = {entry["entry_id"]: entry for entry in replay_concept_entries([contributions["deployment"]])}
+    assert "op-1:cand-1" in replayed[rollout["entry_id"]]["evidence_claim_ids"]
+    assert replayed[rollout["entry_id"]]["name"] == "Deployment Rollout"
 
 def _ingest_contributions(operation_id: str, result: dict) -> dict[str, dict]:
     return build_concept_contributions(
@@ -301,7 +343,7 @@ class EntryConnection:
 def test_embedding_units_have_sub_entry_units_and_entry_ids_on_their_evidence() -> None:
     conn = EntryConnection([
         {"entry_id": "e-rollout", "name": "Rollout", "definition": "새 버전으로 바꾼다", "block_refs": ["doc-1:B0002"],
-         "parent_name": "Deployment"},
+         "aliases": [], "parent_name": "Deployment"},
     ])
 
     persist_embedding_units(conn, "page-deploy", "doc-1", (
@@ -453,7 +495,7 @@ def test_nested_merge_stored_state_equals_replay(scoped_dsn, monkeypatch) -> Non
         "## Sub-entries\n- scale\n  - Deployment Scale Limit")
     # 임베딩도 실제 바로 위 항목 이름을 쓴다.
     assert [row["text"] for row in units] == [
-        "kubectl > scale: Pod 수를 바꾼다", "scale > Deployment Scale Limit: Deployment Scale Limit 정의"]
+        "kubectl > scale (Deployment Scale): Pod 수를 바꾼다", "scale > Deployment Scale Limit: Deployment Scale Limit 정의"]
 
 
 def test_child_added_to_existing_entry_is_drawn_under_it(scoped_dsn, monkeypatch) -> None:

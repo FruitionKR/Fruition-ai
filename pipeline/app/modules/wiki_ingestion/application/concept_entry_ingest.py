@@ -113,6 +113,10 @@ def apply_concept_entries(
             "parent_entry_id": match["parent_entry_id"] if match else parent_entry_id,
             "anchor_reference_ids": refs,
             "evidence_claim_ids": list(concept.get("evidence_claim_ids", [])),
+            # 원래 개념의 정체성은 항목에 남긴다. 부모 페이지 별칭·태그로 섞으면 다른 개념을 동의어로 오인한다.
+            "slug": detail,
+            "aliases": list(concept.get("aliases") or []),
+            "tags": list(concept.get("tags") or []),
         }
         if home != container:
             references.append({
@@ -147,9 +151,13 @@ def apply_concept_entries(
         evidence["related_concept_slugs"] = unique_keep_order(
             [home_of.get(slug, slug) for slug in evidence.get("related_concept_slugs", [])]
         )
+    # 하위 항목이 된 개념을 가리키던 갱신 판정은 그 항목의 근거로 간다. 집 페이지 개념의 근거로 바꾸면 "같은 하위 항목"
+    # 판정이 "같은 상위 개념" 갱신으로 둔갑한다.
     for decision in result.get("concept_update_decisions", []):
-        if decision.get("concept_slug") in home_of:
-            decision["concept_slug"] = home_of[decision["concept_slug"]]
+        detail = decision.get("concept_slug")
+        if detail in home_of:
+            decision["concept_slug"] = home_of[detail]
+            decision["entry"] = {key: adds[detail][key] for key in ("entry_id", "name", "definition", "parent_entry_id")}
     result["entry_changes"] = entry_changes
     result["entry_references"] = references
     logger.info("[하위 항목 배정] 배정=%d 하위 항목=%d 같은 항목=%d 참조=%d",
@@ -276,6 +284,8 @@ def _existing_entries(existing: dict[str, dict[str, Any]]) -> list[dict[str, Any
                 "title": f"{parent_name} > {entry['name']}",
                 "aliases": [],
                 "definition": entry.get("definition") or "",
+                "aliases": list(entry.get("aliases") or []),
+                "slugs": list(entry.get("slugs") or []),
                 "page_slug": page_slug,
                 "name": entry["name"],
                 "parent_entry_id": entry.get("parent_entry_id"),
@@ -288,16 +298,20 @@ def _match_entries(
     pool: list[dict[str, Any]],
     judge_same: PairJudge | None,
 ) -> dict[str, dict[str, Any]]:
-    """세부 항목 slug → 같은 기존 하위 항목. 이름 일치는 판정 없이, 나머지는 쌍 판정 same만 같은 항목으로 본다."""
+    """세부 항목 slug → 같은 기존 하위 항목. 원래 개념 slug·이름 일치는 판정 없이, 나머지는 쌍 판정 same만 같은 항목으로 본다.
+
+    원래 slug는 하위 항목이 된 개념의 정체성이다. 같은 개념을 다시 편입하면 상위가 달라져도 그 항목에 근거를 더한다.
+    """
     if not pool:
         return {}
+    by_slug = {slug: entry for entry in pool for slug in entry.get("slugs", [])}
     by_title: dict[str, dict[str, Any]] = {}
     for entry in pool:
         by_title.setdefault(name_key(entry["title"]), entry)
     matched = {
-        detail: by_title[name_key(query["title"])]
+        detail: by_slug.get(detail) or by_title[name_key(query["title"])]
         for detail, query in queries.items()
-        if name_key(query["title"]) in by_title
+        if detail in by_slug or name_key(query["title"]) in by_title
     }
     rest = [query for detail, query in queries.items() if detail not in matched]
     if judge_same is None or not rest:

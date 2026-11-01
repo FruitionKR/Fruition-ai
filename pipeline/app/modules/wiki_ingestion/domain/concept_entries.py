@@ -7,6 +7,9 @@ from typing import Any
 # 다른 페이지 하위 항목을 가리키는 참조 링크의 relation. 링크에 `entry_id`를 함께 싣는다.
 ENTRY_REFERENCE = "entry_reference"
 ENTRY_EVIDENCE_FIELDS = ("anchor_reference_ids", "evidence_claim_ids")
+# 하위 항목이 된 개념의 정체성(ADR 0042). 원래 개념 slug(`add`의 `slug`)·별칭·태그는 항목에 남기고 부모 페이지에 섞지 않는다.
+# 다른 개념을 부모의 동의어로 오인하지 않게 한다. 기여마다 더해 합친다.
+ENTRY_IDENTITY_FIELDS = ("slugs", "aliases", "tags")
 SUB_ENTRIES_HEADING = "## Sub-entries"
 
 
@@ -31,7 +34,8 @@ def replay_concept_entries(
 ) -> list[dict[str, Any]]:
     """한 페이지의 기여를 적용 순서대로 받아 남은 하위 항목을 돌려준다.
 
-    - add: 없으면 만들고, 있으면 근거만 더한다(이름·정의·상위 항목은 처음 추가한 기여를 따른다).
+    - add: 없으면 만들고, 있으면 근거만 더한다(이름·정의·상위 항목은 처음 추가한 기여를 따른다). 원래 개념 slug·별칭·태그는
+      기여마다 더한다.
     - move: 상위 항목만 바꾼다. 없는 항목이거나 자기 아래로 옮기면 무시한다.
     - remove: 항목과 그 아래 항목을 함께 지운다.
     - revive: 앞서 remove로 지운 항목과 그때 함께 지운 아래 항목을 근거째 되살린다. 지운 적 없으면 무시한다.
@@ -56,10 +60,13 @@ def replay_concept_entries(
                         "name": str(change.get("name") or ""),
                         "definition": str(change.get("definition") or ""),
                         "parent_entry_id": parent_id,
-                        **{field: [] for field in ENTRY_EVIDENCE_FIELDS},
+                        **{field: [] for field in (*ENTRY_EVIDENCE_FIELDS, *ENTRY_IDENTITY_FIELDS)},
                     },
                 )
                 for field in ENTRY_EVIDENCE_FIELDS:
+                    entry[field] = list(dict.fromkeys([*entry[field], *change.get(field, [])]))
+                entry["slugs"] = list(dict.fromkeys([*entry["slugs"], *([change["slug"]] if change.get("slug") else [])]))
+                for field in ("aliases", "tags"):
                     entry[field] = list(dict.fromkeys([*entry[field], *change.get(field, [])]))
             elif op == "move" and entry_id in entries:
                 if entry_id not in _ancestors(entries, parent_id):

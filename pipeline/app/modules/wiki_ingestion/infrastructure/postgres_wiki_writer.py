@@ -6,7 +6,7 @@ import uuid
 import psycopg
 from minio.error import S3Error
 
-from app.modules.wiki_generation.domain.text_utils import slugify
+from app.modules.wiki_generation.domain.text_utils import name_key, slugify
 from app.modules.wiki_generation.infrastructure.ref_format import ref_label
 
 from app.modules.wiki_ingestion.infrastructure.embedding_units import (
@@ -42,7 +42,7 @@ def persist_embedding_units(
     # 하위 항목 단위와 그 항목에 딸린 근거 단위(ADR 0042). 참조는 집 페이지 항목이 아니라 벡터를 두지 않는다.
     entries = conn.execute(
         """
-        SELECT entry.entry_id, entry.name, entry.definition, entry.block_refs,
+        SELECT entry.entry_id, entry.name, entry.definition, entry.block_refs, entry.aliases,
                COALESCE(parent.name, page.title, page.slug) AS parent_name
         FROM wiki_page_entries entry
         JOIN wiki_pages page ON page.id = entry.page_id
@@ -61,8 +61,8 @@ def persist_embedding_units(
         {
             "unit_type": "sub_entry",
             "block_refs": list(entry["block_refs"] or []),
-            # 표현 텍스트는 "바로 위 이름 > 이름"과 정의다. 근거가 늘어도 바뀌지 않아 벡터를 다시 쓴다.
-            "text": f"{entry['parent_name']} > {entry['name']}" + (f": {entry['definition']}" if entry["definition"] else ""),
+            # 표현 텍스트는 "바로 위 이름 > 이름"과 별칭·정의다. 근거가 늘어도 바뀌지 않아 벡터를 다시 쓴다.
+            "text": _sub_entry_text(entry),
             "weight": 1.0,
             "entry_id": entry["entry_id"],
         }
@@ -175,6 +175,13 @@ def _ref_key(ref: str) -> str:
     return f"{document_id}:{ref_label(block_id)}"
 
 
+def _sub_entry_text(entry) -> str:
+    # 하위 항목이 된 개념은 페이지 벡터가 없어 별칭으로도 이 단위가 찾혀야 한다. 이름과 같은 별칭은 뺀다.
+    aliases = [alias for alias in entry["aliases"] or [] if name_key(alias) != name_key(entry["name"])]
+    return (f"{entry['parent_name']} > {entry['name']}" + (f" ({', '.join(aliases)})" if aliases else "")
+            + (f": {entry['definition']}" if entry["definition"] else ""))
+
+
 def upsert_page_entries(
     conn: psycopg.Connection,
     workspace_id: str,
@@ -186,14 +193,18 @@ def upsert_page_entries(
         conn.execute(
             """
             INSERT INTO wiki_page_entries
-                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs, slugs, aliases, tags)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (workspace_id, entry_id) DO UPDATE SET
                 block_refs = ARRAY(
                     SELECT DISTINCT ref
                     FROM unnest(wiki_page_entries.block_refs || EXCLUDED.block_refs) AS ref
                     ORDER BY ref
-                )
+                ),
+                -- 재생처럼 원래 slug·별칭·태그는 기여마다 더한다.
+                slugs = ARRAY(SELECT DISTINCT value FROM unnest(wiki_page_entries.slugs || EXCLUDED.slugs) AS value ORDER BY value),
+                aliases = ARRAY(SELECT DISTINCT value FROM unnest(wiki_page_entries.aliases || EXCLUDED.aliases) AS value ORDER BY value),
+                tags = ARRAY(SELECT DISTINCT value FROM unnest(wiki_page_entries.tags || EXCLUDED.tags) AS value ORDER BY value)
             """,
             (
                 workspace_id,
@@ -203,6 +214,9 @@ def upsert_page_entries(
                 change.get("parent_entry_id"),
                 change.get("definition") or "",
                 list(change.get("anchor_reference_ids") or []),
+                [change["slug"]] if change.get("slug") else [],
+                list(change.get("aliases") or []),
+                list(change.get("tags") or []),
             ),
         )
 

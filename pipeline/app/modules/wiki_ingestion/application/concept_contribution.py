@@ -136,6 +136,17 @@ def _concept_update_contributions(
         )
         source_block_ids = {ref.rsplit(":", 1)[-1] for ref in refs}
         existing_concept = concepts_by_slug.get(slug, {})
+        # 하위 항목이 된 개념을 가리킨 판정은 그 항목에 근거를 더한다(ADR 0042). 이름·위치는 처음 추가한 기여를 따른다.
+        entry_changes = [
+            {
+                "op": "add",
+                **value["entry"],
+                "anchor_reference_ids": list(value.get("refs", [])),
+                "evidence_claim_ids": [unit["evidence_id"]],
+            }
+            for value, unit in zip(values, evidence_units, strict=True)
+            if value.get("entry")
+        ]
         contributions[slug] = globalize_contribution_identity(
             {
                 "schema_version": 1,
@@ -163,6 +174,7 @@ def _concept_update_contributions(
                     for link in links
                     if _link_supports_concept(link, slug)
                 ],
+                **({"entry_changes": entry_changes} if entry_changes else {}),
             }
         )
     return contributions
@@ -197,6 +209,12 @@ def _merge_contribution(
         "links": _unique_dicts(
             [*base.get("links", []), *update.get("links", [])],
             "relation",
+        ),
+        # 갱신 판정이 하위 항목에 더한 근거는 그 페이지 기여의 항목 변경 뒤에 붙인다.
+        **(
+            {"entry_changes": [*base.get("entry_changes", []), *update.get("entry_changes", [])]}
+            if base.get("entry_changes") or update.get("entry_changes")
+            else {}
         ),
     }
 
