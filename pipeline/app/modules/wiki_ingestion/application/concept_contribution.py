@@ -32,6 +32,8 @@ def build_concept_contributions(
         if source_key_points is not None
         else _normalized_source_key_points(normalized)
     )
+    # 집 페이지별 하위 항목 추가(ADR 0042). 세부 항목의 근거는 이미 집 페이지 개념의 근거로 옮겨 두었다.
+    entry_changes = normalized.get("entry_changes") or {}
     contributions: dict[str, dict[str, Any]] = {}
     for concept in normalized.get("concept_ledger", []):
         if not isinstance(concept, dict):
@@ -68,6 +70,7 @@ def build_concept_contributions(
                     for link in links
                     if _link_supports_concept(link, slug, document_id)
                 ],
+                **({"entry_changes": entry_changes[slug]} if slug in entry_changes else {}),
             }
         )
     update_contributions = _concept_update_contributions(
@@ -205,10 +208,12 @@ def _unique_dicts(
     result: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for value in values:
+        # 하위 항목 참조는 같은 두 페이지 사이에도 항목마다 따로 둔다.
         key = (
             value.get(identity_field),
             value.get("source"),
             value.get("target"),
+            value.get("entry_id"),
         )
         if key not in seen:
             seen.add(key)

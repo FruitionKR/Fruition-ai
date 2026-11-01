@@ -74,6 +74,7 @@ from app.modules.wiki_generation.infrastructure.source_context_merge import (
 from app.modules.wiki_ingestion.application.concept_contribution import (
     build_concept_contributions,
 )
+from app.modules.wiki_ingestion.application.concept_entry_ingest import apply_concept_entries
 from app.modules.wiki_ingestion.application.models import PipelineRunCommand
 from app.modules.wiki_ingestion.domain.source_block_changes import (
     SourceBlockChanges,
@@ -555,6 +556,13 @@ def _resolve_pipeline_concepts(
         candidates=resolved_candidates,
         concept_slug_map=resolved.get("concept_slug_map", {}),
     )
+    # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). Jev가 없으면 이름 규칙만 쓴다.
+    jev = resolver.inner if isinstance(resolver.inner, JevConceptResolver) else None
+    resolved = apply_concept_entries(
+        resolved,
+        judge_part_of=jev.judge_part_of if jev else None,
+        judge_same=jev.judge_concepts if jev else None,
+    )
     log.emit(
         "4-보조. Concept Resolution",
         "Concept resolution과 근거 갱신 후보 판단을 병렬 실행하고 canonical slug를 반영했습니다.",
@@ -572,6 +580,8 @@ def _resolve_pipeline_concepts(
                 1 for item in resolutions if item.get("decision") == "merge_into"
             ),
             "링크 판단 수": sum(1 for item in resolutions if item.get("link_targets")),
+            "하위 항목 수": sum(len(items) for items in resolved.get("entry_changes", {}).values()),
+            "하위 항목 참조 수": len(resolved.get("entry_references", [])),
             "same_concept 수": sum(
                 1
                 for item in resolved["concept_update_decisions"]

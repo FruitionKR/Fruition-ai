@@ -377,6 +377,8 @@ class LinkBuilder:
                     "decided_by": "alias_overlap",
                 }
             )
+        # 다른 페이지 하위 항목을 가리키는 참조(ADR 0042). 항목마다 하나다.
+        links.extend(normalized.get("entry_references", []))
         return links
 
 

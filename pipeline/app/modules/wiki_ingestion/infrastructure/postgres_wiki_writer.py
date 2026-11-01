@@ -175,6 +175,38 @@ def _ref_key(ref: str) -> str:
     return f"{document_id}:{ref_label(block_id)}"
 
 
+def upsert_page_entries(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    entry_adds: list[dict],
+) -> None:
+    """편입이 둔 하위 항목을 조회용 사본에 더한다. 있는 항목은 재생처럼 이름·정의·위치를 두고 근거 블록만 더한다."""
+    for change in entry_adds:
+        conn.execute(
+            """
+            INSERT INTO wiki_page_entries
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id, entry_id) DO UPDATE SET
+                block_refs = ARRAY(
+                    SELECT DISTINCT ref
+                    FROM unnest(wiki_page_entries.block_refs || EXCLUDED.block_refs) AS ref
+                    ORDER BY ref
+                )
+            """,
+            (
+                workspace_id,
+                change["entry_id"],
+                page_id,
+                change.get("name") or "",
+                change.get("parent_entry_id"),
+                change.get("definition") or "",
+                list(change.get("anchor_reference_ids") or []),
+            ),
+        )
+
+
 def upload_wiki_markdown(markdown: str, object_name: str) -> str:
     return write_text_object(object_name, markdown)
 

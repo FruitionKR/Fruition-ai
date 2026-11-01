@@ -1367,10 +1367,31 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
             """,
             (workspace_id,),
         ).fetchall()
+        # 같은 하위 항목 찾기(ADR 0042)의 후보다. 집 페이지 개념 아래에 둔다.
+        entry_rows = conn.execute(
+            """
+            SELECT page.slug, entry.entry_id, entry.name, entry.definition, entry.parent_entry_id
+            FROM wiki_page_entries entry
+            JOIN wiki_pages page ON page.id = entry.page_id
+            WHERE entry.workspace_id = %s
+              AND page.page_type = 'concept'
+              AND page.status = 'active'
+            ORDER BY entry.entry_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+    entries_by_slug: dict[str, list[dict[str, Any]]] = {}
+    for row in entry_rows:
+        entries_by_slug.setdefault(row["slug"], []).append(
+            {key: row[key] for key in ("entry_id", "name", "definition", "parent_entry_id")}
+        )
     concepts = []
     for row in rows:
         markdown = _read_optional_text_object(row["markdown_uri"])
-        concepts.append(_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown))
+        concepts.append({
+            **_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown),
+            "entries": entries_by_slug.get(row["slug"], []),
+        })
     try:
         put_concept_index(workspace_id, concepts)
     except Exception:
