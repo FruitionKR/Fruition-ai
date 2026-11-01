@@ -116,7 +116,12 @@ def plan_entry_lint(
             nodes.append(
                 EntryNode(
                     entry_id=node_id,
-                    evidence_count=_evidence_count(page.entries),
+                    # 항목 근거와, 분리 뒤 자식 페이지 자체에 쌓인 근거(항목 변경 없는 편입 기록)를 함께 센다.
+                    evidence_count=_evidence_count(page.entries) + sum(
+                        len(item.get("evidence_units", []))
+                        for item in page.contributions
+                        if item.get("artifact_type") not in (_LINT, _MANUAL) and not item.get("entry_changes")
+                    ),
                     child_entry_ids=tuple(item["entry_id"] for item in page.entries if item["entry_id"] != root),
                     reference_page_ids=_referencing_pages(pages, page, {item["entry_id"] for item in page.entries})
                     - {record["split_from"]["page_id"]},
@@ -145,6 +150,10 @@ def plan_entry_lint(
 
     moved: set[str] = set()
     merged_parents: set[str] = set()
+    # 옮기기로 한 항목을 먼저 모두 정하고 기록은 그 뒤에 만든다. 같은 lint에서 함께 옮긴 항목끼리의 참조도
+    # 최종 위치로 잇기 위해서다. location: 항목 id → (원래 집 ref, 새 페이지 ref).
+    moves: list[tuple[EntryPage, dict[str, Any], str, str]] = []
+    location: dict[str, tuple[str, str]] = {}
     depth = {
         entry["entry_id"]: len(_ancestors({item["entry_id"]: item for item in page.entries}, entry["entry_id"]))
         for page, entry in targets.values()
@@ -173,9 +182,13 @@ def plan_entry_lint(
         elif moved & _ancestors({item["entry_id"]: item for item in page.entries}, entry["entry_id"]):
             reason = "ancestor_moved"
         else:
-            reason = _move_to_new_page(plan, pages, page, entry, new_page)
-            if reason is None:
-                moved.update(item["entry_id"] for item in _subtree(page.entries, entry["entry_id"]))
+            created = new_page(page, entry)
+            reason = None if created else "slug_taken"
+            if created:
+                moves.append((page, entry, *created))
+                for item in _subtree(page.entries, entry["entry_id"]):
+                    moved.add(item["entry_id"])
+                    location[item["entry_id"]] = (page.ref, f"concept:{created[1]}")
         plan.decisions.append(
             {
                 "action": decision.action,
@@ -184,21 +197,20 @@ def plan_entry_lint(
                 **({"skipped_reason": reason} if reason else {}),
             }
         )
+    for home, entry, page_id, slug in moves:
+        _move_to_new_page(plan, home, entry, page_id, slug)
+    _relocate_references(plan, pages, location)
     _drop_dangling_references(plan, pages)
     return plan
 
 
 def _move_to_new_page(
     plan: EntryLintPlan,
-    pages: dict[str, EntryPage],
     home: EntryPage,
     entry: dict[str, Any],
-    new_page: Callable[[EntryPage, dict[str, Any]], tuple[str, str] | None],
-) -> str | None:
-    created = new_page(home, entry)
-    if created is None:
-        return "slug_taken"
-    page_id, slug = created
+    page_id: str,
+    slug: str,
+) -> None:
     subtree = _subtree(home.entries, entry["entry_id"])
     moved_ids = {item["entry_id"] for item in subtree}
     home_change = plan.change(home.page_id, home.slug, home.title)
@@ -232,13 +244,36 @@ def _move_to_new_page(
         split_from={"page_id": home.page_id, "slug": home.slug, "entry_id": entry["entry_id"]},
         linked_operation_ids=linked_operation_ids,
     )
-    # 옮긴 항목 아래 둔 참조(다른 페이지 항목을 가리키는 요약 줄)도 함께 옮긴다.
-    for link in home.links:
-        if link.get("relation") == ENTRY_REFERENCE and link.get("parent_entry_id") in moved_ids:
-            home_change["removed_links"].append(link)
-            child["added_links"].append({**link, "source": f"concept:{slug}"})
-    _retarget_references(plan, pages, home, moved_ids, f"concept:{slug}", {home.page_id})
-    return None
+
+
+
+def _relocate_references(
+    plan: EntryLintPlan,
+    pages: dict[str, EntryPage],
+    location: dict[str, tuple[str, str]],
+) -> None:
+    """참조의 출발(아래 둔 항목)과 대상 항목을 이번 lint로 옮긴 최종 위치로 바꾼다.
+
+    옮긴 항목 아래 둔 참조는 새 페이지에서 나가고, 옮긴 항목을 가리키는 참조는 새 페이지를 가리킨다. 둘 다 이번에
+    옮겼으면 새 페이지끼리 잇는다.
+    """
+    new_pages = {ref: page_id for page_id, change in plan.page_changes.items() for ref in [f"concept:{change['slug']}"]}
+    for page in pages.values():
+        for link in page.links:
+            if link.get("relation") != ENTRY_REFERENCE:
+                continue
+            moved_source = location.get(str(link.get("parent_entry_id")))
+            source = moved_source[1] if moved_source and moved_source[0] == page.ref else str(link.get("source"))
+            moved_target = location.get(str(link.get("entry_id")))
+            target = moved_target[1] if moved_target and moved_target[0] == link.get("target") else str(link.get("target"))
+            if (source, target) == (link.get("source"), link.get("target")):
+                continue
+            change = plan.change(page.page_id, page.slug, page.title)
+            if link in change["removed_links"]:
+                continue
+            change["removed_links"].append(link)
+            owner = plan.page_changes[new_pages[source]] if source != page.ref else change
+            owner["added_links"].append({**link, "source": source, "target": target})
 
 
 def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPage) -> str | None:
@@ -257,12 +292,16 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
     for contribution in child.contributions:
         operation_id = str(contribution.get("operation_id"))
         changes = [change for change in contribution.get("entry_changes", []) if isinstance(change, dict)]
-        if contribution.get("artifact_type") in (_LINT, _MANUAL) or operation_id in linked or not changes:
+        # 사람이 고친 자식 본문은 부모로 옮길 수 없다.
+        if contribution.get("artifact_type") == _MANUAL:
+            return "manual_edit"
+        if contribution.get("artifact_type") == _LINT or operation_id in linked:
             continue
         # ponytail: 기록은 페이지·작업마다 하나라, 분리 뒤 같은 작업이 두 페이지에 다 기여했으면 잇지 못해 합치지 않는다.
         if operation_id in parent_operations:
             return "operation_on_both_pages"
-        copies.append(_linked_copy(contribution, parent.page_id, parent.slug, changes))
+        # 분리 뒤 자식에 쌓인 기록은 항목 변경이 없어도(페이지 근거만 있어도) 원래 작업 id로 부모에 잇는다.
+        copies.append(_linked_copy(contribution, parent.page_id, parent.slug, changes, all_evidence=True))
     for copy in copies:
         plan.link(copy)
     change = plan.change(parent.page_id, parent.slug, parent.title)
@@ -297,8 +336,13 @@ def _linked_copy(
     page_id: str,
     slug: str,
     changes: list[dict[str, Any]],
+    *,
+    all_evidence: bool = False,
 ) -> dict[str, Any]:
-    """옮긴 항목의 원래 편입 기록을 같은 작업 id로 다른 페이지에 잇는다. 개념 없이 항목과 그 근거만 가진다."""
+    """옮긴 항목의 원래 편입 기록을 같은 작업 id로 다른 페이지에 잇는다. 개념 없이 항목과 그 근거만 가진다.
+
+    all_evidence면 항목에 딸리지 않은 페이지 근거까지 모두 옮긴다(다시 합치기).
+    """
     claim_ids = {claim_id for change in changes for claim_id in change.get("evidence_claim_ids", [])}
     return {
         **{key: contribution[key] for key in ("schema_version", "artifact_type", "operation_id", "document_id") if key in contribution},
@@ -307,7 +351,7 @@ def _linked_copy(
         "evidence_units": [
             {**unit, "related_concept_slugs": [slug]}
             for unit in contribution.get("evidence_units", [])
-            if isinstance(unit, dict) and unit.get("evidence_id") in claim_ids
+            if isinstance(unit, dict) and (all_evidence or unit.get("evidence_id") in claim_ids)
         ],
         "source_blocks": [],
         "links": [],
