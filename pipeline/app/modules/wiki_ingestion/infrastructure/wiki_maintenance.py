@@ -192,7 +192,6 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     "promotion_status": cluster.get("promotion_status"),
                     "promotion_source_refs": cluster.get("promotion_source_refs", []),
                     "claims": cluster.get("claims", []),
-                    "relations": cluster.get("relations", []),
                 },
                 "source_blocks": cluster.get("source_blocks", []),
                 "allowed_anchor_refs": sorted(allowed_refs),
@@ -253,7 +252,7 @@ def _promotion_concept_system_prompt() -> str:
     return (
         base_prompt
         + "\n\nStage=PromotionClusterConceptPageGeneration.\n"
-        "You receive one promotion cluster, evidence claims, existing relation candidates, and source blocks.\n"
+        "You receive one promotion cluster, evidence claims, and source blocks.\n"
         "Generate a real concept page draft from the supplied evidence only.\n"
         "Use allowed_anchor_refs exactly as anchor_block_ids. They may be global refs like doc_id:B0001.\n"
         "Do not use refs that are not listed in allowed_anchor_refs.\n"

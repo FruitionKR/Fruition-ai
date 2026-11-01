@@ -6,11 +6,6 @@ TRAVERSABLE_RELATION_TYPES = frozenset(
         "source_mentions_concept",
         "concept_related_to",
         "related_to",
-        "part_of",
-        "child_of",
-        "uses_or_depends_on",
-        "contrasts_with",
-        "supports_or_enables",
     }
 )
 

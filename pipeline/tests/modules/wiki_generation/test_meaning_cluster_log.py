@@ -14,7 +14,6 @@ def test_render_meaning_cluster_log_uses_given_date_and_cluster_decisions() -> N
                     "decision_reason": "새 개념 후보",
                 }
             ],
-            "core_relation_candidates": [],
             "promotion": None,
         }
     ]

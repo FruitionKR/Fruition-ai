@@ -101,7 +101,6 @@ def test_promoted_page_gets_detail_items_as_sub_entries_and_lint_restore_removes
     assert _sub_entry_units(world, "rollout") == sorted(f"Rollout > {term}: {term} 근거 문장이다." for term in TERMS)
     assert [entry["name"] for entry in world.ledger_rebuild("rollout").entries] == TERMS
     # 관련 개념 링크는 만들지 않는다.
-    assert result["materialized_relations"] == []
     assert not [link for link in after["links"] if link[2] == "concept_related_to"]
     # 항목 근거의 문서가 승격 페이지의 문서 연결이 된다.
     assert ("doc-c", "rollout") in after["documents"]

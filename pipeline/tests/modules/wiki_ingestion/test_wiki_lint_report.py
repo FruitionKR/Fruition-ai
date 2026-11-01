@@ -9,8 +9,6 @@ def test_render_lint_log_markdown_uses_given_date_and_change_queues() -> None:
         "orphan_refs": ["doc_1:B0001"],
         "promotion_candidates": ["cluster_1"],
         "needs_review": [],
-        "relation_candidates": [],
-        "invalid_relations": [],
         "invalid_promotions": [],
         "orphan_link_candidates": [
             {
@@ -32,7 +30,6 @@ def test_render_lint_log_markdown_uses_given_date_and_change_queues() -> None:
             {"cluster_id": "cluster_1", "concept_slug": "back-emf"},
         ],
         "merged_promotions": [],
-        "materialized_relations": [],
     }
 
     markdown = render_lint_log_markdown(result, "2026-07-18")

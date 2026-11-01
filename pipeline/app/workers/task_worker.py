@@ -821,9 +821,6 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                 concept_update_decisions=list(
                     command.get("concept_update_decisions") or []
                 ),
-                core_relation_decisions=list(
-                    command.get("core_relation_decisions") or []
-                ),
                 core_concepts=list(
                     command["cluster_normalized"].get("core_concepts") or []
                 ),

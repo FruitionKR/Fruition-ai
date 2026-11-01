@@ -188,31 +188,14 @@ def normalize_concept_update_decisions(
         decision = str(item.get("decision") or "not_same_concept")
         raw_concept_slug = str(item.get("concept_slug") or "")
         concept_slug = slug_map.get(raw_concept_slug, raw_concept_slug)
-        relation = str(item.get("relation") or "")
-        if relation not in {
-            "part_of",
-            "child_of",
-            "uses_or_depends_on",
-            "contrasts_with",
-            "supports_or_enables",
-            "related_evidence",
-            "insufficient_evidence",
-        }:
-            relation = ""
-        if decision == "same_concept" and concept_slug in valid_concept_slugs:
-            relation = "same_concept"
-        elif decision == "relation_candidate" and concept_slug in valid_concept_slugs and relation:
-            pass
-        else:
+        if decision != "same_concept" or concept_slug not in valid_concept_slugs:
             decision = "not_same_concept"
             concept_slug = ""
-            relation = ""
         normalized_decisions.append(
             {
                 "candidate_id": candidate_id,
                 "decision": decision,
                 "concept_slug": concept_slug,
-                "relation": relation,
                 "reason": item.get("reason"),
             }
         )
@@ -240,25 +223,22 @@ def judge_concept_update_candidates(
         except JevUnavailable as exc:
             logger.warning("[개념 갱신 후보 Jev 대체] %s", exc)
     system_prompt = """Stage=ConceptUpdateCandidateJudge.
-You decide whether section/mention evidence claims already belong to or have an evidence-backed relation with an existing/current core concept.
+You decide whether section/mention evidence claims already belong to an existing/current core concept.
 
 Rules:
 - Return JSON only.
 - Use same_concept only when the candidate has the same identity as an existing/current concept, such as a synonym, translation, abbreviation, or spelling variant.
-- A procedure, record, metric, property, evidence, or subtopic that merely belongs to or supports an existing concept is not same_concept. Use relation_candidate when its relation is grounded; otherwise use not_same_concept.
-- Use relation_candidate when the candidate is not the same concept but has an evidence-backed relation to an existing/current concept.
-- Use not_same_concept when it should remain available for active cluster judging.
+- A procedure, record, metric, property, evidence, or subtopic that merely belongs to or supports an existing concept is not same_concept.
+- Use not_same_concept otherwise so it remains available for active cluster judging.
 - Do not create new concepts or clusters.
-- Allowed relation values: part_of, child_of, uses_or_depends_on, contrasts_with, supports_or_enables, related_evidence, insufficient_evidence.
 
 Schema:
 {
   "decisions": [
     {
       "candidate_id": "cand_001",
-      "decision": "same_concept | relation_candidate | not_same_concept",
+      "decision": "same_concept | not_same_concept",
       "concept_slug": "existing-concept-slug-or-empty",
-      "relation": "part_of | child_of | uses_or_depends_on | contrasts_with | supports_or_enables | related_evidence | insufficient_evidence | empty",
       "reason": "brief Korean reason"
     }
   ]
@@ -306,7 +286,7 @@ def _pair_judged_updates(
     concepts: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    # 후보는 근거 문장을 정의 자리에 둔 개념처럼 판정한다. same이면 같은 개념, related면 관계 후보다.
+    # 후보는 근거 문장을 정의 자리에 둔 개념처럼 판정한다. same이면 같은 개념이고, 나머지는 클러스터 판정으로 간다.
     incoming = [
         {"slug": item["candidate_id"], "title": item["term"], "aliases": [item["slug"]], "definition": item["claim"]}
         for item in candidates
@@ -315,18 +295,12 @@ def _pair_judged_updates(
     decisions = []
     for item in candidates:
         resolution = resolutions.get(item["candidate_id"]) or {}
-        if resolution.get("decision") == "merge_into":
-            decision, relation = "same_concept", ""
-        elif resolution.get("decision") == "link_to":
-            decision, relation = "relation_candidate", "related_evidence"
-        else:
-            decision, relation = "not_same_concept", ""
+        same = resolution.get("decision") == "merge_into"
         decisions.append(
             {
                 "candidate_id": item["candidate_id"],
-                "decision": decision,
-                "concept_slug": resolution.get("canonical_slug") or "",
-                "relation": relation,
+                "decision": "same_concept" if same else "not_same_concept",
+                "concept_slug": (resolution.get("canonical_slug") or "") if same else "",
             }
         )
     return normalize_concept_update_decisions(

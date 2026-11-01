@@ -181,16 +181,7 @@ class PostgresWikiRepositoryTest(unittest.TestCase):
             (
                 "ws_target",
                 "ws_target",
-                [
-                    "child_of",
-                    "concept_related_to",
-                    "contrasts_with",
-                    "part_of",
-                    "related_to",
-                    "source_mentions_concept",
-                    "supports_or_enables",
-                    "uses_or_depends_on",
-                ],
+                ["concept_related_to", "related_to", "source_mentions_concept"],
                 ["source-1", "concept-1"],
                 [],
                 ["source-1", "concept-1"],

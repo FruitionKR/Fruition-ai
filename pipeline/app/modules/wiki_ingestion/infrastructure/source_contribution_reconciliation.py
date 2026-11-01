@@ -169,7 +169,6 @@ def source_contribution_payload(manifest: dict[str, Any]) -> dict[str, Any]:
         "links": _manifest_links(manifest),
         "source_block_changes": manifest.get("source_block_changes") or {},
         "claim_signatures": _claim_signatures(active_cluster_markdown),
-        "relation_signatures": _relation_signatures(active_cluster_markdown),
     }
 
 
@@ -238,10 +237,8 @@ def _reconciliation_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "_cluster_reconciliation_ready": (
             isinstance(stored_contribution, dict)
             and isinstance(stored_contribution.get("claim_signatures"), list)
-            and isinstance(stored_contribution.get("relation_signatures"), list)
         ),
         "_current_claim_signatures": payload.get("claim_signatures", []),
-        "_current_relation_signatures": payload.get("relation_signatures", []),
     }
 
 
@@ -265,21 +262,6 @@ def _claim_signatures(markdown: Any) -> list[list[str]]:
         [cluster["id"], str(claim.get("id") or ""), str(claim.get("text") or "")]
         for cluster in parse_active_cluster_lint(markdown)
         for claim in cluster.get("claims", [])
-    ]
-
-
-def _relation_signatures(markdown: Any) -> list[list[Any]]:
-    if not isinstance(markdown, str):
-        return []
-    return [
-        [
-            cluster["id"],
-            str(relation.get("target") or ""),
-            str(relation.get("relation") or ""),
-            [str(item) for item in relation.get("evidence", [])],
-        ]
-        for cluster in parse_active_cluster_lint(markdown)
-        for relation in cluster.get("relations", [])
     ]
 
 

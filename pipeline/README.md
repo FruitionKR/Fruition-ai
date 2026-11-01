@@ -329,7 +329,7 @@ Wiki ingest의 의미 추출·정규화·평가·보정·재시도를 LangGraph�
 
 section/mention evidence candidate의 application 판단 정책입니다.
 
-- concept resolution 응답의 기존 concept 갱신 또는 relation candidate 판정 결과 검증
+- concept resolution 응답의 기존 concept 갱신 판정 결과 검증
 - existing active cluster 병합·신규 생성·검토 필요 판정
 - LLM JSON 결과의 candidate/concept 식별자와 허용 enum 검증
 
@@ -493,7 +493,7 @@ Concept canonicalization과 section/mention 갱신 후보 판단을 서로 독�
 - current batch concept끼리 synonym merge
 - existing wiki concept와 synonym merge
 - missing related hint를 current/existing concept로 매핑
-- existing/current concept의 근거 갱신 또는 relation candidate 분류
+- existing/current concept의 근거 갱신 분류
 
 resolution 응답에서 빠진 concept는 신규 생성, hint는 unresolved로 처리합니다. 근거 없는 concept 관계는 생성하지 않습니다. 갱신 후보 중 `not_same_concept`는 후속 cluster 판단 대상으로 처리합니다.
 

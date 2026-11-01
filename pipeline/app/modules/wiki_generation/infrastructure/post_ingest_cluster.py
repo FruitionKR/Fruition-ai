@@ -49,7 +49,6 @@ def build_post_ingest_cluster_artifact(
     user_id: str,
     workspace_id: str,
     concept_update_decisions: list[dict[str, Any]],
-    core_relation_decisions: list[dict[str, Any]],
     core_concepts: list[dict[str, Any]] | None = None,
     concept_judge: JevConceptResolver | None = None,
 ) -> dict[str, Any]:
@@ -75,7 +74,6 @@ def build_post_ingest_cluster_artifact(
         "workspace_id": workspace_id,
         "cluster_decisions": cluster_decisions,
         "concept_update_decisions": concept_update_decisions,
-        "core_relation_decisions": core_relation_decisions,
     }
     artifact = assembler.build(normalized, **build_args)
     # 근거를 덧붙인 뒤의 클러스터를 보고 승격을 정한다.

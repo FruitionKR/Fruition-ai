@@ -45,7 +45,6 @@ def test_post_ingest_cluster_judges_only_non_concept_updates() -> None:
                     "concept_slug": "existing",
                 }
             ],
-            core_relation_decisions=[],
         )
 
     assert [item["candidate_id"] for item in judge.call_args.kwargs["candidates"]] == [
@@ -121,7 +120,6 @@ reason: 이미 쌓임
             user_id="user-1",
             workspace_id="workspace-1",
             concept_update_decisions=[],
-            core_relation_decisions=[],
             core_concepts=[{"slug": "back-electromotive-force", "title": "역기전력", "aliases": ["Back EMF"]}],
         )
 
@@ -204,7 +202,6 @@ representative: Gegen-EMK
             user_id="user-1",
             workspace_id="workspace-1",
             concept_update_decisions=[],
-            core_relation_decisions=[],
             core_concepts=core_concepts,
             concept_judge=judge,
         )
@@ -267,7 +264,6 @@ def _judged_active_markdown(existing: str) -> str:
             user_id="user-1",
             workspace_id="workspace-1",
             concept_update_decisions=[],
-            core_relation_decisions=[],
         )
     return judge.call_args.kwargs["existing_active_markdown"]
 

@@ -593,11 +593,6 @@ def _resolve_pipeline_concepts(
                 for item in resolved["concept_update_decisions"]
                 if item.get("decision") == "same_concept"
             ),
-            "relation_candidate 수": sum(
-                1
-                for item in resolved["concept_update_decisions"]
-                if item.get("decision") == "relation_candidate"
-            ),
             "resolution 소요 시간(초)": f"{resolution_seconds:.2f}",
             "update judge 소요 시간(초)": f"{update_seconds:.2f}",
             "병렬 wall 시간(초)": f"{parallel_seconds:.2f}",
@@ -826,9 +821,6 @@ def _prepare_post_ingest_clusters(
         for item in decisions
         if item.get("decision") == "same_concept"
     ]
-    core_relations = [
-        item for item in decisions if item.get("decision") == "relation_candidate"
-    ]
     log.emit(
         "8. 후속 Meaning Cluster 준비",
         "Concept 근거 갱신은 현재 ingest에 유지하고 Meaning Cluster 판단 입력을 준비했습니다.",
@@ -864,7 +856,6 @@ def _prepare_post_ingest_clusters(
         {
             "cluster_normalized": cluster_normalized,
             "concept_update_decisions": concept_updates,
-            "core_relation_decisions": core_relations,
         },
     )
 

@@ -133,14 +133,15 @@ class JudgeCandidatesTest(unittest.TestCase):
         self.assertIn("A procedure, record, metric, property, evidence, or subtopic", completion.system_prompt)
         self.assertIn("is not same_concept", completion.system_prompt)
 
-    def test_rejects_relation_to_unknown_concept(self) -> None:
+    def test_rejects_relation_decision_and_unknown_concept(self) -> None:
+        # 관계 후보 판정은 없다(ADR 0042). same_concept가 아니거나 모르는 개념이면 클러스터 판정으로 보낸다.
         completion = FakeCompletion(
             {
                 "concept_update_decisions": [
                     {
                         "candidate_id": "cand_001",
                         "decision": "relation_candidate",
-                        "concept_slug": "missing-concept",
+                        "concept_slug": "motor",
                         "relation": "part_of",
                     }
                 ]
@@ -159,7 +160,6 @@ class JudgeCandidatesTest(unittest.TestCase):
                 "candidate_id": "cand_001",
                 "decision": "not_same_concept",
                 "concept_slug": "",
-                "relation": "",
                 "reason": None,
             },
         )
@@ -213,7 +213,7 @@ class JudgeCandidatesTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_pair_judge_maps_same_and_related_and_sends_only_identity(self) -> None:
+    def test_pair_judge_maps_only_same_and_sends_only_identity(self) -> None:
         calls = []
 
         def judge_pairs(incoming, pool):
@@ -242,9 +242,8 @@ class JudgeCandidatesTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [(item["decision"], item["concept_slug"], item["relation"]) for item in decisions],
-            [("same_concept", "back-emf", "same_concept"), ("relation_candidate", "back-emf", "related_evidence"),
-             ("not_same_concept", "", "")],
+            [(item["decision"], item["concept_slug"]) for item in decisions],
+            [("same_concept", "back-emf"), ("not_same_concept", ""), ("not_same_concept", "")],
         )
         incoming, pool = calls[0]
         self.assertEqual(incoming[0], {

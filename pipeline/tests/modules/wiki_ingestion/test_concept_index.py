@@ -12,7 +12,6 @@ from app.modules.wiki_ingestion.infrastructure.concept_evidence import append_co
 from app.modules.wiki_ingestion.infrastructure.embedding_units import extract_embedding_units
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
     _concept_index_from_markdown,
-    _materialize_active_relation_candidates,
     _merge_promotion_into_existing_concept,
     _delete_source_related_links,
     _resolve_or_create_wiki_page_id,
@@ -306,7 +305,7 @@ def test_resolve_or_create_wiki_page_id_reuses_existing_uuid() -> None:
     assert second_id == first_id
 
 
-def test_parse_active_cluster_lint_reads_promotion_relations_and_refs() -> None:
+def test_parse_active_cluster_lint_reads_promotion_and_refs() -> None:
     markdown = """# Active Meaning Clusters
 
 ## cluster: back-emf
@@ -315,12 +314,6 @@ representative: Back EMF
 
 ### Evidence Claims
 - claim_001: Back EMF는 제조 공차의 영향을 받는다. [doc_a:B0001, doc_b:B0002]
-
-### Core Relation Candidates
-- target: concept:tolerance-analysis
-  relation: supports_or_enables
-  evidence: [doc_a:B0001]
-  reason: Back EMF 변화가 공차 분석 근거로 쓰임
 
 ### Promotion
 status: candidate
@@ -344,15 +337,6 @@ reason: definition/evidence/relation이 충분함
                         "decision": "",
                     }
                 ],
-                "relations": [
-                    {
-                        "target": "concept:tolerance-analysis",
-                        "relation": "supports_or_enables",
-                        "evidence": ["doc_a:B0001"],
-                        "reason": "Back EMF 변화가 공차 분석 근거로 쓰임",
-                    }
-                ],
-                "invalid_relations": [],
                 "promotion_status": "candidate",
                 "promotion_source_refs": ["doc_a", "doc_b"],
                 "promotion_target": "",
@@ -360,19 +344,13 @@ reason: definition/evidence/relation이 충분함
     ]
 
 
-def test_merge_active_cluster_markdown_deduplicates_claims_and_relations() -> None:
+def test_merge_active_cluster_markdown_deduplicates_claims() -> None:
     existing = """# Active Meaning Clusters
 
 ## cluster: back-emf
 
 ### Evidence Claims
 - claim_001: Back EMF는 제조 공차의 영향을 받는다. [doc_a:B0001]
-
-### Core Relation Candidates
-- target: concept:tolerance-analysis
-  relation: supports_or_enables
-  evidence: [doc_a:B0001]
-  reason: 기존 근거
 """
     incoming = """# Active Meaning Clusters
 
@@ -381,24 +359,12 @@ def test_merge_active_cluster_markdown_deduplicates_claims_and_relations() -> No
 ### Evidence Claims
 - claim_001: Back EMF는 제조 공차의 영향을 받는다. [doc_a:B0001]
 - claim_002: Back EMF는 토크 리플 분석에도 쓰인다. [doc_b:B0002]
-
-### Core Relation Candidates
-- target: concept:tolerance-analysis
-  relation: supports_or_enables
-  evidence: [doc_a:B0001]
-  reason: 중복 근거
-- target: concept:torque-ripple
-  relation: related_evidence
-  evidence: [doc_b:B0002]
-  reason: 신규 관계 후보
 """
 
     merged = merge_active_cluster_markdown(existing, incoming)
 
     assert merged.count("claim_001") == 1
     assert "claim_002: Back EMF는 토크 리플 분석에도 쓰인다. [doc_b:B0002]" in merged
-    assert merged.count("target: concept:tolerance-analysis") == 1
-    assert "target: concept:torque-ripple" in merged
 
 
 def test_merge_active_cluster_markdown_fills_missing_representative() -> None:
@@ -492,69 +458,6 @@ reason: 신규 누적 근거
     assert "source_refs: [doc_a, doc_b]" in merged
 
 
-def test_materialize_active_relation_candidates_links_existing_concepts_only() -> None:
-    class FakeConn:
-        def __init__(self) -> None:
-            self.link_params = []
-
-        def execute(self, _query: str, params: tuple[str, str, str, str, float]):
-            self.link_params.append(params)
-            return self
-
-    clusters = [
-        {
-            "id": "torque-ripple-optimization",
-            "claims": [
-                {
-                    "id": "claim_001",
-                    "refs": ["doc_a:B0001"],
-                }
-            ],
-            "relations": [
-                {
-                    "target": "concept:afpm-motor-optimization",
-                    "relation": "part_of",
-                    "evidence": ["claim_001"],
-                    "reason": "토크 리플 최적화는 AFPM 모터 최적화의 일부",
-                },
-                {
-                    "target": "concept:cogging-torque",
-                    "relation": "related_evidence",
-                    "evidence": ["claim_001"],
-                    "reason": "약한 근거 연결",
-                },
-                {
-                    "target": "concept:missing-concept",
-                    "relation": "uses_or_depends_on",
-                    "evidence": ["claim_001"],
-                    "reason": "대상 concept 없음",
-                },
-            ],
-        }
-    ]
-
-    materialized = _materialize_active_relation_candidates(
-        FakeConn(),
-        clusters,
-        {
-            "torque-ripple-optimization": "page_source",
-            "afpm-motor-optimization": "page_target",
-            "cogging-torque": "page_related",
-        },
-        "workspace-1",
-    )
-
-    assert materialized == [
-        {
-            "from": "torque-ripple-optimization",
-            "to": "afpm-motor-optimization",
-            "relation": "part_of",
-            "evidence": ["claim_001"],
-            "source_refs": ["doc_a:B0001"],
-        }
-    ]
-
-
 def test_merge_active_cluster_markdown_replaces_non_candidate_promotion() -> None:
     existing = """# Active Meaning Clusters
 
@@ -594,7 +497,6 @@ target: concept:back-electromotive-force
 
 def test_lint_materialize_keeps_concurrent_ingest_updates(monkeypatch) -> None:
     calls = []
-    materialized_clusters = []
     active_markdown = {
         "value": """# Active Meaning Clusters
 
@@ -613,7 +515,7 @@ source_refs: [doc-1, doc-3]
     # 승격 개수 규칙은 아래 전용 테스트가 본다.
     monkeypatch.setattr(repository, "cluster_reaches_promotion", lambda _count: True)
 
-    def candidate(run_id, claim_signatures=None, relation_signatures=None):
+    def candidate(run_id, claim_signatures=None):
         return {
             "pipeline_run_id": run_id,
             "document_id": "doc-2",
@@ -625,7 +527,6 @@ source_refs: [doc-1, doc-3]
             "structural_reconciled": False,
             "_cluster_reconciliation_ready": True,
             "_current_claim_signatures": claim_signatures or [],
-            "_current_relation_signatures": relation_signatures or [],
         }
 
     reconciliation_candidates = iter(
@@ -636,14 +537,6 @@ source_refs: [doc-1, doc-3]
                     "run-after-ingest",
                     [
                         ["shared", "claim_002", "ingest 중 추가된 근거 [doc-2:B0001]"]
-                    ],
-                    [
-                        [
-                            "shared",
-                            "concept:target",
-                            "supports_or_enables",
-                            ["doc-2:B0001"],
-                        ]
                     ],
                 )
             ],
@@ -710,11 +603,6 @@ source_refs: [doc-1, doc-3]
     )
     monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
-    monkeypatch.setattr(
-        repository,
-        "_materialize_active_relation_candidates",
-        lambda _conn, clusters, *_args: materialized_clusters.extend(clusters) or [],
-    )
 
     def generate_page(_input):
         calls.append("llm")
@@ -725,12 +613,6 @@ source_refs: [doc-1, doc-3]
 ### Evidence Claims
 - claim_001: 기존 근거 [doc-1:B0001]
 - claim_002: ingest 중 추가된 근거 [doc-2:B0001]
-
-### Core Relation Candidates
-- target: concept:target
-  relation: supports_or_enables
-  evidence: [doc-2:B0001]
-  reason: ingest 중 추가된 관계
 
 ### Promotion
 status: candidate
@@ -764,16 +646,9 @@ source_refs: [doc-1, doc-2]
     assert result["applied_reconciliations"] == [
         {"pipeline_run_id": "run-after-ingest"}
     ]
-    assert result["applied_cluster_reconciliation"] == {
-        "removed_claims": [],
-        "removed_relations": [],
-    }
+    assert result["applied_cluster_reconciliation"] == {"removed_claims": []}
     assert "ingest 중 추가된 근거" in result["_lint_page_changes"][0]["markdown"]
-    assert materialized_clusters[0]["claims"][1]["id"] == "claim_002"
-    assert materialized_clusters[0]["relations"][0]["target"] == "concept:target"
-    assert "ingest 중 추가된 관계" in result["_lint_object_changes"][
-        "archived_sections"
-    ][0]
+    assert "ingest 중 추가된 근거" in result["_lint_object_changes"]["archived_sections"][0]
 
 def test_lint_wiki_workspace_dry_run_does_not_write_log(monkeypatch) -> None:
     writes = []
@@ -828,7 +703,6 @@ source_refs: [doc_1]
                 "stale_relations": [],
                 "structural_reconciled": False,
                 "_current_claim_signatures": [],
-                "_current_relation_signatures": [],
             }
         ],
     )
@@ -1013,7 +887,6 @@ def test_lint_does_not_remove_claim_for_legacy_reingest_without_signatures(
                 "structural_reconciled": False,
                 "_cluster_reconciliation_ready": False,
                 "_current_claim_signatures": [],
-                "_current_relation_signatures": [],
             }
         ],
     )
@@ -1022,7 +895,6 @@ def test_lint_does_not_remove_claim_for_legacy_reingest_without_signatures(
         "_reconcile_active_cluster_invalidations",
         lambda markdown, refs, *_args: (
             reconciled_refs.append(refs) or markdown,
-            [],
             [],
         ),
     )
@@ -1062,75 +934,18 @@ def test_reconcile_active_clusters_removes_only_stale_reingest_claims() -> None:
 - claim_old: 수정 전 주장이다. [doc_1:B0002]
 - claim_new: 수정 후 주장이다. [doc_1:B0002]
 - claim_other: 다른 문서 주장이다. [doc_2:B0001]
-
-### Core Relation Candidates
-- target: concept:old-target
-  relation: supports_or_enables
-  evidence: [claim_old]
-  reason: 이전 주장 관계
-- target: concept:new-target
-  relation: supports_or_enables
-  evidence: [claim_old, claim_new]
-  reason: 최신 주장 관계
 """
 
-    reconciled, removed_claims, removed_relations = (
-        reconcile_active_cluster_invalidations(
-            markdown,
-            {"doc_1:B0002"},
-            {
-                (
-                    "motor",
-                    "claim_new",
-                    "수정 후 주장이다. [doc_1:B0002]",
-                )
-            },
-            {
-                (
-                    "motor",
-                    "concept:new-target",
-                    "supports_or_enables",
-                    ("claim_old", "claim_new"),
-                )
-            },
-        )
+    reconciled, removed_claims = reconcile_active_cluster_invalidations(
+        markdown,
+        {"doc_1:B0002"},
+        {("motor", "claim_new", "수정 후 주장이다. [doc_1:B0002]")},
     )
 
     assert "claim_old" not in reconciled
-    assert "concept:old-target" not in reconciled
     assert "claim_new" in reconciled
-    assert "concept:new-target" in reconciled
-    assert "evidence: [claim_new]" in reconciled
     assert "claim_other" in reconciled
     assert removed_claims[0]["claim_id"] == "claim_old"
-    assert removed_relations[0]["target"] == "concept:old-target"
-
-
-def test_reconcile_active_clusters_keeps_partial_relation_evidence_change() -> None:
-    markdown = """# Active Meaning Clusters
-
-## cluster: motor
-
-### Core Relation Candidates
-- target: concept:target
-  relation: supports_or_enables
-  evidence: [doc_1:B0002, claim_keep]
-  reason: 일부 근거만 무효화
-"""
-
-    reconciled, removed_claims, removed_relations = (
-        reconcile_active_cluster_invalidations(
-            markdown,
-            {"doc_1:B0002"},
-            set(),
-            set(),
-        )
-    )
-
-    assert "evidence: [claim_keep]" in reconciled
-    assert "doc_1:B0002" not in reconciled
-    assert removed_claims == []
-    assert removed_relations == []
 
 
 def test_delete_source_related_links_is_scoped_to_workspace() -> None:
@@ -1309,7 +1124,6 @@ def test_lint_promotion_judged_related_creates_page_without_links(monkeypatch) -
     # 관련 개념 판정으로 링크를 덧붙이지 않는다(ADR 0042). 연결은 하위 항목 배정과 참조가 맡는다.
     assert result["promotions"] == [{"cluster_id": "orchid-lease", "concept_slug": "orchid-lease", "page_id": "page-orchid"}]
     assert links == []
-    assert result["relations"] == []
     assert "added_links" not in result["page_changes"][0]
 
 

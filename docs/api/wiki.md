@@ -20,7 +20,7 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 클러스터만 받고, 모자란 후보는 `invalid_promotions`에 남긴다. 핵심 개념과 맞춘 후보는 개수를 보지 않는다([ADR 0042](../adr/0042-hierarchical-concept-pages.md)).
 lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
 기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고, 아니면 새 페이지를 만든다. 관련 개념 링크는 잇지 않는다.
-세부 항목은 승격 페이지(병합 대상 개념)의 하위 항목으로 lint 기록 `entry_changes`에 남아 lint 복원 시 함께 빠지고, 그 근거 문서는 페이지의 문서 연결이 된다. 승격·병합 lint 기록은 `ledger_contributions`에도 실린다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
+세부 항목은 승격 페이지(병합 대상 개념)의 하위 항목으로 lint 기록 `entry_changes`에 남아 lint 복원 시 함께 빠지고, 그 근거 문서는 페이지의 문서 연결이 된다. 클러스터의 관계 후보(`### Core Relation Candidates`)와 그 링크 생성, 결과의 `relation_candidates`·`invalid_relations`·`materialized_relations`는 지웠다(ADR 0042). Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
 `archived.md`로 옮기고, lint 복원은 이를 `active.md`로 되돌린다([ADR 0037](../adr/0037-meaning-cluster-promotion.md), [ADR 0038](../adr/0038-concept-to-concept-links.md)).
 
 - API 수: 11
@@ -610,7 +610,7 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 [data-model](../data-model.md)). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`),
 `deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다(그 자식에도 이 lint의
 합친 기록이 남고 `changed_pages`에 실린다). `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·
-`linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다. 이 lint의 하위 항목 기록은
+`linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다.
 `operation_id`가 이 lint, `document_id`·`linked_by_operation_id`가 null이다. 원래 작업 id로 다른 페이지에 이은 편입 기록은
 `operation_id`·`document_id`가 원래 편입이고 `linked_by_operation_id`가 이 lint다. 같은 작업을 같은 페이지에 여러 번 이으면 한
 기록·한 행으로 합친다. document-svc는 `deleted_pages`의 기여를 비활성으로 바꾸고, 이 lint를 복원할 때 `operation_id`나
@@ -655,15 +655,12 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
   "changed_pages": [],
   "cluster_count": 1,
   "invalid_promotions": [],
-  "invalid_relations": [],
   "materialized_promotions": [],
-  "materialized_relations": [],
   "merged_promotions": [],
   "needs_review": [],
   "orphan_refs": [],
   "promotion_candidates": [],
   "reconciliation_candidates": [],
-  "relation_candidates": [],
   "source_ref_count": 0,
   "user_id": "local-user",
   "workspace_id": "local-workspace"
@@ -725,15 +722,12 @@ curl -X POST "$PIPELINE/wiki/maintenance/lint" \
   "changed_pages": [],
   "cluster_count": 1,
   "invalid_promotions": [],
-  "invalid_relations": [],
   "materialized_promotions": [],
-  "materialized_relations": [],
   "merged_promotions": [],
   "needs_review": [],
   "orphan_refs": [],
   "promotion_candidates": [],
   "reconciliation_candidates": [],
-  "relation_candidates": [],
   "source_ref_count": 0,
   "user_id": "local-user",
   "workspace_id": "local-workspace"
