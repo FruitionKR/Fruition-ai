@@ -2839,12 +2839,13 @@ def _promotion_entry_changes(
 ) -> list[dict[str, Any]]:
     """클러스터 세부 항목마다 페이지 바로 아래 하위 항목 `add`. 근거는 그 용어의 근거 줄이다.
 
-    같은 이름(name_key)의 항목이 이미 있으면 그 id로 더해 근거만 합친다(재생 규칙).
+    같은 이름(name_key)의 항목이 이미 있으면 그 id로 더해 근거만 합친다(재생 규칙). 새 id는 세부 항목을 센 것과 같은
+    name_key로 만든다. 기호를 지우는 slugify로 만들면 `C`·`C++`·`C#`이 한 항목으로 합쳐진다.
     """
     return [
         {
             "op": "add",
-            "entry_id": existing_ids.get(name_key(item["name"])) or new_entry_id(page_slug, slugify(item["name"])),
+            "entry_id": existing_ids.get(name_key(item["name"])) or new_entry_id(page_slug, name_key(item["name"])),
             "name": item["name"],
             "definition": item["definition"],
             "parent_entry_id": None,

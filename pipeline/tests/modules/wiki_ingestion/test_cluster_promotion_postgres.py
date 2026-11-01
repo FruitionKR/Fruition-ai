@@ -176,3 +176,14 @@ def test_split_of_promoted_entry_links_the_promotion_record_and_restores_with_it
     assert state["entries"] == []
     assert "rollout" not in state["pages"]
     assert not [document for document in state["documents"] if document[1] == "rollout-history"]
+
+
+def test_detail_items_that_differ_only_by_symbols_stay_separate_entries(world: World, monkeypatch) -> None:
+    names = ["C", "C++", "C#", "Java", "Python"]
+
+    _lint(world, monkeypatch, "lint-languages", _cluster("languages", names))
+
+    entries = world.ledger_rebuild("languages").entries
+    assert [entry["name"] for entry in entries] == names
+    assert len({entry["entry_id"] for entry in entries}) == 5
+    assert [entry["anchor_reference_ids"] for entry in entries] == [[f"doc-c:B{index:04d}"] for index in range(1, 6)]
