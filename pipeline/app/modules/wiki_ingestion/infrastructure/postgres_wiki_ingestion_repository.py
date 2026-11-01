@@ -1952,6 +1952,9 @@ def lint_concept_entries(
                     read_text=read_text_object,
                 )
                 rebuilt = rebuild_concept_page(loaded[page_id])
+                if rebuilt.deleted:
+                    del loaded[page_id]
+                    continue
                 pages[page_id] = EntryPage(
                     page_id=page_id,
                     slug=str(row["slug"]),
@@ -2103,7 +2106,9 @@ def lint_concept_entries(
             for index, item in enumerate(simulated, start=1)
         ]
         rebuilt = rebuild_concept_page(simulated)
-        page_changes.append({**change, "markdown": rebuilt.markdown, "claims": []})
+        # 삭제 기록의 본문은 지우기 직전 본문으로 둔다. document-svc가 이 기록을 삭제 변경으로 남긴다.
+        markdown = rebuild_concept_page(before).markdown if rebuilt.deleted else rebuilt.markdown
+        page_changes.append({**change, "markdown": markdown, "claims": []})
         if page_id in plan.redirects:
             # 합쳐 지울 자식은 기록만 남기고 현재 상태는 지운다. 항목 사본을 다시 쓰면 부모로 옮긴 항목을 빼앗는다.
             continue

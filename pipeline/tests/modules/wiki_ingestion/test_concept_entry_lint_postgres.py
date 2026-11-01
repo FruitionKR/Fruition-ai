@@ -1,8 +1,9 @@
 """lint 하위 항목 재검사(ADR 0042 3단계)를 실제 PostgreSQL과 기록 재생으로 확인한다.
 
-document-svc 기여 원장은 가짜다. lint 결과의 `ledger_contributions`를 원장에 더하고 `deleted_pages`의 기여를
-비활성으로 바꾼다. lint 복원은 lint가 만든 페이지를 지우고, 바꾼 페이지는 그 lint 기록과 그 lint가 이은 기록
-(`linked_by_operation_id`)을 빼고, 그 lint가 지운 페이지의 기여는 다시 활성으로 돌려 재조립한다.
+document-svc 기여 원장은 가짜다. lint 결과의 `ledger_contributions`를 원장에 더하고, 어떤 행도 일괄 비활성화하거나
+다시 켜지 않는다. lint 복원은 대상 lint 기록과 그 lint가 이은 기록(`linked_by_operation_id`)만 끄고, 그 행이 있던
+페이지를 남은 기여로 재조립한다. lint 기록 말고 받치는 기여가 없는 페이지는 지운다. 재생 결과 삭제로 끝난 페이지는
+복원 결과의 `deleted_pages`로 받는다.
 """
 from __future__ import annotations
 
@@ -75,8 +76,6 @@ class World:
         self.dsn = dsn
         self.objects: dict[str, str] = {}
         self.ledger: list[dict] = []
-        self.created: dict[str, list[str]] = {}
-        self.deactivated: dict[str, list[dict]] = {}
         self.runs = 0
         monkeypatch.setenv("S3_BUCKET", "wiki")
         monkeypatch.setattr(database, "connect", self.connect)
@@ -200,15 +199,8 @@ class World:
         with self.connect() as conn:
             conn.execute("UPDATE pipeline_runs SET status = 'succeeded', manifest = %s WHERE id = %s",
                          (Json({"task_result": result}), run_id))
-        known = {row["page_id"] for row in self.ledger}
         for row in result["ledger_contributions"]:
             self._record(row["page_id"], row["operation_id"], row["document_id"], row["linked_by_operation_id"])
-        self.created[operation_id] = sorted(
-            {row["page_id"] for row in result["ledger_contributions"] if row["operation_id"] == operation_id} - known
-        )
-        self.deactivated[operation_id] = [
-            row for row in self.ledger if row["page_id"] in result["deleted_pages"] and row["active"]]
-        self._deactivate(lambda row: row in self.deactivated[operation_id])
         return result
 
     def _deactivate(self, predicate) -> None:
@@ -216,13 +208,23 @@ class World:
             if predicate(row):
                 row["active"] = False
 
-    def restore_ingest(self, operation_id: str) -> None:
+    def _supported(self, page_id: str, without: str) -> bool:
+        """document-svc처럼 lint 기록 말고 받치는 기여(문서가 있는 행)가 남았는지 본다."""
+        return any(
+            row["page_id"] == page_id and row["active"] and row["document_id"] is not None
+            and without not in (row["ingest_operation_id"], row["linked_by_operation_id"])
+            for row in self.ledger
+        )
+
+    def restore_ingest(self, operation_id: str) -> dict:
         run = f"restore-{operation_id}"
         page_ids = list(dict.fromkeys(
             row["page_id"] for row in self.ledger if row["ingest_operation_id"] == operation_id and row["active"]
         ))
-        changed = [self._rebuild(run, page_id, operation_id) for page_id in page_ids if self._keep(page_id, operation_id)]
-        deleted = [page_id for page_id in page_ids if not self._keep(page_id, operation_id)]
+        changed = [self._rebuild(run, page_id, operation_id) for page_id in page_ids if self._supported(page_id, operation_id)]
+        deleted = [page_id for page_id in page_ids if not self._supported(page_id, operation_id)]
+        deleted += [page["page_id"] for page in changed if page.get("deleted")]
+        changed = [page for page in changed if not page.get("deleted")]
         database.apply_restored_wiki_state_and_cleanup(
             run, WS, changed,
             {"removed_links": [], "restored_links": [link for page in changed for link in page["supported_links"]]},
@@ -230,23 +232,25 @@ class World:
         )
         self._deactivate(lambda row: row["ingest_operation_id"] == operation_id)
         self._run("restore_ingest", {"changed_pages": [{"page_id": page["page_id"]} for page in changed]})
+        return {"changed_pages": changed, "deleted_pages": deleted}
 
     def restore_lint(self, operation_id: str) -> dict:
-        for row in self.deactivated.get(operation_id, []):
-            row["active"] = True
-        updated = sorted({
+        """document-svc처럼 대상 lint 행만 끄고, 그 lint가 바꾼 페이지를 남은 기여로 재조립한다. 다시 켜는 행은 없다."""
+        page_ids = sorted({
             row["page_id"] for row in self.ledger
-            if row["ingest_operation_id"] == operation_id and row["page_id"] not in self.created[operation_id]
+            if row["active"] and operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"])
         })
         result = RestoreWikiPagesUseCase(self.restore).execute_lint(
             LintOperationRestoreCommand(
                 operation_id=f"restore-{operation_id}", target_operation_id=operation_id, workspace_id=WS,
-                rebuild_pages=tuple(RebuildPageCommand(page_id, self._keep(page_id, operation_id)) for page_id in updated),
-                deleted_pages=tuple(self.created[operation_id]),
+                rebuild_pages=tuple(
+                    RebuildPageCommand(page_id, self._keep(page_id, operation_id))
+                    for page_id in page_ids if self._supported(page_id, operation_id)
+                ),
+                deleted_pages=tuple(page_id for page_id in page_ids if not self._supported(page_id, operation_id)),
             )
         )
-        self._deactivate(lambda row: operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"])
-                         or row["page_id"] in self.created[operation_id])
+        self._deactivate(lambda row: operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"]))
         self._run("restore_lint", {"changed_pages": result["changed_pages"]})
         return result
 
@@ -479,6 +483,7 @@ def _thick(entry_id: str, name: str, refs: int) -> list[dict]:
 def test_merging_two_children_at_once_combines_records_of_one_operation(world: World) -> None:
     world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
         *_thick("e-alpha", "Alpha", 1), *_thick("e-beta", "Beta", 20)]}})
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["B99"]}})
     world.lint("lint-split")
     # 분리 뒤 한 문서가 두 자식에만 기여한다.
     world.ingest("op-z", "doc-z", {
@@ -526,6 +531,7 @@ def test_nested_entries_split_parent_first_even_when_child_id_sorts_first(world:
 
 def test_lint_restore_of_merge_back_recreates_child_with_its_entries_and_links(world: World) -> None:
     _deployment_with_thick_rollout(world)
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["B99"]}})
     world.lint("lint-split")
     # 분리 뒤 자식에만 기여한 편입과 자식으로 가는 링크.
     world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "entry_changes": [
@@ -585,17 +591,17 @@ def test_references_added_from_two_pages_get_the_untouched_home_promoted(world: 
     assert "label-selector" in world.state()["pages"]
 
 
-def test_child_emptied_by_restore_is_merged_on_next_lint(world: World) -> None:
+def test_child_left_without_support_is_deleted_by_the_restore_itself(world: World) -> None:
     world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": _thick("e-rollout", "Rollout", 1)}})
     world.ingest("op-w", "doc-w", {"deployment": {"title": "Deployment", "entry_changes": [
         _add("e-scale", "Scale", refs=["B30"])]}})
     world.lint("lint-split")
     rollout_id = world.page_id("rollout")
-    world.restore_ingest("op-x")
 
-    merged = world.lint("lint-merge")
+    # 자식에 남는 것은 분리 lint 기록뿐이다. lint 메타데이터만으로 페이지를 남기지 않는다(ADR 0042 결정 3).
+    result = world.restore_ingest("op-x")
 
-    assert merged["deleted_pages"] == [rollout_id]
+    assert result["deleted_pages"] == [rollout_id]
     assert "rollout" not in world.state()["pages"]
     assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
 
@@ -842,3 +848,49 @@ def test_lint_restore_of_merge_back_restores_chained_redirects(world: World) -> 
     world.restore_lint("lint-merge")
 
     assert target() == rollout_id
+
+
+def _split_rollout_with_history_from_doc_y(world: World) -> None:
+    """Rollout을 나눈다. 부모는 doc-d 근거로도 받쳐지고, History는 doc-y도 근거로 가진다."""
+    _deployment_with_thick_rollout(world)
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["B99"]}})
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-history", "History", "e-rollout", ["B20"])]}})
+    world.lint("lint-split")
+
+
+def test_cancelled_ingest_stays_cancelled_through_merge_and_merge_restore(world: World) -> None:
+    # ingest → split → ingest 취소 → merge → merge 취소. 합치기가 자식 기여를 끄지 않으므로 되살릴 것도 없다.
+    _split_rollout_with_history_from_doc_y(world)
+    world.restore_ingest("op-x")
+    before_merge = world.state()
+
+    merged = world.lint("lint-merge")
+    rollout_id = world.page_id("rollout")
+    assert merged["deleted_pages"] == [rollout_id]
+    assert world.contribution("rollout", "lint-merge")["content_action"] == "delete"
+    # 삭제한 자식도 changed_pages에 있어야 document-svc가 그 원장 행을 받는다.
+    assert rollout_id in {page["page_id"] for page in merged["changed_pages"]}
+    assert all(row["active"] for row in world.ledger if row["page_id"] == rollout_id and row["ingest_operation_id"] != "op-x")
+
+    world.restore_lint("lint-merge")
+
+    state = world.state()
+    assert state == before_merge
+    assert not [text for _title, _summary, text in state["pages"].values() if "doc-x" in text]
+
+
+def test_restore_whose_replay_ends_in_the_merge_delete_reports_the_page_deleted(world: World) -> None:
+    _split_rollout_with_history_from_doc_y(world)
+    # 분리 뒤 자식에만 기여한 문서. 다시 합치기가 부모에 잇는다.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "evidence": ["B70"]}})
+    world.restore_ingest("op-x")
+    world.lint("lint-merge")
+    rollout_id = world.page_id("rollout")
+
+    # doc-w가 자식을 받쳐 document-svc는 자식을 재조립 대상으로 넘기지만, 재생은 삭제 기록에서 끝난다.
+    result = world.restore_ingest("op-y")
+
+    assert rollout_id in result["deleted_pages"]
+    assert rollout_id not in {page["page_id"] for page in result["changed_pages"]}
+    assert "rollout" not in world.state()["pages"]

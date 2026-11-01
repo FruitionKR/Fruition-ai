@@ -321,9 +321,11 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
         parent.ref,
         {parent.page_id, child.page_id},
     )
-    # 자식에도 합친 기록을 남겨 lint 복원이 자식을 다시 만들 수 있게 한다. 자식이 내던 링크는 이 기록이 지운 것으로
-    # 남겨 복원 때 되살린다. 다른 페이지에서 옮겨 간 링크(redirected_links)는 저장할 때 채운다.
+    # 자식에는 재생 가능한 삭제 기록을 남긴다. 자식의 기존 기여는 그대로 두고, 이 기록이 그때까지의 기록을 지운다.
+    # lint 복원이 이 기록과 이은 기록을 빼면 자식이 다시 재생된다. 자식이 내던 링크는 이 기록이 지운 것으로 남겨
+    # 복원 때 되살린다. 다른 페이지에서 옮겨 간 링크(redirected_links)는 저장할 때 채운다.
     child_change = plan.change(child.page_id, child.slug, child.title)
+    child_change["content_action"] = "delete"
     child_change["merged_into"] = {"page_id": parent.page_id, "slug": parent.slug}
     child_change["removed_links"].extend(link for link in child.links if link not in child_change["removed_links"])
     plan.redirects[child.page_id] = parent.page_id

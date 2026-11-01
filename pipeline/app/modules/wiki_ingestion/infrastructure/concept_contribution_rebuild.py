@@ -45,6 +45,8 @@ class RebuiltConceptPage:
     source_document_ids: tuple[str, ...]
     # 기여 재생으로 남은 하위 항목. 이 페이지가 집이다(ADR 0042).
     entries: tuple[dict[str, Any], ...]
+    # 재생 결과 페이지가 없다. 나머지 값은 비어 있다(ADR 0042).
+    deleted: bool = False
 
 
 def load_concept_contributions(
@@ -108,6 +110,12 @@ def rebuild_concept_page(
         )
 
     page_id = ordered[0].page_id
+    # 다시 합치기는 자식에 삭제 기록(lint `content_action: "delete"`)을 남긴다(ADR 0042). 삭제는 그때까지의 기록을
+    # 모두 지운 것과 같고, 뒤에 기록이 없으면 페이지가 없다. 삭제 기록을 되돌리면 앞 기록이 다시 재생된다.
+    last_delete = max((index for index, item in enumerate(ordered) if _is_delete(item)), default=-1)
+    ordered = ordered[last_delete + 1:]
+    if not ordered:
+        return _deleted_page(page_id)
     manual = [item for item in ordered if _is_manual(item)]
     generated = [item for item in ordered if not _is_manual(item)]
     # 페이지 identity는 page_id다. 분리로 자식 페이지에 이어 붙인 원래 편입 기록은
@@ -247,6 +255,18 @@ def _without_moved_citations(
             if not (item.get("anchor_reference_ids") and set(item["anchor_reference_ids"]) <= dropped_refs)
         ],
     }
+
+
+def _deleted_page(page_id: str) -> RebuiltConceptPage:
+    return RebuiltConceptPage(
+        page_id=page_id, markdown="", operation_ids=(), supported_links=(), title=None, summary=None,
+        source_document_ids=(), entries=(), deleted=True,
+    )
+
+
+def _is_delete(item: PageContribution) -> bool:
+    contribution = item.contribution or {}
+    return contribution.get("artifact_type") == "lint" and contribution.get("content_action") == "delete"
 
 
 def _is_manual(item: PageContribution) -> bool:

@@ -90,6 +90,9 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 read_text=self._read_text,
             )
             rebuilt = rebuild_concept_page(contributions)
+            if rebuilt.deleted:
+                # 재생 결과 페이지가 없다. 복원 결과의 deleted_pages로 보고한다(ADR 0042).
+                return {"page_id": page.page_id, "page_type": "concept", "deleted": True}
             markdown_key = (
                 f"wiki/{workspace_id}/pages/{page.page_id}/ops/"
                 f"{operation_id}.md"

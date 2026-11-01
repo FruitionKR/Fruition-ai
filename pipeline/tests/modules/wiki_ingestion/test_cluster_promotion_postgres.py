@@ -54,14 +54,11 @@ def _lint(world: World, monkeypatch, operation_id: str, active: str) -> dict:
     with world.connect() as conn:
         conn.execute("UPDATE pipeline_runs SET status = 'succeeded', manifest = %s WHERE id = %s",
                      (Json({"task_result": result}), run_id))
-    known = {row["page_id"] for row in world.ledger}
     changed = {page["page_id"] for page in result["changed_pages"]}
     for row in result["ledger_contributions"]:
         assert row["page_id"] in changed
         assert (row["operation_id"], row["document_id"], row["linked_by_operation_id"]) == (operation_id, None, None)
         world._record(row["page_id"], row["operation_id"], row["document_id"], row["linked_by_operation_id"])
-    world.created[operation_id] = sorted({row["page_id"] for row in result["ledger_contributions"]} - known)
-    world.deactivated[operation_id] = []
     return result
 
 

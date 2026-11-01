@@ -309,6 +309,8 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 ingest 작업의 Wiki 변경을 복원합니다.
 
+- `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서 끝나면 그 페이지는 지우고 응답의
+  `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는 이를 삭제로 기록한다. lint 복원도 같다.
 - `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0031](../adr/0031-manual-wiki-contributions.md)).
 - source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
 
@@ -608,13 +610,16 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 하위 항목 재검사([ADR 0042](../adr/0042-hierarchical-concept-pages.md) 3단계)도 함께 한다. 지난 lint 뒤 바뀐 개념 페이지의
 하위 항목으로 분리·여러 부모 승격·다시 합치기를 정하고 사라진 항목을 가리키는 참조를 지운다(형식은
 [data-model](../data-model.md)). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`),
-`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다(그 자식에도 이 lint의
-합친 기록이 남고 `changed_pages`에 실린다). `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·
+`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다. 그 자식에는 이 lint의
+재생 가능한 삭제 기록(`content_action: "delete"`)이 남고, 그 기록은 `changed_pages`와 `ledger_contributions`에 함께 실린다
+(document-svc는 `changed_pages`에 없는 페이지의 원장 행을 받지 않는다). 삭제 기록은 그때까지의 기록을 모두 지운 것과 같아,
+재생이 삭제 기록에서 끝나면 페이지가 없다. `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·
 `linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다. 이 lint가 저장한 기록(`operation_artifacts`)은 하위 항목·승격·병합·링크만 바꾼 기록 모두 행이 되며,
 `operation_id`가 이 lint, `document_id`·`linked_by_operation_id`가 null이다. 원래 작업 id로 다른 페이지에 이은 편입 기록은
 `operation_id`·`document_id`가 원래 편입이고 `linked_by_operation_id`가 이 lint다. 같은 작업을 같은 페이지에 여러 번 이으면 한
-기록·한 행으로 합친다. document-svc는 `deleted_pages`의 기여를 비활성으로 바꾸고, 이 lint를 복원할 때 `operation_id`나
-`linked_by_operation_id`가 이 lint인 행을 빼고, 이 lint가 지운 페이지의 기여를 다시 활성으로 돌려 그 페이지를 재조립 대상에 넣는다.
+기록·한 행으로 합친다. document-svc는 어떤 행도 일괄 비활성화하지 않고 다시 켜지도 않는다. 합친 자식의 기존 기여도 그대로
+활성이다. 이 lint를 복원할 때는 `operation_id`나 `linked_by_operation_id`가 이 lint인 행만 끄고, 그 행이 있던 페이지를 남은 활성
+기여로 `rebuild_pages`에 넣는다(lint 기록 말고 받치는 기여가 없으면 `deleted_pages`).
 
 #### 3. Auth 필요 여부
 

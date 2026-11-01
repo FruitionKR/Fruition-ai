@@ -28,7 +28,7 @@ def persist_lint_operation_artifacts(
     artifacts: list[dict[str, Any]] = []
     for change in page_changes:
         payload = lint_contribution(operation_id, change)
-        if payload["content_action"] not in {"create", "append_evidence"} and not (
+        if payload["content_action"] not in {"create", "append_evidence", "delete"} and not (
             payload["added_links"] or payload["removed_links"] or any(payload.get(key) for key in ENTRY_LINT_FIELDS)
         ):
             raise ValueError("lint artifact must contain a replayable action")

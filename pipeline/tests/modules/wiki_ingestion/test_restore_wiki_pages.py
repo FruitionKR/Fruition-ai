@@ -789,3 +789,32 @@ def test_ingest_restore_does_not_report_source_page_of_deleted_document() -> Non
     assert [item["page_id"] for item in result["changed_pages"]] == ["X"]
     assert embedding_job.calls == [("restore-1", ["X"])]
 
+
+
+def test_rebuild_whose_replay_ends_in_a_delete_record_is_reported_deleted() -> None:
+    # 다시 합치기가 자식에 남긴 삭제 기록(ADR 0042). 재생이 여기서 끝나면 복원 결과의 deleted_pages다.
+    delete_record = json.loads(_lint_payload("L1", "C", "합침"))
+    delete_record.update(content_action="delete", evidence_units=[])
+    store = ArtifactStore({
+        "wiki/ws-1/pages/C/ops/A1.json": _payload("A1", "C", "A1의 C"),
+        "wiki/ws-1/pages/C/ops/L1.json": json.dumps(delete_record),
+        "wiki/ws-1/pages/Y/ops/B1.json": _payload("B1", "Y", "Y"),
+    })
+
+    result = RestoreWikiPagesUseCase(_restore(store)).execute_ingest(
+        IngestOperationRestoreCommand(
+            operation_id="restore-1", restore_to_operation_id=None, cancel_operation_ids=("B0",),
+            workspace_id="ws-1", source_page=SourceSnapshotRestoreCommand("S_B", "doc-B0"),
+            rebuild_pages=(
+                RebuildPageCommand("C", (RestoreContributionCommand("A1", "doc-A1"), RestoreContributionCommand("L1", None))),
+                RebuildPageCommand("Y", (RestoreContributionCommand("B1", "doc-B1"),)),
+            ),
+        )
+    )
+
+    assert [page["page_id"] for page in result["changed_pages"]] == ["Y"]
+    assert result["deleted_pages"] == ["S_B", "C"]
+    assert store.cleaned_pages == [("ws-1", ["S_B", "C"])]
+    # 삭제 기록을 되돌리면(그 행을 빼면) 앞 기록이 다시 재생된다.
+    revived = _restore(store).rebuild_page("restore-2", "ws-1", RebuildPageCommand("C", (RestoreContributionCommand("A1", "doc-A1"),)))
+    assert not revived.get("deleted") and "A1의 C" in store.writes[-1][1]
