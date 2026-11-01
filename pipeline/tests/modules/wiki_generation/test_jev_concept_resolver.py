@@ -9,6 +9,7 @@ from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     CANDIDATE_LIMIT,
+    PART_OF_RULE,
     JevConceptResolver,
     with_jev_concept_merge,
 )
@@ -313,6 +314,86 @@ class JevConceptResolverTest(unittest.TestCase):
         result = _resolver(jev).resolve(incoming, existing)
 
         self.assertEqual([item["incoming_slug"] for item in result["resolutions"]], ["b"])
+
+
+class PartOfJev:
+    """(상위, 세부)별로 정해 둔 선택·확률을 돌려주고 받은 요청을 기록한다. 정하지 않은 쌍은 not_part_of다."""
+
+    def __init__(self, answers: dict[tuple[str, str], tuple[str, dict[str, float]]] | None = None) -> None:
+        self._answers = answers or {}
+        self._lock = Lock()
+        self.requests: list[dict] = []
+
+    def choose(self, state: str, questions: dict) -> dict:
+        task = json.loads(state)
+        with self._lock:
+            self.requests.append({"state": task, "questions": questions})
+        head = task["head"]["id"]
+        assert [detail["id"] for detail in task["details"]] == list(questions)
+        result = {}
+        for key, question in questions.items():
+            choice, probabilities = self._answers.get((head, key), ("not_part_of", {"not_part_of": 0.9}))
+            assert choice in question["criteria"]
+            result[key] = {"choice": choice, "probabilities": probabilities}
+        return result
+
+
+HEAD = {"slug": "sorting", "title": "정렬", "aliases": [], "definition": "원소를 순서대로 늘어놓는다."}
+STABLE = {"slug": "stable-sort", "title": "안정 정렬", "aliases": [], "definition": "같은 키의 원래 순서를 지킨다."}
+PIVOT = {"slug": "pivot", "title": "피벗", "aliases": [], "definition": "분할 기준이 되는 원소다."}
+
+
+class JudgePartOfTest(unittest.TestCase):
+    def test_rule_is_in_state_once_and_questions_carry_only_ids(self) -> None:
+        jev = PartOfJev()
+
+        _resolver(jev).judge_part_of([(HEAD, STABLE), (HEAD, PIVOT)])
+
+        [request] = jev.requests
+        self.assertEqual(request["state"]["rule"], PART_OF_RULE)
+        self.assertEqual(request["state"]["head"]["id"], "sorting")
+        self.assertEqual(list(request["questions"]), ["stable-sort", "pivot"])
+        for question in request["questions"].values():
+            self.assertEqual(set(question["criteria"]), {"part_of", "not_part_of"})
+            self.assertNotIn(PART_OF_RULE, question["instructions"])
+
+    def test_part_of_only_at_or_above_probability_threshold(self) -> None:
+        jev = PartOfJev({
+            ("sorting", "stable-sort"): ("part_of", {"part_of": 0.95, "not_part_of": 0.05}),
+            ("sorting", "pivot"): ("part_of", {"part_of": 0.85, "not_part_of": 0.15}),
+        })
+
+        result = _resolver(jev).judge_part_of([(HEAD, STABLE), (HEAD, PIVOT)])
+
+        self.assertEqual(result, {
+            ("sorting", "stable-sort"): {"part_of": True, "probability": 0.95},
+            ("sorting", "pivot"): {"part_of": False, "probability": 0.85},
+        })
+
+    def test_skips_pairs_without_definition_or_with_itself(self) -> None:
+        jev = PartOfJev()
+
+        result = _resolver(jev).judge_part_of([(HEAD, {**PIVOT, "definition": ""}), (HEAD, HEAD)])
+
+        self.assertEqual(result, {})
+        self.assertEqual(jev.requests, [])
+
+    def test_splits_details_into_requests_by_token_budget(self) -> None:
+        details = [
+            {"slug": f"d{index:03d}", "title": f"d{index:03d}", "aliases": [], "definition": "긴 정의 " * 40}
+            for index in range(CANDIDATE_LIMIT)
+        ]
+        jev = PartOfJev()
+
+        result = _resolver(jev).judge_part_of([(HEAD, detail) for detail in details])
+
+        self.assertGreater(len(jev.requests), 1)
+        self.assertEqual(sorted(detail for _, detail in result), [detail["slug"] for detail in details])
+        for request in jev.requests:
+            self.assertLessEqual(request_tokens({**request, "state": json.dumps(request["state"], ensure_ascii=False)}), MAX_BATCH_TOKENS)
+
+    def test_unavailable_jev_returns_no_decisions(self) -> None:
+        self.assertEqual(_resolver(FailingJev()).judge_part_of([(HEAD, STABLE)]), {})
 
 
 class WithJevConceptMergeTest(unittest.TestCase):

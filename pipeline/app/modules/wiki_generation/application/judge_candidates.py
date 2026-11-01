@@ -11,6 +11,8 @@ from app.modules.wiki_generation.application.ports import JsonCompletionPort
 logger = logging.getLogger(__name__)
 # (판정할 개념, 후보 pool) → incoming slug별 판정. JevConceptResolver.judge_concepts와 같은 계약이다.
 PairJudge = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, dict[str, Any]]]
+# [(상위 항목, 세부 항목)] → (상위 slug, 세부 slug)별 part_of 판정. JevConceptResolver.judge_part_of와 같은 계약이다.
+PartOfJudge = Callable[[list[tuple[dict[str, Any], dict[str, Any]]]], dict[tuple[str, str], dict[str, Any]]]
 
 
 def judge_meaning_cluster_candidates(
