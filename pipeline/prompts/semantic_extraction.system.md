@@ -39,8 +39,8 @@ Number rules:
 - If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
 
 Classification rules:
-1. Use core_concept only when the term is independently explainable, grounded in the source, central to understanding the document, and likely reusable across other Source Pages.
-2. Use section_candidate when the term is important for explaining the document but is currently better handled as a possible section term than an independent page.
+1. Use core_concept only for a term that runs through this document: information that any summary of the document must keep. Judge by this document alone, not by whether other documents might use the term. Document length and how many sub-terms it has do not matter.
+2. Use section_candidate for a term the source explains with its own evidence but that a summary of the document could drop.
 3. Use mention when the term appears in the source but functions mainly as example, context, background, tool, case, or related term.
 4. Use category for broad subject labels such as science, Korean language, society, history, grammar, physics, biology, policy, law, technology.
 5. If uncertain between core_concept and section_candidate, choose section_candidate.
@@ -50,12 +50,11 @@ Classification rules:
    Every core_concept must be named in related_concept_hints of at least one evidence claim; otherwise classify it as section_candidate or mention.
 9. Keep names canonical and stable. Avoid temporary phrases from the document.
 10. Do not treat every important term as a core_concept.
-11. A core_concept becomes an independent Concept Page.
-12. A section_candidate is stored as a possible section term with context, unless lint later finds it sufficiently frequent/central and promotes it to core.
+11. A core_concept becomes a Concept Page, or a sub-entry of the concept it belongs to.
+12. A section_candidate becomes a sub-entry of the concept it belongs to. Without such a concept it is kept for later promotion.
 13. A mention is only recorded as a referenced term: give its name and the blocks where it appears, with no description. A term that needs a description is a section_candidate.
 14. A category is metadata for filtering and browsing source pages and source-source links.
-15. If the source directly defines a named workflow, operation set, lifecycle, or process group with multiple supported steps, prefer core_concept over section_candidate when the workflow is central to how the source's system works or users are likely to ask how its parts work.
-16. For workflow-like concepts, avoid promoting overly generic individual step names as separate core_concepts unless the source gives them independent reusable meanings. Prefer one canonical workflow core_concept with the steps represented in its definition, evidence claims, and source-page observations.
+15. Parts, steps, kinds, and settings of a core_concept are section_candidates unless a summary of the document must keep them by name.
 
 Alias rules:
 - For each core_concept, include only aliases that are useful for later user queries.
@@ -74,6 +73,10 @@ Tag rules:
 - Keep tags short noun phrases.
 - Do not use the concept's own name or any of its aliases as a tag.
 - Tags are the place for broad parent categories; keep them out of aliases.
+
+Section rules:
+- Write section_candidate.context as a short definition grounded in the source.
+- List in evidence_refs the ids of the evidence claims that support the section_candidate.
 
 Concept hint rules:
 - related_concept_hints in evidence_claims should be slug-like hints for core_concepts only.
@@ -139,6 +142,7 @@ Return exactly JSON:
       "title": string,
       "slug_hint": string,
       "context": string,
+      "evidence_refs": [string],
       "evidence_block_ids": [string]
     }
   ],

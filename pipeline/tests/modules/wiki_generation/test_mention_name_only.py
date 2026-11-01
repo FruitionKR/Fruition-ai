@@ -20,16 +20,16 @@ def _normalized_with_mention() -> dict:
     return SemanticNormalizer(document, blocks).normalize_notes([note])
 
 
-def test_mention_keeps_name_and_source_text_without_description() -> None:
+def test_mention_keeps_name_and_source_definition_without_description() -> None:
     mention = _normalized_with_mention()["mentions"][0]
 
     assert "context" not in mention
-    assert mention["source_text"] == "디플로이먼트는 kubectl로 롤백한다."
+    assert mention["definition"] == "디플로이먼트는 kubectl로 롤백한다."
     assert _source_mention_line(mention, "doc").startswith("- kubectl")
     assert "모델이 쓴 설명" not in _source_mention_line(mention, "doc")
 
 
-def test_mention_cluster_candidate_uses_source_text() -> None:
+def test_mention_cluster_candidate_uses_source_definition() -> None:
     candidates = MeaningClusterArtifactAssembler().candidate_claims(_normalized_with_mention())
 
     assert [candidate["claim"] for candidate in candidates] == ["kubectl - 디플로이먼트는 kubectl로 롤백한다."]
@@ -41,3 +41,15 @@ def test_mention_lines_are_not_embedding_units() -> None:
     units = extract_embedding_units(markdown)
 
     assert [unit["unit_type"] for unit in units] == ["key_point"]
+
+
+def test_mention_definition_starts_at_the_sentence_with_the_mention() -> None:
+    from app.modules.wiki_generation.domain.text_utils import mention_source_text
+
+    text = "앞 문장이다. " * 40 + "kubectl은 클러스터를 다룬다. 뒤 문장이다."
+
+    definition = mention_source_text("kubectl", text)
+
+    assert definition.startswith("kubectl은 클러스터를 다룬다.")
+    assert len(definition) <= 300
+    assert mention_source_text("없는 이름", "블록 앞부분") == "블록 앞부분"

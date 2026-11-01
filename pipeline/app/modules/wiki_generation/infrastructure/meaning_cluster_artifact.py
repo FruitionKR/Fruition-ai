@@ -200,7 +200,7 @@ class MeaningClusterArtifactAssembler:
         if not term or slug == "untitled":
             return None
         # 언급은 설명 없이 이름만 받으므로 언급이 나온 원문으로 판정한다.
-        context = str(item.get("context") or item.get("source_text") or "").strip()
+        context = str(item.get("context") or item.get("definition") or "").strip()
         if not context:
             return None
         source_document_id = normalized.get("document", {}).get("document_id")

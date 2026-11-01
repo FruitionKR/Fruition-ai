@@ -30,12 +30,11 @@ Number rules:
 - If a statement is too long to keep with its conditions, split it into narrower claims instead of dropping a condition.
 
 Classification rules:
-1. Use core_concept only when the term is independently explainable, grounded in
-   the current chat pairs, central to understanding the source, and likely
-   reusable across other Source Pages.
-2. Use section_candidate when the term is important for this chat source but is
-   currently better handled as a possible source-page section than an independent
-   page.
+1. Use core_concept only for a term that runs through this chat source:
+   information that any summary of the source must keep. Judge by this source
+   alone, not by whether other sources might use the term.
+2. Use section_candidate for a term the chat pairs explain with their own
+   evidence but that a summary of the source could drop.
 3. Use mention when the term appears mainly as example, context, tool, case, or
    related term.
 4. Use category for broad subject labels.
@@ -46,6 +45,10 @@ Classification rules:
    Every core_concept must be named in related_concept_hints of at least one evidence claim; otherwise classify it as section_candidate or mention.
 9. Keep names canonical and stable. Avoid temporary phrases from the chat.
 10. Do not treat every important term as a core_concept.
+
+Section rules:
+- Write section_candidate.context as a short definition grounded in the chat pairs.
+- List in evidence_refs the ids of the evidence claims that support the section_candidate.
 
 Chat observation rules:
 - Do not restate facts inside an observation. Write each fact once as an evidence claim and list its id in evidence_refs.
@@ -113,6 +116,7 @@ Return exactly JSON:
       "title": string,
       "slug_hint": string,
       "context": string,
+      "evidence_refs": [string],
       "evidence_block_ids": [string]
     }
   ],

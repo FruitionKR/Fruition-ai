@@ -4,11 +4,14 @@ from dataclasses import asdict
 from typing import Any, Dict, Iterable, List
 
 from app.modules.wiki_generation.domain.entities import NormalizedConcept, NormalizedEvidence, SourceBlock, SourceDocument
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, contains_ci, name_key, slugify, unique_keep_order
-
-
-# 언급의 클러스터 판정에 쓰는 원문 길이. 개념 갱신·클러스터 후보 문장 한 줄 분량이다.
-MENTION_SOURCE_TEXT_CHARS = 300
+from app.modules.wiki_generation.domain.text_utils import (
+    clean_concept_tags,
+    contains_ci,
+    mention_source_text,
+    name_key,
+    slugify,
+    unique_keep_order,
+)
 
 
 class PipelineValidationError(Exception):
@@ -62,6 +65,7 @@ class SemanticNormalizer:
                 self._merge_source_item(categories_by_name, category, key="term")
 
             for section in (normalized_note.get("section_candidates") or []):
+                self._resolve_section_evidence(section, evidence_by_local_id, warnings)
                 self._merge_source_item(section_candidates_by_slug, section, key="slug")
 
             for mention in (normalized_note.get("mentions") or []):
@@ -125,7 +129,7 @@ class SemanticNormalizer:
             "categories": sorted(categories_by_name.values(), key=lambda x: x.get("name", "")),
             "section_candidates": sorted(section_candidates_by_slug.values(), key=lambda x: x.get("slug", "")),
             "mentions": [
-                {**mention, "source_text": self._source_text(mention["anchor_reference_ids"])}
+                {**mention, "definition": self._mention_definition(mention)}
                 for mention in sorted(mentions_by_slug.values(), key=lambda x: x.get("slug", ""))
             ],
             "observations": observations,
@@ -190,6 +194,7 @@ class SemanticNormalizer:
                     "title": item.get("title", ""),
                     "slug": slugify(item.get("slug_hint") or item.get("title", "")),
                     "context": item.get("context") or item.get("summary", ""),
+                    "evidence_refs": [str(ref).strip() for ref in (item.get("evidence_refs") or []) if str(ref).strip()],
                     "anchor_reference_ids": self._anchor_refs(
                         (item.get("evidence_block_ids") or []) or (item.get("anchor_block_ids") or []), warnings, limit=3
                     ),
@@ -254,23 +259,47 @@ class SemanticNormalizer:
             observation["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
         )
 
+    def _resolve_section_evidence(
+        self,
+        section: dict[str, Any],
+        evidence_by_local_id: dict[str, NormalizedEvidence],
+        warnings: list[str],
+    ) -> None:
+        """섹션 용어가 가리킨 근거 주장을 전역 근거 id로 잇는다. 하위 항목으로 배정되면 이 근거가 항목 근거가 된다(ADR 0042).
+
+        같은 블록에 섹션이 여럿이어도 근거의 주인을 블록 겹침이 아니라 이 연결로 정한다.
+        """
+        rows = []
+        for ref in section.pop("evidence_refs", []):
+            row = evidence_by_local_id.get(ref)
+            if row is None:
+                warnings.append(f"unknown section evidence_ref: {ref}")
+                continue
+            rows.append(row)
+        section["definition"] = str(section.get("context") or "")
+        section["evidence_claim_ids"] = [row.evidence_id for row in rows]
+        section["anchor_reference_ids"] = unique_keep_order(
+            section["anchor_reference_ids"] + [ref for row in rows for ref in row.anchor_reference_ids]
+        )
+
     def _merge_source_item(self, bucket: dict[str, dict[str, Any]], item: dict[str, Any], key: str) -> None:
         raw_key = str(item.get(key, "")).strip()
         if not raw_key:
             return
         merge_key = raw_key.lower() if key in {"name", "term"} else raw_key
         existing = bucket.setdefault(merge_key, {**item, "anchor_reference_ids": []})
-        existing["anchor_reference_ids"] = unique_keep_order(
-            (existing.get("anchor_reference_ids") or []) + (item.get("anchor_reference_ids") or [])
-        )
+        # 근거 주장 연결은 섹션 용어만 가진다.
+        for field in ("anchor_reference_ids", "evidence_claim_ids"):
+            if field in item:
+                existing[field] = unique_keep_order((existing.get(field) or []) + item[field])
         for field in ("context", "definition", "why_page_worthy"):
             if item.get(field) and len(str(item.get(field))) > len(str(existing.get(field, ""))):
                 existing[field] = item[field]
 
-    def _source_text(self, block_ids: list[str]) -> str:
-        """언급이 나온 원문 블록. 언급은 설명을 받지 않으므로 클러스터 판정은 이 원문으로 한다."""
-        text = " ".join(self.by_block_id[block_id].text for block_id in block_ids if block_id in self.by_block_id)
-        return " ".join(text.split())[:MENTION_SOURCE_TEXT_CHARS]
+    def _mention_definition(self, mention: dict[str, Any]) -> str:
+        """첫 근거 블록의 언급 원문. 근거 블록이 없으면 정의가 없다."""
+        block = next((self.by_block_id[ref] for ref in mention["anchor_reference_ids"] if ref in self.by_block_id), None)
+        return mention_source_text(str(mention.get("name") or ""), block.text) if block else ""
 
     def _anchor_refs(self, anchor_block_ids: Iterable[str], warnings: list[str], limit: int = 3) -> list[str]:
         refs = []
