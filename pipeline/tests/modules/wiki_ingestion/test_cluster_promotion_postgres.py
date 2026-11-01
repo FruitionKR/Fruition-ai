@@ -303,3 +303,32 @@ def test_two_clusters_into_one_page_in_one_lint_keep_both_records(world: World, 
     world.restore_lint("lint-two")
 
     assert world.state() == before
+
+
+def test_promoted_parent_becomes_a_page_and_the_next_lint_moves_existing_pages_under_it(world: World, monkeypatch) -> None:
+    # 기존 페이지(하위 항목 있음)의 상위 개념이 클러스터로 모여 승격된다. 승격은 새 페이지, 다음 lint가 기존 페이지를 옮긴다.
+    world.ingest("op-s", "doc-s", {"strategy": {"title": "Strategy", "evidence": ["S1"], "entry_changes": [
+        {**_add("e-blue", "Blue Green", refs=["S2"]), "definition": "블루 그린 정의"}]}})
+    judge = PlacementJudge({("rollout", "strategy"): 0.95})
+
+    class NearModel(FakeModel):
+        """승격 개념(Rollout)과 Strategy만 가깝다. 승격 페이지의 세부 항목은 멀다."""
+
+        def embed(self, texts):
+            return [[1.0, 0.0] if text.startswith(("Rollout:", "Strategy")) else [0.0, 1.0] for text in texts]
+
+    judge.model = NearModel()
+    _store_page_vectors(world, judge.model, {"strategy": [1.0, 0.0]})
+
+    promoted = _lint(world, monkeypatch, "lint-promote", _cluster("rollout", TERMS), judge)
+
+    assert [item["concept_slug"] for item in promoted["materialized_promotions"]] == ["rollout"]
+    assert "strategy" in world.state()["pages"]
+
+    moved = world.lint("lint-move")
+
+    assert moved["deleted_pages"] == [world.page_id("strategy")]
+    root = new_entry_id("rollout", "strategy")
+    entries = {entry for entry in world.state()["entries"] if entry[1] == "rollout"}
+    assert (root, "rollout", "Strategy", None) in entries
+    assert ("e-blue", "rollout", "Blue Green", root) in entries

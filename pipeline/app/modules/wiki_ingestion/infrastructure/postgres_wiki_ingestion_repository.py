@@ -62,7 +62,7 @@ from app.modules.wiki_ingestion.domain.concept_entry_lint import (
     move_page_under,
     plan_entry_lint,
     retarget_split_relations,
-    standalone,
+    movable,
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
@@ -2104,7 +2104,7 @@ def lint_concept_entries(
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
 
     concept_judge가 있으면 분리한 부모의 개념 관계를 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(결정 6).
-    judge_part_of·embedding_model이 있으면 바뀐 페이지와 그 가까이의 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
+    judge_part_of·embedding_model이 있으면 바뀐 페이지와 그 가까이의 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
@@ -2413,7 +2413,7 @@ def lint_concept_entries(
     return result
 
 
-# 역방향 후보를 찾을 때 바뀐 페이지마다 유사도 순으로 살펴볼 페이지 수 상한. 그 안에서 홀로 선 페이지를
+# 역방향 후보를 찾을 때 바뀐 페이지마다 유사도 순으로 살펴볼 페이지 수 상한. 그 안에서 옮길 수 있는 페이지를
 # `PART_OF_CANDIDATE_LIMIT`개까지 고른다. 가까운 페이지가 사람이 고친 페이지 등이라 옮길 수 없으면 다음 페이지를 본다.
 REVERSE_SCAN_LIMIT = 4 * PART_OF_CANDIDATE_LIMIT
 
@@ -2429,7 +2429,7 @@ def _plan_page_moves(
     judge_part_of: PartOfJudge,
     embedding_model: EmbeddingModelPort,
 ) -> None:
-    """바뀐 페이지와 바뀐 페이지 가까이의 홀로 선 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 옮긴다(ADR 0042 4의 이동).
+    """바뀐 페이지와 바뀐 페이지 가까이의 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 통째로 옮긴다(ADR 0042 4의 이동).
 
     편입 순서 때문에 먼저 들어온 세부 개념이 페이지로 남은 것을 뒤에 들어온 상위 개념 아래로 옮긴다. 후보와 판정은 편입
     배정과 같다. 후보는 다른 활성 개념 페이지와 그 하위 항목의 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개이고,
@@ -2438,7 +2438,7 @@ def _plan_page_moves(
     다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
     """
     busy = set(plan.page_changes)
-    page_rows, entry_rows, heads, head_pages = _part_of_heads(conn, workspace_id)
+    page_rows, _entry_rows, heads, head_pages = _part_of_heads(conn, workspace_id)
     vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
     fresh = [key for key in heads if head_pages[key][0] in changed and (head_pages[key][1] is None or key not in vectors)]
     try:
@@ -2448,22 +2448,11 @@ def _plan_page_moves(
         return
     vectors.update({key: embedded[concept_text(heads[key])] for key in fresh})
     heads = {key: head for key, head in heads.items() if key in vectors}
-    # 역방향: 바뀐 페이지(새 상위 후보)마다 가까운 홀로 선 페이지를 `PART_OF_CANDIDATE_LIMIT`개까지 후보로 더한다.
-    # 그 페이지가 바뀌지 않았어도(세부 페이지 뒤 lint가 한 번 돈 다음 상위 페이지가 들어온 경우) 옮길 수 있다.
-    # 하위 항목이나 참조가 있는 페이지는 미리 빼고, 나머지는 유사도 순으로 읽어 홀로 선 페이지인지 본다.
+    # 역방향: 바뀐 페이지(새 상위 후보)마다 가까운 페이지를 `PART_OF_CANDIDATE_LIMIT`개까지 후보로 더한다.
+    # 그 페이지가 바뀌지 않았어도(세부 페이지 뒤 lint가 한 번 돈 다음 상위 페이지가 들어온 경우, 승격 개념이 기존
+    # 페이지들의 상위인 경우) 옮길 수 있다. 유사도 순으로 읽어 옮길 수 있는 페이지인지 본다.
     slug_ids = {str(row["slug"]): str(row["id"]) for row in page_rows}
-    excluded = changed | {str(row["page_id"]) for row in entry_rows} | {
-        str(row["from_page_id"])
-        for row in conn.execute(
-            """
-            SELECT DISTINCT link.from_page_id FROM wiki_page_links link
-            JOIN wiki_pages page ON page.id = link.from_page_id
-            WHERE link.link_type = 'entry_reference' AND page.workspace_id = %s
-            """,
-            (workspace_id,),
-        ).fetchall()
-    }
-    pool = [slug for slug in sorted(heads) if slug in slug_ids and slug_ids[slug] not in excluded]
+    pool = [slug for slug in sorted(heads) if slug in slug_ids and slug_ids[slug] not in changed]
     eligible: dict[str, bool] = {}
     nearby: set[str] = set()
     for page_id in sorted(changed - set(plan.deleted_page_ids)):
@@ -2478,7 +2467,7 @@ def _plan_page_moves(
                   and str(row["slug"]) not in eligible])
             for slug in batch:
                 page = pages.get(slug_ids[slug])
-                eligible.setdefault(slug, page is not None and page.page_id not in busy and standalone(page))
+                eligible.setdefault(slug, page is not None and page.page_id not in busy and movable(page))
             found.extend(slug for slug in batch if eligible[slug])
             if len(found) >= PART_OF_CANDIDATE_LIMIT:
                 break
@@ -2486,7 +2475,7 @@ def _plan_page_moves(
     movers = {
         page.slug: page for page_id, page in pages.items()
         if (page_id in changed or page.slug in nearby)
-        and page_id not in busy and standalone(page) and summaries.get(page_id, "").strip()
+        and page_id not in busy and movable(page) and summaries.get(page_id, "").strip()
     }
     details = [heads[slug] for slug in sorted(movers) if slug in heads]
     if not details:
@@ -2496,18 +2485,44 @@ def _plan_page_moves(
     def similarity(query: str, texts: list[str]) -> list[float]:
         return [vector_similarity(by_text[query], by_text[text]) for text in texts]
 
+    # 페이지는 자기 하위 항목 아래로 옮기지 않는다.
     ranked = [
         (probability, head, movers[detail].page_id)
         for probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity)
-        if detail in movers
+        if detail in movers and head_pages[head][0] != movers[detail].page_id
     ]
     moves, deferred = choose_page_moves(ranked, head_pages, busy)
     load([row for row in page_rows if str(row["id"]) in {target for _, target, _ in moves} - set(pages)])
+    # 옮길 페이지의 항목을 가리키는 참조를 낸 페이지도 읽는다. 그 참조는 대상 페이지를 가리키게 바꾼다.
+    if moves:
+        load([
+            row for row in conn.execute(
+                """
+                SELECT DISTINCT page.id, page.slug, page.title, page.summary
+                FROM wiki_pages page
+                JOIN wiki_page_links link ON link.from_page_id = page.id
+                WHERE link.link_type = 'entry_reference' AND link.to_page_id = ANY(%s)
+                  AND page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
+                """,
+                ([page_id for page_id, _, _ in moves], workspace_id),
+            ).fetchall()
+            if str(row["id"]) not in pages
+        ])
+    moving = {page_id for page_id, _, _ in moves}
     for page_id, target, parent_entry_id in moves:
-        reason = (
-            move_page_under(plan, pages[page_id], summaries[page_id], pages[target], parent_entry_id)
-            if target in pages else "target_missing"
-        )
+        ref = pages[page_id].ref
+        referrers = {
+            other.page_id for other in pages.values()
+            if any(link.get("relation") == "entry_reference" and link.get("target") == ref for link in other.links)
+        }
+        # 이번에 함께 옮기는 페이지가 이 페이지 항목을 가리키면 참조를 두 번 옮기게 되므로 다음 lint로 미룬다.
+        if referrers & (moving - {page_id}):
+            reason = "chained"
+            plan.deferred_page_ids.append(page_id)
+        elif target not in pages:
+            reason = "target_missing"
+        else:
+            reason = move_page_under(plan, pages, pages[page_id], summaries[page_id], pages[target], parent_entry_id)
         plan.decisions.append({"action": "move", "page_id": page_id, "entry_id": None, "target_page_id": target,
                                "parent_entry_id": parent_entry_id, **({"skipped_reason": reason} if reason else {})})
     for page_id, reason in deferred:

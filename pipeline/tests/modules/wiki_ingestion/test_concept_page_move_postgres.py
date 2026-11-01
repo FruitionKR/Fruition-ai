@@ -1,4 +1,4 @@
-"""lint가 홀로 선 개념 페이지를 다른 페이지의 하위 항목으로 옮긴다(ADR 0042 4의 이동). 판정기·임베딩은 가짜다."""
+"""lint가 개념 페이지를 통째로 다른 페이지의 하위 항목으로 옮긴다(ADR 0042 4의 이동). 판정기·임베딩은 가짜다."""
 from __future__ import annotations
 
 import json
@@ -12,6 +12,7 @@ from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # n
     pytestmark,
     World,
     _add,
+    _reference,
     _thick,
     world,
 )
@@ -304,8 +305,8 @@ def test_pages_linted_before_the_head_arrived_move_when_the_head_page_changes(wo
 
     # 임베딩은 바뀐 파드 페이지와 그 항목만 한다. 라이프사이클 페이지는 저장된 벡터로 찾는다.
     assert sorted(judge.model.embedded) == ["파드 (Pod) > Container: 컨테이너 정의", "파드 (Pod): pod 정의"]
-    # 바뀐 파드 페이지에서 찾은 가까운 홀로 선 페이지가 후보다.
-    assert {detail for _, detail in judge.asked} == set(MOVERS)
+    # 바뀐 파드 페이지에서 찾은 가까운 페이지가 후보다. 하위 항목이 있는 바뀐 파드 페이지도 옮길 후보다.
+    assert {detail for _, detail in judge.asked} == {*MOVERS, "pod"}
     assert sorted(result["deleted_pages"]) == sorted(world.page_id(slug) for slug in MOVERS)
     state = world.state()
     assert set(state["pages"]) == {"pod"}
@@ -380,3 +381,66 @@ def test_move_of_a_page_deleted_and_ingested_again_carries_only_records_after_th
     world.restore_lint("lint-again")
 
     assert world.state() == before
+
+
+def _pod_with_entries_then_workloads(world: World) -> None:
+    """파드 문서가 하위 항목(컨테이너 > 초기화 컨테이너)을 가진 파드 페이지를 만들고, 서비스가 컨테이너 항목을 참조한다.
+    뒤에 워크로드 문서가 들어왔다."""
+    world.ingest("op-p", "doc-p", {"pod": {"title": "파드 (Pod)", "evidence": ["P1"], "entry_changes": [
+        {**_add("e-container", "Container", refs=["P2"]), "definition": "컨테이너 정의"},
+        {**_add("e-init", "Init Container", "e-container", ["P3"]), "definition": "초기화 컨테이너 정의"},
+    ]}})
+    world.ingest("op-s", "doc-s", {"service": {"title": "Service", "evidence": ["S1"], "links": [
+        _reference("service", "pod", "e-container", "Container")]}})
+    world.ingest("op-w", "doc-w", {"workloads": {"title": "워크로드", "evidence": ["W1"]}})
+
+
+def test_page_with_sub_entries_moves_as_a_whole_and_references_follow(world: World, judged) -> None:
+    _pod_with_entries_then_workloads(world)
+    before = world.state()
+    judged({("workloads", "pod"): 0.95})
+
+    result = world.lint("lint-move")
+
+    assert result["deleted_pages"] == [world.page_id("pod")]
+    root = new_entry_id("workloads", "pod")
+    state = world.state()
+    assert set(state["pages"]) == {"workloads", "service"}
+    assert {entry for entry in state["entries"] if entry[1] == "workloads"} == {
+        (root, "workloads", "파드 (Pod)", None),
+        ("e-container", "workloads", "Container", root),
+        ("e-init", "workloads", "Init Container", "e-container"),
+    }
+    # 서비스의 참조는 같은 항목을 그대로 가리키고, 집 페이지만 워크로드로 바뀐다.
+    assert ("service", "workloads", "entry_reference") in state["links"]
+    assert not [link for link in state["links"] if "pod" in link[:2]]
+    linked = world.contribution("workloads", "op-p")
+    assert [change["entry_id"] for change in linked["entry_changes"]] == [root, "e-container", "e-init"]
+    body = state["pages"]["workloads"][2]
+    assert "doc-p:P2" in body and body == world.ledger_rebuild("workloads").markdown
+    assert ("doc-p", "workloads") in state["documents"]
+
+    world.restore_lint("lint-move")
+
+    assert world.state() == before
+
+
+def test_ingest_restore_after_whole_page_move_removes_its_entries_from_the_target(world: World, judged) -> None:
+    _pod_with_entries_then_workloads(world)
+    judged({("workloads", "pod"): 0.95})
+    world.lint("lint-move")
+
+    world.restore_ingest("op-p")
+
+    state = world.state()
+    assert [entry for entry in state["entries"] if entry[1] == "workloads"] == []
+    assert ("doc-p", "workloads") not in state["documents"]
+
+
+def test_page_is_not_moved_under_its_own_sub_entry(world: World, judged) -> None:
+    _pod_with_entries_then_workloads(world)
+    judged({("e-container", "pod"): 0.99})
+
+    result = world.lint("lint-move")
+
+    assert not [item for item in result["entry_decisions"] if item["action"] == "move"]
