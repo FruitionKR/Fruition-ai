@@ -2068,6 +2068,14 @@ def lint_concept_entries(
         for child, parent in plan.redirects.items():
             # 다른 페이지에서 자식으로 오던 링크는 부모로 옮긴다. lint 복원이 되돌리도록 옮긴 간선과
             # 부모 쪽에 새로 생기는 간선인지를 자식의 합친 기록에 남긴다.
+            # 이 자식으로 방향 전환된 옛 페이지는 합치며 부모로 바꾼다. 복원이 되돌리도록 남긴다.
+            plan.page_changes[child]["redirected_pages"] = [
+                str(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM wiki_pages WHERE workspace_id = %s AND merged_into_page_id = %s ORDER BY id",
+                    (workspace_id, child),
+                ).fetchall()
+            ]
             plan.page_changes[child]["redirected_links"] = [
                 {"from_page_id": str(row["from_page_id"]), "link_type": str(row["link_type"]),
                  "created": not row["existed"]}
@@ -2202,6 +2210,11 @@ def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: l
     """
     for reversal in reversals:
         child, parent = str(reversal["page_id"]), str(reversal["merged_into_page_id"])
+        if reversal.get("pages"):
+            conn.execute(
+                "UPDATE wiki_pages SET merged_into_page_id = %s WHERE workspace_id = %s AND id = ANY(%s)",
+                (child, workspace_id, list(reversal["pages"])),
+            )
         for link in reversal.get("links", []):
             source, link_type = str(link["from_page_id"]), str(link["link_type"])
             if link.get("created") and not _source_supports_link(conn, workspace_id, source, parent, link_type):

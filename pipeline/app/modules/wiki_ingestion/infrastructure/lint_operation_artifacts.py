@@ -14,6 +14,7 @@ ENTRY_LINT_FIELDS = (
     "merged_pages",
     "merged_into",
     "redirected_links",
+    "redirected_pages",
 )
 
 

@@ -179,6 +179,23 @@ def rebuild_concept_page(
             }
             for item in contribution_json
         ]
+    # 그 항목들만 인용한 블록의 핵심 내용과 개념 인용도 뺀다. 남은 항목·근거와 같이 쓰는 블록은 남긴다.
+    entry_refs = {
+        ref
+        for item in contribution_json
+        for change in item.get("entry_changes", [])
+        if change.get("op") == "add"
+        for ref in change.get("anchor_reference_ids", [])
+    }
+    kept_refs = {ref for entry in entries for ref in entry["anchor_reference_ids"]} | {
+        ref
+        for item in contribution_json
+        for unit in item.get("evidence_units", [])
+        for ref in unit.get("anchor_reference_ids", [])
+    }
+    dropped_refs = entry_refs - kept_refs
+    if dropped_refs or dropped_claims:
+        contribution_json = [_without_moved_citations(item, dropped_refs, dropped_claims) for item in contribution_json]
     normalized = _merge_contributions(contribution_json)
     pages = ConceptPageAssembler().build_top(
         normalized,
@@ -208,6 +225,28 @@ def rebuild_concept_page(
         source_document_ids=source_document_ids,
         entries=entries,
     )
+
+
+def _without_moved_citations(
+    contribution: dict[str, Any],
+    dropped_refs: set[str],
+    dropped_claims: set[str],
+) -> dict[str, Any]:
+    concept = dict(contribution["concept"])
+    for field in ("anchor_reference_ids", "mention_reference_ids", "display_reference_ids"):
+        concept[field] = [ref for ref in concept.get(field, []) if ref not in dropped_refs]
+    concept["evidence_claim_ids"] = [
+        claim_id for claim_id in concept.get("evidence_claim_ids", []) if claim_id not in dropped_claims
+    ]
+    return {
+        **contribution,
+        "concept": concept,
+        "source_key_points": [
+            item
+            for item in contribution.get("source_key_points", [])
+            if not (item.get("anchor_reference_ids") and set(item["anchor_reference_ids"]) <= dropped_refs)
+        ],
+    }
 
 
 def _is_manual(item: PageContribution) -> bool:
