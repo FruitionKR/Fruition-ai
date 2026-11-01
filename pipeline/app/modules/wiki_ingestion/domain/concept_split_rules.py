@@ -4,10 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-# ADR-0042의 K·C·C_low·P는 초기값이다. 계획 0단계 측정으로 다시 정한다.
+# ADR-0042의 C·C_low·P는 초기값이다. 계획 0단계 측정으로 다시 정한다.
 
-# 편입 승격: 세부 항목이 이만큼 배정된 항목만 개념 페이지가 된다. 0단계 측정 전 초기값.
-MIN_PAGE_ITEMS = 3  # K
 # lint 분리: 하위 항목의 자식이 이만큼이면 자식 페이지로 보낸다.
 SPLIT_MIN_CHILDREN = 5  # C
 # 근거 수는 기준이 아니다. 근거를 많이 붙이는 모델에서는 자식 없는 항목까지 분리돼 페이지가 다시 잘게 쪼개진다.
@@ -34,10 +32,6 @@ class EntryNode:
 class EntryDecision:
     action: Literal["split", "merge_back", "promote"]
     entry_id: str
-
-
-def reaches_page_threshold(assigned_item_count: int) -> bool:
-    return assigned_item_count >= MIN_PAGE_ITEMS
 
 
 def cluster_reaches_promotion(subcategory_count: int) -> bool:

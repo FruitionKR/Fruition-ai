@@ -1,13 +1,11 @@
 from app.modules.wiki_ingestion.domain.concept_split_rules import (
     MERGE_MAX_CHILDREN,
     MIN_CLUSTER_SUBCATEGORIES,
-    MIN_PAGE_ITEMS,
     SPLIT_MIN_CHILDREN,
     EntryDecision,
     EntryNode,
     cluster_reaches_promotion,
     decide_entry_changes,
-    reaches_page_threshold,
 )
 
 
@@ -24,9 +22,7 @@ def _actions(*entries):
     return [(d.action, d.entry_id) for d in decide_entry_changes(entries)]
 
 
-def test_페이지와_클러스터_승격_문턱():
-    assert not reaches_page_threshold(MIN_PAGE_ITEMS - 1)
-    assert reaches_page_threshold(MIN_PAGE_ITEMS)
+def test_클러스터_승격_문턱():
     assert not cluster_reaches_promotion(MIN_CLUSTER_SUBCATEGORIES - 1)
     assert cluster_reaches_promotion(MIN_CLUSTER_SUBCATEGORIES)
 

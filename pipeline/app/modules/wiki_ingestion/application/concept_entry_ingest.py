@@ -4,8 +4,9 @@
    세부 항목마다 상위 후보는 임베딩("이름: 정의") 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개이고, 이번 문서 개념과
    워크스페이스 기존 개념 페이지가 모두 후보다(기존 페이지는 상위 항목만 된다). 이름 규칙으로 배정하거나 후보를
    고르지 않는다. 임베딩을 쓸 수 없거나, 애매하거나, 판정기를 쓸 수 없으면 배정하지 않는다.
-2. 승격: 배정을 따라 올라간 맨 위 항목이 기존 개념 페이지이거나 세부 항목이 `K`개 이상이면 그 페이지의 하위 항목이 된다.
-   모자라면 배정을 버리고 지금처럼 각자 개념 페이지로 둔다.
+2. 놓기: 배정을 따라 올라간 맨 위가 기존 개념 페이지면 그 페이지, 기존 하위 항목이면 그 항목의 집 페이지 그 항목 아래,
+   이번 문서 개념이면 그 개념의 새 페이지의 하위 항목이 된다. 배정은 버리지 않는다. 하위 항목이 많아지면 lint 분리 규칙이
+   자식 페이지로 나눈다(세부 항목 수로 페이지 여부를 정하던 `K`는 지웠다. 작은 개념일수록 흩어졌다).
 3. 같은 것 찾기: 새 하위 항목마다 워크스페이스의 기존 하위 항목과 "바로 위 이름 > 이름"이 같거나 쌍 판정이 same이면
    기존 항목에 근거를 더하고, 집이 다른 페이지면 이번 페이지에는 참조를 둔다. 기존 항목과 같지 않은 새 항목끼리도
    같은 집·같은 위 항목 아래면 같은 규칙으로 먼저 나온 항목에 근거를 더한다. 애매하면 따로 둔다.
@@ -22,7 +23,6 @@ from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.application.judge_candidates import PairJudge, PartOfJudge
 from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_order
 from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id
-from app.modules.wiki_ingestion.domain.concept_split_rules import reaches_page_threshold
 
 logger = logging.getLogger(__name__)
 # 세부 항목마다 part_of로 물을 상위 후보 수. 편입 잠금 안의 판정이라 작게 둔다.
@@ -45,14 +45,21 @@ def apply_concept_entries(
     """
     ledger = [concept for concept in resolved.get("concept_ledger", []) if concept.get("slug")]
     existing = {concept["slug"]: concept for concept in resolved.get("existing_concept_index", []) if concept.get("slug")}
-    assigned = _assign_heads(ledger, existing, judge_part_of, similarity)
-    placements = _place(assigned, set(existing))
+    # 기존 하위 항목도 상위 후보다(항목 id → 그 항목). 집 페이지의 그 항목 아래로 놓는다.
+    existing_entries = {
+        entry["entry_id"]: {**entry, "page_slug": page_slug}
+        for page_slug, concept in existing.items()
+        for entry in concept.get("entries") or []
+    }
+    assigned = _assign_heads(ledger, existing, existing_entries, judge_part_of, similarity)
+    placements = _place(assigned, set(existing), existing_entries)
     if not placements:
         return resolved
     result = copy.deepcopy(resolved)
     by_slug = {concept["slug"]: concept for concept in result["concept_ledger"]}
     title_of = {**{slug: c.get("title") or slug for slug, c in existing.items()},
-                **{slug: c.get("title") or slug for slug, c in by_slug.items()}}
+                **{slug: c.get("title") or slug for slug, c in by_slug.items()},
+                **{entry_id: entry["name"] for entry_id, entry in existing_entries.items()}}
     pool = _existing_entries(existing)
     # 같은 것 찾기는 위 항목부터 깊이별로 한다. 위 항목이 기존 항목과 같으면 아래 항목은 그 항목 이름 아래에서 찾는다.
     depth = {detail: _depth(placements, detail) for detail in placements}
@@ -79,8 +86,9 @@ def apply_concept_entries(
     document_id = str(result.get("document", {}).get("document_id") or "")
     evidence_by_id = {item.get("evidence_id"): item for item in result.get("evidence_units", [])}
     # 집은 위 항목부터 정한다. 다른 페이지 항목과 같다고 본 항목의 새 아래 항목은 그 항목의 집에 함께 둔다.
-    entry_ids: dict[str, str] = {}
-    home_of: dict[str, str] = {}
+    # 기존 하위 항목 아래 놓인 세부 항목의 위 항목은 그 항목 자신이다(집·id가 이미 정해져 있다).
+    entry_ids: dict[str, str] = {entry_id: entry_id for entry_id in existing_entries}
+    home_of: dict[str, str] = {entry_id: entry["page_slug"] for entry_id, entry in existing_entries.items()}
     entry_changes: dict[str, list[dict[str, Any]]] = {}
     references: list[dict[str, Any]] = []
     adds: dict[str, dict[str, Any]] = {}
@@ -168,10 +176,14 @@ def apply_concept_entries(
 def _assign_heads(
     ledger: list[dict[str, Any]],
     existing: dict[str, dict[str, Any]],
+    existing_entries: dict[str, dict[str, Any]],
     judge_part_of: PartOfJudge | None,
     similarity: Similarity | None,
 ) -> dict[str, str]:
-    """세부 항목 slug → 상위 항목 slug. 판정기의 part_of만 배정한다. 기존 개념 페이지는 세부 항목이 되지 않는다."""
+    """세부 항목 slug → 상위 항목 slug 또는 기존 하위 항목 id. 판정기의 part_of만 배정한다.
+
+    기존 개념 페이지와 하위 항목은 세부 항목이 되지 않는다(기존 페이지를 옮기는 일은 lint 이동이 한다).
+    """
     if judge_part_of is None or similarity is None:
         return {}
     # 판정기는 `definition`만 본다. 파일 개념 인덱스는 정의를 `summary`에 담으므로 옮겨 둔다.
@@ -180,6 +192,19 @@ def _assign_heads(
         for slug, concept in {**existing, **{c["slug"]: c for c in ledger}}.items()
         if _has_definition(concept)
     }
+    # 기존 하위 항목은 "바로 위 이름 > 이름"을 제목으로 둔다(같은 것 찾기·lint 이동 후보와 같다).
+    names = {entry_id: entry["name"] for entry_id, entry in existing_entries.items()}
+    heads.update({
+        entry_id: {
+            "slug": entry_id,
+            "title": f"{names.get(entry.get('parent_entry_id')) or existing[entry['page_slug']].get('title') or entry['page_slug']}"
+                     f" > {entry['name']}",
+            "aliases": list(entry.get("aliases") or []),
+            "definition": entry.get("definition") or "",
+        }
+        for entry_id, entry in existing_entries.items()
+        if str(entry.get("definition") or "").strip()
+    })
     details = [concept for concept in ledger if concept["slug"] not in existing and concept["slug"] in heads]
     assigned: dict[str, str] = {}
     for _, head, detail in rank_part_of(details, heads, judge_part_of, similarity):
@@ -244,29 +269,33 @@ def _creates_cycle(assigned: dict[str, str], detail: str, head: str) -> bool:
     return True
 
 
-def _place(assigned: dict[str, str], existing: set[str]) -> dict[str, tuple[str, str | None]]:
-    """세부 항목 slug → (집 페이지 slug, 바로 위 세부 항목 slug 또는 None).
+def _place(
+    assigned: dict[str, str],
+    existing: set[str],
+    existing_entries: dict[str, dict[str, Any]],
+) -> dict[str, tuple[str, str | None]]:
+    """세부 항목 slug → (집 페이지 slug, 바로 위 세부 항목 slug·기존 하위 항목 id 또는 None).
 
-    맨 위 항목 아래 세부 항목 수(모든 깊이)로 승격을 정한다. 깊은 세부 항목도 같은 페이지 안에서 중첩된다.
+    배정을 따라 올라간 맨 위가 집이다. 기존 하위 항목이면 그 항목의 집 페이지 그 항목 아래다. 깊은 세부 항목도 같은 페이지
+    안에서 중첩된다.
     """
     def root(slug: str) -> str:
         while slug in assigned:
             slug = assigned[slug]
         return slug
 
-    roots = {detail: root(detail) for detail in assigned}
-    counts = Counter(roots.values())
-    pages = {slug for slug, count in counts.items() if slug in existing or reaches_page_threshold(count)}
-    return {
-        detail: (page, assigned[detail] if assigned[detail] != page else None)
-        for detail, page in roots.items()
-        if page in pages
-    }
+    placements = {}
+    for detail in assigned:
+        top = root(detail)
+        page = existing_entries[top]["page_slug"] if top in existing_entries else top
+        placements[detail] = (page, assigned[detail] if assigned[detail] != page else None)
+    return placements
 
 
 def _depth(placements: dict[str, tuple[str, str | None]], detail: str) -> int:
+    # 기존 하위 항목은 맨 위에 둔 것으로 센다(그 아래 세부 항목의 같은 것 찾기는 그 항목 이름 아래에서 한다).
     depth, parent = 0, placements[detail][1]
-    while parent:
+    while parent in placements:
         depth, parent = depth + 1, placements[parent][1]
     return depth
 

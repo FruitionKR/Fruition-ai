@@ -1,4 +1,4 @@
-"""편입 배정과 승격(ADR 0042 2단계): 이름 규칙·part_of 배정, K 승격, 같은 하위 항목 찾기, 기여·복구·임베딩 단위."""
+"""편입 배정(ADR 0042 2단계): part_of 배정과 놓기, 같은 하위 항목 찾기, 기여·복구·임베딩 단위."""
 from __future__ import annotations
 
 import json
@@ -93,7 +93,7 @@ def _entries(result: dict, page: str) -> dict[str, dict]:
     return {change["name"]: change for change in result["entry_changes"][page]}
 
 
-def test_judge_assigns_details_under_head_that_reaches_k() -> None:
+def test_judge_assigns_details_under_their_head() -> None:
     result = _apply(_normalized(DEPLOYMENT))
 
     assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
@@ -111,13 +111,30 @@ def test_judge_assigns_details_under_head_that_reaches_k() -> None:
     assert result["entry_references"] == []
 
 
-def test_head_below_k_keeps_todays_pages() -> None:
-    normalized = _normalized(DEPLOYMENT[:3])
+def test_one_detail_under_a_new_head_still_becomes_its_entry() -> None:
+    # 세부 항목 수로 페이지 여부를 정하지 않는다. 배정은 버리지 않고, 많아지면 lint 분리 규칙이 나눈다.
+    result = _apply(_normalized(DEPLOYMENT[:2]))
 
-    assert _apply(normalized) is normalized
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert list(_entries(result, "deployment")) == ["Deployment Rollout"]
 
 
-def test_existing_page_is_a_head_without_k_and_joins_the_ledger() -> None:
+def test_detail_judged_part_of_an_existing_entry_goes_under_it_on_its_page() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": [
+        # 가짜 판정기는 제목·별칭 접두로 답한다. 항목 후보 제목은 "바로 위 이름 > 이름"이라 별칭으로 맞춘다.
+        {"entry_id": "e-rollout", "name": "Deployment Rollout", "definition": "롤아웃 정의", "parent_entry_id": None,
+         "aliases": ["Deployment Rollout"]}]}]
+    history = _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")
+
+    result = _apply(_normalized([history], existing))
+
+    entry = _entries(result, "deployment")["Deployment Rollout History"]
+    assert entry["parent_entry_id"] == "e-rollout"
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert result["concept_slug_map"]["deployment-rollout-history"] == "deployment"
+
+
+def test_existing_page_is_a_head_and_joins_the_ledger() -> None:
     existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
 
     result = _apply(_normalized([DEPLOYMENT[1]], existing))
