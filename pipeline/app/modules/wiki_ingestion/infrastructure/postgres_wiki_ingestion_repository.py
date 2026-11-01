@@ -47,7 +47,7 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     load_concept_contributions,
     rebuild_concept_page,
 )
-from app.modules.wiki_ingestion.application.concept_entry_ingest import Similarity, rank_part_of
+from app.modules.wiki_ingestion.application.concept_entry_ingest import Similarity, nearest_concepts, rank_part_of
 from app.modules.wiki_generation.application.judge_candidates import PartOfJudge
 from app.modules.wiki_ingestion.domain.concept_entry_lint import (
     EntryLintPlan,
@@ -2094,7 +2094,7 @@ def lint_concept_entries(
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
 
     concept_judge가 있으면 분리한 부모의 개념 관계를 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(결정 6).
-    judge_part_of·similarity가 있으면 바뀐 페이지 중 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
+    judge_part_of·similarity가 있으면 바뀐 페이지와 그 가까이의 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
@@ -2414,7 +2414,7 @@ def _plan_page_moves(
     judge_part_of: PartOfJudge,
     similarity: Similarity,
 ) -> None:
-    """바뀐 페이지 중 홀로 선 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 옮긴다(ADR 0042 4의 이동).
+    """바뀐 페이지와 바뀐 페이지 가까이의 홀로 선 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 옮긴다(ADR 0042 4의 이동).
 
     편입 순서 때문에 먼저 들어온 세부 개념이 페이지로 남은 것을 뒤에 들어온 상위 개념 아래로 옮긴다. 후보와 판정은 편입
     배정과 같다. 후보는 다른 활성 개념 페이지와 그 하위 항목의 임베딩("이름: 정의") 상위 `PART_OF_CANDIDATE_LIMIT`개이고,
@@ -2422,12 +2422,6 @@ def _plan_page_moves(
     다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
     """
     busy = set(plan.page_changes)
-    movers = {
-        page.slug: page for page_id, page in pages.items()
-        if page_id in changed and page_id not in busy and standalone(page) and summaries.get(page_id, "").strip()
-    }
-    if not movers:
-        return
     page_rows = conn.execute(
         """
         SELECT id, slug, title, summary FROM wiki_pages
@@ -2460,7 +2454,31 @@ def _plan_page_moves(
                            "definition": str(row.get("definition") or "")}
         head_pages[entry_id] = (str(row["page_id"]), entry_id)
     heads = {key: head for key, head in heads.items() if head["definition"].strip()}
+    # 역방향: 바뀐 페이지(새 상위 후보)마다 가까운 홀로 선 페이지를 상위 `PART_OF_CANDIDATE_LIMIT`개까지 후보로 더한다.
+    # 그 페이지가 바뀌지 않았어도(세부 페이지 뒤 lint가 한 번 돈 다음 상위 페이지가 들어온 경우) 옮길 수 있다.
+    # 비용은 바뀐 페이지 수에 비례한다. 하위 항목이 있는 페이지는 홀로 서지 않아 미리 뺀다.
+    with_entries = {str(row["page_id"]) for row in entry_rows}
+    pool = {
+        str(row["slug"]): heads[str(row["slug"])] for row in page_rows
+        if str(row["id"]) not in changed and str(row["id"]) not in with_entries and str(row["slug"]) in heads
+    }
+    nearby: set[str] = set()
+    try:
+        for page_id in sorted(changed - set(plan.deleted_page_ids)):
+            if pool and pages[page_id].slug in heads:
+                nearby.update(nearest_concepts(heads[pages[page_id].slug], pool, similarity))
+    except JevUnavailable as exc:
+        logger.warning("[lint 페이지 이동 역방향 후보 생략] %s", exc)
+        return
+    load([row for row in page_rows if str(row["slug"]) in nearby and str(row["id"]) not in pages])
+    movers = {
+        page.slug: page for page_id, page in pages.items()
+        if (page_id in changed or page.slug in nearby)
+        and page_id not in busy and standalone(page) and summaries.get(page_id, "").strip()
+    }
     details = [heads[slug] for slug in sorted(movers) if slug in heads]
+    if not details:
+        return
     ranked = [
         (probability, head, movers[detail].page_id)
         for probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity)

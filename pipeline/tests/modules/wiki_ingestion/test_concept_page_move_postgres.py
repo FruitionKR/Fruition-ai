@@ -262,3 +262,33 @@ def test_move_is_deferred_when_the_target_is_split_in_the_same_lint(world: World
 
     assert result["deleted_pages"] == [termination]
     assert world.state()["pages"]["pod"][2] == world.ledger_rebuild("pod").markdown
+
+
+def test_pages_linted_before_the_head_arrived_move_when_the_head_page_changes(world: World, judged) -> None:
+    # 라이프사이클 문서 → lint → 파드 문서 순서. 라이프사이클 페이지는 둘째 lint에서 바뀐 페이지가 아니다.
+    world.ingest("op-l", "doc-l", {
+        "pod-termination": {"title": "파드 종료", "evidence": ["L1"]},
+        "container-probe": {"title": "컨테이너 프로브", "evidence": ["L2"]},
+        "pod-lifecycle": {"title": "파드 라이프사이클", "evidence": ["L3"]},
+    })
+    judge = judged(MOVE_ANSWERS)
+    assert world.lint("lint-first")["deleted_pages"] == []
+    world.ingest("op-p", "doc-p", {"pod": {"title": "파드 (Pod)", "evidence": ["P1"], "entry_changes": [
+        {**_add("e-container", "Container", refs=["P2"]), "definition": "컨테이너 정의"}]}})
+    before = world.state()
+    judge.asked.clear()
+
+    result = world.lint("lint-move")
+
+    # 바뀐 파드 페이지에서 찾은 가까운 홀로 선 페이지가 후보다.
+    assert {detail for _, detail in judge.asked} == set(MOVERS)
+    assert sorted(result["deleted_pages"]) == sorted(world.page_id(slug) for slug in MOVERS)
+    state = world.state()
+    assert set(state["pages"]) == {"pod"}
+    assert (new_entry_id("pod", "container-probe"), "pod", "컨테이너 프로브", "e-container") in state["entries"]
+    assert state["pages"]["pod"][2] == world.ledger_rebuild("pod").markdown
+    assert ("doc-l", "pod") in state["documents"]
+
+    world.restore_lint("lint-move")
+
+    assert world.state() == before

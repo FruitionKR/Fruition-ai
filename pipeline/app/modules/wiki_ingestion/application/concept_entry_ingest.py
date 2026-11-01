@@ -193,7 +193,7 @@ def rank_part_of(
     서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 판정기·임베딩 서버를 쓸 수 없으면 빈 목록이다.
     """
     try:
-        pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
+        pairs = [(heads[head], detail) for detail in details for head in nearest_concepts(detail, heads, similarity)]
         decisions = judge_part_of(pairs) if pairs else {}
     except JevUnavailable as exc:
         logger.warning("[part_of 판정 생략] %s", exc)
@@ -205,8 +205,11 @@ def rank_part_of(
     )
 
 
-def _candidate_heads(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
-    """part_of로 물을 상위 후보. 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
+def nearest_concepts(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
+    """part_of로 물을 후보. 임베딩("이름: 정의") 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다(자기 자신 제외).
+
+    임베딩 서버를 쓸 수 없으면 similarity가 JevUnavailable을 낸다.
+    """
     others = [slug for slug in sorted(heads) if slug != detail["slug"]]
     if not others:
         return []
