@@ -106,3 +106,16 @@ def test_moved_relation_disappears_when_the_ingest_that_made_it_is_rolled_back(w
     world.restore_ingest("op-s")
     assert "service" in world.state()["pages"]
     assert _relations(world) == set()
+
+
+def test_split_restore_drops_the_moved_relation_from_a_child_that_survives(world: World, judged) -> None:
+    _setup(world)
+    judged({"canary": {"rollout"}, "service": {"rollout"}})
+    world.lint("lint-split")
+    # 분리 뒤 자식에 독립 기여가 생겨 분리를 되돌려도 자식이 남는다.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "evidence": ["W1"]}})
+
+    world.restore_lint("lint-split")
+
+    assert "rollout" in world.state()["pages"]
+    assert _relations(world) == {("deployment", "service"), ("canary", "deployment")}

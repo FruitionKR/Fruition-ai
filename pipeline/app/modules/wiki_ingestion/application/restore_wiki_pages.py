@@ -92,12 +92,18 @@ class RestoreWikiPagesUseCase:
             affected_page_ids,
             supported_links,
         )
+        # 재조립한 페이지의 나가는 링크는 재생 결과(supported_links)로 바꾼다. lint가 원래 작업 id로 이은 기록이 낸
+        # 링크(분리 때 옮긴 관계)는 lint 기록 차이에 없어, 차이만 반영하면 자식이 남을 때 그 링크가 남는다.
+        # 사람이 낸 링크도 수동 기록 재생에 들어 있고, 소스 → 개념 링크는 동기화가 따로 맞춘다.
         skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
             command.operation_id,
             command.workspace_id,
             changed_pages,
-            link_changes,
-            False,
+            {
+                "removed_links": link_changes["removed_links"],
+                "restored_links": [*link_changes["restored_links"], *supported_links],
+            },
+            True,
             deleted_pages,
         )
         # lint가 승격·병합하며 archived.md로 옮긴 클러스터를 active.md로 되돌린다.
