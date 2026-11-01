@@ -68,7 +68,7 @@ def build_concept_contributions(
                 "links": [
                     link
                     for link in links
-                    if _link_supports_concept(link, slug, document_id)
+                    if _link_supports_concept(link, slug)
                 ],
                 **({"entry_changes": entry_changes[slug]} if slug in entry_changes else {}),
             }
@@ -161,7 +161,7 @@ def _concept_update_contributions(
                 "links": [
                     link
                     for link in links
-                    if _link_supports_concept(link, slug, document_id)
+                    if _link_supports_concept(link, slug)
                 ],
             }
         )
@@ -249,14 +249,5 @@ def _concept_block_ids(
     return list(dict.fromkeys(str(value) for value in values if value))
 
 
-def _link_supports_concept(
-    link: dict[str, Any],
-    concept_slug: str,
-    document_id: str,
-) -> bool:
-    source = str(link.get("source") or "")
-    target = str(link.get("target") or "")
-    concept_ref = f"concept:{concept_slug}"
-    return source == concept_ref or (
-        source == f"source:{document_id}" and target == concept_ref
-    )
+def _link_supports_concept(link: dict[str, Any], concept_slug: str) -> bool:
+    return str(link.get("source") or "") == f"concept:{concept_slug}"

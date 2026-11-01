@@ -80,6 +80,7 @@ from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliatio
     source_contribution_payload as _source_contribution_payload,
 )
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
+    SOURCE_MENTIONS_CONCEPT,
     delete_source_related_links as _delete_source_related_links,
     load_existing_concept_ids_by_slug as _load_existing_concept_ids_by_slug,
     persist_embedding_units as _persist_embedding_units,
@@ -88,6 +89,7 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     upsert_page_entries as _upsert_page_entries,
     read_optional_text_object as _read_optional_text_object,
     resolve_or_create_wiki_page_id as _resolve_or_create_wiki_page_id,
+    sync_source_concept_links,
     upload_wiki_markdown as _upload_wiki_markdown,
     upsert_document_wiki_link as _upsert_document_wiki_link,
     upsert_wiki_page as _upsert_wiki_page,
@@ -185,6 +187,10 @@ def _cleanup_deleted_wiki_pages(
     conn.execute(
         "DELETE FROM document_wiki_links WHERE wiki_page_id = ANY(%s)",
         (target_ids,),
+    )
+    conn.execute(
+        "DELETE FROM wiki_source_manual_links WHERE from_page_id = ANY(%s) OR to_page_id = ANY(%s)",
+        (target_ids, target_ids),
     )
     conn.execute(
         "DELETE FROM wiki_page_embeddings WHERE page_id = ANY(%s)",
@@ -456,8 +462,9 @@ def _apply_restored_wiki_state(
             )
 
         if replace_links and page_ids:
+            # 소스 → 개념 자동 링크는 재생 기록이 아니라 문서 연결에서 파생한다. 아래 동기화가 다시 만든다(ADR 0042 결정 5).
             conn.execute(
-                "DELETE FROM wiki_page_links WHERE from_page_id = ANY(%s)",
+                "DELETE FROM wiki_page_links WHERE from_page_id = ANY(%s) AND link_type <> 'source_mentions_concept'",
                 (page_ids,),
             )
 
@@ -469,7 +476,7 @@ def _apply_restored_wiki_state(
 
         for link in link_changes.get("removed_links", []):
             source = by_ref.get(str(link.get("source")))
-            if source is None:
+            if source is None or link.get("relation") == SOURCE_MENTIONS_CONCEPT:
                 continue
             target_id = resolve(str(link.get("target")))
             if target_id:
@@ -497,7 +504,7 @@ def _apply_restored_wiki_state(
                 )
         for link in link_changes.get("restored_links", []):
             source = by_ref.get(str(link.get("source")))
-            if source is None:
+            if source is None or link.get("relation") == SOURCE_MENTIONS_CONCEPT:
                 continue
             target_id = resolve(str(link.get("target")))
             if target_id and target_id != str(source["id"]):
@@ -510,7 +517,83 @@ def _apply_restored_wiki_state(
                     link.get("confidence"),
                     workspace_id,
                 )
+        source_pages = [
+            page for page in changed_pages
+            if str(page["page_id"]) not in skipped_page_ids and by_id[str(page["page_id"])]["page_type"] == "source"
+        ]
+        for page in source_pages:
+            if "snapshot_operation_id" in page:
+                # 소스 스냅샷 복원: 그 스냅샷까지의 수동 기여로 수동 링크 의도를 다시 재생한다.
+                _write_manual_source_links(
+                    conn, workspace_id, str(page["page_id"]),
+                    _replayed_manual_source_links(workspace_id, str(page["page_id"]), str(page["snapshot_operation_id"])),
+                    replace=True,
+                )
+            elif page.get("manual_source_links"):
+                _write_manual_source_links(
+                    conn, workspace_id, str(page["page_id"]),
+                    {str(item["target"]): bool(item["present"]) for item in page["manual_source_links"]},
+                    replace=False,
+                )
+        # 모든 페이지 최종 상태를 쓴 뒤 문서 연결과 자동 소스 링크를 맞춘다(ADR 0042 결정 5).
+        sync_source_concept_links(
+            conn,
+            workspace_id,
+            concept_page_ids=[
+                str(page["page_id"]) for page in changed_pages
+                if by_id[str(page["page_id"])]["page_type"] == "concept" and page.get("source_document_ids") is not None
+            ],
+            source_page_ids=[str(page["page_id"]) for page in source_pages],
+        )
     return skipped_page_ids
+
+
+def _replayed_manual_source_links(workspace_id: str, source_page_id: str, snapshot_operation_id: str) -> dict[str, bool]:
+    """소스 페이지의 활성 수동 기여를 스냅샷 작업까지 적용 순서대로 재생한 `[[slug]]` 의도(대상 ref → 있음/지움)."""
+    intents: dict[str, bool] = {}
+    rows = sorted(
+        (row for row in read_contributions([source_page_id], workspace_id)
+         if str(row.get("page_id")) == source_page_id and row.get("active")),
+        key=lambda row: int(row.get("sequence_revision") or 0),
+    )
+    for row in rows:
+        key = str(row.get("object_key") or "")
+        payload = json.loads(_read_optional_text_object(key) or "{}") if key.endswith(".json") else {}
+        if payload.get("artifact_type") == "manual":
+            for present, field in ((False, "removed_links"), (True, "added_links")):
+                for link in payload.get(field, []):
+                    if isinstance(link, dict) and link.get("relation") == SOURCE_MENTIONS_CONCEPT:
+                        intents[str(link.get("target"))] = present
+        if str(row.get("ingest_operation_id")) == snapshot_operation_id:
+            break
+    return intents
+
+
+def _write_manual_source_links(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    source_page_id: str,
+    intents: dict[str, bool],
+    *,
+    replace: bool,
+) -> None:
+    if replace:
+        conn.execute("DELETE FROM wiki_source_manual_links WHERE from_page_id = %s", (source_page_id,))
+    for row in conn.execute(
+        """
+        SELECT id, slug FROM wiki_pages
+        WHERE workspace_id = %s AND page_type = 'concept' AND slug = ANY(%s)
+        """,
+        (workspace_id, [target.removeprefix("concept:") for target in intents if target.startswith("concept:")]),
+    ).fetchall():
+        conn.execute(
+            """
+            INSERT INTO wiki_source_manual_links (from_page_id, to_page_id, present, workspace_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (from_page_id, to_page_id) DO UPDATE SET present = EXCLUDED.present
+            """,
+            (source_page_id, row["id"], intents[f"concept:{row['slug']}"], workspace_id),
+        )
 
 
 def _reject_entry_conflicts(
@@ -582,6 +665,7 @@ REQUIRED_TABLES = (
     "source_block_snapshots",
     "wiki_page_links",
     "wiki_page_entries",
+    "wiki_source_manual_links",
     "pipeline_runs",
     "wiki_page_embeddings",
     "wiki_embedding_vectors",
@@ -1116,6 +1200,13 @@ def save_manual_wiki_edit(
                 "title": None,
                 "summary": None,
                 "source_document_ids": source_document_ids,
+                # 소스 → 개념 링크는 파생이라 수동 의도만 따로 남긴다. 수동 삭제가 자동보다 우선한다(ADR 0042 결정 5).
+                "manual_source_links": [
+                    *({"target": link["target"], "present": False} for link in removed_links
+                      if link["relation"] == SOURCE_MENTIONS_CONCEPT),
+                    *({"target": link["target"], "present": True} for link in added_links
+                      if link["relation"] == SOURCE_MENTIONS_CONCEPT),
+                ],
             }],
             {"removed_links": removed_links, "restored_links": added_links},
             False,
@@ -2542,7 +2633,7 @@ def _materialize_promotion_candidates(
         page_id = _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug)
         # 클러스터에 모인 세부 항목을 새 페이지의 하위 항목으로 둔다(ADR 0042). 기록에 남아 lint 복원이 되돌린다.
         entry_changes = _promotion_entry_changes(slug, _detail_items(cluster), {})
-        markdown = _add_promotion_entries(conn, workspace_id, page_id, markdown, entry_changes).strip()
+        markdown = _add_promotion_entries(conn, workspace_id, page_id, markdown, entry_changes, claims).strip()
         if operation_id:
             markdown_uri = storage_uri(
                 f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
@@ -2688,7 +2779,7 @@ def _merge_promotion_into_existing_concept(
         entry_changes = _promotion_entry_changes(
             concept_slug, detail_items, {name_key(entry["name"]): entry["entry_id"] for entry in stored_entries}
         )
-        updated_markdown = _add_promotion_entries(conn, workspace_id, str(row["id"]), updated_markdown, entry_changes)
+    updated_markdown = _add_promotion_entries(conn, workspace_id, str(row["id"]), updated_markdown, entry_changes, claims)
     if operation_id:
         current_markdown_uri = storage_uri(
             f"wiki/{workspace_id}/pages/{row['id']}/ops/{operation_id}.md"
@@ -2762,15 +2853,15 @@ def _add_promotion_entries(
     page_id: str,
     markdown: str,
     entry_changes: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
 ) -> str:
     """편입과 같게 하위 항목을 사본에 더하고 본문 목록을 사본 전체로 다시 그린다. 임베딩 단위보다 먼저 써야 한다.
 
-    항목 근거의 문서는 그 페이지의 문서 연결(`extracted_concept`)이 된다. 복구 재생도 lint 기록의 항목에서 같은 연결을 만든다.
+    항목 근거와 lint 근거(claims)의 문서는 그 페이지의 문서 연결(`extracted_concept`)이 되고, 자동 소스 → 개념 링크도
+    맞춘다. 복구 재생도 lint 기록의 남은 항목·근거 단위에서 같은 연결을 만든다(ADR 0042 결정 5).
     """
-    if not entry_changes:
-        return markdown
-    _upsert_page_entries(conn, workspace_id, page_id, entry_changes)
-    for document_id in entry_document_ids(entry_changes):
+    claim_documents = [str(ref).split(":", 1)[0] for claim in claims for ref in claim.get("refs", []) if ":" in str(ref)]
+    for document_id in dict.fromkeys([*entry_document_ids(entry_changes), *claim_documents]):
         conn.execute(
             """
             INSERT INTO document_wiki_links (document_id, wiki_page_id, relation_type, confidence, workspace_id, created_at)
@@ -2779,6 +2870,10 @@ def _add_promotion_entries(
             """,
             (document_id, page_id, workspace_id),
         )
+    sync_source_concept_links(conn, workspace_id, concept_page_ids=[page_id])
+    if not entry_changes:
+        return markdown
+    _upsert_page_entries(conn, workspace_id, page_id, entry_changes)
     entries, references = _stored_entry_index(conn, page_id)
     return render_entry_index(markdown, entries, references)
 

@@ -322,19 +322,8 @@ generated_by: backend_skeleton
 
 class LinkBuilder:
     def build(self, normalized: dict[str, Any], generated_concept_pages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        doc = normalized["document"]
-        ledger = normalized["concept_ledger"]
+        # 소스 → 개념 링크는 만들지 않는다. 개념 기록 재생의 문서 연결에서 파생한다(ADR 0042 결정 5).
         links = []
-        source_page_id = f"source:{doc['document_id']}"
-        for c in ledger:
-            links.append(
-                {
-                    "source": source_page_id,
-                    "target": f"concept:{c['slug']}",
-                    "relation": "source_mentions_concept",
-                    "decided_by": "backend",
-                    }
-                )
         # 개념끼리의 링크는 판단을 거친 관계만 만든다. 병합 판단이 '따로 두고 연결(link_to)'로 고른 관계로,
         # 다른 문서의 기존 개념과도 이어진다. 같은 근거에 함께 나온 정도의 약한 관계는 본문 Related Concepts에만 둔다.
         # 연결 대상이 같은 편입에서 병합됐으면 병합된 개념으로 잇는다.

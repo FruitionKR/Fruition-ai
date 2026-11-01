@@ -28,6 +28,7 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     persist_embedding_units,
     read_optional_text_object,
     resolve_or_create_wiki_page_id,
+    sync_source_concept_links,
     upload_wiki_markdown,
     upsert_document_wiki_link,
     stored_entry_index,
@@ -122,6 +123,17 @@ def persist_wiki_outputs(
         document_id,
         manifest,
     ) or []
+    # 기존 개념 갱신(same_concept)도 이 문서의 직접 개념 기여로 기록된다. 재생과 같게 문서 연결을 둔다(ADR 0042 결정 5).
+    for page in updated_concept_pages:
+        upsert_document_wiki_link(conn, document_id, str(page["page_id"]), "extracted_concept", None, workspace_id)
+    # 모든 페이지를 쓴 뒤 문서 연결에서 자동 소스 → 개념 링크를 맞춘다. 다시 편입한 문서(휴지통에서 되살림 포함)의
+    # 변경 없는 개념 연결도 소스 페이지 범위로 함께 맞춘다.
+    sync_source_concept_links(
+        conn,
+        workspace_id,
+        concept_page_ids=[*concept_page_ids, *(str(page["page_id"]) for page in updated_concept_pages)],
+        source_page_ids=[source_page_id],
+    )
     # operation artifact(운영 로그용 markdown/JSON)는 DB 반영이 모두 끝난 뒤 마지막에 써서,
     # 이후 단계 실패로 트랜잭션이 롤백돼도 object storage에 orphan 파일이 남지 않게 한다.
     if operation_id:

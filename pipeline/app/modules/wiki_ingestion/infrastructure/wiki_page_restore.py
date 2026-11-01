@@ -160,6 +160,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "title": None,
             "summary": None if manual else markdown_section(markdown, "Summary"),
             "source_document_id": source_page.document_id,
+            # 수동 `[[slug]]` 의도를 이 스냅샷까지의 수동 기여로 다시 재생한다(ADR 0042 결정 5).
+            "snapshot_operation_id": restore_to_operation_id,
         }
 
     def _is_manual_snapshot(self, contribution_key: str) -> bool:

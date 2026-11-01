@@ -249,9 +249,10 @@ def test_restore_legacy_contribution_without_document_id_keeps_embedding_unbound
     assert result["changed_pages"][0]["source_document_ids"] == []
 
 
-def test_restore_lint_only_contribution_keeps_document_provenance_unbound() -> None:
+def test_restore_lint_record_links_only_documents_of_its_surviving_evidence() -> None:
+    # lint 기록의 개념 메타데이터 문서는 세지 않고, 남은 근거(승격 근거 단위)의 문서만 센다(ADR 0042 결정 5).
     lint = json.loads(_lint_payload("L", "C3", "lint 근거"))
-    lint["concept"]["source_document_ids"] = ["doc-A"]
+    lint["concept"]["source_document_ids"] = ["doc-meta"]
     lint["evidence_units"][0]["source_document_id"] = "doc-A"
     store = ArtifactStore(
         {"wiki/ws-1/pages/C3/ops/L.json": json.dumps(lint)}
@@ -273,7 +274,7 @@ def test_restore_lint_only_contribution_keeps_document_provenance_unbound() -> N
         )
     )
 
-    assert result["changed_pages"][0]["source_document_ids"] == []
+    assert result["changed_pages"][0]["source_document_ids"] == ["doc-A"]
 
 
 def test_restore_ingest_falls_back_to_document_id() -> None:

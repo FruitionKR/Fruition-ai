@@ -309,6 +309,9 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 ingest 작업의 Wiki 변경을 복원합니다.
 
+- 소스 → 개념 자동 링크(`source_mentions_concept`)는 복원 결과의 문서 연결(`source_document_ids`, 재생 결과 남은 유효 근거의 문서)에서
+  다시 만든다(ADR 0042 결정 5). source 페이지를 스냅샷으로 되돌려도 이 링크는 지우지 않고, 그 스냅샷까지의 수동 기여로 수동
+  `[[slug]]` 의도를 다시 재생한다. 응답 `changed_pages`의 source 페이지에는 `snapshot_operation_id`(= `restore_to_operation_id`)가 실린다.
 - 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
   끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
   lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는
@@ -1150,7 +1153,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 
 - `wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md`(본문)와 `.json`(수동 기여)을 쓴다.
 - `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
-- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
+- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`). source 페이지의 개념 링크는 수동 의도(`wiki_source_manual_links`)로 남겨 자동 파생 링크와 합친다. 자동 링크가 있어도 새 slug는 수동 지원으로 남고, 수동 삭제가 자동보다 우선한다(ADR 0042 결정 5).
 - 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
 - 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다. 이때 `content_hash`는 요청 본문이 아니라 저장된 본문의 해시다.
 

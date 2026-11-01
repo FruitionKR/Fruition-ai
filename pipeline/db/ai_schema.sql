@@ -107,6 +107,17 @@ CREATE TABLE IF NOT EXISTS wiki_page_links (
 CREATE INDEX IF NOT EXISTS idx_wiki_page_links_workspace
     ON wiki_page_links (workspace_id);
 
+-- 사람이 소스 본문에 쓴 `[[slug]]`의 수동 지원(present)·삭제(NOT present)(ADR 0042 결정 5). 자동 소스 → 개념 링크
+-- (source_mentions_concept)는 개념 기록 재생에서 파생하고, wiki_page_links 키가 출처를 구분하지 못해 수동 의도는 여기 둔다.
+-- 수동 삭제가 자동보다 우선한다. 원본은 소스 페이지의 수동 기여 기록이고, 소스 스냅샷 복원 때 다시 재생한다.
+CREATE TABLE IF NOT EXISTS wiki_source_manual_links (
+    from_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    to_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    present boolean NOT NULL,
+    workspace_id varchar(255) NOT NULL,
+    PRIMARY KEY (from_page_id, to_page_id)
+);
+
 -- 합쳐 지운 페이지의 방향 전환은 두지 않는다(ADR 0042 결정 1). 페이지 상태는 기여 원장 재생으로 정한다.
 ALTER TABLE wiki_pages DROP COLUMN IF EXISTS merged_into_page_id;
 

@@ -9,6 +9,7 @@ import psycopg
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     parse_active_cluster_lint,
 )
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import sync_source_concept_links
 
 
 def list_reconciliation_candidates(
@@ -86,6 +87,8 @@ def apply_structural_reconciliation(
             candidate["document_id"],
             candidate["stale_concept_slugs"],
         )
+        # 문서 연결을 지웠으니 그 문서의 자동 소스 → 개념 링크도 맞춘다(ADR 0042 결정 5).
+        sync_source_concept_links(conn, candidate["workspace_id"], document_ids=[candidate["document_id"]])
         removed_relations = _remove_stale_relations(
             conn,
             candidate["stale_relations"],

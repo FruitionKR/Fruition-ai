@@ -389,7 +389,8 @@ def test_link_builder_does_not_materialize_weak_concept_edges() -> None:
 
     links = LinkBuilder().build(normalized)
 
-    assert {link["relation"] for link in links} == {"source_mentions_concept"}
+    # 약한 관계 링크도, 소스 → 개념 링크(문서 연결에서 파생, ADR 0042 결정 5)도 만들지 않는다.
+    assert links == []
 
 
 def test_link_builder_links_concepts_judged_link_to_including_existing_ones() -> None:

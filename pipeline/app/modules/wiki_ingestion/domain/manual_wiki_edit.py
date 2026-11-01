@@ -27,6 +27,7 @@ def manual_link_changes(
     """사람이 고친 본문의 `[[slug]]` 차이를 edge 추가·삭제로 바꾼다.
 
     본문에서 바뀐 slug만 반영한다. 손대지 않은 링크와, 본문에 없던 기존 edge는 그대로 둔다.
+    소스 → 개념 링크(`source_mentions_concept`)는 자동 링크가 있어도 새 slug를 추가로 남긴다.
     지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 모두 지우고, 새 slug는 활성 페이지가
     있을 때만 edge를 만든다. `target_refs`는 새 본문의 slug를 `page_type:slug`로 푼 값이다.
     """
@@ -38,7 +39,8 @@ def manual_link_changes(
         for link in current_links
         if str(link["target"]).split(":", 1)[-1] in dropped
     ]
-    linked = {str(link["target"]) for link in current_links}
+    # 소스 → 개념 자동 링크가 이미 있어도 사람이 쓴 링크는 수동 의도로 남긴다. 자동 근거가 사라져도 남아야 한다(ADR 0042).
+    linked = {str(link["target"]) for link in current_links if link["relation"] != "source_mentions_concept"}
     added = []
     for slug in new_slugs:
         target = target_refs.get(slug)

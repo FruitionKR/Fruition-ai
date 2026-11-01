@@ -268,6 +268,84 @@ def read_optional_text_object(object_name: str) -> str:
         raise
 
 
+SOURCE_MENTIONS_CONCEPT = "source_mentions_concept"
+
+
+def sync_source_concept_links(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    *,
+    concept_page_ids: list[str] = (),
+    source_page_ids: list[str] = (),
+    document_ids: list[str] = (),
+) -> None:
+    """자동 소스 → 개념 링크를 문서 연결에서 다시 만든다(ADR 0042 결정 5). 모든 페이지 최종 상태를 쓴 뒤 부른다.
+
+    소스 페이지(문서 D) → 개념 P 링크는 P의 문서 연결(`extracted_concept`, 재생 결과의 유효 근거 문서)에 D가 있을 때만
+    있다. 소스·개념이 활성이고 D가 휴지통(tombstone)에 없어야 한다. 사람이 소스 본문에 쓴 `[[slug]]`는
+    `wiki_source_manual_links`로 따로 더하고, 수동 삭제는 자동 링크보다 우선한다. 범위는 주어진 개념 페이지로 오는
+    링크와 주어진 소스 페이지(문서)에서 나가는 링크다. 같은 트랜잭션에서 문서 연결을 바꾼 뒤 부른다.
+    """
+    source_page_ids = [str(item) for item in source_page_ids]
+    if document_ids:
+        source_page_ids += [
+            str(row["wiki_page_id"])
+            for row in conn.execute(
+                """
+                SELECT wiki_page_id FROM document_wiki_links
+                WHERE workspace_id = %s AND relation_type = 'source_of' AND document_id = ANY(%s)
+                """,
+                (workspace_id, [str(item) for item in document_ids]),
+            ).fetchall()
+        ]
+    scope = {"ws": workspace_id, "pages": [str(item) for item in concept_page_ids], "sources": source_page_ids}
+    if not scope["pages"] and not scope["sources"]:
+        return
+    conn.execute(
+        """
+        DELETE FROM wiki_page_links
+        WHERE workspace_id = %(ws)s AND link_type = 'source_mentions_concept'
+          AND (to_page_id = ANY(%(pages)s) OR from_page_id = ANY(%(sources)s))
+        """,
+        scope,
+    )
+    conn.execute(
+        """
+        INSERT INTO wiki_page_links (
+            from_page_id, to_page_id, link_type, label, confidence, workspace_id, created_at, updated_at
+        )
+        SELECT source.id, concept.id, 'source_mentions_concept', NULL, NULL, source.workspace_id, now(), now()
+        FROM wiki_pages source
+        JOIN wiki_pages concept ON concept.workspace_id = source.workspace_id
+        LEFT JOIN wiki_source_manual_links manual
+          ON manual.from_page_id = source.id AND manual.to_page_id = concept.id
+        WHERE source.workspace_id = %(ws)s
+          AND source.page_type = 'source' AND source.status = 'active'
+          AND concept.page_type = 'concept' AND concept.status = 'active'
+          AND (concept.id = ANY(%(pages)s) OR source.id = ANY(%(sources)s))
+          AND (
+              manual.present
+              OR (manual.present IS NULL AND EXISTS (
+                  SELECT 1
+                  FROM document_wiki_links source_of
+                  JOIN document_wiki_links extracted
+                    ON extracted.document_id = source_of.document_id
+                   AND extracted.relation_type = 'extracted_concept'
+                   AND extracted.wiki_page_id = concept.id
+                  WHERE source_of.wiki_page_id = source.id
+                    AND source_of.relation_type = 'source_of'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM wiki_source_tombstones tombstone
+                        WHERE tombstone.workspace_id = %(ws)s AND tombstone.document_id = source_of.document_id
+                    )
+              ))
+          )
+        ON CONFLICT (from_page_id, link_type, to_page_id) DO NOTHING
+        """,
+        scope,
+    )
+
+
 def delete_source_related_links(
     conn: psycopg.Connection,
     workspace_id: str,
