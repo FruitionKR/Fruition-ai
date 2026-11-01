@@ -792,16 +792,6 @@ def test_merge_back_carries_plain_child_evidence_to_the_parent(world: World) -> 
     assert body == world.ledger_rebuild("deployment").markdown
 
 
-def test_child_with_much_own_evidence_is_not_merged_back(world: World) -> None:
-    _merged_back_rollout(world)
-    world.ingest("op-p", "doc-p", {"rollout": {"title": "Rollout", "evidence": [f"B{70 + index}" for index in range(6)]}})
-
-    result = world.lint("lint-merge")
-
-    assert result["deleted_pages"] == []
-    assert "rollout" in world.state()["pages"]
-
-
 def test_references_between_entries_split_in_the_same_lint_follow_both_moves(world: World) -> None:
     world.ingest("op-x", "doc-x", {
         "alpha": {"title": "Alpha", "entry_changes": _thick("e-xen", "Xen", 1),

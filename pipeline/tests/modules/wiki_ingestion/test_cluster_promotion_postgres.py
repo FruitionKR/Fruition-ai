@@ -33,6 +33,13 @@ def _cluster(cluster_id: str, terms: list[str], target: str | None = None) -> st
     )
 
 
+def _thicken_history(world: World) -> None:
+    """승격 페이지의 Rollout History 아래에 문서 doc-h가 세부 항목 5개를 더한다(분리 기준 C=5)."""
+    history = next(entry["entry_id"] for entry in world.ledger_rebuild("rollout").entries if entry["name"] == "Rollout History")
+    world.ingest("op-h", "doc-h", {"rollout": {"title": "Rollout", "entry_changes": [
+        _add(f"e-h{index}", f"History {index}", history, [f"H{index}"]) for index in range(5)]}})
+
+
 def _lint(world: World, monkeypatch, operation_id: str, active: str) -> dict:
     world.write(f"wiki/{WS}/clusters/active.md", "# Active Meaning Clusters\n\n" + active)
     monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: None)
@@ -146,8 +153,8 @@ def test_lint_sub_entries_on_merged_concept_survive_restore_of_an_unrelated_inge
 
 
 def test_split_of_promoted_entry_links_the_promotion_record_and_restores_with_it(world: World, monkeypatch) -> None:
-    # History는 근거 줄 5개라 근거 수(블록 5 + claim 5)가 분리 기준(E=10)에 닿는다.
     _lint(world, monkeypatch, "lint-promote", _cluster("rollout", [*TERMS, *["Rollout History"] * 4]))
+    _thicken_history(world)
 
     result = world.lint("lint-split")
 
@@ -163,10 +170,12 @@ def test_split_of_promoted_entry_links_the_promotion_record_and_restores_with_it
             "linked_by_operation_id": "lint-split"} in result["ledger_contributions"]
     state = world.state()
     assert ("rollout-history" in state["pages"]) and state["pages"]["rollout-history"][2] == world.ledger_rebuild("rollout-history").markdown
-    assert [entry["name"] for entry in world.ledger_rebuild("rollout-history").entries] == ["Rollout History"]
+    assert [entry["name"] for entry in world.ledger_rebuild("rollout-history").entries] == [
+        "Rollout History", *(f"History {index}" for index in range(5))]
     assert ("doc-c", "rollout-history") in state["documents"]
 
-    # 승격 lint를 되돌리면 부모의 항목과 자식에 이은 기록이 함께 빠진다.
+    # 세부 항목 편입과 승격 lint를 되돌리면 부모의 항목과 자식에 이은 기록이 함께 빠진다.
+    world.restore_ingest("op-h")
     world.restore_lint("lint-promote")
 
     state = world.state()
@@ -189,7 +198,8 @@ def test_detail_items_that_differ_only_by_symbols_stay_separate_entries(world: W
 def test_restoring_a_split_of_a_promoted_page_keeps_the_page_its_lint_record_supports(world: World, monkeypatch) -> None:
     # 승격 페이지는 lint 기록만으로 받쳐진다. 그 항목의 분리를 되돌려도 승격 근거가 남아 페이지는 남는다.
     _lint(world, monkeypatch, "lint-promote", _cluster("rollout", [*TERMS, *["Rollout History"] * 4]))
-    world.lint("lint-split")
+    _thicken_history(world)
+    assert [item["action"] for item in world.lint("lint-split")["entry_decisions"]] == ["split"]
 
     result = world.restore_lint("lint-split")
 

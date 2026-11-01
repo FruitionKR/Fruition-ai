@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.modules.wiki_ingestion.domain.concept_entries import (
-    ENTRY_EVIDENCE_FIELDS,
     ENTRY_REFERENCE,
     _ancestors,
     new_entry_id,
@@ -127,12 +126,6 @@ def plan_entry_lint(
             nodes.append(
                 EntryNode(
                     entry_id=node_id,
-                    # 항목 근거와, 분리 뒤 자식 페이지 자체에 쌓인 근거(항목 변경 없는 편입 기록)를 함께 센다.
-                    evidence_count=_evidence_count(page.entries) + sum(
-                        len(item.get("evidence_units", []))
-                        for item in page.contributions
-                        if item.get("artifact_type") not in (_LINT, _MANUAL) and not item.get("entry_changes")
-                    ),
                     child_entry_ids=tuple(item["entry_id"] for item in page.entries if item["entry_id"] != root),
                     reference_page_ids=_referencing_pages(pages, page, {item["entry_id"] for item in page.entries})
                     - {record["split_from"]["page_id"]},
@@ -147,7 +140,6 @@ def plan_entry_lint(
             nodes.append(
                 EntryNode(
                     entry_id=entry["entry_id"],
-                    evidence_count=_evidence_count(_subtree(page.entries, entry["entry_id"])),
                     child_entry_ids=tuple(
                         item["entry_id"] for item in page.entries if item["parent_entry_id"] == entry["entry_id"]
                     ),
@@ -531,10 +523,6 @@ def _referencing_pages(pages: dict[str, EntryPage], home: EntryPage, entry_ids: 
 def _subtree(entries: tuple[dict[str, Any], ...], root: str) -> list[dict[str, Any]]:
     by_id = {item["entry_id"]: item for item in entries}
     return [item for item in entries if root in _ancestors(by_id, item["entry_id"])]
-
-
-def _evidence_count(entries: Any) -> int:
-    return len({value for entry in entries for key in ENTRY_EVIDENCE_FIELDS for value in entry.get(key, [])})
 
 
 def retarget_split_relations(
