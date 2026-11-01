@@ -559,3 +559,52 @@ def test_reference_from_existing_parent_not_in_this_document_round_trips(scoped_
     restored = rebuild_concept_page(plan_page_recovery(history, {"op-x"}).kept_contributions)
     assert not [link for link in restored.supported_links if link["relation"] == "entry_reference"]
     assert "## Sub-entries" not in restored.markdown
+
+
+def test_new_sibling_entries_of_one_ingest_merge_by_name_rule_and_same_judgment() -> None:
+    # 같은 집·같은 위 항목 아래 이번 문서의 새 세부 항목끼리도 같은 것을 찾는다. 다른 표기의 같은 항목은 쌍 판정 same만 합친다.
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": ["디플로이먼트"], "definition": "기존 정의",
+                 "entries": []}]
+    concepts = [
+        _concept("deployment-rolling-update", "Deployment Rolling Update", "B0001"),
+        _concept("ko-rolling-update", "디플로이먼트 롤링 업데이트", "B0002"),
+        _concept("deployment-pod-template", "Deployment Pod Template", "B0003"),
+        _concept("deployment-pod-template-2", "deployment pod-template", "B0004"),
+    ]
+    asked: list[tuple[str, list[str]]] = []
+
+    def judge(entries, pool):
+        asked.append((entries[0]["title"], [item["title"] for item in pool]))
+        return {
+            entry["slug"]: {"incoming_slug": entry["slug"], "decision": "merge_into",
+                            "canonical_slug": "incoming:deployment-rolling-update"}
+            for entry in entries if entry["title"].endswith("디플로이먼트 롤링 업데이트")
+        }
+
+    result = apply_concept_entries(_normalized(concepts, existing), judge_same=judge)
+
+    adds = result["entry_changes"]["deployment"]
+    ids = {change["entry_id"] for change in adds}
+    assert len(ids) == 2
+    rolling = [change for change in adds if change["name"] == "Deployment Rolling Update"]
+    # 먼저 나온 항목의 이름·id로 근거를 더한다.
+    assert {change["entry_id"] for change in rolling} == {adds[1]["entry_id"]} == {adds[0]["entry_id"]}
+    assert [change["anchor_reference_ids"] for change in rolling] == [["B0001"], ["B0002"]]
+    pod = [change for change in adds if change["name"] == "Deployment Pod Template"]
+    assert [change["anchor_reference_ids"] for change in pod] == [["B0003"], ["B0004"]]
+    # 이름 규칙으로 합친 항목은 묻지 않는다. 판정은 먼저 나온 형제하고만 한다.
+    assert [title for title, _pool in asked if "pod-template" in title] == []
+    assert ("Deployment > 디플로이먼트 롤링 업데이트", ["Deployment > Deployment Rolling Update"]) in asked
+
+
+def test_unsure_or_unavailable_sibling_judgment_keeps_entries_apart() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
+    concepts = [_concept("deployment-rollout", "Deployment Rollout", "B0001"),
+                _concept("deployment-scale", "Deployment Scale", "B0002")]
+
+    def unavailable(_entries, _pool):
+        raise JevUnavailable("Jev HTTP 402")
+
+    for judge in (FakeSame(None), unavailable, None):
+        adds = apply_concept_entries(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
+        assert len({change["entry_id"] for change in adds}) == 2

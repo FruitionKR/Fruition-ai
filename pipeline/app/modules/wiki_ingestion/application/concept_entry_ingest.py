@@ -5,7 +5,8 @@
 2. 승격: 배정을 따라 올라간 맨 위 항목이 기존 개념 페이지이거나 세부 항목이 `K`개 이상이면 그 페이지의 하위 항목이 된다.
    모자라면 배정을 버리고 지금처럼 각자 개념 페이지로 둔다.
 3. 같은 것 찾기: 새 하위 항목마다 워크스페이스의 기존 하위 항목과 "바로 위 이름 > 이름"이 같거나 쌍 판정이 same이면
-   기존 항목에 근거를 더하고, 집이 다른 페이지면 이번 페이지에는 참조를 둔다. 애매하면 따로 둔다.
+   기존 항목에 근거를 더하고, 집이 다른 페이지면 이번 페이지에는 참조를 둔다. 기존 항목과 같지 않은 새 항목끼리도
+   같은 집·같은 위 항목 아래면 같은 규칙으로 먼저 나온 항목에 근거를 더한다. 애매하면 따로 둔다.
 """
 from __future__ import annotations
 
@@ -47,10 +48,13 @@ def apply_concept_entries(
     # 같은 것 찾기는 위 항목부터 깊이별로 한다. 위 항목이 기존 항목과 같으면 아래 항목은 그 항목 이름 아래에서 찾는다.
     depth = {detail: _depth(placements, detail) for detail in placements}
     matched: dict[str, dict[str, Any]] = {}
+    # 같은 집·같은 위 항목 아래 이번 문서의 새 세부 항목끼리 같은 것. 세부 항목 slug → 먼저 나온 같은 세부 항목 slug.
+    siblings: dict[str, str] = {}
     for level in sorted(set(depth.values())):
         queries = {}
         for detail in (slug for slug in placements if depth[slug] == level):
             page, parent = placements[detail]
+            parent = siblings.get(parent, parent)
             parent_name = matched[parent]["name"] if parent in matched else title_of[parent or page]
             queries[detail] = {
                 "slug": f"incoming:{detail}",
@@ -59,6 +63,9 @@ def apply_concept_entries(
                 "definition": by_slug[detail].get("definition") or "",
             }
         matched.update(_match_entries(queries, pool, judge_same))
+        siblings.update(_match_siblings(
+            {detail: query for detail, query in queries.items() if detail not in matched}, placements, judge_same,
+        ))
 
     document_id = str(result.get("document", {}).get("document_id") or "")
     evidence_by_id = {item.get("evidence_id"): item for item in result.get("evidence_units", [])}
@@ -67,13 +74,20 @@ def apply_concept_entries(
     home_of: dict[str, str] = {}
     entry_changes: dict[str, list[dict[str, Any]]] = {}
     references: list[dict[str, Any]] = []
+    adds: dict[str, dict[str, Any]] = {}
     for detail in sorted(placements, key=lambda slug: depth[slug]):
         page, parent = placements[detail]
         concept = by_slug[detail]
         # 이 항목이 놓일 페이지와 그 페이지 안의 바로 위 항목이다.
         container = home_of[parent] if parent else page
         parent_entry_id = entry_ids[parent] if parent else None
-        match = matched.get(detail)
+        # 같은 형제로 본 세부 항목은 먼저 나온 항목에 근거만 더한다(이름·정의·위치는 먼저 나온 항목을 따른다).
+        sibling = adds.get(siblings.get(detail, ""))
+        match = matched.get(detail) or (
+            {"page_slug": home_of[siblings[detail]], "slug": sibling["entry_id"], "name": sibling["name"],
+             "definition": sibling["definition"], "parent_entry_id": sibling["parent_entry_id"]}
+            if sibling else None
+        )
         home = match["page_slug"] if match else container
         entry_ids[detail] = match["slug"] if match else new_entry_id(home, detail)
         refs = unique_keep_order([
@@ -102,6 +116,7 @@ def apply_concept_entries(
                 "parent_entry_id": parent_entry_id,
             })
         entry_changes.setdefault(home, []).append(add)
+        adds[detail] = add
         home_of[detail] = home
         # 이번 문서에 없던 기존 페이지는 개념 판정이 기존 개념에 병합할 때와 같게 목록에 넣는다.
         # 참조를 둔 페이지(container)도 넣어야 그 페이지 기여·본문에 참조가 남아 복구 재생이 된다.
@@ -272,6 +287,50 @@ def _match_entries(
         if decision.get("decision") == "merge_into" and decision.get("canonical_slug") in by_id:
             matched[detail] = by_id[decision["canonical_slug"]]
     return matched
+
+
+def _match_siblings(
+    queries: dict[str, dict[str, Any]],
+    placements: dict[str, tuple[str, str | None]],
+    judge_same: PairJudge | None,
+) -> dict[str, str]:
+    """같은 집 페이지·같은 위 항목 아래 이번 문서의 새 세부 항목끼리 같은 것을 찾는다(기존 항목 찾기와 같은 규칙).
+
+    "바로 위 이름 > 이름"이 같으면 판정 없이, 나머지는 먼저 나온 형제들과의 쌍 판정 same만 같은 항목으로 본다.
+    서로가 서로에 합쳐지지 않게 먼저 나온 항목에만 합친다. 애매하거나 판정기를 쓸 수 없으면 따로 둔다.
+    """
+    groups: dict[tuple[str, str | None], list[str]] = {}
+    for detail in queries:
+        groups.setdefault(placements[detail], []).append(detail)
+    found: dict[str, str] = {}
+    for members in groups.values():
+        canonical: list[str] = []
+        for detail in members:
+            by_name = next(
+                (other for other in canonical if name_key(queries[other]["title"]) == name_key(queries[detail]["title"])),
+                None,
+            )
+            target = by_name or (_same_sibling(queries[detail], [queries[other] for other in canonical], judge_same)
+                                 if canonical else None)
+            if target:
+                found[detail] = target.removeprefix("incoming:")
+            else:
+                canonical.append(detail)
+    return found
+
+
+def _same_sibling(query: dict[str, Any], earlier: list[dict[str, Any]], judge_same: PairJudge | None) -> str | None:
+    if judge_same is None:
+        return None
+    try:
+        decision = judge_same([query], earlier).get(query["slug"]) or {}
+    except JevUnavailable as exc:
+        logger.warning("[같은 형제 항목 판정 생략] %s", exc)
+        return None
+    target = decision.get("canonical_slug")
+    if decision.get("decision") == "merge_into" and target in {item["slug"] for item in earlier}:
+        return str(target)
+    return None
 
 
 def _existing_concept_entry(concept: dict[str, Any], document_id: str) -> dict[str, Any]:
