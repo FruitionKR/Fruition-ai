@@ -58,45 +58,45 @@ def apply_concept_entries(
 
     document_id = str(result.get("document", {}).get("document_id") or "")
     evidence_by_id = {item.get("evidence_id"): item for item in result.get("evidence_units", [])}
-    entry_ids = {
-        detail: matched[detail]["slug"] if detail in matched else _new_entry_id(page, detail)
-        for detail, (page, _) in placements.items()
-    }
+    # 집은 위 항목부터 정한다. 다른 페이지 항목과 같다고 본 항목의 새 아래 항목은 그 항목의 집에 함께 둔다.
+    entry_ids: dict[str, str] = {}
     home_of: dict[str, str] = {}
     entry_changes: dict[str, list[dict[str, Any]]] = {}
     references: list[dict[str, Any]] = []
-    for detail, (page, parent) in placements.items():
+    for detail in sorted(placements, key=lambda slug: _depth(placements, slug)):
+        page, parent = placements[detail]
         concept = by_slug[detail]
+        # 이 항목이 놓일 페이지와 그 페이지 안의 바로 위 항목이다.
+        container = home_of[parent] if parent else page
         parent_entry_id = entry_ids[parent] if parent else None
+        match = matched.get(detail)
+        home = match["page_slug"] if match else container
+        entry_ids[detail] = match["slug"] if match else _new_entry_id(home, detail)
         refs = unique_keep_order([
             *concept.get("anchor_reference_ids", []),
             *(ref for evidence_id in concept.get("evidence_claim_ids", [])
               for ref in evidence_by_id.get(evidence_id, {}).get("anchor_reference_ids", [])),
         ])
+        # 같은 항목이면 이름·정의·위치는 기존 항목을 따른다. 근거는 그 항목의 집에 더한다.
         add = {
             "op": "add",
             "entry_id": entry_ids[detail],
-            "name": concept.get("title") or detail,
-            "definition": concept.get("definition") or "",
-            "parent_entry_id": parent_entry_id,
+            "name": match["name"] if match else concept.get("title") or detail,
+            "definition": match["definition"] if match else concept.get("definition") or "",
+            "parent_entry_id": match["parent_entry_id"] if match else parent_entry_id,
             "anchor_reference_ids": refs,
             "evidence_claim_ids": list(concept.get("evidence_claim_ids", [])),
         }
-        home = page
-        if match := matched.get(detail):
-            # 같은 항목이면 이름·정의·위치는 기존 항목을 따른다. 근거는 그 항목의 집에 더한다.
-            home = match["page_slug"]
-            add.update(name=match["name"], definition=match["definition"], parent_entry_id=match["parent_entry_id"])
-            if home != page:
-                references.append({
-                    "source": f"concept:{page}",
-                    "target": f"concept:{home}",
-                    "relation": ENTRY_REFERENCE,
-                    "decided_by": "concept_entry",
-                    "entry_id": add["entry_id"],
-                    "name": add["name"],
-                    "parent_entry_id": parent_entry_id,
-                })
+        if home != container:
+            references.append({
+                "source": f"concept:{container}",
+                "target": f"concept:{home}",
+                "relation": ENTRY_REFERENCE,
+                "decided_by": "concept_entry",
+                "entry_id": add["entry_id"],
+                "name": add["name"],
+                "parent_entry_id": parent_entry_id,
+            })
         entry_changes.setdefault(home, []).append(add)
         home_of[detail] = home
         target = by_slug.get(home)
@@ -207,6 +207,13 @@ def _place(assigned: dict[str, str], existing: set[str]) -> dict[str, tuple[str,
         for detail, page in roots.items()
         if page in pages
     }
+
+
+def _depth(placements: dict[str, tuple[str, str | None]], detail: str) -> int:
+    depth, parent = 0, placements[detail][1]
+    while parent:
+        depth, parent = depth + 1, placements[parent][1]
+    return depth
 
 
 def _existing_entries(existing: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:

@@ -49,6 +49,7 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
 )
+from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE
 from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     read_text_object,
@@ -71,6 +72,7 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     delete_source_related_links as _delete_source_related_links,
     load_existing_concept_ids_by_slug as _load_existing_concept_ids_by_slug,
     persist_embedding_units as _persist_embedding_units,
+    upsert_entry_references,
     read_optional_text_object as _read_optional_text_object,
     resolve_or_create_wiki_page_id as _resolve_or_create_wiki_page_id,
     upload_wiki_markdown as _upload_wiki_markdown,
@@ -192,6 +194,10 @@ def _cleanup_deleted_wiki_pages(
         )
     conn.execute(
         "DELETE FROM wiki_page_entries WHERE page_id = ANY(%s)",
+        (target_ids,),
+    )
+    conn.execute(
+        "DELETE FROM wiki_page_entry_references WHERE page_id = ANY(%s)",
         (target_ids,),
     )
     conn.execute(
@@ -338,7 +344,9 @@ def _apply_restored_wiki_state(
                 ),
             )
             if page.get("entries") is not None:
-                _replace_page_entries(conn, workspace_id, str(page["page_id"]), page["entries"])
+                _replace_page_entries(
+                    conn, workspace_id, str(page["page_id"]), page["entries"], page.get("supported_links") or [],
+                )
 
             source_document_ids = page.get("source_document_ids")
             if source_document_ids is not None:
@@ -472,9 +480,15 @@ def _replace_page_entries(
     workspace_id: str,
     page_id: str,
     entries: list[dict[str, Any]],
+    supported_links: list[dict[str, Any]],
 ) -> None:
     # 재생 결과의 조회용 사본(ADR 0042). 항목의 집은 하나라 다른 페이지에서 옮겨 온 항목은 집만 바꾼다.
+    # 재생 순서대로 다시 넣어 본문 목록 순서(position)를 재생과 맞춘다.
     conn.execute("DELETE FROM wiki_page_entries WHERE page_id = %s", (page_id,))
+    conn.execute("DELETE FROM wiki_page_entry_references WHERE page_id = %s", (page_id,))
+    upsert_entry_references(
+        conn, workspace_id, page_id, [link for link in supported_links if link.get("relation") == ENTRY_REFERENCE],
+    )
     for entry in entries:
         conn.execute(
             """

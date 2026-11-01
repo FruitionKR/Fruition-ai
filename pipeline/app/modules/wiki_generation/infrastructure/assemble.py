@@ -343,7 +343,8 @@ class LinkBuilder:
         for resolution in normalized.get("concept_resolutions", []):
             if resolution.get("decision") != "link_to":
                 continue
-            source = resolution.get("incoming_slug")
+            # 하위 항목으로 옮긴 개념(ADR 0042)의 연결은 그 집 페이지에서 나간다.
+            source = slug_map.get(resolution.get("incoming_slug"), resolution.get("incoming_slug"))
             # 대상별 확신도(Jev 판정)는 병합 반영 전 대상 slug로 찾고, 없으면 판정 전체 확신도를 쓴다.
             confidences = resolution.get("link_confidences") or {}
             for original in resolution.get("link_targets", []):

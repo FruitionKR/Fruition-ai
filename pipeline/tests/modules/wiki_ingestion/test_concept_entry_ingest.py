@@ -12,7 +12,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from app.core.jev_client import JevUnavailable
-from app.modules.wiki_generation.infrastructure.assemble import LinkBuilder
+from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler, LinkBuilder
 from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
 from app.modules.wiki_ingestion.application.concept_entry_ingest import apply_concept_entries
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, plan_page_recovery
@@ -300,7 +300,7 @@ def scoped_dsn():
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(name)))
 
 
-def test_ingest_persists_entries_references_and_entry_units(scoped_dsn, monkeypatch) -> None:
+def _stored_markdown(monkeypatch) -> dict[str, str]:
     stored: dict[str, str] = {}
 
     def write(markdown: str, key: str) -> str:
@@ -310,20 +310,35 @@ def test_ingest_persists_entries_references_and_entry_units(scoped_dsn, monkeypa
     monkeypatch.setattr(persistence, "upload_wiki_markdown", write)
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
     monkeypatch.setattr(persistence, "write_text_object", lambda key, text, *_args: write(text, key))
+    return stored
 
-    def manifest(operation_id: str, normalized: dict, existing: list[dict] | None = None, judge_same=None) -> dict:
-        result = apply_concept_entries({**normalized, "existing_concept_index": existing or []}, judge_same=judge_same)
-        links = LinkBuilder().build(result)
-        return {
-            "operation_id": operation_id, "workspace_id": "ws-1", "user_id": "user-1", "normalized": result,
-            "source_page": {"markdown": "# 문서\n"}, "source_blocks": [],
-            "concept_pages": [{"slug": concept["slug"], "markdown": f"# {concept['title']}\n\n## Evidence\n"
-                               + "".join(f"- {item['claim']} [doc-1:{item['anchor_reference_ids'][0]}]\n"
-                                         for item in result["evidence_units"] if concept["slug"] in item["related_concept_slugs"])
-                               + "\n## Related Concepts\n- 관련 개념 없음\n"}
-                              for concept in result["concept_ledger"]],
-            "concept_contributions": _ingest_contributions(operation_id, result), "links": links,
-        }
+
+def manifest(operation_id: str, normalized: dict, existing: list[dict] | None = None, judge_same=None,
+             entry_changes: dict | None = None) -> dict:
+    result = apply_concept_entries({**normalized, "existing_concept_index": existing or []}, judge_same=judge_same)
+    if entry_changes:
+        result = {**result, "entry_changes": entry_changes}
+    links = LinkBuilder().build(result)
+    return {
+        "operation_id": operation_id, "workspace_id": "ws-1", "user_id": "user-1", "normalized": result,
+        "source_page": {"markdown": "# 문서\n"}, "source_blocks": [],
+        "concept_pages": [{"slug": concept["slug"], "markdown": f"# {concept['title']}\n\n## Evidence\n"
+                           + "".join(f"- {item['claim']} [doc-1:{item['anchor_reference_ids'][0]}]\n"
+                                     for item in result["evidence_units"] if concept["slug"] in item["related_concept_slugs"])
+                           + "\n## Related Concepts\n- 관련 개념 없음\n"}
+                          for concept in result["concept_ledger"]],
+        "concept_contributions": _ingest_contributions(operation_id, result), "links": links,
+    }
+
+
+def _section(markdown: str) -> str:
+    start = markdown.index("## Sub-entries")
+    end = markdown.find("\n## ", start + 1)
+    return markdown[start:end if end >= 0 else None].strip()
+
+
+def test_ingest_persists_entries_references_and_entry_units(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
 
     with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
         persistence.persist_wiki_outputs(conn, "doc-0", manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")])))
@@ -361,3 +376,90 @@ def test_ingest_persists_entries_references_and_entry_units(scoped_dsn, monkeypa
     assert not any(row["slug"] == "deployment" and row["entry_id"] == "e-scale" for row in units)
     markdown = stored[markdown_uri]
     assert "## Sub-entries\n- Deployment Rollout\n- Deployment Rollback\n- Label Selector (Deployment)\n- [[kubectl|scale]]\n" in markdown
+
+
+NESTED = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009"),
+          _concept("deployment-scale-limit", "Deployment Scale Limit", "B0007")]
+
+
+def test_child_of_parent_merged_into_another_page_lives_under_it_there() -> None:
+    result = apply_concept_entries(_normalized(NESTED, _with_kubectl_entry()), judge_same=FakeSame("merge_into"))
+
+    kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
+    assert set(kubectl) == {"scale", "Deployment Scale Limit"}
+    assert kubectl["Deployment Scale Limit"]["parent_entry_id"] == "e-scale"
+    assert "Deployment Scale Limit" not in _entries(result, "deployment")
+    # 참조는 같은 항목으로 본 위 항목 하나뿐이다. 아래 항목은 그 항목의 집에서 함께 보인다.
+    assert [link["entry_id"] for link in result["entry_references"]] == ["e-scale"]
+    assert result["concept_slug_map"]["deployment-scale-limit"] == "kubectl"
+
+
+def test_nested_merge_stored_state_equals_replay(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    first = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    second = manifest("op-x", _normalized(NESTED), _with_kubectl_entry(), judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'kubectl'").fetchone()
+        rows = conn.execute("SELECT entry_id, name, parent_entry_id FROM wiki_page_entries WHERE page_id = %s "
+                            "ORDER BY position", (page["id"],)).fetchall()
+        units = conn.execute("SELECT text FROM wiki_embedding_units WHERE unit_type = 'sub_entry' AND page_id = %s "
+                             "ORDER BY text", (page["id"],)).fetchall()
+
+    replayed = rebuild_concept_page([
+        _page(page["id"], "op-w", 1, first["concept_contributions"]["kubectl"]),
+        _page(page["id"], "op-x", 2, second["concept_contributions"]["kubectl"]),
+    ])
+    assert rows == [{key: entry[key] for key in ("entry_id", "name", "parent_entry_id")} for entry in replayed.entries]
+    assert _section(stored[page["markdown_uri"]]) == _section(replayed.markdown) == (
+        "## Sub-entries\n- scale\n  - Deployment Scale Limit")
+    # 임베딩도 실제 바로 위 항목 이름을 쓴다.
+    assert [row["text"] for row in units] == [
+        "kubectl > scale: Pod 수를 바꾼다", "scale > Deployment Scale Limit: Deployment Scale Limit 정의"]
+
+
+def test_child_added_to_existing_entry_is_drawn_under_it(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    first = manifest("op-w", _normalized(DEPLOYMENT))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
+        {"entry_id": change["entry_id"], "name": change["name"], "definition": change["definition"], "parent_entry_id": None}
+        for change in first["normalized"]["entry_changes"]["deployment"]]}]
+    # 다시 나온 Rollout은 이름으로 같은 항목이 되고, 새 History는 그 아래 항목이다.
+    second = manifest("op-x", _normalized([DEPLOYMENT[0], DEPLOYMENT[1],
+                                           _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")]),
+                      existing)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        markdown_uri = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()["markdown_uri"]
+
+    assert _section(stored[markdown_uri]) == (
+        "## Sub-entries\n- Deployment Rollout\n  - Deployment Rollout History\n- Deployment Rollback\n"
+        "- Label Selector (Deployment)")
+
+
+def test_relation_from_concept_moved_into_entry_starts_from_its_home_page() -> None:
+    concepts = [*DEPLOYMENT, _concept("service", "Service", "B0006")]
+    normalized = _normalized(concepts)
+    normalized["concept_resolutions"] = [
+        {"incoming_slug": "deployment-rollout", "decision": "link_to", "canonical_slug": "deployment-rollout",
+         "link_targets": ["service", "deployment"], "confidence": 0.95},
+    ]
+
+    result = apply_concept_entries(normalized)
+    links = [link for link in LinkBuilder().build(result) if link["relation"] == "concept_related_to"]
+    contributions = _ingest_contributions("op-x", result)
+    replayed = rebuild_concept_page([_page("page-deploy", "op-x", 1, contributions["deployment"])])
+
+    # 집 페이지로 옮긴 연결만 남고, 집 페이지 자신을 가리키는 연결은 버린다.
+    assert [(link["source"], link["target"]) for link in links] == [("concept:deployment", "concept:service")]
+    assert [(link["source"], link["target"]) for link in replayed.supported_links
+            if link["relation"] == "concept_related_to"] == [("concept:deployment", "concept:service")]
+    deployment = next(page for page in ConceptPageAssembler().build_top(result, top_n=None)
+                      if page["slug"] == "deployment")
+    assert "[[service|Service]]" in deployment["markdown"]

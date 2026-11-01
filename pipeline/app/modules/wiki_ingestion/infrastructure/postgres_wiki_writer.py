@@ -207,6 +207,54 @@ def upsert_page_entries(
         )
 
 
+def upsert_entry_references(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    references: list[dict],
+) -> None:
+    """참조 사본을 쓴다. 같은 항목 참조를 다시 두면 재생처럼 위치는 두고 내용만 바꾼다."""
+    for link in references:
+        conn.execute(
+            """
+            INSERT INTO wiki_page_entry_references
+                (page_id, entry_id, workspace_id, target_slug, name, parent_entry_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (page_id, entry_id) DO UPDATE SET
+                target_slug = EXCLUDED.target_slug,
+                name = EXCLUDED.name,
+                parent_entry_id = EXCLUDED.parent_entry_id
+            """,
+            (
+                page_id,
+                link["entry_id"],
+                workspace_id,
+                str(link.get("target") or "").removeprefix("concept:"),
+                link.get("name") or link["entry_id"],
+                link.get("parent_entry_id"),
+            ),
+        )
+
+
+def stored_entry_index(conn: psycopg.Connection, page_id: str) -> tuple[list[dict], list[dict]]:
+    """본문 목록을 그릴 저장된 항목과 참조. render_entry_index 입력 형식이다."""
+    entries = conn.execute(
+        "SELECT entry_id, name, parent_entry_id FROM wiki_page_entries WHERE page_id = %s ORDER BY position",
+        (page_id,),
+    ).fetchall()
+    references = conn.execute(
+        """
+        SELECT entry_id, 'concept:' || target_slug AS target, name, parent_entry_id,
+               'entry_reference' AS relation
+        FROM wiki_page_entry_references
+        WHERE page_id = %s
+        ORDER BY position
+        """,
+        (page_id,),
+    ).fetchall()
+    return [dict(row) for row in entries], [dict(row) for row in references]
+
+
 def upload_wiki_markdown(markdown: str, object_name: str) -> str:
     return write_text_object(object_name, markdown)
 

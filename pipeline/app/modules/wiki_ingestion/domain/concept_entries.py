@@ -102,35 +102,6 @@ def render_entry_index(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def append_entry_index(
-    markdown: str,
-    entries: list[dict[str, Any]],
-    reference_links: list[dict[str, Any]],
-) -> str:
-    """편입이 새로 둔 하위 항목·참조를 본문 목록 끝에 덧붙인다. 이미 있는 줄은 다시 쓰지 않는다.
-
-    편입은 기존 본문 위에 쓰므로 목록 전체를 다시 그리지 않는다. 전체 목록은 복구 재생(render_entry_index)이 그린다.
-    """
-    lines = markdown.splitlines()
-    start = next((index for index, line in enumerate(lines) if line.strip() == SUB_ENTRIES_HEADING), -1)
-    if start < 0:
-        return render_entry_index(markdown, entries, reference_links)
-    end = start + 1
-    while end < len(lines) and not lines[end].startswith("## "):
-        end += 1
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1
-    present = set(lines[start + 1:end])
-    # ponytail: 줄 글자로 중복을 거른다. 다른 상위 항목 아래 같은 이름 줄은 빠지지만 복구 재생이 바로잡는다.
-    added = [
-        line
-        for line in render_entry_index("", entries, reference_links).splitlines()[1:]
-        if line not in present
-    ]
-    lines[end:end] = added
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def _ancestors(entries: dict[str, dict[str, Any]], entry_id: str | None) -> set[str]:
     """entry_id 자신과 그 위 항목들. 순환이 있어도 멈춘다."""
     seen: set[str] = set()
