@@ -320,6 +320,13 @@ ingest 작업의 Wiki 변경을 복원합니다.
   그 참조를 가진 다른 살아 있는 페이지(`rebuild_pages`에 없음)는 활성 원장 기록으로 다시 그려 응답 `changed_pages`에 더한다
   (`markdown_key`는 `ops/{복원 작업}.md`). document-svc는 그 페이지의 새 버전만 남기고 원장 행은 바꾸지 않는다. 기록은 다음 lint가 지운다.
 - 재조립한 페이지의 나가는 링크는 재생 결과(`supported_links`)로 바꾼다. lint 복원도 같다.
+- 재편입 대체 뒤 재조립(빼는 작업 없는 재조립 명령): 같은 문서를 다시 편입하면 document-svc가 그 문서의 이전 편입 행을 대체해 끈다.
+  새 편입의 `changed_pages`에 없는데 그 문서 근거를 잃은 페이지는 document-svc가 Kafka 명령(`kind`는 임시로 `rebuild_pages`, document-svc와
+  이름을 맞추는 중)으로 보낸다. 본문은 복원과 같은 `operation_id`·`workspace_id`·`rebuild_pages`(`keep_contributions`)·`deleted_pages`이고
+  빼는 작업(`cancel_operation_ids`·`target_operation_id`)과 `source_page`는 없다. ai는 남은 기여를 재생해 다시 만들고, 결과는 복원과 같은
+  `changed_pages`·`deleted_pages`(재생이 삭제로 끝난 페이지 포함)이며 `operation_type`은 `page_rebuild`다. 나가는 링크·문서 연결·소스 → 개념
+  자동 링크도 재생 결과로 바꿔, 대체된 문서의 근거와 링크가 그 페이지에서 빠진다. 편입 자체는 이 페이지들을 추측해 다시 만들지 않고, 자기가
+  기여한 페이지만 쓴다.
 - 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
   끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
   lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는

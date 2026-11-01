@@ -56,6 +56,16 @@ class LintOperationRestoreCommand:
 
 
 @dataclass(frozen=True)
+class PageRebuildCommand:
+    """빼는 작업 없이 남은 기여로 페이지를 다시 만든다. 재편입이 대체한 이전 기여를 잃은 페이지에 document-svc가 보낸다."""
+
+    operation_id: str
+    workspace_id: str
+    rebuild_pages: tuple[RebuildPageCommand, ...]
+    deleted_pages: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PipelineRunRegistration:
     run_id: str
     document_id: str | None

@@ -183,3 +183,34 @@ def test_manual_intent_survives_the_target_being_merged_away_and_merge_restore(w
 
     # 대상이 다시 살아나면 수동 삭제는 계속 자동보다 우선하고, 수동 전용 링크는 돌아온다.
     assert {link for link in _links(world) if link[1] == "rollout"} == {("doc-m", "rollout")}
+
+
+def test_rebuild_only_command_after_reingest_drops_the_superseded_document_from_lost_pages(world: World) -> None:
+    from app.modules.wiki_ingestion.application.models import PageRebuildCommand, RebuildPageCommand
+    from app.modules.wiki_ingestion.application.restore_wiki_pages import RestoreWikiPagesUseCase
+
+    for document_id in ("doc-r", "doc-o"):
+        _source(world, document_id)
+    world.ingest("op-r1", "doc-r", {"deployment": {"title": "Deployment", "evidence": ["R1"]},
+                                    "queue": {"title": "Queue", "evidence": ["R2"]},
+                                    "lonely": {"title": "Lonely", "evidence": ["R3"]}})
+    world.ingest("op-o", "doc-o", {"queue": {"title": "Queue", "evidence": ["O1"]}})
+    # doc-r를 다시 편입했더니 Deployment만 남았다. document-svc는 이전 편입 행을 대체해 끈다.
+    world.ingest("op-r2", "doc-r", {"deployment": {"title": "Deployment", "evidence": ["R9"]}})
+    world._deactivate(lambda row: row["ingest_operation_id"] == "op-r1")
+    lost = [world.page_id("queue"), world.page_id("lonely")]
+
+    # 재편입이 다루지 않아 doc-r 근거를 잃은 페이지는 빼는 작업 없이 남은 기여로 다시 만든다.
+    result = RestoreWikiPagesUseCase(world.restore).execute_rebuild(PageRebuildCommand(
+        operation_id="rebuild-1", workspace_id=WS,
+        rebuild_pages=tuple(RebuildPageCommand(page_id, world._keep(page_id)) for page_id in lost if world._keep(page_id)),
+        deleted_pages=tuple(page_id for page_id in lost if not world._keep(page_id)),
+    ))
+
+    state = world.state()
+    assert result["operation_type"] == "page_rebuild"
+    assert [page["page_id"] for page in result["changed_pages"]] == [world.page_id("queue")]
+    assert result["deleted_pages"] == [world.page_id("lonely")]
+    assert "doc-r" not in state["pages"]["queue"][2] and "doc-o" in state["pages"]["queue"][2]
+    assert ("doc-r", "queue") not in state["documents"] and ("doc-o", "queue") in state["documents"]
+    assert _links(world) == {("doc-r", "deployment"), ("doc-o", "queue")}

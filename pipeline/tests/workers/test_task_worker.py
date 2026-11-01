@@ -1079,7 +1079,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
     fail.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint"])
+@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint", "rebuild_pages"])
 @pytest.mark.parametrize("status", [None, "running", "failed", "cancel_requested", "rolling_back", "rollback_failed", "cancelled"])
 def test_failure_is_durable_only_with_registered_terminal_or_rollback_state(kind, status):
     connection = MagicMock()
@@ -2011,3 +2011,26 @@ def test_agent_command_startup_requires_folder_tree_config_even_when_skills_disa
 
     monkeypatch.setenv("DOCUMENT_INTERNAL_BASE_URL", "http://document-svc:8080")
     task_worker._verify_agent_command_config()
+
+
+def test_rebuild_only_command_runs_the_page_rebuild_without_an_excluded_operation() -> None:
+    # 재편입이 대체한 기여를 잃은 페이지의 재조립 명령(ADR 0042). 복원과 같은 흐름·결과로 처리한다.
+    command = {"run_id": "rebuild-1", "kind": task_worker.REBUILD_PAGES_KIND, "workspace_id": "ws-1", "user_id": "u-1",
+               "operation_id": "rebuild-op", "rebuild_pages": [
+                   {"page_id": "page-q", "keep_contributions": [{"operation_id": "op-o", "document_id": "doc-o"}]}],
+               "deleted_pages": ["page-l"]}
+    use_case = MagicMock()
+    use_case.execute_rebuild.return_value = {"status": "succeeded", "changed_pages": [], "deleted_pages": ["page-l"]}
+    with (
+        patch.object(task_worker.database, "get_pipeline_run", return_value=None),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "finish_pipeline_run") as finish,
+        patch.object(task_worker, "get_restore_wiki_pages_use_case", return_value=use_case),
+    ):
+        result = task_worker._handle(command)
+
+    rebuilt = use_case.execute_rebuild.call_args.args[0]
+    assert (rebuilt.operation_id, rebuilt.deleted_pages) == ("rebuild-op", ("page-l",))
+    assert rebuilt.rebuild_pages[0].keep_contributions[0].operation_id == "op-o"
+    assert result["deleted_pages"] == ["page-l"]
+    finish.assert_called_once()
