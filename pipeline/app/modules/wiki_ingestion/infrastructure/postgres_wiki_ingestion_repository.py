@@ -478,14 +478,20 @@ def _replace_page_entries(
     for entry in entries:
         conn.execute(
             """
-            INSERT INTO wiki_page_entries (workspace_id, entry_id, page_id, name, parent_entry_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO wiki_page_entries
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (workspace_id, entry_id)
             DO UPDATE SET page_id = EXCLUDED.page_id,
                           name = EXCLUDED.name,
-                          parent_entry_id = EXCLUDED.parent_entry_id
+                          parent_entry_id = EXCLUDED.parent_entry_id,
+                          definition = EXCLUDED.definition,
+                          block_refs = EXCLUDED.block_refs
             """,
-            (workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"]),
+            (
+                workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"],
+                entry.get("definition") or "", list(entry.get("anchor_reference_ids") or []),
+            ),
         )
 
 

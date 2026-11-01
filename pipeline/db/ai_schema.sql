@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS wiki_page_entries (
 CREATE INDEX IF NOT EXISTS idx_wiki_page_entries_page
     ON wiki_page_entries (page_id);
 
+-- 같은 것 찾기(ADR 0042 2단계)는 정의로 쌍 판정하고, 임베딩 단위는 블록으로 근거 단위에 항목을 붙인다.
+ALTER TABLE wiki_page_entries ADD COLUMN IF NOT EXISTS definition text NOT NULL DEFAULT '';
+ALTER TABLE wiki_page_entries ADD COLUMN IF NOT EXISTS block_refs text[] NOT NULL DEFAULT ARRAY[]::text[];
+
 CREATE TABLE IF NOT EXISTS source_blocks (
     document_id varchar(255) NOT NULL,
     block_id varchar(255) NOT NULL,
@@ -191,6 +195,9 @@ CREATE INDEX IF NOT EXISTS idx_wiki_embedding_units_page
 
 CREATE INDEX IF NOT EXISTS idx_wiki_embedding_units_vector
     ON wiki_embedding_units (embedding_vector_id);
+
+-- 하위 항목 단위(sub_entry)와 그 항목에 딸린 근거 단위가 가리키는 항목(ADR 0042). 페이지 자체 단위는 NULL이다.
+ALTER TABLE wiki_embedding_units ADD COLUMN IF NOT EXISTS entry_id varchar(255);
 
 -- wiki_schemas: core_db V4__add_pipeline_schema.sql에서 ai_db로 이전한 테이블 (형상 동일)
 CREATE TABLE IF NOT EXISTS wiki_schemas (

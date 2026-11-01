@@ -79,7 +79,7 @@ def test_replay_adds_moves_and_removes_entries_by_id() -> None:
     ])
 
     # Rollout을 지우면 그 아래 History도 함께 빠진다. 먼저 옮긴 Undo는 남는다.
-    assert entries == [{"entry_id": "e-undo", "name": "Undo", "parent_entry_id": None,
+    assert entries == [{"entry_id": "e-undo", "name": "Undo", "definition": "", "parent_entry_id": None,
                         "anchor_reference_ids": [], "evidence_claim_ids": []}]
 
 
@@ -194,7 +194,8 @@ def test_restore_replaces_queryable_entry_copy() -> None:
     changed = [{
         "page_id": "page-deploy",
         "markdown_key": "wiki/ws-1/pages/page-deploy/ops/restore-1.md",
-        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "parent_entry_id": None}],
+        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "definition": "롤아웃 정의", "parent_entry_id": None,
+                     "anchor_reference_ids": ["doc-1:B0001"]}],
     }]
 
     with (
@@ -208,4 +209,4 @@ def test_restore_replaces_queryable_entry_copy() -> None:
     delete_index = calls.index(("DELETE FROM wiki_page_entries WHERE page_id = %s", ("page-deploy",)))
     insert = next(index for index, (query, _) in enumerate(calls) if query.startswith("INSERT INTO wiki_page_entries"))
     assert delete_index < insert
-    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None)
+    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None, "롤아웃 정의", ["doc-1:B0001"])
