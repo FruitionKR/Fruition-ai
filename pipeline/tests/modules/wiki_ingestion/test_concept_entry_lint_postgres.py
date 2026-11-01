@@ -129,7 +129,8 @@ class World:
         for slug, data in pages.items():
             with self.connect() as conn:
                 page_id = database._resolve_or_create_wiki_page_id(conn, "user", WS, "concept", slug)
-            adds = [entry for entry in data.get("entry_changes", []) if entry["op"] == "add"]
+            # 근거 블록이 없는 항목은 근거 없이 둔다.
+            adds = [entry for entry in data.get("entry_changes", []) if entry["op"] == "add" and entry["anchor_reference_ids"]]
             evidence = [
                 {"evidence_id": f"ev-{entry['entry_id']}", "claim": f"{entry['name']} 근거({document_id})",
                  "anchor_reference_ids": entry["anchor_reference_ids"], "related_concept_slugs": [slug],
@@ -249,6 +250,9 @@ class World:
             slug = {row["id"]: row["slug"] for row in conn.execute("SELECT id, slug FROM wiki_pages").fetchall()}
             links = conn.execute("SELECT from_page_id, to_page_id, link_type FROM wiki_page_links").fetchall()
             entries = conn.execute("SELECT entry_id, page_id, name, parent_entry_id FROM wiki_page_entries").fetchall()
+            references = conn.execute(
+                "SELECT page_id, entry_id, target_slug, name, parent_entry_id FROM wiki_page_entry_references"
+            ).fetchall()
             documents = conn.execute(
                 "SELECT document_id, wiki_page_id FROM document_wiki_links WHERE relation_type = 'extracted_concept'"
             ).fetchall()
@@ -256,6 +260,10 @@ class World:
             "pages": {row["slug"]: (row["title"], row["summary"], self.read(row["markdown_uri"])) for row in pages},
             "links": sorted((slug[row["from_page_id"]], slug[row["to_page_id"]], row["link_type"]) for row in links),
             "entries": sorted((row["entry_id"], slug[row["page_id"]], row["name"], row["parent_entry_id"]) for row in entries),
+            "references": sorted(
+                (slug[row["page_id"]], row["entry_id"], row["target_slug"], row["name"], row["parent_entry_id"])
+                for row in references
+            ),
             "documents": sorted((row["document_id"], slug[row["wiki_page_id"]]) for row in documents),
         }
 
@@ -590,3 +598,71 @@ def test_child_emptied_by_restore_is_merged_two_lints_later(world: World) -> Non
     assert merged["deleted_pages"] == [rollout_id]
     assert "rollout" not in world.state()["pages"]
     assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
+
+
+def test_split_keeps_entry_reference_copy_through_later_ingest(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.lint("lint-split")
+    reference = ("deployment", "e-rollout", "rollout", "Rollout", None)
+    assert reference in world.state()["references"]
+
+    world.ingest("op-w", "doc-w", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-strategy", "Strategy", refs=["B30"])]}})
+
+    state = world.state()
+    assert reference in state["references"]
+    assert "[[rollout|Rollout]]" in state["pages"]["deployment"][2]
+
+
+def test_merge_and_split_of_the_receiving_parent_in_one_lint_defers_the_split(world: World) -> None:
+    # A 아래 E가 두꺼워 E만 나뉜다(근거 없는 세부 항목이라 A 전체 근거는 기준 아래).
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-a", "Area", refs=["B1"]),
+        *(_add(f"e-a{index}", f"Area {index}", "e-a") for index in range(1, 4)),
+        _add("e-e", "Edge", "e-a", ["B9"]),
+        {**_add("e-e5", "Edge 5", "e-e"), "anchor_reference_ids": []},
+    ]}})
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        {**_add(f"e-e{index}", f"Edge {index}", "e-e"), "anchor_reference_ids": []} for index in range(1, 5)]}})
+    split = world.lint("lint-split")
+    assert [(item["action"], item["entry_id"]) for item in split["entry_decisions"]] == [("split", "e-e")]
+    world.restore_ingest("op-y")
+    world.lint("lint-wait")
+    # 합치기와 같은 lint에서 A도 분리 기준(자식 5개)을 넘는다.
+    world.ingest("op-z", "doc-z", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-a4", "Area 4", "e-a", ["B20"]), _add("e-a5", "Area 5", "e-a", ["B21"])]}})
+
+    merged = world.lint("lint-merge")
+
+    assert [(item["action"], item.get("skipped_reason")) for item in merged["entry_decisions"]] == [
+        ("merge_back", None), ("split", "parent_merged")]
+    assert world.page_id("deployment") in merged["deferred_entry_pages"]
+    assert ("e-e", "deployment", "Edge", "e-a") in world.state()["entries"]
+
+    world.lint("lint-next")
+
+    entries = {entry[0]: entry[1] for entry in world.state()["entries"]}
+    assert entries["e-e"] == entries["e-a"] == "area"
+    assert {entry["entry_id"] for entry in world.ledger_rebuild("area").entries} >= {"e-a", "e-e", "e-e5"}
+
+
+def test_lint_restore_of_merge_back_does_not_revive_edge_whose_ingest_was_rolled_back(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-history", "History", "e-rollout", ["B20"])]}})
+    world.lint("lint-split")
+    world.ingest("op-s", "doc-s", {"service": {"title": "Service"}})
+    world.ingest("op-z", "doc-z", {"service": {"title": "Service", "links": [
+        {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
+    ]}})
+    world.restore_ingest("op-x")
+    world.lint("lint-wait")
+    world.lint("lint-merge")
+    # 자식으로 가던 간선을 낸 편입을 되돌린다. Service는 다른 편입으로 남는다.
+    world.restore_ingest("op-z")
+
+    world.restore_lint("lint-merge")
+
+    state = world.state()
+    assert "service" in state["pages"] and "rollout" in state["pages"]
+    assert not [link for link in state["links"] if link[0] == "service"]

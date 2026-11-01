@@ -2126,6 +2126,8 @@ def lint_concept_entries(
                 "summary": change["definition"] if page is None else None,
                 "source_document_ids": list(rebuilt.source_document_ids),
                 "entries": list(rebuilt.entries),
+                # 항목 참조 사본(wiki_page_entry_references)도 재생 결과로 다시 쓴다.
+                "supported_links": list(rebuilt.supported_links),
             }
         )
         # DB 간선은 페이지 쌍 단위다. 재생한 링크의 페이지 쌍이 바뀐 것만 반영한다.
@@ -2198,6 +2200,7 @@ def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: l
     """다시 합치기를 lint 복원할 때 옮겼던 간선을 자식으로 되돌린다.
 
     부모 쪽 간선은 합칠 때 새로 생긴 것이고, 그 뒤 원래 페이지 기록이 직접 잇지도 않을 때만 지운다.
+    자식 쪽 간선은 원래 페이지의 지금 활성 기록이 아직 자식을 이을 때만 되살린다(그 사이 편입 롤백으로 빠졌을 수 있다).
     """
     for reversal in reversals:
         child, parent = str(reversal["page_id"]), str(reversal["merged_into_page_id"])
@@ -2208,6 +2211,8 @@ def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: l
                     "DELETE FROM wiki_page_links WHERE from_page_id = %s AND to_page_id = %s AND link_type = %s",
                     (source, parent, link_type),
                 )
+            if not _source_supports_link(conn, workspace_id, source, child, link_type):
+                continue
             conn.execute(
                 """
                 INSERT INTO wiki_page_links (

@@ -144,6 +144,7 @@ def plan_entry_lint(
             targets[entry["entry_id"]] = (page, entry)
 
     moved: set[str] = set()
+    merged_parents: set[str] = set()
     depth = {
         entry["entry_id"]: len(_ancestors({item["entry_id"]: item for item in page.entries}, entry["entry_id"]))
         for page, entry in targets.values()
@@ -159,8 +160,16 @@ def plan_entry_lint(
         page, entry = targets[decision.entry_id]
         if entry is None:
             reason = _merge_back(plan, pages, page)
+            if reason is None:
+                merged_parents.add(str(page.split_record["split_from"]["page_id"]))
         elif page.page_id in plan.redirects:
             reason = "page_merged"
+        elif page.page_id in merged_parents:
+            # 이번에 자식을 합쳐 받은 부모는 합친 뒤 항목으로 다음 lint가 나눈다. 합치기 전 항목으로 나누면
+            # 되살린 항목이 지워지기만 하고 새 페이지로 이어지지 않는다.
+            reason = "parent_merged"
+            if page.page_id not in plan.deferred_page_ids:
+                plan.deferred_page_ids.append(page.page_id)
         elif moved & _ancestors({item["entry_id"]: item for item in page.entries}, entry["entry_id"]):
             reason = "ancestor_moved"
         else:
