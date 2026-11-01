@@ -2,7 +2,7 @@
 
 바뀐 페이지의 하위 항목으로 분리·여러 부모 승격·다시 합치기를 정하고, 그대로 재생할 기여 기록을 만든다.
 - 분리·승격: 집 페이지에는 옮긴 항목마다 `remove`와 새 페이지를 가리키는 `entry_reference`를 남긴다. 새 페이지에는
-  개념과 `split_from`을 남기고, 옮긴 항목의 원래 편입 기록을 원래 작업 id 그대로 잇는다(`linked`).
+  개념과 `split_from`을 남기고, 옮긴 항목의 원래 기록(편입, 클러스터 승격·병합 lint)을 원래 작업 id 그대로 잇는다(`linked`).
 - 다시 합치기: 부모에 자식 항목마다 `revive`를 남겨 분리 때 지운 항목을 되살리고, 분리 뒤 자식에만 쌓인 편입 기록을
   부모에 잇는다. 자식은 지우고 자식 → 부모 방향 전환(`redirects`)을 남긴다.
 - 다른 페이지의 참조는 옮긴 항목을 따라 대상을 바꾸고, 가리키던 항목이 없어진 참조는 지운다.
@@ -23,7 +23,7 @@ from app.modules.wiki_ingestion.domain.concept_split_rules import (
     decide_entry_changes,
 )
 
-# 편입·수동이 아닌 기록. 옮길 근거를 갖지 않는다.
+# 편입이 아닌 기록. 수동 기록은 옮길 수 없고, lint 기록은 클러스터 승격·병합의 `add`만 옮길 근거를 가진다.
 _LINT = "lint"
 _MANUAL = "manual"
 
@@ -234,7 +234,10 @@ def _move_to_new_page(
             for change in contribution.get("entry_changes", [])
             if isinstance(change, dict) and change.get("entry_id") in moved_ids
         ]
-        if changes and contribution.get("artifact_type") not in (_LINT, _MANUAL):
+        if contribution.get("artifact_type") == _LINT:
+            # 클러스터 승격·병합 lint 기록이 더한 항목은 그 기록이 원래 기록이다(ADR 0042 4단계). 옮긴 항목의 `add`만 잇는다.
+            changes = [change for change in changes if change.get("op") == "add"]
+        if changes and contribution.get("artifact_type") != _MANUAL:
             plan.link(_linked_copy(contribution, page_id, slug, changes))
             linked_operation_ids.append(str(contribution["operation_id"]))
     child = plan.change(page_id, slug, entry["name"])

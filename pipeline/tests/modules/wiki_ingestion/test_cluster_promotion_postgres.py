@@ -146,3 +146,33 @@ def test_lint_sub_entries_on_merged_concept_survive_restore_of_an_unrelated_inge
     assert entries == ["Rollout History", "Rollout Undo", "Scale"]
     assert ("doc-c", "deployment") in state["documents"]
     assert ("doc-y", "deployment") not in state["documents"]
+
+
+def test_split_of_promoted_entry_links_the_promotion_record_and_restores_with_it(world: World, monkeypatch) -> None:
+    # History는 근거 줄 5개라 근거 수(블록 5 + claim 5)가 분리 기준(E=10)에 닿는다.
+    _lint(world, monkeypatch, "lint-promote", _cluster("rollout", [*TERMS, *["Rollout History"] * 4]))
+
+    result = world.lint("lint-split")
+
+    assert [(item["action"], item["skipped_reason"] if "skipped_reason" in item else None)
+            for item in result["entry_decisions"]] == [("split", None)]
+    # 옮긴 항목을 만든 승격 기록을 원래 작업 id 그대로 자식에 잇는다.
+    linked = world.contribution("rollout-history", "lint-promote")
+    assert linked["linked_by_operation_id"] == "lint-split"
+    assert [change["name"] for change in linked["entry_changes"]] == ["Rollout History"]
+    assert len(linked["evidence_units"]) == 5
+    assert {"page_id": world.page_id("rollout-history"), "operation_id": "lint-promote", "document_id": None,
+            "contribution_key": f"wiki/{WS}/pages/{world.page_id('rollout-history')}/ops/lint-promote.json",
+            "linked_by_operation_id": "lint-split"} in result["ledger_contributions"]
+    state = world.state()
+    assert ("rollout-history" in state["pages"]) and state["pages"]["rollout-history"][2] == world.ledger_rebuild("rollout-history").markdown
+    assert [entry["name"] for entry in world.ledger_rebuild("rollout-history").entries] == ["Rollout History"]
+    assert ("doc-c", "rollout-history") in state["documents"]
+
+    # 승격 lint를 되돌리면 부모의 항목과 자식에 이은 기록이 함께 빠진다.
+    world.restore_lint("lint-promote")
+
+    state = world.state()
+    assert state["entries"] == []
+    assert "rollout" not in state["pages"]
+    assert not [document for document in state["documents"] if document[1] == "rollout-history"]

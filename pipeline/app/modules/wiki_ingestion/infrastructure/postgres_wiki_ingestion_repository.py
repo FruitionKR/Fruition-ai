@@ -2418,7 +2418,8 @@ def _persist_entry_lint(
             {
                 "page_id": item["page_id"],
                 "operation_id": item["operation_id"],
-                "document_id": item.get("document_id"),
+                # 이은 lint 기록(클러스터 승격·병합)은 lint 기록 행처럼 문서가 없다.
+                "document_id": None if item.get("artifact_type") == "lint" else item.get("document_id"),
                 "contribution_key": key,
                 "linked_by_operation_id": operation_id,
             }
