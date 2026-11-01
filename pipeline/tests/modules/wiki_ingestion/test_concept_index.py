@@ -1291,41 +1291,26 @@ def test_lint_judged_merge_keeps_representative_and_cluster_id_as_separate_alias
     assert concept["aliases"] == ["오키드 리스", "orchid-lease"]
 
 
-def test_lint_promotion_judged_related_creates_page_and_links(monkeypatch) -> None:
-    from app.modules.wiki_ingestion.domain.lint_operation_recovery import calculate_lint_link_changes
-
+def test_lint_promotion_judged_related_creates_page_without_links(monkeypatch) -> None:
     judge = _FakeConceptJudge(
         {
             "orchid-lease": {
                 "incoming_slug": "orchid-lease",
                 "decision": "link_to",
                 "canonical_slug": "supply-contract",
-                "link_targets": ["supply-contract", "missing"],
-                "link_confidences": {"supply-contract": 0.7, "missing": 0.6},
+                "link_targets": ["supply-contract"],
+                "link_confidences": {"supply-contract": 0.95},
             }
         }
     )
 
     result, _upserts, links = _materialize_with_judge(monkeypatch, judge)
 
+    # 관련 개념 판정으로 링크를 덧붙이지 않는다(ADR 0042). 연결은 하위 항목 배정과 참조가 맡는다.
     assert result["promotions"] == [{"cluster_id": "orchid-lease", "concept_slug": "orchid-lease", "page_id": "page-orchid"}]
-    assert links == [("page-orchid", "page-supply", "concept_related_to", None, 0.7, "ws")]
-    assert result["relations"] == [
-        {"from": "orchid-lease", "to": "supply-contract", "relation": "concept_related_to", "confidence": 0.7}
-    ]
-
-    # 판정 링크는 lint 기록의 added_links에 들어가고, 복원 시 지지하는 근거가 없으면 지운다.
-    writes = []
-    monkeypatch.setattr(repository, "write_text_object", lambda key, text, content_type: writes.append((key, text)) or key)
-    repository.persist_lint_operation_result(
-        "ws",
-        "lint-op-1",
-        {"_lint_page_changes": result["page_changes"], "materialized_relations": result["relations"]},
-    )
-    contribution = json.loads(next(text for key, text in writes if key.endswith(".json")))
-    link = {"source": "concept:orchid-lease", "target": "concept:supply-contract", "relation": "concept_related_to"}
-    assert contribution["added_links"] == [link]
-    assert calculate_lint_link_changes([contribution], [])["removed_links"] == [link]
+    assert links == []
+    assert result["relations"] == []
+    assert "added_links" not in result["page_changes"][0]
 
 
 def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:

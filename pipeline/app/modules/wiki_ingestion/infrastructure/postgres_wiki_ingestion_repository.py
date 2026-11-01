@@ -2546,7 +2546,6 @@ def _materialize_promotion_candidates(
     materialized_promotions: list[dict[str, Any]] = []
     merged_promotions: list[dict[str, Any]] = []
     page_changes: list[dict[str, Any]] = []
-    judged_links: list[dict[str, Any]] = []
     existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     eligible_cluster_ids = {cluster["id"] for cluster in clusters}
     prepared_pages: dict[str, dict[str, Any]] = {}
@@ -2714,14 +2713,6 @@ def _materialize_promotion_candidates(
             "entry_changes": entry_changes,
         }
         page_changes.append(created_page)
-        if judgment.get("decision") == "link_to":
-            for target in judgment["link_targets"]:
-                target_id = existing_concept_ids.get(target)
-                if not target_id or target_id == page_id:
-                    continue
-                confidence = judgment["link_confidences"].get(target)
-                _upsert_wiki_page_link(conn, page_id, target_id, "concept_related_to", None, confidence, workspace_id)
-                judged_links.append({"from": slug, "to": target, "relation": "concept_related_to", "confidence": confidence})
         section = active_sections.pop(cluster_id, "")
         if section:
             _archive_cluster(
@@ -2732,11 +2723,7 @@ def _materialize_promotion_candidates(
                 f"promoted_to: concept:{slug}\npromoted_at: {_today_iso()}",
             )
     # 관계 재료화는 promotion이 모두 끝나 existing_concept_ids가 완성된 뒤 한 곳에서만 수행한다(근거 검증·dedup 포함).
-    # 판정 링크도 같은 목록에 담아 lint 기록(added_links)과 복원 대상에 들어가게 한다.
-    materialized_relations = [
-        *_materialize_active_relation_candidates(conn, clusters, existing_concept_ids, workspace_id),
-        *judged_links,
-    ]
+    materialized_relations = _materialize_active_relation_candidates(conn, clusters, existing_concept_ids, workspace_id)
     active_markdown_update = latest_active_markdown if active_markdown_changed else None
     if materialized_promotions or merged_promotions:
         lines = ["# Active Meaning Clusters"]
@@ -2776,7 +2763,10 @@ def _judge_promoted_concepts(
     workspace_id: str,
     prepared_pages: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """승격할 개념을 기존 개념과 쌍 판정해 클러스터 id별 병합(merge_into)·연결(link_to) 판정을 돌려준다."""
+    """승격할 개념을 기존 개념과 쌍 판정해 클러스터 id별 판정을 돌려준다. 병합(merge_into)만 쓰고 연결(link_to)은 버린다.
+
+    연결은 하위 항목 배정과 참조로 표현한다(ADR 0042). 관련 개념 링크를 덧붙이면 잘게 쪼개진 개념이 그래프를 엉키게 한다.
+    """
     concepts = []
     for cluster_id, page in prepared_pages.items():
         markdown = str(page.get("markdown") or "")

@@ -19,8 +19,8 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. LLM 판정과 lint 승격은 세부 항목(근거 줄 용어를 이름 정규화로 묶은 것, 클러스터 자신의 이름 제외)이 `P`개(초기값 5) 이상인
 클러스터만 받고, 모자란 후보는 `invalid_promotions`에 남긴다. 핵심 개념과 맞춘 후보는 개수를 보지 않는다([ADR 0042](../adr/0042-hierarchical-concept-pages.md)).
 lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
-기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고 관련 개념이면 새 페이지를 만들고 `concept_related_to`로 잇는다.
-판정 링크는 `materialized_relations`에 담겨 lint 복원 시 함께 지운다. 세부 항목은 승격 페이지(병합 대상 개념)의 하위 항목으로 lint 기록 `entry_changes`에 남아 lint 복원 시 함께 빠진다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
+기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고, 아니면 새 페이지를 만든다. 관련 개념 링크는 잇지 않는다.
+세부 항목은 승격 페이지(병합 대상 개념)의 하위 항목으로 lint 기록 `entry_changes`에 남아 lint 복원 시 함께 빠진다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
 `archived.md`로 옮기고, lint 복원은 이를 `active.md`로 되돌린다([ADR 0037](../adr/0037-meaning-cluster-promotion.md), [ADR 0038](../adr/0038-concept-to-concept-links.md)).
 
 - API 수: 11
