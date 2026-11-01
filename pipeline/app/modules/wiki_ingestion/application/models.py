@@ -63,6 +63,8 @@ class PageRebuildCommand:
     workspace_id: str
     rebuild_pages: tuple[RebuildPageCommand, ...]
     deleted_pages: tuple[str, ...] = ()
+    # 기여를 대체한 재편입. 추적용이며 빼지 않는다.
+    target_operation_id: str | None = None
 
 
 @dataclass(frozen=True)

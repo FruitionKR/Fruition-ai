@@ -101,8 +101,8 @@ from app.workers.event_request import without_top_level_secrets
 
 logger = logging.getLogger("task_worker")
 # 재편입이 대체한 이전 기여를 잃은 페이지를 남은 기여로 다시 만드는 document-svc 명령(ADR 0042). 빼는 작업이 없다.
-# ponytail: 명령 이름은 document-svc와 맞출 때까지 임시 이름이다.
-REBUILD_PAGES_KIND = "rebuild_pages"
+# target_operation_id는 그 재편입(추적용)이라 lint 복원처럼 빼지 않는다.
+RESTORE_REBUILD_KIND = "restore_rebuild"
 BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 COMMAND_TOPIC = os.environ.get("AI_COMMAND_TOPIC", "ai.query.command")
 RESULT_TOPIC = os.environ.get("AI_TASK_EVENT_TOPIC", "ai.task.event")
@@ -585,7 +585,7 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
             result = use_case.execute_ingest(
                 IngestOperationRestoreIn.model_validate(command).to_command()
             )
-        elif command["kind"] == REBUILD_PAGES_KIND:
+        elif command["kind"] == RESTORE_REBUILD_KIND:
             result = use_case.execute_rebuild(PageRebuildIn.model_validate(command).to_command())
         else:
             result = use_case.execute_lint(
@@ -959,7 +959,7 @@ def _handle(
                     or _failure_is_durable(command)
                 ):
                     raise
-    if kind in {"restore_ingest", "restore_lint", REBUILD_PAGES_KIND}:
+    if kind in {"restore_ingest", "restore_lint", RESTORE_REBUILD_KIND}:
         return _handle_restore(command)
     raise ValueError(f"unsupported AI command kind: {kind}")
 
@@ -1113,7 +1113,7 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         "post_ingest",
         "restore_ingest",
         "restore_lint",
-        REBUILD_PAGES_KIND,
+        RESTORE_REBUILD_KIND,
     }:
         return True
     try:

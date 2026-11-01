@@ -262,7 +262,15 @@ class LintOperationRestoreIn(_OperationRestoreIn):
 
 
 class PageRebuildIn(_OperationRestoreIn):
-    """재편입이 대체한 기여를 잃은 페이지의 재조립 명령. 빼는 작업이 없다(ADR 0042)."""
+    """재편입이 대체한 기여를 잃은 페이지의 재조립 명령(`restore_rebuild`). 빼는 작업이 없다(ADR 0042).
+
+    `target_operation_id`는 그 재편입(추적용)이다. `restore_to_operation_id`·`cancel_operation_ids`·`source_page`는 null로 온다.
+    """
+
+    target_operation_id: str | None = None
+    restore_to_operation_id: None = None
+    cancel_operation_ids: None = None
+    source_page: None = None
 
     def to_command(self) -> PageRebuildCommand:
         return PageRebuildCommand(
@@ -270,6 +278,7 @@ class PageRebuildIn(_OperationRestoreIn):
             workspace_id=self.workspace_id,
             rebuild_pages=self.rebuild_commands(),
             deleted_pages=tuple(self.deleted_pages),
+            target_operation_id=self.target_operation_id,
         )
 
 
