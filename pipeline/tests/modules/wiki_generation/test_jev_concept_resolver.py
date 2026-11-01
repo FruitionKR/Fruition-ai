@@ -1,6 +1,7 @@
 import json
 import math
 import unittest
+from array import array
 from threading import Lock
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     CANDIDATE_LIMIT,
+    ENTRY_CANDIDATE_LIMIT,
     PART_OF_RULE,
     JevConceptResolver,
     with_jev_concept_merge,
@@ -314,6 +316,52 @@ class JevConceptResolverTest(unittest.TestCase):
         result = _resolver(jev).resolve(incoming, existing)
 
         self.assertEqual([item["incoming_slug"] for item in result["resolutions"]], ["b"])
+
+
+def _entry(slug: str, title: str, definition: str = "정의") -> dict:
+    return {"slug": slug, "title": title, "aliases": [], "definition": definition}
+
+
+class JudgeEntriesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        jev_concept_resolver._embedding_cache.clear()
+
+    def test_candidates_come_from_stored_vectors_capped_and_only_new_texts_are_embedded(self) -> None:
+        # 저장된 벡터가 가까운 순(각도가 작은 순)으로 상위 ENTRY_CANDIDATE_LIMIT개만 묻는다.
+        pool = [_entry(f"entry:{index:02d}", f"Deployment > 항목{index:02d}") for index in range(ENTRY_CANDIDATE_LIMIT + 5)]
+        stored = {
+            entry["slug"]: array("f", [math.cos(index * 0.05), math.sin(index * 0.05)])
+            for index, entry in enumerate(pool)
+        }
+        jev = PairJev({("incoming:history", "entry:03"): ("same", {"same": 0.95, "unrelated": 0.05})})
+        embedder = AngleEmbedder({"Deployment": 0.0})
+        models = []
+
+        result = _resolver(jev, embedder).judge_entries(
+            [_entry("incoming:history", "Deployment > History")], pool, lambda model: models.append(model) or stored
+        )
+
+        self.assertEqual(result["incoming:history"]["canonical_slug"], "entry:03")
+        self.assertEqual(models, ["fake-embedding"])
+        self.assertEqual(sorted(jev.sent("incoming:history")), [f"entry:{index:02d}" for index in range(ENTRY_CANDIDATE_LIMIT)])
+        # 기존 항목은 저장된 벡터를 쓰고 새 항목만 임베딩한다. 텍스트는 저장 단위와 같은 "이름 경로: 정의"다.
+        self.assertEqual(embedder.calls, [["Deployment > History: 정의"]])
+
+    def test_embeds_existing_entries_without_stored_vector(self) -> None:
+        embedder = AngleEmbedder()
+
+        _resolver(PairJev(), embedder).judge_entries(
+            [_entry("incoming:a", "A > B")], [_entry("entry:x", "A > X"), _entry("entry:y", "A > Y", "")], lambda _model: {}
+        )
+
+        # 정의가 없는 기존 항목은 묻지 않아 임베딩하지 않는다.
+        self.assertEqual(embedder.calls, [["A > X: 정의", "A > B: 정의"]])
+
+    def test_embedding_unavailable_raises_jev_unavailable(self) -> None:
+        with self.assertRaises(JevUnavailable):
+            _resolver(PairJev(), FailingEmbedder()).judge_entries(
+                [_entry("incoming:a", "A > B")], [_entry("entry:x", "A > X")], lambda _model: {}
+            )
 
 
 class PartOfJev:

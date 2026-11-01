@@ -64,6 +64,7 @@ from app.modules.wiki_generation.infrastructure.concept_resolution import (
 from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
 from app.modules.wiki_generation.infrastructure.packet import SemanticPacketBuilder
 from app.modules.wiki_generation.infrastructure.pipeline_log import PipelineLog
+from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 from app.modules.wiki_ingestion.infrastructure.object_storage import pipeline_log_uri
 from app.modules.wiki_generation.infrastructure.prompt_io import collect_concept_source_blocks
 from app.modules.wiki_generation.infrastructure.source_context_merge import (
@@ -557,11 +558,16 @@ def _resolve_pipeline_concepts(
         concept_slug_map=resolved.get("concept_slug_map", {}),
     )
     # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). Jev가 없으면 이름 규칙만 쓴다.
+    # 같은 하위 항목 후보는 DB에 저장된 sub_entry 벡터로 고른다. 기존 하위 항목은 DB 개념 목록에만 있다.
     jev = resolver.inner if isinstance(resolver.inner, JevConceptResolver) else None
     resolved = apply_concept_entries(
         resolved,
         judge_part_of=jev.judge_part_of if jev else None,
-        judge_same=jev.judge_concepts if jev else None,
+        judge_same=(
+            lambda entries, pool: jev.judge_entries(
+                entries, pool, lambda model: database.list_sub_entry_vectors(args.workspace_id, model)
+            )
+        ) if jev else None,
     )
     log.emit(
         "4-보조. Concept Resolution",

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from array import array
 from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
@@ -1452,6 +1453,31 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
     except Exception:
         logger.warning("concept index cache write failed", exc_info=True)
     return concepts
+
+
+def list_sub_entry_vectors(workspace_id: str, embedding_model: str) -> dict[str, array]:
+    """워크스페이스 하위 항목의 저장된 `sub_entry` 벡터(항목 id별). 같은 하위 항목 찾기 후보를 고를 때 쓴다(ADR 0042).
+
+    아직 임베딩하지 않은(pending) 항목은 빠지고 호출자가 그 항목만 임베딩한다.
+    """
+    # ponytail: 워크스페이스 항목 벡터를 모두 읽어 프로세스에서 점수를 매긴다. 항목이 수만 개가 되면 DB 쪽 근사 검색으로 바꾼다.
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (unit.entry_id) unit.entry_id, vector.embedding_vector
+            FROM wiki_embedding_units unit
+            JOIN wiki_pages page ON page.id = unit.page_id
+            JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
+            WHERE page.workspace_id = %s
+              AND page.status = 'active'
+              AND unit.unit_type = 'sub_entry'
+              AND vector.embedding_model = %s
+              AND vector.status = 'completed'
+            ORDER BY unit.entry_id, unit.id
+            """,
+            (workspace_id, embedding_model),
+        ).fetchall()
+    return {row["entry_id"]: array("f", row["embedding_vector"]) for row in rows}
 
 
 def latest_source_extraction_artifact(document_id: str) -> dict[str, Any] | None:
