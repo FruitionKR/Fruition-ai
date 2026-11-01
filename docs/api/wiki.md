@@ -316,6 +316,10 @@ ingest 작업의 Wiki 변경을 복원합니다.
   어떤 행도 다시 켜지 않는다. 그 행이 있던 페이지 중 남은 활성 행이 있으면 `rebuild_pages`(남은 행을 적용 순서대로 `keep_contributions`),
   없으면 `deleted_pages`다. 남은 행이 lint 기록뿐이라는 이유로 `deleted_pages`에 넣지 않는다. 클러스터 승격 페이지는 lint 기록이 근거라,
   넣으면 그 항목의 분리를 되돌릴 때 승격 페이지까지 사라진다.
+- 재조립·삭제로 가리키던 하위 항목이 없어진 참조(`entry_reference`)는 같은 복원에서 참조 사본·본문 목록·간선을 함께 정리한다.
+  그 참조를 가진 다른 살아 있는 페이지(`rebuild_pages`에 없음)는 활성 원장 기록으로 다시 그려 응답 `changed_pages`에 더한다
+  (`markdown_key`는 `ops/{복원 작업}.md`). document-svc는 그 페이지의 새 버전만 남기고 원장 행은 바꾸지 않는다. 기록은 다음 lint가 지운다.
+- 재조립한 페이지의 나가는 링크는 재생 결과(`supported_links`)로 바꾼다. lint 복원도 같다.
 - 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
   끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
   lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는

@@ -356,7 +356,14 @@ def test_split_writes_both_pages_and_lint_restore_returns_to_pre_split_state(wor
 
     world.restore_lint("lint-split")
 
-    assert world.state() == before
+    # 처음부터 사라진 항목(e-gone)을 가리키던 kubectl 참조는 복원이 kubectl을 다시 그리며 함께 정리한다.
+    after = world.state()
+    assert after["references"] == [row for row in before["references"] if row[1] != "e-gone"]
+    assert "|Gone]]" in before["pages"]["kubectl"][2] and "|Gone]]" not in after["pages"]["kubectl"][2]
+    assert {key: value for key, value in after.items() if key not in ("references", "pages")} == {
+        key: value for key, value in before.items() if key not in ("references", "pages")}
+    assert {slug: page for slug, page in after["pages"].items() if slug != "kubectl"} == {
+        slug: page for slug, page in before["pages"].items() if slug != "kubectl"}
 
 
 def test_ingest_restore_after_split_removes_document_from_parent_and_child(world: World) -> None:
@@ -605,16 +612,16 @@ def test_child_left_without_support_is_deleted_by_the_restore_itself(world: Worl
     result = world.restore_ingest("op-x")
 
     assert result["deleted_pages"] == [rollout_id]
-    assert "rollout" not in world.state()["pages"]
-    assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
-
-    # 지운 자식을 가리키던 부모의 요약 줄(참조)은 다음 lint가 기록으로 지운다.
-    world.lint("lint-clean")
-
+    # 지운 자식을 가리키던 부모의 요약 줄(참조)도 같은 복원에서 정리한다.
     state = world.state()
+    assert "rollout" not in state["pages"]
     assert "[[rollout|" not in state["pages"]["deployment"][2]
     assert not [row for row in state["references"] if row[2] == "rollout"]
-    assert state["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
+
+    # 기록은 다음 lint가 지워 원장 재생과 맞춘다.
+    world.lint("lint-clean")
+
+    assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
 
 
 def test_split_restore_keeps_child_with_independent_later_contribution(world: World) -> None:
@@ -817,18 +824,22 @@ def test_references_to_a_page_that_lost_its_last_entry_are_removed(world: World)
     world.ingest("op-q", "doc-q", {"kubectl": {"title": "kubectl", "links": [
         _reference("kubectl", "deployment", "e-scale", "Scale")]}})
     world.lint("lint-first")
-    world.restore_ingest("op-x")
 
-    # 페이지는 doc-w로 남고 항목만 사라졌다. 참조는 다음 lint가 기록으로 지운다.
-    assert "deployment" in world.state()["pages"]
+    result = world.restore_ingest("op-x")
 
+    # 페이지는 doc-w로 남고 항목만 사라졌다. 같은 복원이 다른 페이지의 참조 사본·본문 목록·간선을 함께 정리한다.
+    state = world.state()
+    assert "deployment" in state["pages"]
+    assert world.page_id("kubectl") in {page["page_id"] for page in result["changed_pages"]}
+    assert ("kubectl", "deployment", "entry_reference") not in state["links"]
+    assert not [row for row in state["references"] if row[0] == "kubectl"]
+    assert "[[deployment|" not in state["pages"]["kubectl"][2]
+
+    # 기록은 다음 lint가 지워, 그 뒤에는 원장 재생과 본문이 같다.
     world.lint("lint-clean")
 
     state = world.state()
-    assert ("kubectl", "deployment", "entry_reference") not in state["links"]
     assert world.contribution("kubectl", "lint-clean")["removed_links"][0]["entry_id"] == "e-scale"
-    assert not [row for row in state["references"] if row[0] == "kubectl"]
-    assert "[[deployment|" not in state["pages"]["kubectl"][2]
     assert state["pages"]["kubectl"][2] == world.ledger_rebuild("kubectl").markdown
 
 

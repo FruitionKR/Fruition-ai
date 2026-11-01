@@ -255,7 +255,11 @@ def apply_restored_wiki_state_and_cleanup(
     replace_links: bool,
     deleted_page_ids: list[str],
 ) -> list[str]:
-    """복구 상태를 반영하고, 삭제한 원본이라 되살리지 않은 페이지 ID를 돌려준다."""
+    """복구 상태를 반영하고, 삭제한 원본이라 되살리지 않은 페이지 ID를 돌려준다.
+
+    재조립·삭제로 가리키던 항목이 없어진 참조는 같은 복구에서 정리한다. 그 참조를 가진 다른 페이지를 다시 그렸으면
+    `changed_pages`에 그 페이지를 더한다(document-svc가 그 페이지의 새 버전을 남긴다).
+    """
     if not changed_pages and not any(link_changes.values()) and not deleted_page_ids:
         return []
     with concept_write_lock(workspace_id, operation_id):
@@ -269,11 +273,105 @@ def apply_restored_wiki_state_and_cleanup(
                 deleted_page_ids,
             )
             _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
+            if deleted_page_ids or any(page.get("entries") is not None for page in changed_pages):
+                _prune_dangling_references(conn, workspace_id, operation_id, changed_pages, deleted_page_ids)
         try:
             invalidate_concept_index(workspace_id)
         except Exception:
             logger.warning("concept index cache invalidation failed", exc_info=True)
     return sorted(skipped_page_ids)
+
+
+def _prune_dangling_references(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    operation_id: str,
+    changed_pages: list[dict[str, Any]],
+    deleted_page_ids: list[str],
+) -> None:
+    """가리키던 항목이 최종 상태에 없는 참조(`entry_reference`)를 참조 사본·본문 목록·간선에서 함께 뺀다(ADR 0042 결정 3).
+
+    대상: 이번에 재조립한 페이지 자신의 참조와, 재조립·삭제한 페이지의 항목을 가리키던 다른 살아 있는 페이지의 참조다.
+    다른 페이지는 활성 원장 기록으로 다시 재생해 그린다(그 페이지에는 이번 작업의 기록이 없다). 기록은 그대로라
+    다음 lint가 사라진 참조를 기록으로도 지운다.
+    """
+    live = {
+        (str(row["slug"]), str(row["entry_id"]))
+        for row in conn.execute(
+            """
+            SELECT page.slug, entry.entry_id FROM wiki_page_entries entry
+            JOIN wiki_pages page ON page.id = entry.page_id
+            WHERE page.workspace_id = %s AND page.status = 'active'
+            """,
+            (workspace_id,),
+        ).fetchall()
+    }
+
+    def dangling(link: dict[str, Any]) -> bool:
+        return link.get("relation") == ENTRY_REFERENCE and (
+            str(link.get("target") or "").removeprefix("concept:"), str(link.get("entry_id"))
+        ) not in live
+
+    touched = [*(str(page["page_id"]) for page in changed_pages), *deleted_page_ids]
+    redraw = [
+        page for page in changed_pages
+        if page.get("entries") is not None and any(dangling(link) for link in page.get("supported_links") or [])
+    ]
+    others = conn.execute(
+        """
+        SELECT DISTINCT reference.page_id
+        FROM wiki_page_entry_references reference
+        JOIN wiki_pages page ON page.id = reference.page_id
+        JOIN wiki_pages target ON target.workspace_id = page.workspace_id AND target.slug = reference.target_slug
+        WHERE page.workspace_id = %s AND page.status = 'active' AND page.page_type = 'concept'
+          AND target.page_type = 'concept' AND target.id = ANY(%s)
+          AND NOT reference.page_id = ANY(%s)
+        ORDER BY reference.page_id
+        """,
+        (workspace_id, touched, touched),
+    ).fetchall()
+    for row in others:
+        page_id = str(row["page_id"])
+        kept = sorted(
+            (item for item in read_contributions([page_id], workspace_id)
+             if str(item.get("page_id")) == page_id and item.get("active")),
+            key=lambda item: int(item.get("sequence_revision") or 0),
+        )
+        if not kept:
+            continue
+        rebuilt = rebuild_concept_page(load_concept_contributions(
+            workspace_id=workspace_id,
+            page_id=page_id,
+            keep_contributions=[
+                {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
+            ],
+            read_text=read_text_object,
+        ))
+        if rebuilt.deleted or not any(dangling(link) for link in rebuilt.supported_links):
+            continue
+        key = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
+        write_text_object(key, rebuilt.markdown, "text/markdown; charset=utf-8")
+        page = {
+            "page_id": page_id,
+            "page_type": "concept",
+            "markdown_key": key,
+            "title": rebuilt.title,
+            "summary": rebuilt.summary,
+            "supported_links": list(rebuilt.supported_links),
+            "source_document_ids": list(rebuilt.source_document_ids),
+            "entries": list(rebuilt.entries),
+        }
+        changed_pages.append(page)
+        redraw.append(page)
+    for page in redraw:
+        links = [link for link in page["supported_links"] if not dangling(link)]
+        markdown = render_entry_index(read_text_object(storage_uri(str(page["markdown_key"]))), page["entries"], links)
+        write_text_object(str(page["markdown_key"]), markdown, "text/markdown; charset=utf-8")
+        page.update(
+            supported_links=links,
+            content_hash="sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        )
+        _apply_restored_wiki_state(workspace_id, [page], {"removed_links": [], "restored_links": links}, True, conn)
 
 
 def _tombstoned_document_ids(conn: psycopg.Connection, workspace_id: str) -> set[str]:
