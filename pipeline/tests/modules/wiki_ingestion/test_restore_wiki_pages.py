@@ -818,3 +818,18 @@ def test_rebuild_whose_replay_ends_in_a_delete_record_is_reported_deleted() -> N
     # 삭제 기록을 되돌리면(그 행을 빼면) 앞 기록이 다시 재생된다.
     revived = _restore(store).rebuild_page("restore-2", "ws-1", RebuildPageCommand("C", (RestoreContributionCommand("A1", "doc-A1"),)))
     assert not revived.get("deleted") and "A1의 C" in store.writes[-1][1]
+
+
+def test_page_left_with_only_lint_metadata_is_deleted_but_lint_evidence_keeps_it() -> None:
+    # 분리 기록(개념·split_from뿐)만 남은 자식은 근거가 없어 사라진다(ADR 0042 결정 3).
+    split = json.loads(_lint_payload("L1", "C", "x"))
+    split.update(content_action="create", evidence_units=[], split_from={"page_id": "P", "slug": "p", "entry_id": "e"})
+    store = ArtifactStore({
+        "wiki/ws-1/pages/C/ops/L1.json": json.dumps(split),
+        # 클러스터 승격 lint 기록은 자기 근거를 가진다.
+        "wiki/ws-1/pages/D/ops/L2.json": _lint_payload("L2", "D", "승격 근거"),
+    })
+    restore = _restore(store)
+
+    assert restore.rebuild_page("r", "ws-1", RebuildPageCommand("C", (RestoreContributionCommand("L1", None),)))["deleted"]
+    assert not restore.rebuild_page("r", "ws-1", RebuildPageCommand("D", (RestoreContributionCommand("L2", None),))).get("deleted")

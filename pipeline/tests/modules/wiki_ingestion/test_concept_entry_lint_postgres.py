@@ -27,6 +27,7 @@ from app.modules.wiki_ingestion.application.models import (
     WikiMaintenanceCommand,
 )
 from app.modules.wiki_ingestion.application.restore_wiki_pages import RestoreWikiPagesUseCase
+from app.modules.wiki_ingestion.domain.operation_recovery import RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
@@ -607,6 +608,45 @@ def test_child_left_without_support_is_deleted_by_the_restore_itself(world: Worl
     assert "rollout" not in world.state()["pages"]
     assert world.state()["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
 
+    # 지운 자식을 가리키던 부모의 요약 줄(참조)은 다음 lint가 기록으로 지운다.
+    world.lint("lint-clean")
+
+    state = world.state()
+    assert "[[rollout|" not in state["pages"]["deployment"][2]
+    assert not [row for row in state["references"] if row[2] == "rollout"]
+    assert state["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
+
+
+def test_split_restore_keeps_child_with_independent_later_contribution(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.lint("lint-split")
+    # 분리 뒤 자식에만 기여한 독립 편입.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "entry_changes": [
+        _add("e-canary", "Canary", refs=["B30"])]}})
+
+    result = world.restore_lint("lint-split")
+
+    # 분리로 만들었다는 이유로 지우지 않는다. 분리 효과(옮긴 항목)만 부모로 돌아간다.
+    state = world.state()
+    assert world.page_id("rollout") not in result["deleted_pages"]
+    assert [entry for entry in state["entries"] if entry[1] == "rollout"] == [("e-canary", "rollout", "Canary", None)]
+    assert ("e-history", "deployment", "History", "e-rollout") in state["entries"]
+    assert "[[rollout|" not in state["pages"]["deployment"][2]
+
+
+def test_split_restore_that_would_put_one_entry_on_two_pages_is_rejected_before_writing(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.lint("lint-split")
+    # 분리 뒤 다른 편입이 자식의 History에 근거를 더했다. 분리를 빼면 History가 부모와 자식 양쪽에 재생된다.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "entry_changes": [
+        _add("e-history", "History", "e-rollout", ["B30"])]}})
+    before = world.state()
+
+    with pytest.raises(RestoreConflictError):
+        world.restore_lint("lint-split")
+
+    assert world.state() == before
+
 
 def test_split_keeps_entry_reference_copy_through_later_ingest(world: World) -> None:
     _deployment_with_thick_rollout(world)
@@ -779,10 +819,17 @@ def test_references_to_a_page_that_lost_its_last_entry_are_removed(world: World)
     world.lint("lint-first")
     world.restore_ingest("op-x")
 
+    # 페이지는 doc-w로 남고 항목만 사라졌다. 참조는 다음 lint가 기록으로 지운다.
+    assert "deployment" in world.state()["pages"]
+
     world.lint("lint-clean")
 
-    assert ("kubectl", "deployment", "entry_reference") not in world.state()["links"]
+    state = world.state()
+    assert ("kubectl", "deployment", "entry_reference") not in state["links"]
     assert world.contribution("kubectl", "lint-clean")["removed_links"][0]["entry_id"] == "e-scale"
+    assert not [row for row in state["references"] if row[0] == "kubectl"]
+    assert "[[deployment|" not in state["pages"]["kubectl"][2]
+    assert state["pages"]["kubectl"][2] == world.ledger_rebuild("kubectl").markdown
 
 
 def test_split_drops_key_points_of_moved_entries_from_parent_body_and_units(world: World) -> None:

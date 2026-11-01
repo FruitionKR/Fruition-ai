@@ -309,8 +309,13 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 ingest 작업의 Wiki 변경을 복원합니다.
 
-- `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서 끝나면 그 페이지는 지우고 응답의
-  `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는 이를 삭제로 기록한다. lint 복원도 같다.
+- 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
+  끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
+  lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는
+  이를 삭제로 기록한다. lint 복원도 같다.
+- 재생 결과가 뒤 작업과 충돌하면(같은 하위 항목이 두 페이지에 재생되거나, 다시 쓰지 않는 다른 페이지가 이미 그 항목의 집이면)
+  ai DB 현재 상태를 쓰기 전에 실패 코드 `restore_conflict`로 실패한다(재조립 본문 객체 `ops/{복원 작업}.md`만 남을 수 있다).
+  document-svc는 원장을 바꾸지 않고 복원을 실패로 표시한다. 뒤 작업부터 되돌려야 한다. lint 복원도 같다.
 - `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0031](../adr/0031-manual-wiki-contributions.md)).
 - source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
 

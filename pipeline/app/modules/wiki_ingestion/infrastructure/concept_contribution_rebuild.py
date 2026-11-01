@@ -131,9 +131,15 @@ def rebuild_concept_page(
         if item.contribution is not None
     ]
     contribution_json = [item for item in artifacts if item.get("artifact_type") != "manual"]
+    # 개념도 항목 변경도 없는 기록은 깨진 기록이다. 근거 없음으로 보고 페이지를 지우지 않는다.
+    if any(not (item.get("concept") or {}).get("slug") and "entry_changes" not in item for item in contribution_json):
+        raise ConceptContributionError("concept contribution has neither concept nor entry changes")
     # 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생해야 사람이 지운 edge가 되살아나지 않는다.
     supported_links = tuple(replay_supported_links(artifacts))
     entries = tuple(replay_concept_entries(artifacts))
+    # 남은 유효 근거가 없으면 페이지도 없다. lint 메타데이터(분리·링크 기록)만으로 존속시키지 않는다(ADR 0042 결정 3).
+    if not (manual or entries or any(_supports_page(item) for item in contribution_json)):
+        return _deleted_page(page_id)
     source_document_ids = tuple(_authoritative_document_ids(contribution_json))
     if manual:
         # 사람이 마지막으로 고친 본문을 기준으로 삼는다. 그 전 AI 기여는 사람이 본 본문에 이미
@@ -262,6 +268,13 @@ def _deleted_page(page_id: str) -> RebuiltConceptPage:
         page_id=page_id, markdown="", operation_ids=(), supported_links=(), title=None, summary=None,
         source_document_ids=(), entries=(), deleted=True,
     )
+
+
+def _supports_page(contribution: dict[str, Any]) -> bool:
+    """페이지를 받치는 기록: 근거 단위가 있거나, lint가 아닌 기록의 직접 개념 기여다."""
+    if contribution.get("evidence_units"):
+        return True
+    return contribution.get("artifact_type") != "lint" and bool((contribution.get("concept") or {}).get("slug"))
 
 
 def _is_delete(item: PageContribution) -> bool:

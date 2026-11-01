@@ -48,7 +48,7 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     rebuild_concept_page,
 )
 from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryPage, plan_entry_lint
-from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
+from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
 from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
@@ -258,6 +258,7 @@ def apply_restored_wiki_state_and_cleanup(
                 link_changes,
                 replace_links,
                 conn,
+                deleted_page_ids,
             )
             _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
         try:
@@ -281,7 +282,9 @@ def _apply_restored_wiki_state(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     conn: psycopg.Connection | None = None,
+    deleted_page_ids: list[str] = (),
 ) -> set[str]:
+    """deleted_page_ids는 같은 작업이 이어서 지울 페이지다. 항목 충돌 검사에서 그 페이지의 항목은 빠진 것으로 본다."""
     if not changed_pages and not any(link_changes.values()):
         return set()
     with (connect() if conn is None else nullcontext(conn)) as conn:
@@ -305,6 +308,7 @@ def _apply_restored_wiki_state(
         by_id = {str(row["id"]): row for row in rows}
         if len(by_id) != len(set(page_ids)):
             raise ValueError("restored Wiki page does not match workspace")
+        _reject_entry_conflicts(conn, workspace_id, changed_pages, [*page_ids, *deleted_page_ids])
         deleted_document_ids = _tombstoned_document_ids(conn, workspace_id)
         # 삭제한 원본의 source 페이지는 되살리지 않는다. 문서 삭제 정리가 이미 내렸으므로
         # 본문·상태뿐 아니라 이 페이지를 끝점으로 하는 링크도 다시 만들지 않는다.
@@ -507,6 +511,34 @@ def _apply_restored_wiki_state(
                     workspace_id,
                 )
     return skipped_page_ids
+
+
+def _reject_entry_conflicts(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    changed_pages: list[dict[str, Any]],
+    rewritten_page_ids: list[str],
+) -> None:
+    """항목의 집은 하나다(ADR 0042). 재생한 항목이 두 페이지에 나오거나, 다시 쓰지 않는 다른 페이지가 이미 집이면
+    뒤 작업과 충돌한 복원이다. 현재 상태를 쓰기 전에 거절한다(뒤 작업부터 되돌린다)."""
+    homes: dict[str, str] = {}
+    for page in changed_pages:
+        for entry in page.get("entries") or []:
+            other = homes.setdefault(str(entry["entry_id"]), str(page["page_id"]))
+            if other != str(page["page_id"]):
+                raise RestoreConflictError(f"entry {entry['entry_id']} replays on two pages: {other}, {page['page_id']}")
+    if not homes:
+        return
+    row = conn.execute(
+        """
+        SELECT entry_id, page_id FROM wiki_page_entries
+        WHERE workspace_id = %s AND entry_id = ANY(%s) AND NOT page_id = ANY(%s)
+        LIMIT 1
+        """,
+        (workspace_id, sorted(homes), list(rewritten_page_ids)),
+    ).fetchone()
+    if row:
+        raise RestoreConflictError(f"entry {row['entry_id']} already lives on page {row['page_id']}")
 
 
 def _replace_page_entries(
@@ -1971,6 +2003,10 @@ def lint_concept_entries(
             ).fetchall()
             load(target_rows)
             changed |= {str(row["id"]) for row in target_rows if str(row["id"]) in pages}
+        # 바뀐 페이지 기여가 가리키지만 살아 있지 않은 집 페이지. 그 참조는 사라진 참조다.
+        deleted_refs = frozenset(
+            f"concept:{slug}" for slug in missing_targets - {page.slug for page in pages.values()}
+        )
         if not changed:
             return result
         # 판정은 바뀐 페이지만 하지만, 참조로 이어진 이웃도 읽어야 승격·참조 정리를 할 수 있다.
@@ -2029,7 +2065,7 @@ def lint_concept_entries(
                 return f"new:{slug}", slug
             return _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug), slug
 
-        plan = plan_entry_lint(pages, changed, new_page)
+        plan = plan_entry_lint(pages, changed, new_page, deleted_refs)
         if plan.deleted_page_ids:
             # 합쳐 지울 자식으로 오던 일반 링크는 그 링크를 낸 개념 페이지의 lint 기록에서 지운다(ADR 0042 결정 2).
             # 합치기 복원이 이 기록을 빼면 원래 기록이 아직 잇는 링크만 되살아난다. 참조는 plan이 부모로 옮겼다.
@@ -2295,6 +2331,7 @@ def _persist_entry_lint(
             entry_state["link_changes"],
             False,
             conn,
+            entry_state["deleted_pages"],
         )
         _cleanup_deleted_wiki_pages(conn, workspace_id, entry_state["deleted_pages"])
 

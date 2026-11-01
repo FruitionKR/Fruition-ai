@@ -213,6 +213,8 @@ def test_restore_replaces_queryable_entry_copy() -> None:
             cursor.fetchall.return_value = [{"id": "page-deploy", "page_type": "concept", "slug": "deploy"}]
         else:
             cursor.fetchall.return_value = []
+        # 항목 충돌 검사: 다른 페이지가 집인 항목이 없다.
+        cursor.fetchone.return_value = None
         return cursor
 
     connection.execute.side_effect = execute

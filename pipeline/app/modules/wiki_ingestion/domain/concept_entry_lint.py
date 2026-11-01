@@ -96,10 +96,12 @@ def plan_entry_lint(
     pages: dict[str, EntryPage],
     changed_page_ids: set[str],
     new_page: Callable[[EntryPage, dict[str, Any]], tuple[str, str] | None],
+    deleted_refs: frozenset[str] = frozenset(),
 ) -> EntryLintPlan:
     """pages는 바뀐 페이지와 참조로 이어진 이웃 페이지다. 판정은 바뀐 페이지만 한다.
 
     new_page(집 페이지, 항목) → (page_id, slug). 쓸 수 있는 slug가 없으면 None이다.
+    deleted_refs는 참조가 가리키지만 지워진 페이지 ref다. 그 참조도 사라진 참조로 지운다.
     """
     plan = EntryLintPlan()
     nodes: list[EntryNode] = []
@@ -196,7 +198,7 @@ def plan_entry_lint(
     for home, entry, page_id, slug in moves:
         _move_to_new_page(plan, home, entry, page_id, slug)
     _relocate_references(plan, pages, location)
-    _drop_dangling_references(plan, pages)
+    _drop_dangling_references(plan, pages, deleted_refs)
     return plan
 
 
@@ -375,15 +377,17 @@ def _retarget_references(
                 change["added_links"].append({**link, "target": target})
 
 
-def _drop_dangling_references(plan: EntryLintPlan, pages: dict[str, EntryPage]) -> None:
-    """집 페이지는 남았는데 가리키던 항목이 없어진 참조를 지운다(1단계에서 남긴 공백)."""
+def _drop_dangling_references(plan: EntryLintPlan, pages: dict[str, EntryPage], deleted_refs: frozenset[str]) -> None:
+    """가리키던 항목이나 집 페이지가 없어진 참조를 지운다. 참조 사본·본문 목록·간선은 이 기록의 재생으로 함께 정리된다."""
     homes = {page.ref: page for page in pages.values()}
     for page in pages.values():
         for link in page.links:
-            home = homes.get(str(link.get("target")))
-            if link.get("relation") != ENTRY_REFERENCE or home is None:
+            if link.get("relation") != ENTRY_REFERENCE:
                 continue
-            if link.get("entry_id") in {item["entry_id"] for item in home.entries}:
+            home = homes.get(str(link.get("target")))
+            if home is None and link.get("target") not in deleted_refs:
+                continue
+            if home is not None and link.get("entry_id") in {item["entry_id"] for item in home.entries}:
                 continue
             change = plan.change(page.page_id, page.slug, page.title)
             if link not in change["removed_links"]:
