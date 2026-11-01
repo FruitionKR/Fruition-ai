@@ -191,6 +191,10 @@ def _cleanup_deleted_wiki_pages(
             (vector_ids,),
         )
     conn.execute(
+        "DELETE FROM wiki_page_entries WHERE page_id = ANY(%s)",
+        (target_ids,),
+    )
+    conn.execute(
         "UPDATE wiki_pages SET status = 'deleted', updated_at = now() WHERE id = ANY(%s)",
         (target_ids,),
     )
@@ -333,6 +337,8 @@ def _apply_restored_wiki_state(
                     workspace_id,
                 ),
             )
+            if page.get("entries") is not None:
+                _replace_page_entries(conn, workspace_id, str(page["page_id"]), page["entries"])
 
             source_document_ids = page.get("source_document_ids")
             if source_document_ids is not None:
@@ -461,12 +467,35 @@ def _apply_restored_wiki_state(
     return skipped_page_ids
 
 
+def _replace_page_entries(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    entries: list[dict[str, Any]],
+) -> None:
+    # 재생 결과의 조회용 사본(ADR 0042). 항목의 집은 하나라 다른 페이지에서 옮겨 온 항목은 집만 바꾼다.
+    conn.execute("DELETE FROM wiki_page_entries WHERE page_id = %s", (page_id,))
+    for entry in entries:
+        conn.execute(
+            """
+            INSERT INTO wiki_page_entries (workspace_id, entry_id, page_id, name, parent_entry_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id, entry_id)
+            DO UPDATE SET page_id = EXCLUDED.page_id,
+                          name = EXCLUDED.name,
+                          parent_entry_id = EXCLUDED.parent_entry_id
+            """,
+            (workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"]),
+        )
+
+
 REQUIRED_TABLES = (
     "wiki_pages",
     "document_wiki_links",
     "source_blocks",
     "source_block_snapshots",
     "wiki_page_links",
+    "wiki_page_entries",
     "pipeline_runs",
     "wiki_page_embeddings",
     "wiki_embedding_vectors",

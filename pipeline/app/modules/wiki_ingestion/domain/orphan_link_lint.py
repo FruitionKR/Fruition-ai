@@ -41,11 +41,13 @@ def find_orphan_links(
 def replay_supported_links(
     operation_artifacts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    supported: dict[tuple[str, str, str], dict[str, Any]] = {}
+    # 하위 항목 참조(entry_reference)는 같은 두 페이지 사이에도 항목마다 따로 남긴다.
+    # DB 간선과 고아 판정은 페이지 단위(_link_key)라, 참조가 하나라도 남으면 간선이 남는다.
+    supported: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for artifact in operation_artifacts:
         for link in artifact.get("removed_links", []):
             if isinstance(link, dict):
-                supported.pop(_link_key(link), None)
+                supported.pop(_replay_key(link), None)
         added = (
             artifact.get("added_links", [])
             if artifact.get("artifact_type") in ("lint", "manual")
@@ -53,8 +55,12 @@ def replay_supported_links(
         )
         for link in added:
             if isinstance(link, dict):
-                supported[_link_key(link)] = link
+                supported[_replay_key(link)] = link
     return list(supported.values())
+
+
+def _replay_key(link: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (*_link_key(link), str(link.get("entry_id") or ""))
 
 
 def _link_key(link: dict[str, Any]) -> tuple[str, str, str]:

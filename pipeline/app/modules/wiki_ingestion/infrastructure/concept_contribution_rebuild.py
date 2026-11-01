@@ -8,6 +8,10 @@ from typing import Any
 from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_generation.domain.text_utils import clean_concept_tags
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
+from app.modules.wiki_ingestion.domain.concept_entries import (
+    render_entry_index,
+    replay_concept_entries,
+)
 from app.modules.wiki_ingestion.domain.contribution_identity import (
     globalize_contribution_identity,
 )
@@ -38,6 +42,8 @@ class RebuiltConceptPage:
     title: str | None
     summary: str | None
     source_document_ids: tuple[str, ...]
+    # 기여 재생으로 남은 하위 항목. 이 페이지가 집이다(ADR 0042).
+    entries: tuple[dict[str, Any], ...]
 
 
 def load_concept_contributions(
@@ -103,16 +109,9 @@ def rebuild_concept_page(
     page_id = ordered[0].page_id
     manual = [item for item in ordered if _is_manual(item)]
     generated = [item for item in ordered if not _is_manual(item)]
-    slugs = {
-        str(item.contribution["concept"].get("slug") or "")
-        for item in generated
-        if item.contribution is not None
-    }
-    if (
-        any(item.page_id != page_id for item in ordered)
-        or len(slugs) > 1
-        or (not manual and len(slugs) != 1)
-    ):
+    # 페이지 identity는 page_id다. 분리로 자식 페이지에 이어 붙인 원래 편입 기록은
+    # 부모 개념의 slug를 가지거나 개념 없이 하위 항목만 가질 수 있다(ADR 0042).
+    if any(item.page_id != page_id for item in ordered):
         raise ConceptContributionError(
             "all contributions must belong to the same concept page"
         )
@@ -125,6 +124,7 @@ def rebuild_concept_page(
     contribution_json = [item for item in artifacts if item.get("artifact_type") != "manual"]
     # 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생해야 사람이 지운 edge가 되살아나지 않는다.
     supported_links = tuple(replay_supported_links(artifacts))
+    entries = tuple(replay_concept_entries(artifacts))
     source_document_ids = tuple(_authoritative_document_ids(contribution_json))
     if manual:
         # 사람이 마지막으로 고친 본문을 기준으로 삼는다. 그 전 AI 기여는 사람이 본 본문에 이미
@@ -145,14 +145,20 @@ def rebuild_concept_page(
             )
         return RebuiltConceptPage(
             page_id=page_id,
-            markdown=markdown,
+            # 하위 항목 목록은 데이터로 그린다. 사람이 고친 목록은 남지 않는다.
+            markdown=render_entry_index(markdown, list(entries), list(supported_links)),
             operation_ids=tuple(item.operation_id for item in ordered),
             supported_links=supported_links,
             title=None,
             summary=None,
             source_document_ids=source_document_ids,
+            entries=entries,
         )
 
+    if not any(item["concept"].get("slug") for item in contribution_json):
+        raise ConceptContributionError(
+            "concept rebuild requires a contribution with a concept"
+        )
     normalized = _merge_contributions(contribution_json)
     pages = ConceptPageAssembler().build_top(
         normalized,
@@ -166,7 +172,11 @@ def rebuild_concept_page(
 
     return RebuiltConceptPage(
         page_id=page_id,
-        markdown=str(pages[0]["markdown"]),
+        markdown=render_entry_index(
+            str(pages[0]["markdown"]),
+            list(entries),
+            list(supported_links),
+        ),
         operation_ids=tuple(item.operation_id for item in ordered),
         supported_links=supported_links,
         title=str(concept.get("title") or ""),
@@ -176,6 +186,7 @@ def rebuild_concept_page(
             or ""
         ),
         source_document_ids=source_document_ids,
+        entries=entries,
     )
 
 
@@ -186,7 +197,7 @@ def _is_manual(item: PageContribution) -> bool:
 def _merge_contributions(
     contributions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    concepts = [item["concept"] for item in contributions]
+    concepts = [item["concept"] for item in contributions if item["concept"].get("slug")]
     merged_concept = dict(concepts[0])
     list_fields = (
         "aliases",

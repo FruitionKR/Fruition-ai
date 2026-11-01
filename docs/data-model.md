@@ -9,6 +9,7 @@
 | wiki_schemas | ai-svc | 워크스페이스·사용자별 Wiki 생성 규칙 | active 스키마는 소유 범위당 최대 1개(부분 unique index) |
 | document_derived_state | ai-svc | 문서 파생물 stale 추적 | `document.edit.event` consumer가 갱신 |
 | wiki_pages·document_wiki_links·wiki_page_links | ai-svc | Wiki 현재 상태와 문서/페이지 관계 | 페이지는 워크스페이스 공유 자산으로 `(workspace_id, page_type, slug)` unique(ADR 0033). `user_id`는 마지막 편입 요청자 귀속 정보다. 사용자별 중복 행이 남은 DB는 스키마 적용이 실패하므로 위키 데이터를 초기화한 뒤 배포한다. DB 밖 document ID는 논리 참조. 사람이 고친 본문은 `ops/{operation_id}.md`·`.json`(`artifact_type: "manual"`)으로 남고 `markdown_uri`가 그 본문을 가리킨다. 수동 기여의 `added_links`·`removed_links`가 본문 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 기여 원장·revision은 document-svc가 소유한다([adr/0031](adr/0031-manual-wiki-contributions.md)) |
+| wiki_page_entries | ai-svc | 개념 페이지 하위 항목의 조회용 사본(ADR 0042) | PK `(workspace_id, entry_id)`, `page_id`(집, `wiki_pages` FK CASCADE)·`name`·`parent_entry_id`(NULL이면 페이지 바로 아래). 원본은 기여 JSON의 `entry_changes`이며 복구 재생(`rebuild_page`) 결과로 페이지마다 지우고 다시 쓴다. 다른 페이지에서 옮겨 온 항목은 집만 바뀐다. 삭제한 페이지의 항목은 함께 지운다. 참조는 이 테이블이 아니라 `wiki_page_links`의 `entry_reference` 간선이다 |
 | source_blocks·source_block_snapshots | ai-svc | 문서 block 텍스트·문서 내 순서·줄 범위, block 집합을 만든 편입 입력 Markdown의 SHA-256 | 복합 PK `(block_id, document_id)`. 영구 `block_id`는 문서 순서가 아니므로 `position`(1부터) 순으로 조회한다. `line_start`·`line_end`는 입력 Markdown을 `\n`으로 나눈 1-based 양끝 포함 값이며 채팅 문서·기존 행은 null. 스냅샷 해시는 블록과 같은 트랜잭션에서 갱신해 편입 실패 시 직전 성공 값을 유지한다 |
 | wiki_source_tombstones | ai-svc | 휴지통으로 옮긴 원본 문서 표시 | `document_deleted` 처리가 기록(`deleted_at`은 삭제마다 갱신)하고 해당 문서의 ingest 완료가 지운다. 로그 되돌리기는 표시된 문서의 source 페이지·문서 링크를 되살리지 않는다. post_ingest는 `deleted_at`이 부모 ingest run 생성 시각보다 늦으면 개념 페이지·근거를 쓰지 않는다(복구 뒤 다시 만든 run은 통과) |
 | pipeline_runs | ai-svc | pipeline 실행 상태 | Spring이 만든 `run_id`, `user_id`·`workspace_id` 보존. ingest manifest의 `post_ingest.status`는 `running/retrying/ready/needs_review` 품질 진단 상태를 보존 |
@@ -20,6 +21,15 @@
 | checkpoint_migrations·checkpoints·checkpoint_blobs·checkpoint_writes | ai-svc | LangGraph Agent 중단·재개 상태 | `PostgresSaver`가 `AI_DATABASE_URL`로 사용 |
 
 Concept 본문 persistence는 ingest와 lint `materialize=true`가 같은 워크스페이스 PostgreSQL transaction advisory lock(`concept-persistence:{workspace_id}`)을 사용해 최종 object read-modify-write부터 DB commit까지 직렬화한다. 편입에 넘기는 기존 개념 목록 캐시도 워크스페이스 키(Redis `wiki:concept-index:{workspace_id}`, TTL 300초)다. 문서 편입의 개념 판정은 워크스페이스 `concept_write_lock`을 잡은 뒤 이 캐시를 거치지 않고 DB에서 다시 읽은 목록으로 한다.
+
+개념 페이지 하위 항목(ADR 0042)은 기여 JSON(`ops/{operation_id}.json`)의 `entry_changes`를 `sequence_revision` 순으로 재생해 만든다. 항목 id는 워크스페이스 안에서 고유하다.
+- `{"op": "add", "entry_id", "name", "parent_entry_id", "anchor_reference_ids", "evidence_claim_ids"}`: 없으면 만들고, 있으면 근거만 더한다. 근거는 개념 근거와 같은 전역 형식(`{document_id}:{block_id}`, `{operation_id}:{evidence_id}`)으로 바꿔 둔다.
+- `{"op": "move", "entry_id", "parent_entry_id"}`: 상위 항목만 바꾼다. 없는 항목이거나 자기 아래로 옮기면 무시한다.
+- `{"op": "remove", "entry_id"}`: 항목과 그 아래 항목을 지운다.
+- 상위 항목이 남지 않은(그 기여를 되돌린) 항목은 페이지 바로 아래로 올린다.
+- 다른 페이지 항목을 가리키는 참조는 참조하는 페이지 기여의 링크(`links`, lint·수동은 `added_links`·`removed_links`)로 남긴다. `{"source": "concept:{참조 페이지}", "target": "concept:{집 페이지}", "relation": "entry_reference", "entry_id", "name", "parent_entry_id"}`이다. 재생은 항목마다 따로 남기고, DB 간선과 고아 판정은 페이지 쌍 단위라 참조가 하나라도 남으면 간선이 남는다.
+- 페이지 identity는 page_id다. 한 페이지의 기여가 모두 같은 slug일 필요는 없고, 개념(`concept`) 없이 하위 항목만 가진 기여도 재생한다. 개념 이름·정의는 개념을 가진 기여에서 온다.
+- 본문의 `## Sub-entries` 섹션은 재생한 항목과 참조로 그리는 중첩 목록이다. 사람이 고친 본문 위에서도 다시 그리며, 항목이 없으면 섹션을 뺀다.
 
 Concept 페이지 frontmatter의 `tags`는 추출 단계가 원문 근거로 붙인 분야·분류 태그(최대 3개, 제목·별칭과 중복 제외)를 `sources`처럼 쉼표로 이어 쓴 값이며, 없으면 빈 값이다. 기존 개념 목록은 이 값을 `tags` 목록으로 노출한다. 태그는 개념 후보 사전 필터링용 색인이며, 같은 개념인지 판정하는 근거로 쓰지 않는다. lint 승격 페이지는 태그 없이 만들어진다.
 

@@ -115,6 +115,7 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "title": rebuilt.title,
             "summary": rebuilt.summary,
             "source_document_ids": list(rebuilt.source_document_ids),
+            "entries": list(rebuilt.entries),
         }
 
     def restore_source_page(

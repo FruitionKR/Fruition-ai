@@ -54,12 +54,38 @@ def globalize_contribution_identity(
         )
         source_key_points.append(item)
 
-    return {
+    globalized = {
         **contribution,
         "concept": concept,
         "evidence_units": evidence_units,
         "source_key_points": source_key_points,
     }
+    if "entry_changes" in contribution:
+        # 하위 항목 근거도 개념 근거와 같은 전역 형식으로 맞춘다(ADR 0042).
+        globalized["entry_changes"] = [
+            _global_entry_change(document_id, operation_id, dict(value))
+            for value in contribution["entry_changes"]
+            if isinstance(value, dict)
+        ]
+    return globalized
+
+
+def _global_entry_change(
+    document_id: str,
+    operation_id: str,
+    change: dict[str, Any],
+) -> dict[str, Any]:
+    if change.get("op") == "add":
+        change["anchor_reference_ids"] = _global_refs(
+            document_id,
+            change.get("anchor_reference_ids", []),
+        )
+        change["evidence_claim_ids"] = [
+            _global_evidence_id(operation_id, evidence_id)
+            for evidence_id in change.get("evidence_claim_ids", [])
+            if evidence_id
+        ]
+    return change
 
 
 def _global_refs(document_id: str, refs: list[Any]) -> list[str]:
