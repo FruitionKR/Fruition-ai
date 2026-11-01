@@ -376,7 +376,7 @@ def test_ingest_restore_after_split_removes_document_from_parent_and_child(world
     assert ("doc-x", "rollout") not in state["documents"]
 
 
-def test_merge_back_waits_one_lint_after_restore_then_redirects_links(world: World) -> None:
+def test_merge_back_on_first_lint_after_restore_then_redirects_links(world: World) -> None:
     _deployment_with_thick_rollout(world)
     world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
         _add("e-history", "History", "e-rollout", ["B20"]),
@@ -388,11 +388,7 @@ def test_merge_back_waits_one_lint_after_restore_then_redirects_links(world: Wor
     ]}})
     world.restore_ingest("op-x")
 
-    # 롤백 직후에는 줄어든 근거로 바로 합치지 않는다.
-    waited = world.lint("lint-wait")
-    assert waited["deleted_pages"] == []
-    assert waited["deferred_entry_pages"] == [world.page_id("rollout")]
-
+    # 되돌린 직후 첫 lint가 줄어든 근거로 판단한다(추가 지연 없음).
     merged = world.lint("lint-merge")
 
     rollout_id = world.page_id("rollout")
@@ -490,7 +486,6 @@ def test_merging_two_children_at_once_combines_records_of_one_operation(world: W
         "beta": {"title": "Beta", "entry_changes": [_add("e-beta-z", "Beta Z", "e-beta", ["B41"])]},
     })
     world.restore_ingest("op-x")
-    world.lint("lint-wait")
 
     merged = world.lint("lint-merge")
     
@@ -539,7 +534,6 @@ def test_lint_restore_of_merge_back_recreates_child_with_its_entries_and_links(w
         {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
     ]}})
     world.restore_ingest("op-x")
-    world.lint("lint-wait")
     before = world.state()
 
     merged = world.lint("lint-merge")
@@ -562,7 +556,6 @@ def test_lint_restore_of_merge_back_keeps_parent_link_added_later_by_ingest(worl
         {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
     ]}})
     world.restore_ingest("op-x")
-    world.lint("lint-wait")
     world.lint("lint-merge")
     # 합친 뒤 다른 편입이 같은 간선을 직접 잇는다.
     world.ingest("op-q", "doc-q", {"service": {"title": "Service", "links": [
@@ -592,7 +585,7 @@ def test_references_added_from_two_pages_get_the_untouched_home_promoted(world: 
     assert "label-selector" in world.state()["pages"]
 
 
-def test_child_emptied_by_restore_is_merged_two_lints_later(world: World) -> None:
+def test_child_emptied_by_restore_is_merged_on_next_lint(world: World) -> None:
     world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": _thick("e-rollout", "Rollout", 1)}})
     world.ingest("op-w", "doc-w", {"deployment": {"title": "Deployment", "entry_changes": [
         _add("e-scale", "Scale", refs=["B30"])]}})
@@ -600,8 +593,6 @@ def test_child_emptied_by_restore_is_merged_two_lints_later(world: World) -> Non
     rollout_id = world.page_id("rollout")
     world.restore_ingest("op-x")
 
-    waited = world.lint("lint-wait")
-    assert waited["deferred_entry_pages"] == [rollout_id]
     merged = world.lint("lint-merge")
 
     assert merged["deleted_pages"] == [rollout_id]
@@ -636,7 +627,6 @@ def test_merge_and_split_of_the_receiving_parent_in_one_lint_defers_the_split(wo
     split = world.lint("lint-split")
     assert [(item["action"], item["entry_id"]) for item in split["entry_decisions"]] == [("split", "e-e")]
     world.restore_ingest("op-y")
-    world.lint("lint-wait")
     # 합치기와 같은 lint에서 A도 분리 기준(자식 5개)을 넘는다.
     world.ingest("op-z", "doc-z", {"deployment": {"title": "Deployment", "entry_changes": [
         _add("e-a4", "Area 4", "e-a", ["B20"]), _add("e-a5", "Area 5", "e-a", ["B21"])]}})
@@ -665,7 +655,6 @@ def test_lint_restore_of_merge_back_does_not_revive_edge_whose_ingest_was_rolled
         {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
     ]}})
     world.restore_ingest("op-x")
-    world.lint("lint-wait")
     world.lint("lint-merge")
     # 자식으로 가던 간선을 낸 편입을 되돌린다. Service는 다른 편입으로 남는다.
     world.restore_ingest("op-z")
@@ -684,7 +673,6 @@ def _merged_back_rollout(world: World) -> None:
         _add("e-history", "History", "e-rollout", ["B20"])]}})
     world.lint("lint-split")
     world.restore_ingest("op-x")
-    world.lint("lint-wait")
 
 
 def test_resplit_after_merge_back_does_not_reuse_the_deleted_child_page(world: World) -> None:

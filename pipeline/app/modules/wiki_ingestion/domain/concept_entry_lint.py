@@ -37,7 +37,6 @@ class EntryPage:
     contributions: tuple[dict[str, Any], ...]
     entries: tuple[dict[str, Any], ...]
     links: tuple[dict[str, Any], ...]
-    restored_recently: bool = False
 
     @property
     def ref(self) -> str:
@@ -61,7 +60,7 @@ class EntryLintPlan:
     linked: list[dict[str, Any]] = field(default_factory=list)
     # 지운 자식 page_id → 부모 page_id
     redirects: dict[str, str] = field(default_factory=dict)
-    # 롤백 직후라 이번에 합치지 않은 자식 페이지. 다음 lint가 다시 본다.
+    # 이번에 자식을 합쳐 받아 분리·승격을 미룬 부모 페이지. 다음 lint가 다시 본다.
     deferred_page_ids: list[str] = field(default_factory=list)
 
     def link(self, record: dict[str, Any]) -> None:
@@ -126,12 +125,9 @@ def plan_entry_lint(
                     reference_page_ids=_referencing_pages(pages, page, {item["entry_id"] for item in page.entries})
                     - {record["split_from"]["page_id"]},
                     is_child_page=True,
-                    restored_recently=page.restored_recently,
                 )
             )
             targets[node_id] = (page, None)
-            if page.restored_recently:
-                plan.deferred_page_ids.append(page.page_id)
         for entry in page.entries:
             # 자식 페이지의 뿌리 항목은 페이지 자신이라 다시 분리하지 않는다.
             if entry["entry_id"] == root:

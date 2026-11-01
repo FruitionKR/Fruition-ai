@@ -1876,7 +1876,7 @@ def lint_concept_entries(
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
-    지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 그 뒤 성공한 복구 작업이 바꾼 페이지는 롤백 직후로 본다.
+    지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
     skip이면 판정 없이 바뀐 페이지를 모두 다음 lint로 미룬다(같은 lint의 승격이 페이지를 바꿨을 때).
     """
     with _connection_scope(connection) as conn:
@@ -1910,22 +1910,6 @@ def lint_concept_entries(
         if skip or not changed_rows:
             result["deferred_entry_pages"] = sorted(str(row["id"]) for row in changed_rows)
             return result
-        restored = {
-            str(page.get("page_id"))
-            for row in conn.execute(
-                """
-                SELECT manifest->'task_result'->'changed_pages' AS pages
-                FROM pipeline_runs
-                WHERE workspace_id = %s
-                  AND mode IN ('restore_ingest', 'restore_lint')
-                  AND status = 'succeeded'
-                  AND (%s::timestamptz IS NULL OR created_at > %s)
-                """,
-                (workspace_id, since, since),
-            ).fetchall()
-            for page in (row["pages"] or [])
-            if isinstance(page, dict)
-        }
         # 지운 페이지 slug도 쓰지 않는다. 그 page_id를 다시 쓰면 옛 lint를 복원할 기록(ops/{작업}.json)을 덮어쓴다.
         taken_slugs = {
             str(row["slug"])
@@ -1975,7 +1959,6 @@ def lint_concept_entries(
                     contributions=tuple(item.contribution or {} for item in loaded[page_id]),
                     entries=rebuilt.entries,
                     links=rebuilt.supported_links,
-                    restored_recently=page_id in restored,
                 )
                 summaries[page_id] = str(row.get("summary") or "")
                 if history:

@@ -31,7 +31,6 @@ class EntryNode:
     child_entry_ids: tuple[str, ...]
     reference_page_ids: frozenset[str]
     is_child_page: bool = False
-    restored_recently: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,8 +60,8 @@ def decide_entry_changes(entries: Iterable[EntryNode]) -> list[EntryDecision]:
 def _decide(entry: EntryNode) -> Literal["split", "merge_back", "promote"] | None:
     multi_parent = len(entry.reference_page_ids) >= MIN_PROMOTION_REFERENCE_PAGES
     if entry.is_child_page:
-        # 롤백 직후에는 줄어든 근거로 바로 합치지 않고 다음 lint에서 본다.
-        if entry.restored_recently or multi_parent:
+        # 되돌린 직후에도 따로 미루지 않는다. 되돌리기가 바꾼 페이지는 다음 lint가 바뀐 페이지로 본다.
+        if multi_parent:
             return None
         if (
             len(entry.child_entry_ids) <= MERGE_MAX_CHILDREN

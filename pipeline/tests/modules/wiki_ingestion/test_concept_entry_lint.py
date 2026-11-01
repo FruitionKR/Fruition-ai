@@ -21,8 +21,8 @@ def test_revive_restores_entries_removed_by_split_with_their_evidence() -> None:
     assert replay_concept_entries([split, merged]) == []
 
 
-def _page(page_id: str, contributions: list[dict], entries: list[dict], restored: bool = False) -> EntryPage:
-    return EntryPage(page_id, page_id, page_id.title(), tuple(contributions), tuple(entries), (), restored)
+def _page(page_id: str, contributions: list[dict], entries: list[dict]) -> EntryPage:
+    return EntryPage(page_id, page_id, page_id.title(), tuple(contributions), tuple(entries), ())
 
 
 def test_merge_back_is_skipped_when_one_operation_contributed_to_parent_and_child() -> None:
@@ -38,10 +38,6 @@ def test_merge_back_is_skipped_when_one_operation_contributed_to_parent_and_chil
     assert plan.decisions == [{"action": "merge_back", "page_id": "rollout", "entry_id": None,
                                "skipped_reason": "operation_on_both_pages"}]
     assert plan.page_changes == {} and plan.redirects == {}
-    # 롤백 직후 자식은 판정하지 않고 다음 lint로 미룬다.
-    restored = _page("rollout", [split], [], restored=True)
-    assert plan_entry_lint({"rollout": restored, "deploy": parent}, {"rollout"}, lambda *_args: None).deferred_page_ids == [
-        "rollout"]
 
 
 def test_split_moves_references_placed_under_the_moved_subtree() -> None:
