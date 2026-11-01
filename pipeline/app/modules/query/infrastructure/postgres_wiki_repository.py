@@ -381,11 +381,14 @@ class PostgresWikiRepository(WikiRepositoryPort):
             return {}
         with database.connect() as conn:
             rows = conn.execute(
-                """
-                SELECT id, page_id, source_document_id, unit_type, block_refs, text, weight
-                FROM wiki_embedding_units
-                WHERE page_id = ANY(%s)
-                ORDER BY page_id, weight DESC, id
+                f"""
+                SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight,
+                       {_ENTRY_PATH} AS entry_path
+                FROM wiki_embedding_units eu
+                JOIN wiki_pages p ON p.id = eu.page_id
+                {_ENTRY_JOIN}
+                WHERE eu.page_id = ANY(%s)
+                ORDER BY eu.page_id, eu.weight DESC, eu.id
                 """,
                 (page_ids,),
             ).fetchall()
@@ -399,11 +402,12 @@ class PostgresWikiRepository(WikiRepositoryPort):
         """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다."""
         with database.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight,
-                       p.title AS page_title
+                       p.title AS page_title, {_ENTRY_PATH} AS entry_path
                 FROM wiki_embedding_units eu
                 JOIN wiki_pages p ON p.id = eu.page_id
+                {_ENTRY_JOIN}
                 WHERE p.status = 'active'
                   AND p.workspace_id = %s
                   AND p.page_type IN ('source', 'concept')
@@ -412,6 +416,17 @@ class PostgresWikiRepository(WikiRepositoryPort):
                 (workspace_id,),
             ).fetchall()
         return [(_embedding_unit(row), row["page_title"] or "") for row in rows]
+
+
+# 하위 항목 단위·근거 단위(entry_id)는 "페이지 제목 > 상위 항목 > 항목" 경로를 함께 읽는다. 항목은 단위의 페이지가 집이다.
+_ENTRY_JOIN = """
+                LEFT JOIN wiki_page_entries entry
+                  ON entry.workspace_id = p.workspace_id AND entry.entry_id = eu.entry_id AND entry.page_id = eu.page_id
+                LEFT JOIN wiki_page_entries parent
+                  ON parent.workspace_id = entry.workspace_id AND parent.entry_id = entry.parent_entry_id
+                 AND parent.page_id = entry.page_id
+"""
+_ENTRY_PATH = "CASE WHEN entry.entry_id IS NOT NULL THEN concat_ws(' > ', p.title, parent.name, entry.name) END"
 
 
 def _embedding_unit(row) -> WikiEmbeddingUnit:
@@ -423,4 +438,5 @@ def _embedding_unit(row) -> WikiEmbeddingUnit:
         source_block_ids=list(row["block_refs"] or []),
         text=row["text"],
         weight=float(row["weight"] or 1.0),
+        entry_path=row["entry_path"],
     )
