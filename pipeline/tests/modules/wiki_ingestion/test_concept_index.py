@@ -148,6 +148,7 @@ def test_lint_merge_does_not_overwrite_previous_operation_snapshot(
             }
         ],
         aliases=[],
+        detail_items=[],
     )
 
     assert writes[0][0] == "wiki/ws/concepts/shared.md"
@@ -185,6 +186,7 @@ def test_promotion_merge_neutralizes_external_links_in_claims(monkeypatch) -> No
         "shared",
         [{"id": "claim-1", "claim": "lint 근거 [안내](https://attacker.example)", "refs": ["doc-A:B0001"]}],
         aliases=[],
+        detail_items=[],
     )
 
     assert change is not None
@@ -608,6 +610,8 @@ source_refs: [doc-1, doc-3]
 """
     }
     concept_indexes = iter(({}, {"shared": "page-shared"}))
+    # 승격 개수 규칙은 아래 전용 테스트가 본다.
+    monkeypatch.setattr(repository, "cluster_reaches_promotion", lambda _count: True)
 
     def candidate(run_id, claim_signatures=None, relation_signatures=None):
         return {
@@ -848,28 +852,40 @@ source_refs: [doc_1]
     assert result["needs_review"] == ["stale-cluster"]
 
 
-def test_lint_promotes_only_candidates_with_evidence_from_multiple_documents(monkeypatch) -> None:
-    active_markdown = """# Active Meaning Clusters
+def _term_claims(prefix: str, terms: list[str], document_id: str = "doc_1") -> str:
+    return "\n".join(
+        f"- claim_{prefix}_{index:03d}: {term} - {term}의 근거 문장이다. [{document_id}:B{index:04d}]"
+        for index, term in enumerate(terms, start=1)
+    )
 
-## cluster: single-doc
+
+ROLLOUT_TERMS = ["Rollout History", "Rollout Undo", "Rollout Pause", "Rollout Resume", "Rollout Status"]
+
+
+def test_lint_promotes_only_candidates_with_enough_detail_items(monkeypatch) -> None:
+    # 세부 항목은 근거 줄 용어를 이름 정규화로 묶은 것이다. 표기만 다른 용어·클러스터 자신의 이름은 세지 않는다.
+    active_markdown = f"""# Active Meaning Clusters
+
+## cluster: few-items
+
+representative: Few Items
 
 ### Evidence Claims
-- claim_001: 한 문서에만 나온 용어다. [doc_1:B0001]
-- claim_002: 같은 문서의 다른 근거다. [doc_1:B0002]
-
-### Promotion
-status: candidate
-source_refs: [doc_1]
-
-## cluster: multi-doc
-
-### Evidence Claims
-- claim_003: 첫 문서 근거다. [doc_1:B0003]
-- claim_004: 다른 문서 근거다. [doc_2:B0001]
+{_term_claims("a", ["Few Items", "rollout-history", "Rollout History", "Rollout Undo", "Rollout Pause", "Rollout Resume"])}
+- ev_0001: 용어 없는 근거 주장이다. [doc_2:B0001]
 
 ### Promotion
 status: candidate
 source_refs: [doc_1, doc_2]
+
+## cluster: enough-items
+
+### Evidence Claims
+{_term_claims("b", ROLLOUT_TERMS)}
+
+### Promotion
+status: candidate
+source_refs: [doc_1]
 
 ## cluster: concept-match
 
@@ -896,9 +912,9 @@ target: concept:shared-concept
 
     result = repository.lint_wiki_workspace("user_1", "workspace_1", write_log=False)
 
-    # 근거 문서가 하나뿐인 후보는 승격하지 않고 이유를 남긴다. 핵심 개념과 맞춘 후보는 편입 때 다른 문서를 확인했다.
-    assert result["promotion_candidates"] == ["multi-doc", "concept-match"]
-    assert {"cluster_id": "single-doc", "reason": "promotion candidate has evidence from a single source document"} in result[
+    # 세부 항목이 P개 미만인 후보는 근거 문서가 여럿이어도 승격하지 않는다. 핵심 개념과 맞춘 후보는 그 개념에 병합한다.
+    assert result["promotion_candidates"] == ["enough-items", "concept-match"]
+    assert {"cluster_id": "few-items", "reason": "promotion candidate has too few detail items"} in result[
         "invalid_promotions"
     ]
 
@@ -956,6 +972,7 @@ source_refs: [doc_1, doc_2]
 
     monkeypatch.setattr(repository, "connect", FakeConnection)
 
+    monkeypatch.setattr(repository, "cluster_reaches_promotion", lambda _count: True)
     result = repository.lint_wiki_workspace(
         "user_1",
         "workspace_1",
@@ -1156,6 +1173,7 @@ class _FakeConceptJudge:
 def _materialize_with_judge(monkeypatch, judge, page_slug="orchid-lease", representative="Orchid Lease"):
     upserts = []
     links = []
+    monkeypatch.setattr(repository, "cluster_reaches_promotion", lambda _count: True)
     active = f"""# Active Meaning Clusters
 
 ## cluster: orchid-lease

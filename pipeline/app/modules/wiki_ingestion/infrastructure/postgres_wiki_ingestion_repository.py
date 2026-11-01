@@ -18,7 +18,7 @@ from app.core.ai_database import connect_ai
 from app.core.jev_client import JevUnavailable
 from app.core.pipeline_control import PipelineRunCancelledError
 from app.core.error_text import truncate_error
-from app.modules.wiki_generation.domain.text_utils import slugify
+from app.modules.wiki_generation.domain.text_utils import name_key, slugify
 from app.modules.wiki_generation.infrastructure.concept_resolution import concept_page_tags
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
     read_contributions,
@@ -26,8 +26,7 @@ from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
 )
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     MATERIALIZED_CORE_RELATIONS,
-    MIN_PROMOTION_SOURCE_DOCUMENTS,
-    source_document_ids as _source_document_ids,
+    cluster_detail_items as _cluster_detail_items,
     cluster_relation_items as _cluster_relation_items,
     cluster_sections_by_id as _cluster_sections_by_id,
     parse_active_cluster_lint as _parse_active_cluster_lint,
@@ -56,7 +55,8 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
 )
-from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE
+from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id, render_entry_index
+from app.modules.wiki_ingestion.domain.concept_split_rules import cluster_reaches_promotion
 from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     read_text_object,
@@ -79,7 +79,9 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     delete_source_related_links as _delete_source_related_links,
     load_existing_concept_ids_by_slug as _load_existing_concept_ids_by_slug,
     persist_embedding_units as _persist_embedding_units,
+    stored_entry_index as _stored_entry_index,
     upsert_entry_references,
+    upsert_page_entries as _upsert_page_entries,
     read_optional_text_object as _read_optional_text_object,
     resolve_or_create_wiki_page_id as _resolve_or_create_wiki_page_id,
     upload_wiki_markdown as _upload_wiki_markdown,
@@ -103,12 +105,14 @@ def _unique_keep_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def _has_multi_document_evidence(cluster: dict[str, Any]) -> bool:
-    """승격 후보가 여러 문서에 근거를 가졌는지. 핵심 개념과 맞춘 후보(target)는 편입 때 다른 문서 근거를 확인했다."""
-    if cluster.get("promotion_target"):
-        return True
-    refs = [ref for claim in cluster.get("claims", []) for ref in claim.get("refs", [])]
-    return len(_source_document_ids(refs)) >= MIN_PROMOTION_SOURCE_DOCUMENTS
+def _detail_items(cluster: dict[str, Any]) -> list[dict[str, Any]]:
+    claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
+    return _cluster_detail_items(cluster["id"], cluster.get("representative") or "", claims)
+
+
+def _reaches_promotion(cluster: dict[str, Any]) -> bool:
+    """승격 후보가 세부 항목을 P개 이상 모았는지(ADR 0042). 핵심 개념과 맞춘 후보(target)는 그 개념에 병합하므로 보지 않는다."""
+    return bool(cluster.get("promotion_target")) or cluster_reaches_promotion(len(_detail_items(cluster)))
 
 
 def _today_iso() -> str:
@@ -1657,12 +1661,12 @@ def lint_wiki_workspace(
     ] + [
         {
             "cluster_id": cluster["id"],
-            "reason": "promotion candidate has evidence from a single source document",
+            "reason": "promotion candidate has too few detail items",
         }
         for cluster in clusters
         if cluster.get("promotion_status") == "candidate"
         and cluster.get("promotion_source_refs")
-        and not _has_multi_document_evidence(cluster)
+        and not _reaches_promotion(cluster)
     ]
     blocked_cluster_ids = {
         cluster["id"]
@@ -1680,7 +1684,7 @@ def lint_wiki_workspace(
         cluster["id"]
         for cluster in clusters
         if cluster.get("promotion_status") == "candidate" and cluster.get("promotion_source_refs")
-        and _has_multi_document_evidence(cluster)
+        and _reaches_promotion(cluster)
         and cluster["id"] not in blocked_cluster_ids
     ]
     needs_review = [
@@ -2550,7 +2554,7 @@ def _materialize_promotion_candidates(
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
             continue
-        if not cluster.get("promotion_source_refs") or not _has_multi_document_evidence(cluster):
+        if not cluster.get("promotion_source_refs") or not _reaches_promotion(cluster):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         # 핵심 개념과 같아 승격 후보가 된 클러스터는 그 개념(target)에 병합한다.
@@ -2618,7 +2622,7 @@ def _materialize_promotion_candidates(
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
             continue
-        if not cluster.get("promotion_source_refs") or not _has_multi_document_evidence(cluster):
+        if not cluster.get("promotion_source_refs") or not _reaches_promotion(cluster):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         if not claims:
@@ -2640,6 +2644,7 @@ def _materialize_promotion_candidates(
                 target_slug,
                 claims,
                 aliases=[cluster.get("representative") or "", cluster_id],
+                detail_items=_detail_items(cluster),
                 operation_id=operation_id,
             )
             if merged_page is not None:
@@ -2681,6 +2686,9 @@ def _materialize_promotion_candidates(
         if not markdown or not slug or slug == "untitled":
             continue
         page_id = _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug)
+        # 클러스터에 모인 세부 항목을 새 페이지의 하위 항목으로 둔다(ADR 0042). 기록에 남아 lint 복원이 되돌린다.
+        entry_changes = _promotion_entry_changes(slug, _detail_items(cluster), {})
+        markdown = _add_promotion_entries(conn, workspace_id, page_id, markdown, entry_changes).strip()
         if operation_id:
             markdown_uri = storage_uri(
                 f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
@@ -2703,6 +2711,7 @@ def _materialize_promotion_candidates(
             "markdown": markdown + "\n",
             "content_action": "create",
             "claims": claims,
+            "entry_changes": entry_changes,
         }
         page_changes.append(created_page)
         if judgment.get("decision") == "link_to":
@@ -2799,6 +2808,7 @@ def _merge_promotion_into_existing_concept(
     claims: list[dict[str, Any]],
     *,
     aliases: list[str],
+    detail_items: list[dict[str, Any]],
     operation_id: str | None = None,
 ) -> dict[str, Any] | None:
     row = conn.execute(
@@ -2829,6 +2839,15 @@ def _merge_promotion_into_existing_concept(
     title = str(row.get("title") or concept_slug)
     with_aliases, added_aliases = _add_aliases(markdown, title, aliases)
     updated_markdown = sanitize_ai_markdown(append_concept_evidence(with_aliases, updates))
+    # 병합한 근거 중 세부 항목은 그 개념의 하위 항목으로 둔다. 개념 자신의 이름이면 빼고, 같은 이름의 항목이 있으면 근거를 더한다.
+    detail_items = [item for item in detail_items if name_key(item["name"]) not in {name_key(title), name_key(concept_slug)}]
+    entry_changes: list[dict[str, Any]] = []
+    if detail_items:
+        stored_entries, _references = _stored_entry_index(conn, str(row["id"]))
+        entry_changes = _promotion_entry_changes(
+            concept_slug, detail_items, {name_key(entry["name"]): entry["entry_id"] for entry in stored_entries}
+        )
+        updated_markdown = _add_promotion_entries(conn, workspace_id, str(row["id"]), updated_markdown, entry_changes)
     if operation_id:
         current_markdown_uri = storage_uri(
             f"wiki/{workspace_id}/pages/{row['id']}/ops/{operation_id}.md"
@@ -2868,7 +2887,46 @@ def _merge_promotion_into_existing_concept(
         "content_action": "append_evidence",
         "claims": claims,
         "aliases": added_aliases,
+        "entry_changes": entry_changes,
     }
+
+
+def _promotion_entry_changes(
+    page_slug: str,
+    detail_items: list[dict[str, Any]],
+    existing_ids: dict[str, str],
+) -> list[dict[str, Any]]:
+    """클러스터 세부 항목마다 페이지 바로 아래 하위 항목 `add`. 근거는 그 용어의 근거 줄이다.
+
+    같은 이름(name_key)의 항목이 이미 있으면 그 id로 더해 근거만 합친다(재생 규칙).
+    """
+    return [
+        {
+            "op": "add",
+            "entry_id": existing_ids.get(name_key(item["name"])) or new_entry_id(page_slug, slugify(item["name"])),
+            "name": item["name"],
+            "definition": item["definition"],
+            "parent_entry_id": None,
+            "anchor_reference_ids": _unique_keep_order([ref for claim in item["claims"] for ref in claim["refs"]]),
+            "evidence_claim_ids": [str(claim["id"]) for claim in item["claims"]],
+        }
+        for item in detail_items
+    ]
+
+
+def _add_promotion_entries(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    markdown: str,
+    entry_changes: list[dict[str, Any]],
+) -> str:
+    """편입과 같게 하위 항목을 사본에 더하고 본문 목록을 사본 전체로 다시 그린다. 임베딩 단위보다 먼저 써야 한다."""
+    if not entry_changes:
+        return markdown
+    _upsert_page_entries(conn, workspace_id, page_id, entry_changes)
+    entries, references = _stored_entry_index(conn, page_id)
+    return render_entry_index(markdown, entries, references)
 
 
 def _add_aliases(markdown: str, title: str, names: list[str]) -> tuple[str, list[str]]:

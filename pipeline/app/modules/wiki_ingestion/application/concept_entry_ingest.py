@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import logging
 from collections import Counter
 from typing import Any
@@ -18,7 +17,7 @@ from typing import Any
 from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.application.judge_candidates import PairJudge, PartOfJudge
 from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_order
-from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE
+from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id
 from app.modules.wiki_ingestion.domain.concept_split_rules import reaches_page_threshold
 
 logger = logging.getLogger(__name__)
@@ -76,7 +75,7 @@ def apply_concept_entries(
         parent_entry_id = entry_ids[parent] if parent else None
         match = matched.get(detail)
         home = match["page_slug"] if match else container
-        entry_ids[detail] = match["slug"] if match else _new_entry_id(home, detail)
+        entry_ids[detail] = match["slug"] if match else new_entry_id(home, detail)
         refs = unique_keep_order([
             *concept.get("anchor_reference_ids", []),
             *(ref for evidence_id in concept.get("evidence_claim_ids", [])
@@ -273,11 +272,6 @@ def _match_entries(
         if decision.get("decision") == "merge_into" and decision.get("canonical_slug") in by_id:
             matched[detail] = by_id[decision["canonical_slug"]]
     return matched
-
-
-def _new_entry_id(page_slug: str, detail_slug: str) -> str:
-    # 같은 문서를 다시 편입하면 같은 id가 나와 근거만 더해진다. 워크스페이스 안에서 페이지 slug가 고유하다.
-    return "entry:" + hashlib.sha256(f"{page_slug}/{detail_slug}".encode("utf-8")).hexdigest()[:24]
 
 
 def _existing_concept_entry(concept: dict[str, Any], document_id: str) -> dict[str, Any]:

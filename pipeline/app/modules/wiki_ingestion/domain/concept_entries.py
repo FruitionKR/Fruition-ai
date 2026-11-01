@@ -1,12 +1,18 @@
 """개념 페이지 하위 항목(ADR 0042). 기여 기록의 `entry_changes`를 순서대로 재생해 만든다."""
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 # 다른 페이지 하위 항목을 가리키는 참조 링크의 relation. 링크에 `entry_id`를 함께 싣는다.
 ENTRY_REFERENCE = "entry_reference"
 ENTRY_EVIDENCE_FIELDS = ("anchor_reference_ids", "evidence_claim_ids")
 SUB_ENTRIES_HEADING = "## Sub-entries"
+
+
+def new_entry_id(page_slug: str, detail_slug: str) -> str:
+    # 같은 문서를 다시 편입하면 같은 id가 나와 근거만 더해진다. 워크스페이스 안에서 페이지 slug가 고유하다.
+    return "entry:" + hashlib.sha256(f"{page_slug}/{detail_slug}".encode("utf-8")).hexdigest()[:24]
 
 
 def replay_concept_entries(

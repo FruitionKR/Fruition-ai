@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.modules.wiki_generation.domain.text_utils import name_key
 from app.modules.wiki_ingestion.domain.unit_text import clean_unit_text
 
 
@@ -158,17 +159,22 @@ def refs_in_text(text: str) -> list[str]:
     return _unique_keep_order(re.findall(ref_pattern, text))
 
 
-# 승격은 여러 문서에 반복해 나오는 용어를 개념으로 올린다. 근거 문서가 이보다 적은 클러스터는 승격 후보가 될 수 없다.
-MIN_PROMOTION_SOURCE_DOCUMENTS = 2
+def cluster_detail_items(cluster_id: str, representative: str, claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """클러스터에 모인 세부 항목(ADR 0042의 하위 분류). 승격하면 개념 페이지의 하위 항목이 된다.
 
-
-def source_document_ids(refs: list[str]) -> set[str]:
-    """`문서ID:블록ID` 근거에서 문서 ID만 모은다."""
-    return {ref.split(":", 1)[0] for ref in refs if ":" in ref}
-
-
-def cluster_source_document_ids(section: str) -> set[str]:
-    return source_document_ids([ref for claim in cluster_claims(section) for ref in claim["refs"]])
+    세부 항목은 편입 후보 근거 줄(`claim_*: {용어} - {원문}`)의 용어를 이름 정규화(`name_key`)로 묶은 것이다.
+    클러스터 자신의 이름(id·대표명)과 같은 용어는 대분류 자신이라 빼고, 용어가 없는 근거 줄(`ev_*`, 근거 주장)은
+    클러스터 자신의 근거로 본다. 결과는 처음 나온 순서이고, 이름·정의는 처음 나온 줄의 용어·원문이다.
+    """
+    own = {name_key(cluster_id), name_key(representative)}
+    items: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        term, separator, context = str(claim.get("claim") or "").partition(" - ")
+        key = name_key(term)
+        if not str(claim.get("id") or "").startswith("claim_") or not separator or not key or key in own:
+            continue
+        items.setdefault(key, {"name": term.strip(), "definition": context.strip(), "claims": []})["claims"].append(claim)
+    return list(items.values())
 
 
 def cluster_claims(section: str) -> list[dict[str, str]]:

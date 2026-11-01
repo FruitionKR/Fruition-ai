@@ -72,6 +72,10 @@ representative: Cogging Torque
 
 ### Evidence Claims
 - claim_a_003: 코깅 토크는 무부하에서 생긴다. [doc-a:B0003]
+- claim_a_004: Detent Torque - 무전류 상태의 걸림 토크다. [doc-a:B0004]
+- claim_a_005: Torque Ripple - 회전 중 토크 변동이다. [doc-a:B0005]
+- claim_a_006: Slot Harmonic - 슬롯이 만드는 고조파다. [doc-a:B0006]
+- claim_a_007: Pole Arc - 자극 호의 폭이다. [doc-a:B0007]
 
 ## cluster: slot-opening
 
@@ -90,6 +94,7 @@ reason: 이미 쌓임
         "document": {"document_id": "doc-b"},
         "section_candidates": [
             {"term": "Cogging Torque", "context": "코깅 토크는 무부하 토크다.", "anchor_reference_ids": ["B0001"]},
+            {"term": "Skew Angle", "context": "스큐 각으로 코깅을 줄인다.", "anchor_reference_ids": ["B0004"]},
             {"term": "Slot Opening", "context": "슬롯 개방 폭을 줄인다.", "anchor_reference_ids": ["B0002"]},
             {"term": "Magnet Grade", "context": "자석 등급은 N42를 쓴다.", "anchor_reference_ids": ["B0003"]},
         ],
@@ -102,7 +107,8 @@ reason: 이미 쌓임
         "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_meaning_cluster_candidates",
         return_value=[
             {"candidate_id": "cand_001", "decision": "same_cluster", "target_cluster_id": "cogging-torque"},
-            {"candidate_id": "cand_002", "decision": "same_cluster", "target_cluster_id": "slot-opening"},
+            {"candidate_id": "cand_002", "decision": "same_cluster", "target_cluster_id": "cogging-torque"},
+            {"candidate_id": "cand_003", "decision": "same_cluster", "target_cluster_id": "slot-opening"},
         ],
     ), patch(
         "app.modules.wiki_generation.infrastructure.post_ingest_cluster.judge_cluster_promotions",
@@ -119,8 +125,9 @@ reason: 이미 쌓임
             core_concepts=[{"slug": "back-electromotive-force", "title": "역기전력", "aliases": ["Back EMF"]}],
         )
 
-    # 근거가 덧붙은 클러스터 중 이미 승격 후보인 slot-opening은 다시 묻지 않고,
-    # 이번 문서에만 근거가 있는 새 클러스터(magnet-grade)는 승격 판정을 받지 않는다.
+    # 근거가 덧붙은 클러스터 중 이미 승격 후보인 slot-opening은 다시 묻지 않고, 세부 항목이 P개 미만인
+    # 새 클러스터(magnet-grade, 자기 이름뿐)는 승격 판정을 받지 않는다. cogging-torque는 세부 항목이 5개(기존 4 + 이번 1)다
+    # (클러스터 이름과 같은 Cogging Torque와 용어 없는 근거 줄은 세지 않는다). 핵심 개념과 맞춘 back-emf는 개수를 보지 않는다.
     assert [item["cluster_id"] for item in judge_promotions.call_args.kwargs["clusters"]] == ["cogging-torque"]
     clusters = {cluster["id"]: cluster for cluster in artifact["clusters"]}
     assert clusters["back-emf"]["promotion"]["target"] == "back-electromotive-force"
