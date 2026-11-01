@@ -37,7 +37,7 @@ def test_merge_back_is_skipped_when_one_operation_contributed_to_parent_and_chil
 
     assert plan.decisions == [{"action": "merge_back", "page_id": "rollout", "entry_id": None,
                                "skipped_reason": "operation_on_both_pages"}]
-    assert plan.page_changes == {} and plan.redirects == {}
+    assert plan.page_changes == {} and plan.deleted_page_ids == []
 
 
 def test_split_moves_references_placed_under_the_moved_subtree() -> None:

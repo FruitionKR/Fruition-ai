@@ -4,7 +4,7 @@
 - 분리·승격: 집 페이지에는 옮긴 항목마다 `remove`와 새 페이지를 가리키는 `entry_reference`를 남긴다. 새 페이지에는
   개념과 `split_from`을 남기고, 옮긴 항목의 원래 기록(편입, 클러스터 승격·병합 lint)을 원래 작업 id 그대로 잇는다(`linked`).
 - 다시 합치기: 부모에 자식 항목마다 `revive`를 남겨 분리 때 지운 항목을 되살리고, 분리 뒤 자식에만 쌓인 편입 기록을
-  부모에 잇는다. 자식은 지우고 자식 → 부모 방향 전환(`redirects`)을 남긴다.
+  부모에 잇는다. 자식에는 재생 가능한 삭제 기록을 남긴다. 방향 전환은 두지 않는다.
 - 다른 페이지의 참조는 옮긴 항목을 따라 대상을 바꾸고, 가리키던 항목이 없어진 참조는 지운다.
 """
 from __future__ import annotations
@@ -58,8 +58,8 @@ class EntryLintPlan:
     page_changes: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 원래 작업 id 그대로 다른 페이지에 잇는 기여 JSON
     linked: list[dict[str, Any]] = field(default_factory=list)
-    # 지운 자식 page_id → 부모 page_id
-    redirects: dict[str, str] = field(default_factory=dict)
+    # 다시 합쳐 지울 자식 page_id
+    deleted_page_ids: list[str] = field(default_factory=list)
     # 이번에 자식을 합쳐 받아 분리·승격을 미룬 부모 페이지. 다음 lint가 다시 본다.
     deferred_page_ids: list[str] = field(default_factory=list)
 
@@ -167,7 +167,7 @@ def plan_entry_lint(
             reason = _merge_back(plan, pages, page)
             if reason is None:
                 merged_parents.add(str(page.split_record["split_from"]["page_id"]))
-        elif page.page_id in plan.redirects:
+        elif page.page_id in plan.deleted_page_ids:
             reason = "page_merged"
         elif page.page_id in merged_parents:
             # 이번에 자식을 합쳐 받은 부모는 합친 뒤 항목으로 다음 lint가 나눈다. 합치기 전 항목으로 나누면
@@ -279,7 +279,7 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
     record = child.split_record or {}
     split_from = record.get("split_from") or {}
     parent = pages.get(str(split_from.get("page_id")))
-    if parent is None or parent.page_id in plan.redirects:
+    if parent is None or parent.page_id in plan.deleted_page_ids:
         return "parent_missing"
     # ponytail: 자식이 다른 페이지 항목을 참조하면(다시 나눈 손자 페이지 포함) 합치지 않는다.
     # 참조를 부모로 옮기고 손자의 부모를 바꾸는 처리는 필요해지면 더한다.
@@ -312,7 +312,6 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
     change["removed_links"].extend(
         link for link in parent.links if link.get("relation") == ENTRY_REFERENCE and link.get("target") == child.ref
     )
-    change.setdefault("merged_pages", []).append({"page_id": child.page_id, "slug": child.slug})
     _retarget_references(
         plan,
         pages,
@@ -323,12 +322,11 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
     )
     # 자식에는 재생 가능한 삭제 기록을 남긴다. 자식의 기존 기여는 그대로 두고, 이 기록이 그때까지의 기록을 지운다.
     # lint 복원이 이 기록과 이은 기록을 빼면 자식이 다시 재생된다. 자식이 내던 링크는 이 기록이 지운 것으로 남겨
-    # 복원 때 되살린다. 다른 페이지에서 옮겨 간 링크(redirected_links)는 저장할 때 채운다.
+    # 복원 때 되살린다. 다른 페이지에서 자식으로 오던 일반 링크는 저장할 때 그 페이지 기록에서 지운다.
     child_change = plan.change(child.page_id, child.slug, child.title)
     child_change["content_action"] = "delete"
-    child_change["merged_into"] = {"page_id": parent.page_id, "slug": parent.slug}
     child_change["removed_links"].extend(link for link in child.links if link not in child_change["removed_links"])
-    plan.redirects[child.page_id] = parent.page_id
+    plan.deleted_page_ids.append(child.page_id)
     return None
 
 

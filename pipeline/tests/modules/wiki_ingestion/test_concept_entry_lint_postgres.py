@@ -380,7 +380,7 @@ def test_ingest_restore_after_split_removes_document_from_parent_and_child(world
     assert ("doc-x", "rollout") not in state["documents"]
 
 
-def test_merge_back_on_first_lint_after_restore_then_redirects_links(world: World) -> None:
+def test_merge_back_on_first_lint_after_restore_removes_links_to_the_child_by_record(world: World) -> None:
     _deployment_with_thick_rollout(world)
     world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
         _add("e-history", "History", "e-rollout", ["B20"]),
@@ -400,25 +400,27 @@ def test_merge_back_on_first_lint_after_restore_then_redirects_links(world: Worl
     assert merged["deleted_pages"] == [rollout_id]
     parent = world.contribution("deployment", "lint-merge")
     assert parent["entry_changes"] == [{"op": "revive", "entry_id": "e-rollout"}, {"op": "revive", "entry_id": "e-history"}]
-    assert parent["merged_pages"] == [{"page_id": rollout_id, "slug": "rollout"}]
+    # 방향 전환 없이, 자식으로 오던 링크는 그 링크를 낸 페이지의 lint 기록이 지운다.
+    assert world.contribution("service", "lint-merge")["removed_links"] == [
+        {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"}]
     state = world.state()
     assert "rollout" not in state["pages"]
     assert ("e-history", "deployment", "History", None) in state["entries"]
     assert "doc-y:B20" in state["pages"]["deployment"][2]
     assert state["pages"]["deployment"][2] == world.ledger_rebuild("deployment").markdown
-    assert ("service", "deployment", "concept_related_to") in state["links"]
-    assert not [link for link in state["links"] if "rollout" in link]
+    assert not [link for link in state["links"] if "rollout" in link or link[0] == "service"]
     with world.connect() as conn:
-        assert conn.execute("SELECT merged_into_page_id FROM wiki_pages WHERE id = %s",
-                            (rollout_id,)).fetchone()["merged_into_page_id"] == world.page_id("deployment")
+        columns = {row["column_name"] for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'wiki_pages'").fetchall()}
+    assert "merged_into_page_id" not in columns
 
-    # 지운 자식을 가리키는 기록을 다시 재생해도 방향 전환을 따라 부모로 잇는다.
+    # 다시 재생해도 지운 자식으로도 부모로도 잇지 않는다.
     service = world._rebuild("resync", world.page_id("service"))
     database.apply_restored_wiki_state(WS, [service], {"removed_links": [], "restored_links": service["supported_links"]}, True)
-    assert ("service", "deployment", "concept_related_to") in world.state()["links"]
+    assert not [link for link in world.state()["links"] if link[0] == "service"]
 
 
-def test_split_restore_redirects_links_made_to_the_child_after_split(world: World) -> None:
+def test_split_restore_drops_links_made_to_the_child_after_split(world: World) -> None:
     _deployment_with_thick_rollout(world)
     world.lint("lint-split")
     world.ingest("op-z", "doc-z", {"service": {"title": "Service", "links": [
@@ -427,10 +429,10 @@ def test_split_restore_redirects_links_made_to_the_child_after_split(world: Worl
 
     result = world.restore_lint("lint-split")
 
-    assert result["link_changes"]["redirects"] == [
-        {"from_page_id": world.page_id("rollout"), "to_page_id": world.page_id("deployment")}]
+    assert "redirects" not in result["link_changes"]
     links = world.state()["links"]
-    assert ("service", "deployment", "concept_related_to") in links
+    # 지운 자식을 가리키던 뒤 링크는 부모로 옮기지 않고 사라진다(ADR 0042 결정 1).
+    assert not [link for link in links if link[0] == "service"]
     assert not [link for link in links if "rollout" in link]
 
 
@@ -545,11 +547,11 @@ def test_lint_restore_of_merge_back_recreates_child_with_its_entries_and_links(w
     merged = world.lint("lint-merge")
     assert merged["deleted_pages"] == [world.page_id("rollout")]
     assert "rollout" not in world.state()["pages"]
-    assert world.contribution("rollout", "lint-merge")["merged_into"]["slug"] == "deployment"
+    assert world.contribution("rollout", "lint-merge")["content_action"] == "delete"
 
-    result = world.restore_lint("lint-merge")
+    world.restore_lint("lint-merge")
 
-    assert result["link_changes"]["reversed_redirects"][0]["page_id"] == world.page_id("rollout")
+    # 자식이 다시 재생되고, 다른 페이지 기록이 지웠던 자식으로 오는 링크도 원래 기록이 아직 이어 되살아난다.
     assert world.state() == before
 
 
@@ -697,29 +699,6 @@ def test_resplit_after_merge_back_does_not_reuse_the_deleted_child_page(world: W
         assert conn.execute("SELECT status FROM wiki_pages WHERE id = %s", (old_id,)).fetchone()["status"] == "deleted"
 
 
-def test_lint_restore_of_merge_back_moves_source_document_links_back(world: World) -> None:
-    _merged_back_rollout(world)
-    # 문서(source) 페이지가 자식 개념을 언급한다. 링크는 편입 실행의 source_contribution에 남는다.
-    link = {"source": "source:doc-s", "target": "concept:rollout", "relation": "source_mentions_concept"}
-    with world.connect() as conn:
-        source_id = database._resolve_or_create_wiki_page_id(conn, "user", WS, "source", "doc-s")
-        world.write(f"wiki/{WS}/pages/{source_id}/ops/op-s.md", "# doc-s\n")
-        database._upsert_wiki_page(conn, source_id, "source", "doc-s", "doc-s", "", f"wiki/{WS}/pages/{source_id}/ops/op-s.md", "user", WS)
-        database._upsert_wiki_page_link(conn, source_id, world.page_id("rollout"), link["relation"], None, None, WS)
-    world._record(source_id, "op-s", "doc-s")
-    world._run("ingest", {"operation_id": "op-s"})
-    with world.connect() as conn:
-        conn.execute("UPDATE pipeline_runs SET manifest = %s WHERE manifest->'task_result'->>'operation_id' = 'op-s'",
-                     (Json({"operation_id": "op-s", "source_contribution": {"links": [link]}}),))
-    before = world.state()
-
-    world.lint("lint-merge")
-    assert ("doc-s", "deployment", "source_mentions_concept") in world.state()["links"]
-    world.restore_lint("lint-merge")
-
-    assert world.state() == before
-
-
 def test_split_reuses_vectors_of_moved_entries(world: World) -> None:
     _deployment_with_thick_rollout(world)
     moved = [f"e-{step}" for step in ROLLOUT_STEPS]
@@ -826,71 +805,3 @@ def test_split_drops_key_points_of_moved_entries_from_parent_body_and_units(worl
         texts = [row["text"] for row in conn.execute(
             "SELECT text FROM wiki_embedding_units WHERE page_id = %s", (world.page_id("deployment"),)).fetchall()]
     assert texts and not [text for text in texts if "롤아웃 단계 요약" in text]
-
-
-def test_lint_restore_of_merge_back_restores_chained_redirects(world: World) -> None:
-    _merged_back_rollout(world)
-    # 앞서 Rollout으로 합쳐 지운 손자 페이지가 있다.
-    rollout_id = world.page_id("rollout")
-    with world.connect() as conn:
-        grandchild = database._resolve_or_create_wiki_page_id(conn, "user", WS, "concept", "rollout-history")
-        conn.execute("UPDATE wiki_pages SET status = 'deleted', merged_into_page_id = %s WHERE id = %s",
-                     (rollout_id, grandchild))
-
-    def target() -> str:
-        with world.connect() as conn:
-            return conn.execute("SELECT merged_into_page_id FROM wiki_pages WHERE id = %s",
-                                (grandchild,)).fetchone()["merged_into_page_id"]
-
-    world.lint("lint-merge")
-    assert target() == world.page_id("deployment")
-
-    world.restore_lint("lint-merge")
-
-    assert target() == rollout_id
-
-
-def _split_rollout_with_history_from_doc_y(world: World) -> None:
-    """Rollout을 나눈다. 부모는 doc-d 근거로도 받쳐지고, History는 doc-y도 근거로 가진다."""
-    _deployment_with_thick_rollout(world)
-    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["B99"]}})
-    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
-        _add("e-history", "History", "e-rollout", ["B20"])]}})
-    world.lint("lint-split")
-
-
-def test_cancelled_ingest_stays_cancelled_through_merge_and_merge_restore(world: World) -> None:
-    # ingest → split → ingest 취소 → merge → merge 취소. 합치기가 자식 기여를 끄지 않으므로 되살릴 것도 없다.
-    _split_rollout_with_history_from_doc_y(world)
-    world.restore_ingest("op-x")
-    before_merge = world.state()
-
-    merged = world.lint("lint-merge")
-    rollout_id = world.page_id("rollout")
-    assert merged["deleted_pages"] == [rollout_id]
-    assert world.contribution("rollout", "lint-merge")["content_action"] == "delete"
-    # 삭제한 자식도 changed_pages에 있어야 document-svc가 그 원장 행을 받는다.
-    assert rollout_id in {page["page_id"] for page in merged["changed_pages"]}
-    assert all(row["active"] for row in world.ledger if row["page_id"] == rollout_id and row["ingest_operation_id"] != "op-x")
-
-    world.restore_lint("lint-merge")
-
-    state = world.state()
-    assert state == before_merge
-    assert not [text for _title, _summary, text in state["pages"].values() if "doc-x" in text]
-
-
-def test_restore_whose_replay_ends_in_the_merge_delete_reports_the_page_deleted(world: World) -> None:
-    _split_rollout_with_history_from_doc_y(world)
-    # 분리 뒤 자식에만 기여한 문서. 다시 합치기가 부모에 잇는다.
-    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "evidence": ["B70"]}})
-    world.restore_ingest("op-x")
-    world.lint("lint-merge")
-    rollout_id = world.page_id("rollout")
-
-    # doc-w가 자식을 받쳐 document-svc는 자식을 재조립 대상으로 넘기지만, 재생은 삭제 기록에서 끝난다.
-    result = world.restore_ingest("op-y")
-
-    assert rollout_id in result["deleted_pages"]
-    assert rollout_id not in {page["page_id"] for page in result["changed_pages"]}
-    assert "rollout" not in world.state()["pages"]

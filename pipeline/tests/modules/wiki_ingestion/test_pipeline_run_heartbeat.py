@@ -244,7 +244,7 @@ def test_restore_resolves_unchanged_active_link_target(monkeypatch) -> None:
         if "status = 'active'" in str(call.args[0])
     )
     assert "user_id" not in str(active_call.args[0])
-    assert active_call.args[1] == ("ws-1", "ws-1")
+    assert active_call.args[1] == ("ws-1",)
 
 
 def test_restore_does_not_resolve_unchanged_active_link_source(monkeypatch) -> None:

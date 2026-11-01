@@ -107,9 +107,8 @@ CREATE TABLE IF NOT EXISTS wiki_page_links (
 CREATE INDEX IF NOT EXISTS idx_wiki_page_links_workspace
     ON wiki_page_links (workspace_id);
 
--- 합쳐 지운 페이지의 방향 전환(ADR 0042). 지운 페이지를 가리키던 기록을 재생하면 이 페이지로 잇는다.
-ALTER TABLE wiki_pages ADD COLUMN IF NOT EXISTS merged_into_page_id varchar(255)
-    REFERENCES wiki_pages(id) ON DELETE SET NULL;
+-- 합쳐 지운 페이지의 방향 전환은 두지 않는다(ADR 0042 결정 1). 페이지 상태는 기여 원장 재생으로 정한다.
+ALTER TABLE wiki_pages DROP COLUMN IF EXISTS merged_into_page_id;
 
 -- 개념 페이지 하위 항목의 조회용 사본(ADR 0042). 원본은 기여 기록이고, 복구 재생 결과로 페이지마다 다시 쓴다.
 -- 항목 id는 워크스페이스 안에서 고유하고 집(page_id)은 하나다. 참조는 wiki_page_links의 entry_reference 간선이다.

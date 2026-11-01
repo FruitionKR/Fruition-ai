@@ -28,28 +28,6 @@ def calculate_lint_link_changes(
             link for link in removed_links if _link_key(link) in supported_keys
         ],
     }
-    # 분리 롤백은 자식을 부모로 합치는 것과 같다(ADR 0042 6). 분리 기록(split_from)은 그 lint가 만든
-    # 자식 페이지에만 있고, 만든 페이지는 롤백에서 지워지므로 자식 → 부모 방향 전환을 남긴다.
-    redirects = [
-        {"from_page_id": contribution["page_id"], "to_page_id": contribution["split_from"]["page_id"]}
-        for contribution in target_contributions
-        if isinstance(contribution.get("split_from"), dict)
-    ]
-    if redirects:
-        changes["redirects"] = redirects
-    # 다시 합치기 롤백: 지운 자식의 합친 기록(merged_into)에 남긴 간선을 자식으로 되돌린다. 자식은 재조립으로 되살아난다.
-    reversed_redirects = [
-        {
-            "page_id": contribution["page_id"],
-            "merged_into_page_id": contribution["merged_into"]["page_id"],
-            "links": contribution.get("redirected_links", []),
-            "pages": contribution.get("redirected_pages", []),
-        }
-        for contribution in target_contributions
-        if isinstance(contribution.get("merged_into"), dict)
-    ]
-    if reversed_redirects:
-        changes["reversed_redirects"] = reversed_redirects
     return changes
 
 

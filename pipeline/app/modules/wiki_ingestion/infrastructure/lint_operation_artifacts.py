@@ -11,10 +11,6 @@ ENTRY_LINT_FIELDS = (
     "entry_changes",
     "split_from",
     "linked_operation_ids",
-    "merged_pages",
-    "merged_into",
-    "redirected_links",
-    "redirected_pages",
 )
 
 
@@ -153,7 +149,7 @@ def _lint_payload(
         "removed_links": removed_links,
         # 이 페이지로 승격·병합하며 archived.md로 옮긴 클러스터. lint 복원이 active.md로 되돌린다.
         "archived_clusters": _dict_items(change.get("archived_clusters", [])),
-        # 하위 항목 재검사(ADR 0042)가 남긴 항목 변경·분리·합치기 기록. 있을 때만 싣는다.
+        # 하위 항목 재검사(ADR 0042)가 남긴 항목 변경·분리 기록. 있을 때만 싣는다.
         **{key: change[key] for key in ENTRY_LINT_FIELDS if change.get(key)},
     }
 

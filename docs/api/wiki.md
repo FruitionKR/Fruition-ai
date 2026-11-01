@@ -464,12 +464,10 @@ lint가 승격·병합하며 `clusters/archived.md`로 옮긴 클러스터도 �
 같은 id의 클러스터가 `active.md`에 새로 생겼으면 덮어쓰지 않고 건너뛴다. 응답의 `cluster_changes`는 쓴 객체 키
 (`written_object_keys`), 되돌린 클러스터(`restored_cluster_ids`), 건너뛴 클러스터(`skipped_cluster_ids`)다.
 
-하위 항목 분리를 되돌리면 그 lint가 만든 자식 페이지(기록에 `split_from`이 있는 페이지)는 부모로 합친 것과 같게 처리한다.
-`link_changes.redirects`(`from_page_id`·`to_page_id`)에 자식 → 부모 방향 전환을 싣고, 자식을 가리키던 링크를 부모로 옮긴 뒤
-자식을 지운다. 지운 자식을 가리키는 기록을 나중에 재생해도 `wiki_pages.merged_into_page_id`를 따라 부모로 잇는다.
-다시 합치기를 되돌리면 자식은 `rebuild_pages`로 재조립돼 다시 활성이 되고(`merged_into_page_id`도 지운다), 자식의 합친 기록
-(`merged_into`·`redirected_links`·`redirected_pages`)으로 `link_changes.reversed_redirects`(`page_id`·`merged_into_page_id`·`links`·`pages`)를 만들어 이어진 방향 전환(`pages`)을 자식으로 되돌리고 부모로
-옮겼던 간선을 자식으로 되돌린다. 부모 쪽 간선은 그때 새로 생겼고(`created`) 원래 페이지의 활성 기록을 재생해도 잇지 않을 때만 지운다. 자식 쪽 간선은 원래 페이지의 활성 기록이 아직 자식을 이을 때만 되살린다. 문서(source) 페이지는 마지막 활성 편입 실행의 `source_contribution.links`로 본다.
+하위 항목 분리·다시 합치기의 복원은 방향 전환 없이 기록 재생으로 한다(ADR 0042). 분리를 되돌리면 자식에 남은 기여로 자식을
+다시 재생하고, 남은 근거가 없으면 지운다. 지운 자식을 가리키던 뒤 링크는 부모로 옮기지 않고 사라진다. 다시 합치기를 되돌리면
+합친 lint 행(자식의 삭제 기록, 부모의 `revive`, 다른 페이지가 자식으로 오던 링크를 지운 기록)과 그 lint가 이은 행이 빠져 자식이
+재생되고, 그 lint 기록이 지웠던 링크(`removed_links`) 중 남은 기록이 아직 잇는 것만 `link_changes.restored_links`로 되살린다.
 
 #### 3. Auth 필요 여부
 
