@@ -166,7 +166,12 @@ def _assign_heads(
     """세부 항목 slug → 상위 항목 slug. 판정기의 part_of만 배정한다. 기존 개념 페이지는 세부 항목이 되지 않는다."""
     if judge_part_of is None or similarity is None:
         return {}
-    heads = {slug: concept for slug, concept in {**existing, **{c["slug"]: c for c in ledger}}.items() if _has_definition(concept)}
+    # 판정기는 `definition`만 본다. 파일 개념 인덱스는 정의를 `summary`에 담으므로 옮겨 둔다.
+    heads = {
+        slug: {**concept, "definition": concept.get("definition") or concept.get("summary") or ""}
+        for slug, concept in {**existing, **{c["slug"]: c for c in ledger}}.items()
+        if _has_definition(concept)
+    }
     details = [concept for concept in ledger if concept["slug"] not in existing and concept["slug"] in heads]
     try:
         pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
@@ -331,8 +336,11 @@ def _match_siblings(
     for detail in asked:
         decision = decisions.get(queries[detail]["slug"]) or {}
         target = str(decision.get("canonical_slug") or "").removeprefix("incoming:")
+        # 먼저 나온 형제가 이미 다른 형제에 합쳐졌으면 그 최종 항목으로 잇는다(B→A, C→B면 C→A).
+        while target in found:
+            target = found[target]
         if (
-            decision.get("decision") == "merge_into" and target in order and target not in found
+            decision.get("decision") == "merge_into" and target in order
             and placements.get(target) == placements[detail] and order[target] < order[detail]
         ):
             found[detail] = target

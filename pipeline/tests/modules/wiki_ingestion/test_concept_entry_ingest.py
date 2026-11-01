@@ -737,3 +737,64 @@ def test_ingest_llm_judges_same_entries_and_keeps_unsure_apart() -> None:
 
     assert judge(entries, entries) == {"incoming:b": {"incoming_slug": "incoming:b", "decision": "merge_into",
                                                      "canonical_slug": "incoming:a", "alias_to_add": None}}
+
+
+def test_existing_page_from_the_file_index_is_judged_with_its_summary_as_definition() -> None:
+    # 파일 개념 인덱스는 정의를 summary에 둔다. Jev처럼 정의 없는 쌍을 건너뛰는 판정기에도 정의로 넘긴다.
+    file_page = {"slug": "pod", "title": "파드 (Pod)", "aliases": [], "summary": "컨테이너를 묶어 실행하는 단위", "entries": []}
+
+    def jev_like(pairs):
+        return {(head["slug"], detail["slug"]): {"part_of": True, "probability": 0.95}
+                for head, detail in pairs
+                if head["slug"] == "pod" and str(head.get("definition") or "").strip() and detail.get("definition")}
+
+    result = apply_concept_entries(
+        _normalized([_concept("sidecar-container", "사이드카 컨테이너", "B0001")], [file_page]),
+        judge_part_of=jev_like, similarity=_same_score,
+    )
+
+    assert set(_entries(result, "pod")) == {"사이드카 컨테이너"}
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("timeout"), ValueError("bad json after retries")])
+def test_llm_judge_failures_are_no_decision_but_cancellation_still_stops(failure) -> None:
+    from app.core.pipeline_control import DeadlineExceededError
+
+    class Failing:
+        def __init__(self, error) -> None:
+            self.error = error
+
+        def complete_json(self, _system, _user):
+            raise self.error
+
+    concepts = [_concept("static-pod-ko", "스태틱 파드", "B0001")]
+    normalized = _normalized(concepts, [POD_PAGE])
+    entries = [{"slug": "incoming:a", "title": "Pod > A", "definition": "a"},
+               {"slug": "incoming:b", "title": "Pod > B", "definition": "b"}]
+
+    # 전송 오류·JSON 재시도 소진은 판정 없음이다. 편입은 배정 없이 계속된다.
+    assert apply_concept_entries(normalized, judge_part_of=llm_part_of_judge(Failing(failure), "r"),
+                                 similarity=_same_score) is normalized
+    assert llm_same_entry_judge(Failing(failure), "r", _same_score)(entries, entries) == {}
+    # 작업 취소·기한 초과는 그대로 올린다.
+    with pytest.raises(DeadlineExceededError):
+        llm_part_of_judge(Failing(DeadlineExceededError("deadline")), "r")([(POD_PAGE, concepts[0])])
+    with pytest.raises(DeadlineExceededError):
+        llm_same_entry_judge(Failing(DeadlineExceededError("deadline")), "r", _same_score)(entries, entries)
+
+
+def test_sibling_merge_chain_resolves_to_the_first_sibling() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
+    concepts = [_concept("deployment-a", "Deployment A", "B0001"), _concept("deployment-b", "Deployment B", "B0002"),
+                _concept("deployment-c", "Deployment C", "B0003")]
+
+    def judge(entries, _pool):
+        # B→A, C→B. C는 B가 합쳐진 최종 항목 A로 가야 한다.
+        targets = {"incoming:deployment-b": "incoming:deployment-a", "incoming:deployment-c": "incoming:deployment-b"}
+        return {entry["slug"]: {"incoming_slug": entry["slug"], "decision": "merge_into", "canonical_slug": targets[entry["slug"]]}
+                for entry in entries if entry["slug"] in targets}
+
+    adds = _apply(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
+
+    assert len({change["entry_id"] for change in adds}) == 1
+    assert [change["anchor_reference_ids"] for change in adds] == [["B0001"], ["B0002"], ["B0003"]]

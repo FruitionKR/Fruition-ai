@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.jev_client import JevUnavailable
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def llm_part_of_judge(completion: JsonCompletionPort, system_prompt: str) -> Par
                 {"id": key, "head": _concept_identity(head), "detail": _concept_identity(detail)}
                 for key, (head, detail) in batch.items()
             ]}
-            raw = completion.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            raw = _judge_call(completion, system_prompt, payload)
             for item in raw.get("judgments") or []:
                 if not isinstance(item, dict) or item.get("id") not in batch:
                     continue
@@ -79,7 +80,7 @@ def llm_same_entry_judge(
                 {"id": entry["slug"], "incoming": _concept_identity(entry), "candidates": [_concept_identity(item) for item in candidates]}
                 for entry, candidates in questions[start:start + LLM_JUDGE_QUESTIONS_PER_CALL]
             ]}
-            raw = completion.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            raw = _judge_call(completion, system_prompt, payload)
             for item in raw.get("judgments") or []:
                 if not isinstance(item, dict) or item.get("id") not in batch:
                     continue
@@ -92,6 +93,21 @@ def llm_same_entry_judge(
         return decisions
 
     return judge
+
+
+def _judge_call(completion: JsonCompletionPort, system_prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """판정 LLM 호출. 전송 오류·시간 초과·JSON 재시도 소진은 판정 없음(빈 결과)으로 보고 편입을 실패시키지 않는다.
+
+    작업 취소와 전체 기한 초과(PipelineRunCancelledError)는 그대로 올린다.
+    """
+    try:
+        raw = completion.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    except PipelineRunCancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[LLM 하위 항목 판정 생략] %s", type(exc).__name__)
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _confidence(value: Any) -> float:
