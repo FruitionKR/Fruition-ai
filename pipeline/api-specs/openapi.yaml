@@ -2337,6 +2337,22 @@ components:
         cluster_count:
           title: Cluster Count
           type: integer
+        deferred_entry_pages:
+          items:
+            type: string
+          title: Deferred Entry Pages
+          type: array
+        deleted_pages:
+          items:
+            type: string
+          title: Deleted Pages
+          type: array
+        entry_decisions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Entry Decisions
+          type: array
         invalid_promotions:
           items:
             additionalProperties: true
@@ -2348,6 +2364,12 @@ components:
             additionalProperties: true
             type: object
           title: Invalid Relations
+          type: array
+        ledger_contributions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Ledger Contributions
           type: array
         materialized_promotions:
           items:

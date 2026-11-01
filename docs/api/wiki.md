@@ -460,6 +460,10 @@ lint가 승격·병합하며 `clusters/archived.md`로 옮긴 클러스터도 �
 같은 id의 클러스터가 `active.md`에 새로 생겼으면 덮어쓰지 않고 건너뛴다. 응답의 `cluster_changes`는 쓴 객체 키
 (`written_object_keys`), 되돌린 클러스터(`restored_cluster_ids`), 건너뛴 클러스터(`skipped_cluster_ids`)다.
 
+하위 항목 분리를 되돌리면 그 lint가 만든 자식 페이지(기록에 `split_from`이 있는 페이지)는 부모로 합친 것과 같게 처리한다.
+`link_changes.redirects`(`from_page_id`·`to_page_id`)에 자식 → 부모 방향 전환을 싣고, 자식을 가리키던 링크를 부모로 옮긴 뒤
+자식을 지운다. 지운 자식을 가리키는 기록을 나중에 재생해도 `wiki_pages.merged_into_page_id`를 따라 부모로 잇는다.
+
 #### 3. Auth 필요 여부
 
 - 필요
@@ -595,6 +599,14 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 #### 2. 목적
 
 워크스페이스 Wiki의 정합성을 검사합니다.
+
+하위 항목 재검사([ADR 0042](../adr/0042-hierarchical-concept-pages.md) 3단계)도 함께 한다. 지난 lint 뒤 바뀐 개념 페이지의
+하위 항목으로 분리·여러 부모 승격·다시 합치기를 정하고 사라진 항목을 가리키는 참조를 지운다(형식은
+[data-model](../data-model.md)). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`),
+`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다. `ledger_contributions`
+(`page_id`·`operation_id`·`document_id`·`contribution_key`)는 document-svc가 기여 원장에 더할 행으로, 이 lint의 하위 항목 기록과
+원래 작업 id로 다른 페이지에 이은 편입 기록이다. document-svc는 이 행 기록, `deleted_pages`의 기여 비활성화, lint 복원 때 대상
+lint 기록을 뺀 재조립을 아직 하지 않는다.
 
 #### 3. Auth 필요 여부
 

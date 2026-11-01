@@ -22,6 +22,8 @@ def _no_shared_object_storage(monkeypatch) -> None:
     # 공유 객체 보관·복원은 객체 저장소를 읽으므로 기본으로 비운다. 복원 테스트는 따로 바꾼다.
     monkeypatch.setattr(wiki_maintenance, "_snapshot_object", lambda _key: None)
     monkeypatch.setattr(wiki_maintenance, "_restore_object", lambda _key, _before: None)
+    # 하위 항목 재검사는 DB를 읽으므로 비운다. 재검사는 test_concept_entry_lint에서 본다.
+    monkeypatch.setattr(wiki_maintenance.database, "lint_concept_entries", lambda *_args, **_kwargs: {})
 
 
 def WikiMaintenanceCommand(**data: object) -> _WikiMaintenanceCommand:

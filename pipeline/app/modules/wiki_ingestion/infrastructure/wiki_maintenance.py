@@ -94,6 +94,17 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     connection=connection,
                 )
             )
+            result.update(
+                database.lint_concept_entries(
+                    command.user_id,
+                    command.workspace_id,
+                    command.operation_id,
+                    apply=not command.dry_run,
+                    # 같은 lint의 승격이 바꾼 페이지와 기록이 겹치지 않게, 승격이 있으면 다음 lint로 미룬다.
+                    skip=bool(result.get("_lint_page_changes")),
+                    connection=connection,
+                )
+            )
             if not command.dry_run:
                 result["operation_id"] = command.operation_id
                 lint_date = date.today().isoformat()
@@ -120,6 +131,9 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                             artifact.get("contribution_key"),
                         )
                         if key
+                    )
+                    written_object_keys.extend(
+                        str(item["contribution_key"]) for item in result.get("ledger_contributions", [])
                     )
                     result["operation_artifacts"] = operation_artifacts
                     result["changed_pages"] = operation_artifacts
@@ -250,8 +264,9 @@ def _embedding_page_ids(result: dict[str, Any]) -> list[str]:
     return list(
         dict.fromkeys(
             str(promotion["page_id"])
-            for promotion_type in ("materialized_promotions", "merged_promotions")
+            for promotion_type in ("materialized_promotions", "merged_promotions", "ledger_contributions")
             for promotion in result.get(promotion_type, [])
             if isinstance(promotion, dict) and promotion.get("page_id")
+            and str(promotion["page_id"]) not in result.get("deleted_pages", [])
         )
     )

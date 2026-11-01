@@ -20,7 +20,7 @@ def calculate_lint_link_changes(
         for link in contribution.get("removed_links", [])
         if isinstance(link, dict)
     )
-    return {
+    changes = {
         "removed_links": [
             link for link in added_links if _link_key(link) not in supported_keys
         ],
@@ -28,6 +28,16 @@ def calculate_lint_link_changes(
             link for link in removed_links if _link_key(link) in supported_keys
         ],
     }
+    # 분리 롤백은 자식을 부모로 합치는 것과 같다(ADR 0042 6). 분리 기록(split_from)은 그 lint가 만든
+    # 자식 페이지에만 있고, 만든 페이지는 롤백에서 지워지므로 자식 → 부모 방향 전환을 남긴다.
+    redirects = [
+        {"from_page_id": contribution["page_id"], "to_page_id": contribution["split_from"]["page_id"]}
+        for contribution in target_contributions
+        if isinstance(contribution.get("split_from"), dict)
+    ]
+    if redirects:
+        changes["redirects"] = redirects
+    return changes
 
 
 def _unique_links(values: Any) -> list[dict[str, Any]]:
