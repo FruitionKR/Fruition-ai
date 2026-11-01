@@ -184,3 +184,16 @@ def test_detail_items_that_differ_only_by_symbols_stay_separate_entries(world: W
     assert [entry["name"] for entry in entries] == names
     assert len({entry["entry_id"] for entry in entries}) == 5
     assert [entry["anchor_reference_ids"] for entry in entries] == [[f"doc-c:B{index:04d}"] for index in range(1, 6)]
+
+
+def test_restoring_a_split_of_a_promoted_page_keeps_the_page_its_lint_record_supports(world: World, monkeypatch) -> None:
+    # 승격 페이지는 lint 기록만으로 받쳐진다. 그 항목의 분리를 되돌려도 승격 근거가 남아 페이지는 남는다.
+    _lint(world, monkeypatch, "lint-promote", _cluster("rollout", [*TERMS, *["Rollout History"] * 4]))
+    world.lint("lint-split")
+
+    result = world.restore_lint("lint-split")
+
+    state = world.state()
+    assert world.page_id("rollout") not in result["deleted_pages"]
+    assert "rollout" in state["pages"] and "rollout-history" not in state["pages"]
+    assert "Rollout History" in [entry[2] for entry in state["entries"] if entry[1] == "rollout"]

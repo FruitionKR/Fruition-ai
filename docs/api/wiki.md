@@ -312,6 +312,10 @@ ingest 작업의 Wiki 변경을 복원합니다.
 - 소스 → 개념 자동 링크(`source_mentions_concept`)는 복원 결과의 문서 연결(`source_document_ids`, 재생 결과 남은 유효 근거의 문서)에서
   다시 만든다(ADR 0042 결정 5). source 페이지를 스냅샷으로 되돌려도 이 링크는 지우지 않고, 그 스냅샷까지의 수동 기여로 수동
   `[[slug]]` 의도를 다시 재생한다. 응답 `changed_pages`의 source 페이지에는 `snapshot_operation_id`(= `restore_to_operation_id`)가 실린다.
+- 복원 command 계약(ADR 0042 최종 설계): document-svc는 대상 작업의 행(`operation_id`)과 그 작업이 이은 행(`linked_by_operation_id`)만 끄고,
+  어떤 행도 다시 켜지 않는다. 그 행이 있던 페이지 중 남은 활성 행이 있으면 `rebuild_pages`(남은 행을 적용 순서대로 `keep_contributions`),
+  없으면 `deleted_pages`다. 남은 행이 lint 기록뿐이라는 이유로 `deleted_pages`에 넣지 않는다. 클러스터 승격 페이지는 lint 기록이 근거라,
+  넣으면 그 항목의 분리를 되돌릴 때 승격 페이지까지 사라진다.
 - 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
   끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
   lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는
@@ -626,7 +630,9 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 `operation_id`·`document_id`가 원래 편입이고 `linked_by_operation_id`가 이 lint다. 같은 작업을 같은 페이지에 여러 번 이으면 한
 기록·한 행으로 합친다. document-svc는 어떤 행도 일괄 비활성화하지 않고 다시 켜지도 않는다. 합친 자식의 기존 기여도 그대로
 활성이다. 이 lint를 복원할 때는 `operation_id`나 `linked_by_operation_id`가 이 lint인 행만 끄고, 그 행이 있던 페이지를 남은 활성
-기여로 `rebuild_pages`에 넣는다(lint 기록 말고 받치는 기여가 없으면 `deleted_pages`).
+기여로 `rebuild_pages`에 넣는다. 남은 활성 행이 하나도 없는 페이지만 `deleted_pages`다. 남은 행이 lint 기록뿐이어도 `rebuild_pages`로
+넘기고, 페이지를 지울지는 ai 재생이 정한다(클러스터 승격 페이지는 lint 기록의 근거로 남는다. 분리·링크 lint 기록만 남은 페이지는 재생이
+지우고 응답 `deleted_pages`로 돌려준다).
 
 #### 3. Auth 필요 여부
 

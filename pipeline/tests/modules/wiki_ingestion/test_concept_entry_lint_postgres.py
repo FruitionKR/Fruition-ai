@@ -2,8 +2,8 @@
 
 document-svc 기여 원장은 가짜다. lint 결과의 `ledger_contributions`를 원장에 더하고, 어떤 행도 일괄 비활성화하거나
 다시 켜지 않는다. lint 복원은 대상 lint 기록과 그 lint가 이은 기록(`linked_by_operation_id`)만 끄고, 그 행이 있던
-페이지를 남은 기여로 재조립한다. lint 기록 말고 받치는 기여가 없는 페이지는 지운다. 재생 결과 삭제로 끝난 페이지는
-복원 결과의 `deleted_pages`로 받는다.
+페이지를 남은 기여로 재조립한다. 남은 행이 없는 페이지만 지우고, 남은 행이 lint 기록뿐이어도 재조립에 넘긴다(클러스터
+승격 페이지는 lint 기록이 근거다). 재생 결과 삭제로 끝난 페이지는 복원 결과의 `deleted_pages`로 받는다.
 """
 from __future__ import annotations
 
@@ -210,9 +210,9 @@ class World:
                 row["active"] = False
 
     def _supported(self, page_id: str, without: str) -> bool:
-        """document-svc처럼 lint 기록 말고 받치는 기여(문서가 있는 행)가 남았는지 본다."""
+        """남은 활성 행이 있으면 재조립 대상이다. 페이지를 지울지는 ai 재생이 정한다(docs/api/wiki.md 복원 계약)."""
         return any(
-            row["page_id"] == page_id and row["active"] and row["document_id"] is not None
+            row["page_id"] == page_id and row["active"]
             and without not in (row["ingest_operation_id"], row["linked_by_operation_id"])
             for row in self.ledger
         )
