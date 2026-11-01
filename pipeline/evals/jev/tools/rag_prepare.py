@@ -93,7 +93,9 @@ def main() -> None:
     parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
     parser.add_argument("--sources", help="쉼표로 구분한 corpus 문서 이름만 편입(확인용)")
     parser.add_argument("--concept-judge", choices=("jev", "llm"), default="jev", help="편입·후속 편입의 개념 판정기")
+    parser.add_argument("--model", default=":".join(HAIKU), help="편입 모델 provider:model(개념 크기 모델 비교용, 기본 Haiku)")
     args = parser.parse_args()
+    provider, model = args.model.split(":", 1)
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")
     # 임베딩 서버 주소는 도커 네트워크 안에서만 닿는다. 이 프로세스는 같은 BGE-M3를 직접 올려 쓴다(평가 전용).
@@ -137,7 +139,7 @@ def main() -> None:
     if not args.resume:
         user_id = jwt_subject(token())
         ws = call("POST", f"{ACCESS}/api/workspaces", {"name": "Jev 켬/끔 RAG 평가"}, token(), expected=(201,))["id"]
-        state = {"workspace_id": ws, "user_id": user_id, "email": email, "documents": []}
+        state = {"workspace_id": ws, "user_id": user_id, "email": email, "model": args.model, "documents": []}
         # 첫 문서에서 실패해도 만든 계정·워크스페이스로 이어갈 수 있게 바로 남긴다.
         (out / "workspace.json").write_text(json.dumps(state, ensure_ascii=False, indent=1))
     done = {doc["source_id"] for doc in state["documents"]}
@@ -151,7 +153,7 @@ def main() -> None:
                    token(), {"Idempotency-Key": f"jev-eval-{ws}-{i}"}, expected=(201,))
         command = {
             "run_id": str(uuid.uuid4()), "kind": "ingest", "document_id": doc["id"], "workspace_id": ws,
-            "user_id": user_id, "display_name": title, "provider": HAIKU[0], "model": HAIKU[1],
+            "user_id": user_id, "display_name": title, "provider": provider, "model": model,
         }
         started = time.monotonic()
         ingest_worker._handle(command)
