@@ -1306,10 +1306,7 @@ def update_pipeline_run_cluster_contribution(
     contribution = _source_contribution_payload(
         {"meaning_clusters": artifact}
     )
-    values = {
-        "claim_signatures": contribution["claim_signatures"],
-        "relation_signatures": contribution["relation_signatures"],
-    }
+    values = {"claim_signatures": contribution["claim_signatures"]}
     with connect() as conn:
         conn.execute(
             """

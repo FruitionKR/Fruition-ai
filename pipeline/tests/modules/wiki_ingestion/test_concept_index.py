@@ -832,7 +832,6 @@ source_refs: [doc_1, doc_2]
                         "수정 후 최신 주장이다. [doc_1:B0002]",
                     ]
                 ],
-                "_current_relation_signatures": [],
             }
         ],
     )
