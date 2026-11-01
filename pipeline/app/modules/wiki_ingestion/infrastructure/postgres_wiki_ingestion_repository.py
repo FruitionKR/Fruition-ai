@@ -1826,6 +1826,8 @@ def lint_wiki_workspace(
     materialize_promotions: bool = False,
     promotion_page_generator: PromotionPageGenerator | None = None,
     concept_judge: JevConceptResolver | None = None,
+    judge_part_of: PartOfJudge | None = None,
+    embedding_model: EmbeddingModelPort | None = None,
     apply_reconciliation: bool = False,
     operation_id: str | None = None,
     write_log: bool = True,
@@ -1960,6 +1962,8 @@ def lint_wiki_workspace(
                 active_markdown,
                 promotion_page_generator,
                 concept_judge=concept_judge,
+                judge_part_of=judge_part_of,
+                embedding_model=embedding_model,
                 operation_id=operation_id,
                 apply_reconciliation=apply_reconciliation,
             )
@@ -2434,38 +2438,7 @@ def _plan_page_moves(
     다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
     """
     busy = set(plan.page_changes)
-    page_rows = conn.execute(
-        """
-        SELECT id, slug, title, summary FROM wiki_pages
-        WHERE workspace_id = %s AND page_type = 'concept' AND status = 'active'
-        """,
-        (workspace_id,),
-    ).fetchall()
-    entry_rows = conn.execute(
-        """
-        SELECT entry.entry_id, entry.name, entry.definition, entry.parent_entry_id, page.id AS page_id, page.title
-        FROM wiki_page_entries entry
-        JOIN wiki_pages page ON page.id = entry.page_id
-        WHERE entry.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
-        ORDER BY entry.entry_id
-        """,
-        (workspace_id,),
-    ).fetchall()
-    # 상위 후보: 페이지는 slug, 하위 항목은 entry_id로 둔다. 항목 이름은 "바로 위 이름 > 이름"이다.
-    heads: dict[str, dict[str, Any]] = {}
-    head_pages: dict[str, tuple[str, str | None]] = {}
-    for row in page_rows:
-        heads[str(row["slug"])] = {"slug": str(row["slug"]), "title": str(row["title"]), "aliases": [],
-                                   "definition": str(row.get("summary") or "")}
-        head_pages[str(row["slug"])] = (str(row["id"]), None)
-    names = {str(row["entry_id"]): str(row["name"]) for row in entry_rows}
-    for row in entry_rows:
-        entry_id = str(row["entry_id"])
-        parent_name = names.get(str(row["parent_entry_id"] or "")) or str(row["title"])
-        heads[entry_id] = {"slug": entry_id, "title": f"{parent_name} > {row['name']}", "aliases": [],
-                           "definition": str(row.get("definition") or "")}
-        head_pages[entry_id] = (str(row["page_id"]), entry_id)
-    heads = {key: head for key, head in heads.items() if head["definition"].strip()}
+    page_rows, entry_rows, heads, head_pages = _part_of_heads(conn, workspace_id)
     vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
     fresh = [key for key in heads if head_pages[key][0] in changed and (head_pages[key][1] is None or key not in vectors)]
     try:
@@ -2542,6 +2515,49 @@ def _plan_page_moves(
         plan.deferred_page_ids.append(page_id)
 
 
+def _part_of_heads(
+    conn: psycopg.Connection,
+    workspace_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, tuple[str, str | None]]]:
+    """part_of 상위 후보. 활성 개념 페이지는 slug, 하위 항목은 entry_id로 둔다. 항목 이름은 "바로 위 이름 > 이름"이다.
+
+    정의가 없는 후보는 판정기가 볼 것이 없어 뺀다. head_pages는 후보 → (그 후보가 있는 page_id, 하위 항목 id 또는 None)이다.
+    lint 페이지 이동과 클러스터 승격 배치가 같이 쓴다.
+    """
+    page_rows = conn.execute(
+        """
+        SELECT id, slug, title, summary FROM wiki_pages
+        WHERE workspace_id = %s AND page_type = 'concept' AND status = 'active'
+        """,
+        (workspace_id,),
+    ).fetchall()
+    entry_rows = conn.execute(
+        """
+        SELECT entry.entry_id, entry.name, entry.definition, entry.parent_entry_id, page.id AS page_id, page.title
+        FROM wiki_page_entries entry
+        JOIN wiki_pages page ON page.id = entry.page_id
+        WHERE entry.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
+        ORDER BY entry.entry_id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    heads: dict[str, dict[str, Any]] = {}
+    head_pages: dict[str, tuple[str, str | None]] = {}
+    for row in page_rows:
+        heads[str(row["slug"])] = {"slug": str(row["slug"]), "title": str(row["title"]), "aliases": [],
+                                   "definition": str(row.get("summary") or "")}
+        head_pages[str(row["slug"])] = (str(row["id"]), None)
+    names = {str(row["entry_id"]): str(row["name"]) for row in entry_rows}
+    for row in entry_rows:
+        entry_id = str(row["entry_id"])
+        parent_name = names.get(str(row["parent_entry_id"] or "")) or str(row["title"])
+        heads[entry_id] = {"slug": entry_id, "title": f"{parent_name} > {row['name']}", "aliases": [],
+                           "definition": str(row.get("definition") or "")}
+        head_pages[entry_id] = (str(row["page_id"]), entry_id)
+    heads = {key: head for key, head in heads.items() if head["definition"].strip()}
+    return page_rows, entry_rows, heads, head_pages
+
+
 def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embedding_model: str) -> dict[str, array]:
     """활성 개념 페이지(slug)와 하위 항목(entry_id)의 저장된 벡터. 아직 임베딩하지 않은 것은 빠진다."""
     rows = conn.execute(
@@ -2614,10 +2630,13 @@ def persist_lint_operation_result(
     result: dict[str, Any],
     connection: psycopg.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    page_changes = {
-        str(change["slug"]): dict(change)
-        for change in result.pop("_lint_page_changes", [])
-    }
+    page_changes: dict[str, dict[str, Any]] = {}
+    for change in result.pop("_lint_page_changes", []):
+        # 기록은 페이지·작업마다 하나다. 같은 페이지 변경은 만드는 쪽(승격·하위 항목 재검사)이 한 변경으로 합친다.
+        # 둘이 오면 뒤 변경이 앞 변경을 덮어써 앞 근거·항목이 기록에서 빠지므로 저장하지 않는다.
+        if str(change["slug"]) in page_changes:
+            raise RuntimeError(f"duplicate lint page change: concept:{change['slug']}")
+        page_changes[str(change["slug"])] = dict(change)
     removed_links = [
         _normalized_relation_link(item)
         for reconciliation in result.get("applied_reconciliations", [])
@@ -2807,6 +2826,8 @@ def _materialize_promotion_candidates(
     promotion_page_generator: PromotionPageGenerator,
     *,
     concept_judge: JevConceptResolver | None = None,
+    judge_part_of: PartOfJudge | None = None,
+    embedding_model: EmbeddingModelPort | None = None,
     operation_id: str | None = None,
     apply_reconciliation: bool = False,
 ) -> dict[str, Any]:
@@ -2814,6 +2835,8 @@ def _materialize_promotion_candidates(
     materialized_promotions: list[dict[str, Any]] = []
     merged_promotions: list[dict[str, Any]] = []
     page_changes: list[dict[str, Any]] = []
+    # page_id → 이번 lint의 변경. 같은 페이지에 여러 클러스터가 들어오면 한 기록으로 합친다.
+    changes_by_page: dict[str, dict[str, Any]] = {}
     existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
     eligible_cluster_ids = {cluster["id"] for cluster in clusters}
     prepared_pages: dict[str, dict[str, Any]] = {}
@@ -2838,6 +2861,23 @@ def _materialize_promotion_candidates(
     # 판정은 외부 호출이라 페이지 생성처럼 DB 잠금(_lock_concept_persistence) 전에 끝낸다. 워크스페이스 개념 잠금
     # (concept_write_lock)은 wiki_maintenance가 lint 전체에 걸쳐 쥐고 있어, 그동안 편입·post-ingest는 기다린다.
     judgments = _judge_promoted_concepts(concept_judge, workspace_id, prepared_pages) if concept_judge else {}
+    # 같은 개념이 아니면 기존 개념 페이지·하위 항목 중 상위를 찾는다(ADR 0042). 찾으면 그 아래 하위 항목이 된다.
+    placements = (
+        _place_promoted_concepts(
+            conn,
+            workspace_id,
+            {
+                cluster_id: page
+                for cluster_id, page in prepared_pages.items()
+                if (judgments.get(cluster_id) or {}).get("decision") != "merge_into"
+                and slugify(str(page.get("slug") or cluster_id)) not in existing_concept_ids
+            },
+            judge_part_of,
+            embedding_model,
+        )
+        if judge_part_of is not None and embedding_model is not None
+        else {}
+    )
 
     _lock_concept_persistence(conn, workspace_id)
     applied_reconciliations: list[dict[str, Any]] = []
@@ -2905,6 +2945,7 @@ def _materialize_promotion_candidates(
                 aliases=[cluster.get("representative") or "", cluster_id],
                 detail_items=_detail_items(cluster),
                 operation_id=operation_id,
+                pending=changes_by_page,
             )
             if merged_page is not None:
                 merged_promotions.append(
@@ -2914,7 +2955,9 @@ def _materialize_promotion_candidates(
                         "page_id": existing_concept_ids[target_slug],
                     }
                 )
-                page_changes.append(merged_page)
+                if merged_page["page_id"] not in changes_by_page:
+                    changes_by_page[merged_page["page_id"]] = merged_page
+                    page_changes.append(merged_page)
                 section = active_sections.pop(cluster_id, "")
                 if section:
                     _archive_cluster(
@@ -2926,6 +2969,36 @@ def _materialize_promotion_candidates(
                     )
             continue
         if page is None:
+            continue
+        placed = _place_promotion_under_head(
+            conn,
+            user_id,
+            workspace_id,
+            cluster,
+            claims,
+            page,
+            placements.get(cluster_id),
+            operation_id=operation_id,
+            pending=changes_by_page,
+        )
+        if placed is not None:
+            merged_page, entry_id = placed
+            merged_promotions.append(
+                {"cluster_id": cluster_id, "concept_slug": merged_page["slug"], "page_id": merged_page["page_id"],
+                 "entry_id": entry_id}
+            )
+            if merged_page["page_id"] not in changes_by_page:
+                changes_by_page[merged_page["page_id"]] = merged_page
+                page_changes.append(merged_page)
+            section = active_sections.pop(cluster_id, "")
+            if section:
+                _archive_cluster(
+                    merged_page,
+                    archived_sections,
+                    cluster_id,
+                    section,
+                    f"merged_to: concept:{merged_page['slug']}#{entry_id}\nmerged_at: {_today_iso()}",
+                )
             continue
         source_refs = _unique_keep_order(ref for claim in claims for ref in claim.get("refs", []))
         markdown = append_concept_evidence(
@@ -3014,6 +3087,110 @@ def _archive_cluster(
     )
 
 
+def _place_promoted_concepts(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    prepared_pages: dict[str, dict[str, Any]],
+    judge_part_of: PartOfJudge,
+    embedding_model: EmbeddingModelPort,
+) -> dict[str, tuple[str, str | None]]:
+    """승격 개념의 상위를 기존 개념 페이지·하위 항목에서 part_of로 찾는다. 클러스터 id → (page_id, 상위 항목 id 또는 None).
+
+    후보와 판정은 lint 페이지 이동과 같다. 저장된 페이지·`sub_entry` 벡터로 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개를
+    판정기에 묻고 0.9 이상만 따른다. 판정기·임베딩을 쓸 수 없으면 비어 새 페이지가 된다. 승격 개념이 기존 페이지들의
+    상위이면 새 페이지로 두고, 그 페이지가 바뀐 페이지가 되는 다음 lint의 페이지 이동(역방향 후보)이 그 페이지들을 옮긴다.
+    판정은 외부 호출이라 개념 저장 잠금 전에 한다.
+    """
+    details = [
+        {"slug": cluster_id, "title": str(page.get("title") or cluster_id), "aliases": [], "definition": definition}
+        for cluster_id, page in prepared_pages.items()
+        for definition in [_markdown_section(str(page.get("markdown") or ""), "Definition")]
+        if definition.strip()
+    ]
+    if not details:
+        return {}
+    _page_rows, _entry_rows, heads, head_pages = _part_of_heads(conn, workspace_id)
+    vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
+    heads = {key: head for key, head in heads.items() if key in vectors}
+    try:
+        embedded = cached_embeddings(embedding_model, [concept_text(detail) for detail in details])
+    except Exception as exc:  # 임베딩 서버를 쓸 수 없으면 새 페이지로 둔다.
+        logger.warning("[lint 승격 배치 생략] 임베딩 실패: %s", type(exc).__name__)
+        return {}
+    by_text = {concept_text(head): vectors[key] for key, head in heads.items()}
+    by_text.update({concept_text(detail): embedded[concept_text(detail)] for detail in details})
+
+    def similarity(query: str, texts: list[str]) -> list[float]:
+        return [vector_similarity(by_text[query], by_text[text]) for text in texts]
+
+    placements: dict[str, tuple[str, str | None]] = {}
+    for _probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity):
+        placements.setdefault(detail, head_pages[head])
+    return placements
+
+
+def _place_promotion_under_head(
+    conn: psycopg.Connection,
+    user_id: str,
+    workspace_id: str,
+    cluster: dict[str, Any],
+    claims: list[dict[str, Any]],
+    page: dict[str, Any],
+    placement: tuple[str, str | None] | None,
+    *,
+    operation_id: str | None,
+    pending: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], str] | None:
+    """판정한 상위 페이지(또는 그 항목) 아래에 승격 개념을 하위 항목으로 둔다. 상위가 없거나 사라졌으면 None이다.
+
+    기록은 상위 페이지의 lint 기록 하나다. 승격 개념 항목의 `add`(이름·정의·별칭, 클러스터 근거 전체)와 그 아래 세부 항목
+    `add`를 남기고 근거를 더한다. lint 복원이 이 기록을 빼면 항목과 근거가 함께 빠진다.
+    """
+    if placement is None:
+        return None
+    page_id, parent_entry_id = placement
+    row = conn.execute(
+        "SELECT slug FROM wiki_pages WHERE id = %s AND page_type = 'concept' AND status = 'active'",
+        (page_id,),
+    ).fetchone()
+    if not row:
+        return None
+    target_slug = str(row["slug"])
+    markdown = str(page.get("markdown") or "")
+    title = str(page.get("title") or cluster["id"]).strip()
+    aliases = [
+        alias.strip()
+        for line in _markdown_list_section(markdown, "Aliases")
+        for alias in line.split(",")
+        if alias.strip() and alias.strip() != "-"
+    ]
+    entry_root = {
+        "op": "add",
+        "entry_id": new_entry_id(target_slug, slugify(str(page.get("slug") or cluster["id"]))),
+        "name": title,
+        "definition": _markdown_section(markdown, "Definition"),
+        "parent_entry_id": parent_entry_id,
+        "aliases": _unique_keep_order(
+            name for name in [*aliases, cluster.get("representative") or ""] if name and name_key(name) != name_key(title)
+        ),
+        "anchor_reference_ids": _unique_keep_order(ref for claim in claims for ref in claim.get("refs", [])),
+        "evidence_claim_ids": [str(claim["id"]) for claim in claims if claim.get("id")],
+    }
+    merged = _merge_promotion_into_existing_concept(
+        conn,
+        user_id,
+        workspace_id,
+        target_slug,
+        claims,
+        aliases=[],
+        detail_items=_detail_items(cluster),
+        operation_id=operation_id,
+        entry_root=entry_root,
+        pending=pending,
+    )
+    return None if merged is None else (merged, entry_root["entry_id"])
+
+
 def _judge_promoted_concepts(
     concept_judge: JevConceptResolver,
     workspace_id: str,
@@ -3056,7 +3233,15 @@ def _merge_promotion_into_existing_concept(
     aliases: list[str],
     detail_items: list[dict[str, Any]],
     operation_id: str | None = None,
+    entry_root: dict[str, Any] | None = None,
+    pending: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
+    """클러스터 근거를 기존 개념 페이지에 더한다. 같은 개념이면 별칭과 세부 항목을, 하위 개념이면 entry_root(승격 개념의
+    `add`) 아래 세부 항목을 하위 항목으로 둔다. 승격 개념은 항목에만 두고 페이지의 이름·정의·별칭은 바꾸지 않는다.
+
+    pending은 이번 lint에서 이미 바꾼 페이지 변경(page_id →)이다. 같은 페이지에 여러 클러스터가 들어오면 그 변경에
+    합친다. 아직 저장 전이라 DB의 본문 위치를 읽으면 앞 병합이 빠진다.
+    """
     row = conn.execute(
         """
         SELECT id, title, summary, markdown_uri
@@ -3070,7 +3255,8 @@ def _merge_promotion_into_existing_concept(
     ).fetchone()
     if not row:
         return None
-    markdown = _read_optional_text_object(row["markdown_uri"])
+    pending_change = (pending or {}).get(str(row["id"]))
+    markdown = pending_change["markdown"] if pending_change else _read_optional_text_object(row["markdown_uri"])
     if not markdown:
         return None
     updates = [
@@ -3083,16 +3269,28 @@ def _merge_promotion_into_existing_concept(
     ]
     # 병합한 클러스터의 이름을 별칭으로 남겨, 다음 편입이 그 이름으로 이 개념을 찾게 한다.
     title = str(row.get("title") or concept_slug)
-    with_aliases, added_aliases = _add_aliases(markdown, title, aliases)
+    with_aliases, added_aliases = (markdown, []) if entry_root else _add_aliases(markdown, title, aliases)
     updated_markdown = sanitize_ai_markdown(append_concept_evidence(with_aliases, updates))
-    # 병합한 근거 중 세부 항목은 그 개념의 하위 항목으로 둔다. 개념 자신의 이름이면 빼고, 같은 이름의 항목이 있으면 근거를 더한다.
-    detail_items = [item for item in detail_items if name_key(item["name"]) not in {name_key(title), name_key(concept_slug)}]
     entry_changes: list[dict[str, Any]] = []
-    if detail_items:
-        stored_entries, _references = _stored_entry_index(conn, str(row["id"]))
-        entry_changes = _promotion_entry_changes(
-            concept_slug, detail_items, {name_key(entry["name"]): entry["entry_id"] for entry in stored_entries}
-        )
+    if entry_root:
+        # 하위 개념: 승격 개념 항목 아래에 세부 항목을 새 id로 둔다. 페이지의 같은 이름 항목과 합치지 않는다.
+        own = {name_key(entry_root["name"])}
+        entry_changes = [entry_root, *(
+            {**change, "parent_entry_id": entry_root["entry_id"]}
+            for change in _promotion_entry_changes(
+                f"{concept_slug}/{entry_root['entry_id']}",
+                [item for item in detail_items if name_key(item["name"]) not in own],
+                {},
+            )
+        )]
+    else:
+        # 병합한 근거 중 세부 항목은 그 개념의 하위 항목으로 둔다. 개념 자신의 이름이면 빼고, 같은 이름의 항목이 있으면 근거를 더한다.
+        detail_items = [item for item in detail_items if name_key(item["name"]) not in {name_key(title), name_key(concept_slug)}]
+        if detail_items:
+            stored_entries, _references = _stored_entry_index(conn, str(row["id"]))
+            entry_changes = _promotion_entry_changes(
+                concept_slug, detail_items, {name_key(entry["name"]): entry["entry_id"] for entry in stored_entries}
+            )
     updated_markdown = _add_promotion_entries(conn, workspace_id, str(row["id"]), updated_markdown, entry_changes, claims)
     if operation_id:
         current_markdown_uri = storage_uri(
@@ -3124,6 +3322,13 @@ def _merge_promotion_into_existing_concept(
         )
         document_id = first_ref.split(":", 1)[0] if first_ref else ""
         _persist_embedding_units(conn, row["id"], document_id, updated_markdown)
+    if pending_change:
+        known = {claim.get("id") for claim in pending_change["claims"]}
+        pending_change["claims"].extend(claim for claim in claims if claim.get("id") not in known)
+        pending_change["aliases"].extend(added_aliases)
+        pending_change["entry_changes"].extend(entry_changes)
+        pending_change["markdown"] = updated_markdown
+        return pending_change
     return {
         "page_id": str(row["id"]),
         "slug": concept_slug,
@@ -3131,7 +3336,7 @@ def _merge_promotion_into_existing_concept(
         "definition": str(row.get("summary") or ""),
         "markdown": updated_markdown,
         "content_action": "append_evidence",
-        "claims": claims,
+        "claims": list(claims),
         "aliases": added_aliases,
         "entry_changes": entry_changes,
     }

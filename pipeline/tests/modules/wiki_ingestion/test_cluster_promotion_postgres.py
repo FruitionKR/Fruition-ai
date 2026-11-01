@@ -8,9 +8,11 @@ from __future__ import annotations
 from psycopg.types.json import Json
 
 from app.modules.wiki_ingestion.application.models import WikiMaintenanceCommand
+from app.modules.wiki_ingestion.domain.concept_entries import new_entry_id
 from app.modules.wiki_ingestion.domain.concept_split_rules import MIN_CLUSTER_SUBCATEGORIES
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from app.modules.wiki_ingestion.interfaces.http.schemas import WikiLintOut
+from tests.modules.wiki_ingestion.test_concept_page_move_postgres import FakeModel, _store_page_vectors
 from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # noqa: F401
     WS,
     World,
@@ -22,10 +24,10 @@ from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # n
 TERMS = ["Rollout History", "Rollout Undo", "Rollout Pause", "Rollout Resume", "Rollout Status"]
 
 
-def _cluster(cluster_id: str, terms: list[str], target: str | None = None) -> str:
+def _cluster(cluster_id: str, terms: list[str], target: str | None = None, start: int = 1) -> str:
     claims = "\n".join(
         f"- claim_{index:03d}: {term} - {term} 근거 문장이다. [doc-c:B{index:04d}]"
-        for index, term in enumerate(terms, start=1)
+        for index, term in enumerate(terms, start=start)
     )
     return (
         f"## cluster: {cluster_id}\n\n### Evidence Claims\n{claims}\n\n"
@@ -40,9 +42,33 @@ def _thicken_history(world: World) -> None:
         _add(f"e-h{index}", f"History {index}", history, [f"H{index}"]) for index in range(5)]}})
 
 
-def _lint(world: World, monkeypatch, operation_id: str, active: str) -> dict:
+class PlacementJudge:
+    """클러스터 승격 판정의 가짜 Jev. 같은 개념 판정은 없고, part_of는 (상위, 세부) → P(part_of)다."""
+
+    def __init__(self, answers: dict[tuple[str, str], float]) -> None:
+        self.answers = answers
+        self.model = FakeModel()
+
+    def judge_concepts(self, _concepts, _pool):
+        return {}
+
+    def judge_related(self, _concept, _candidates):
+        return None
+
+    def judge_part_of(self, pairs):
+        return {
+            (head["slug"], detail["slug"]): {
+                "part_of": self.answers.get((head["slug"], detail["slug"]), 0.1) >= 0.9,
+                "probability": self.answers.get((head["slug"], detail["slug"]), 0.1),
+            }
+            for head, detail in pairs
+        }
+
+
+def _lint(world: World, monkeypatch, operation_id: str, active: str, judge: PlacementJudge | None = None) -> dict:
     world.write(f"wiki/{WS}/clusters/active.md", "# Active Meaning Clusters\n\n" + active)
-    monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: None)
+    monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: judge)
+    monkeypatch.setattr(wiki_maintenance, "embedding_server_model", lambda: judge.model if judge else None)
     monkeypatch.setattr(
         wiki_maintenance.PostgresWikiMaintenance,
         "_build_promotion_page_generator",
@@ -207,3 +233,73 @@ def test_restoring_a_split_of_a_promoted_page_keeps_the_page_its_lint_record_sup
     assert world.page_id("rollout") not in result["deleted_pages"]
     assert "rollout" in state["pages"] and "rollout-history" not in state["pages"]
     assert "Rollout History" in [entry[2] for entry in state["entries"] if entry[1] == "rollout"]
+
+
+def test_promoted_concept_judged_part_of_an_existing_page_becomes_its_sub_entry(world: World, monkeypatch) -> None:
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["D1"]}})
+    judge = PlacementJudge({("deployment", "rollout"): 0.95})
+    _store_page_vectors(world, judge.model, {"deployment": [1.0, 0.0]})
+    before = world.state()
+
+    result = _lint(world, monkeypatch, "lint-place", _cluster("rollout", TERMS), judge)
+
+    assert result["materialized_promotions"] == []
+    root = new_entry_id("deployment", "rollout")
+    assert result["merged_promotions"] == [
+        {"cluster_id": "rollout", "concept_slug": "deployment", "page_id": world.page_id("deployment"), "entry_id": root}]
+    contribution = world.contribution("deployment", "lint-place")
+    # 승격 개념은 항목에만 있다. 상위 페이지의 이름·정의는 그대로다.
+    assert contribution["concept"]["title"] == "Deployment"
+    assert contribution["concept"]["definition"] == "deployment 정의"
+    assert contribution["entry_changes"][0]["entry_id"] == root
+    assert contribution["entry_changes"][0]["name"] == "Rollout"
+    assert contribution["entry_changes"][0]["parent_entry_id"] is None
+    assert len(contribution["entry_changes"][0]["evidence_claim_ids"]) == len(TERMS)
+    assert [(change["name"], change["parent_entry_id"]) for change in contribution["entry_changes"][1:]] == [
+        (term, root) for term in TERMS]
+    state = world.state()
+    assert "rollout" not in state["pages"]
+    assert state["pages"]["deployment"][0] == "Deployment"
+    assert sorted(name for _id, slug, name, parent in state["entries"] if slug == "deployment" and parent == root) == sorted(TERMS)
+    assert [(entry["name"], entry["parent_entry_id"]) for entry in world.ledger_rebuild("deployment").entries] == [
+        ("Rollout", None), *((term, root) for term in TERMS)]
+    assert ("doc-c", "deployment") in state["documents"]
+
+    world.restore_lint("lint-place")
+
+    assert world.state() == before
+
+
+def test_promotion_without_a_confident_parent_stays_a_new_page(world: World, monkeypatch) -> None:
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["D1"]}})
+    judge = PlacementJudge({("deployment", "rollout"): 0.6})
+    _store_page_vectors(world, judge.model, {"deployment": [1.0, 0.0]})
+
+    result = _lint(world, monkeypatch, "lint-new", _cluster("rollout", TERMS), judge)
+
+    assert [item["concept_slug"] for item in result["materialized_promotions"]] == ["rollout"]
+    assert result["merged_promotions"] == []
+
+
+def test_two_clusters_into_one_page_in_one_lint_keep_both_records(world: World, monkeypatch) -> None:
+    world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["D1"]}})
+    before = world.state()
+    first = _cluster("deploy-a", ["Scale", "Pause"], target="deployment")
+    second = _cluster("deploy-b", ["Resume", "Status"], target="deployment", start=3)
+
+    result = _lint(world, monkeypatch, "lint-two", first + "\n\n" + second)
+
+    assert [item["cluster_id"] for item in result["merged_promotions"]] == ["deploy-a", "deploy-b"]
+    contribution = world.contribution("deployment", "lint-two")
+    assert [change["name"] for change in contribution["entry_changes"]] == ["Scale", "Pause", "Resume", "Status"]
+    assert [unit["evidence_id"] for unit in contribution["evidence_units"]] == [
+        "claim_001", "claim_002", "claim_003", "claim_004"]
+    assert [item["cluster_id"] for item in contribution["archived_clusters"]] == ["deploy-a", "deploy-b"]
+    state = world.state()
+    assert sorted(name for _id, slug, name, _parent in state["entries"] if slug == "deployment") == [
+        "Pause", "Resume", "Scale", "Status"]
+    assert [entry["name"] for entry in world.ledger_rebuild("deployment").entries] == ["Scale", "Pause", "Resume", "Status"]
+
+    world.restore_lint("lint-two")
+
+    assert world.state() == before

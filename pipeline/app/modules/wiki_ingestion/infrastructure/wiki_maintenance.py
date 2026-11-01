@@ -89,6 +89,8 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                 materialize_promotions=should_materialize,
                 promotion_page_generator=promotion_generator,
                 concept_judge=concept_judge if should_materialize else None,
+                judge_part_of=judge_part_of if should_materialize else None,
+                embedding_model=embedding_model if should_materialize else None,
                 apply_reconciliation=not command.dry_run,
                 operation_id=command.operation_id,
                 write_log=False,
