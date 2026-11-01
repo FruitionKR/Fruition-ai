@@ -338,6 +338,7 @@ def _apply_restored_wiki_state(
             ).fetchall()
             for row in active_rows:
                 target_by_ref.setdefault(f'{row["page_type"]}:{row["slug"]}', row)
+        old_vector_ids: list[str] = []
         for page in changed_pages:
             if str(page["page_id"]) in skipped_page_ids:
                 continue
@@ -435,19 +436,21 @@ def _apply_restored_wiki_state(
                     source_document_id,
                     markdown,
                 )
-            vector_ids = [str(row["embedding_vector_id"]) for row in old_vectors]
-            if vector_ids:
-                conn.execute(
-                    """
-                    DELETE FROM wiki_embedding_vectors vector
-                    WHERE vector.id = ANY(%s)
-                      AND NOT EXISTS (
-                          SELECT 1 FROM wiki_embedding_units unit
-                          WHERE unit.embedding_vector_id = vector.id
-                      )
-                    """,
-                    (vector_ids,),
-                )
+            old_vector_ids.extend(str(row["embedding_vector_id"]) for row in old_vectors)
+        # 모든 페이지 단위를 다시 쓴 뒤 한 번만 지운다. 분리로 다른 페이지에 옮긴 항목은 같은 표현 텍스트의 벡터를
+        # 다시 쓰므로, 페이지마다 지우면 옮겨 갈 벡터까지 지워 다시 임베딩하게 된다(ADR 0042).
+        if old_vector_ids:
+            conn.execute(
+                """
+                DELETE FROM wiki_embedding_vectors vector
+                WHERE vector.id = ANY(%s)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM wiki_embedding_units unit
+                      WHERE unit.embedding_vector_id = vector.id
+                  )
+                """,
+                (list(dict.fromkeys(old_vector_ids)),),
+            )
 
         if replace_links and page_ids:
             conn.execute(
@@ -1938,10 +1941,11 @@ def lint_concept_entries(
             for page in (row["pages"] or [])
             if isinstance(page, dict)
         }
-        active_slugs = {
+        # 지운 페이지 slug도 쓰지 않는다. 그 page_id를 다시 쓰면 옛 lint를 복원할 기록(ops/{작업}.json)을 덮어쓴다.
+        taken_slugs = {
             str(row["slug"])
             for row in conn.execute(
-                "SELECT slug FROM wiki_pages WHERE workspace_id = %s AND page_type = 'concept' AND status = 'active'",
+                "SELECT slug FROM wiki_pages WHERE workspace_id = %s AND page_type = 'concept'",
                 (workspace_id,),
             ).fetchall()
         }
@@ -2058,18 +2062,20 @@ def lint_concept_entries(
             ).fetchall())
 
         def new_page(home: EntryPage, entry: dict[str, Any]) -> tuple[str, str] | None:
-            # 항목 이름을 slug로 쓰고, 이미 있으면 집 slug를 앞에 붙인다. 그래도 있으면 나누지 않는다.
+            # 항목 이름을 slug로 쓰고, 이미 있으면 집 slug를 앞에 붙이고, 그래도 있으면 번호를 붙인다.
+            # ponytail: 번호는 9까지만 본다. 같은 항목을 그보다 많이 나눴다 합치면 나누지 않는다.
+            base = slugify(f"{home.slug}-{entry['name']}")
             slug = next(
                 (
                     candidate
-                    for candidate in (slugify(entry["name"]), slugify(f"{home.slug}-{entry['name']}"))
-                    if candidate and candidate != "untitled" and candidate not in active_slugs
+                    for candidate in (slugify(entry["name"]), base, *(f"{base}-{number}" for number in range(2, 10)))
+                    if candidate and candidate != "untitled" and candidate not in taken_slugs
                 ),
                 None,
             )
             if slug is None:
                 return None
-            active_slugs.add(slug)
+            taken_slugs.add(slug)
             if not apply:
                 return f"new:{slug}", slug
             return _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug), slug
@@ -2248,15 +2254,19 @@ def _source_supports_link(
     target_page_id: str,
     link_type: str,
 ) -> bool:
-    """원래 페이지의 활성 기록을 재생해 그 간선을 아직 직접 잇는지 본다. 개념 페이지가 아니면 재생하지 않는다."""
+    """원래 페이지의 활성 기록이 그 간선을 아직 직접 잇는지 본다.
+
+    개념 페이지는 활성 기여를 재생한다. 문서(source) 페이지는 마지막 활성 편입이 남긴 링크(`source_contribution.links`)다.
+    """
     rows = conn.execute(
         "SELECT id, page_type, slug FROM wiki_pages WHERE workspace_id = %s AND id = ANY(%s)",
         (workspace_id, [source_page_id, target_page_id]),
     ).fetchall()
     by_id = {str(row["id"]): row for row in rows}
     source, target = by_id.get(source_page_id), by_id.get(target_page_id)
-    if source is None or target is None or source["page_type"] != "concept":
+    if source is None or target is None or source["page_type"] not in ("concept", "source"):
         return False
+    key = (f"{source['page_type']}:{source['slug']}", f"{target['page_type']}:{target['slug']}", link_type)
     kept = sorted(
         (
             item
@@ -2267,6 +2277,18 @@ def _source_supports_link(
     )
     if not kept:
         return False
+    if source["page_type"] == "source":
+        run = conn.execute(
+            """
+            SELECT manifest->'source_contribution'->'links' AS links
+            FROM pipeline_runs
+            WHERE workspace_id = %s AND status = 'succeeded' AND manifest->>'operation_id' = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (workspace_id, str(kept[-1]["ingest_operation_id"])),
+        ).fetchone()
+        return key in {_page_link_key(link) for link in ((run or {}).get("links") or []) if isinstance(link, dict)}
     rebuilt = rebuild_concept_page(load_concept_contributions(
         workspace_id=workspace_id,
         page_id=source_page_id,
@@ -2275,7 +2297,6 @@ def _source_supports_link(
         ],
         read_text=read_text_object,
     ))
-    key = (f"concept:{source['slug']}", f"{target['page_type']}:{target['slug']}", link_type)
     return key in {_page_link_key(link) for link in rebuilt.supported_links}
 
 

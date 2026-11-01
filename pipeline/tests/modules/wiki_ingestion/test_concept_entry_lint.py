@@ -42,3 +42,18 @@ def test_merge_back_is_skipped_when_one_operation_contributed_to_parent_and_chil
     restored = _page("rollout", [split], [], restored=True)
     assert plan_entry_lint({"rollout": restored, "deploy": parent}, {"rollout"}, lambda *_args: None).deferred_page_ids == [
         "rollout"]
+
+
+def test_split_moves_references_placed_under_the_moved_subtree() -> None:
+    reference = {"source": "concept:home", "target": "concept:other", "relation": "entry_reference",
+                 "entry_id": "x-other", "name": "Other", "parent_entry_id": "e-child-0"}
+    entries = [{"entry_id": "e-root", "name": "Root", "parent_entry_id": None,
+                "anchor_reference_ids": [], "evidence_claim_ids": []}]
+    entries += [{"entry_id": f"e-child-{index}", "name": f"Child {index}", "parent_entry_id": "e-root",
+                 "anchor_reference_ids": [], "evidence_claim_ids": []} for index in range(5)]
+    home = EntryPage("home", "home", "Home", ({"operation_id": "op-x"},), tuple(entries), (reference,))
+
+    plan = plan_entry_lint({"home": home}, {"home"}, lambda *_args: ("root-page", "root"))
+
+    assert reference in plan.page_changes["home"]["removed_links"]
+    assert {**reference, "source": "concept:root"} in plan.page_changes["root-page"]["added_links"]

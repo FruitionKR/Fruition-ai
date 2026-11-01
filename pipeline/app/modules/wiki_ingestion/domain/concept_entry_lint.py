@@ -232,6 +232,11 @@ def _move_to_new_page(
         split_from={"page_id": home.page_id, "slug": home.slug, "entry_id": entry["entry_id"]},
         linked_operation_ids=linked_operation_ids,
     )
+    # 옮긴 항목 아래 둔 참조(다른 페이지 항목을 가리키는 요약 줄)도 함께 옮긴다.
+    for link in home.links:
+        if link.get("relation") == ENTRY_REFERENCE and link.get("parent_entry_id") in moved_ids:
+            home_change["removed_links"].append(link)
+            child["added_links"].append({**link, "source": f"concept:{slug}"})
     _retarget_references(plan, pages, home, moved_ids, f"concept:{slug}", {home.page_id})
     return None
 

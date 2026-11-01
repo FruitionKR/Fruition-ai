@@ -666,3 +666,81 @@ def test_lint_restore_of_merge_back_does_not_revive_edge_whose_ingest_was_rolled
     state = world.state()
     assert "service" in state["pages"] and "rollout" in state["pages"]
     assert not [link for link in state["links"] if link[0] == "service"]
+
+
+def _merged_back_rollout(world: World) -> None:
+    """Rollout을 나눴다가 doc-x 롤백으로 줄어 부모로 다시 합친 상태."""
+    _deployment_with_thick_rollout(world)
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-history", "History", "e-rollout", ["B20"])]}})
+    world.lint("lint-split")
+    world.restore_ingest("op-x")
+    world.lint("lint-wait")
+
+
+def test_resplit_after_merge_back_does_not_reuse_the_deleted_child_page(world: World) -> None:
+    _merged_back_rollout(world)
+    world.lint("lint-merge")
+    old_id = world.page_id("rollout")
+    old_records = {key: text for key, text in world.objects.items() if f"/pages/{old_id}/" in key}
+    world.ingest("op-v", "doc-v", {"deployment": {"title": "Deployment", "entry_changes": _thick("e-rollout-2", "Rollout", 50)}})
+
+    result = world.lint("lint-resplit")
+
+    assert [(item["action"], item["entry_id"]) for item in result["entry_decisions"]] == [("split", "e-rollout-2")]
+    assert "deployment-rollout" in world.state()["pages"]
+    assert {key: text for key, text in world.objects.items() if f"/pages/{old_id}/" in key} == old_records
+    with world.connect() as conn:
+        assert conn.execute("SELECT status FROM wiki_pages WHERE id = %s", (old_id,)).fetchone()["status"] == "deleted"
+
+
+def test_lint_restore_of_merge_back_moves_source_document_links_back(world: World) -> None:
+    _merged_back_rollout(world)
+    # 문서(source) 페이지가 자식 개념을 언급한다. 링크는 편입 실행의 source_contribution에 남는다.
+    link = {"source": "source:doc-s", "target": "concept:rollout", "relation": "source_mentions_concept"}
+    with world.connect() as conn:
+        source_id = database._resolve_or_create_wiki_page_id(conn, "user", WS, "source", "doc-s")
+        world.write(f"wiki/{WS}/pages/{source_id}/ops/op-s.md", "# doc-s\n")
+        database._upsert_wiki_page(conn, source_id, "source", "doc-s", "doc-s", "", f"wiki/{WS}/pages/{source_id}/ops/op-s.md", "user", WS)
+        database._upsert_wiki_page_link(conn, source_id, world.page_id("rollout"), link["relation"], None, None, WS)
+    world._record(source_id, "op-s", "doc-s")
+    world._run("ingest", {"operation_id": "op-s"})
+    with world.connect() as conn:
+        conn.execute("UPDATE pipeline_runs SET manifest = %s WHERE manifest->'task_result'->>'operation_id' = 'op-s'",
+                     (Json({"operation_id": "op-s", "source_contribution": {"links": [link]}}),))
+    before = world.state()
+
+    world.lint("lint-merge")
+    assert ("doc-s", "deployment", "source_mentions_concept") in world.state()["links"]
+    world.restore_lint("lint-merge")
+
+    assert world.state() == before
+
+
+def test_split_reuses_vectors_of_moved_entries(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    moved = [f"e-{step}" for step in ROLLOUT_STEPS]
+
+    def vectors() -> set:
+        with world.connect() as conn:
+            return {
+                (row["id"], row["status"], row["representation_text"])
+                for row in conn.execute(
+                    """
+                    SELECT vector.id, vector.status, vector.representation_text
+                    FROM wiki_embedding_units unit
+                    JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
+                    WHERE unit.unit_type = 'sub_entry' AND unit.entry_id = ANY(%s)
+                    """,
+                    (moved,),
+                ).fetchall()
+            }
+
+    with world.connect() as conn:
+        conn.execute("UPDATE wiki_embedding_vectors SET status = 'ready'")
+    before = vectors()
+    assert len(before) == len(moved)
+
+    world.lint("lint-split")
+
+    assert vectors() == before
