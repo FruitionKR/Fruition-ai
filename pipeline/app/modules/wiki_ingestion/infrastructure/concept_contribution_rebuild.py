@@ -159,6 +159,25 @@ def rebuild_concept_page(
         raise ConceptContributionError(
             "concept rebuild requires a contribution with a concept"
         )
+    # 다른 페이지로 옮겼거나 지운 하위 항목의 근거는 본문에 두지 않는다. 옮긴 근거는 새 집이 보인다(ADR 0042).
+    entry_claims = {
+        claim_id
+        for item in contribution_json
+        for change in item.get("entry_changes", [])
+        if change.get("op") == "add"
+        for claim_id in change.get("evidence_claim_ids", [])
+    }
+    dropped_claims = entry_claims - {claim_id for entry in entries for claim_id in entry["evidence_claim_ids"]}
+    if dropped_claims:
+        contribution_json = [
+            {
+                **item,
+                "evidence_units": [
+                    unit for unit in item.get("evidence_units", []) if unit.get("evidence_id") not in dropped_claims
+                ],
+            }
+            for item in contribution_json
+        ]
     normalized = _merge_contributions(contribution_json)
     pages = ConceptPageAssembler().build_top(
         normalized,

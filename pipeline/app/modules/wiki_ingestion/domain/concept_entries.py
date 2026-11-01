@@ -17,9 +17,13 @@ def replay_concept_entries(
     - add: 없으면 만들고, 있으면 근거만 더한다(이름·상위 항목은 처음 추가한 기여를 따른다).
     - move: 상위 항목만 바꾼다. 없는 항목이거나 자기 아래로 옮기면 무시한다.
     - remove: 항목과 그 아래 항목을 함께 지운다.
+    - revive: 앞서 remove로 지운 항목과 그때 함께 지운 아래 항목을 근거째 되살린다. 지운 적 없으면 무시한다.
+      분리한 자식 페이지를 부모로 다시 합칠 때 쓴다. 근거는 되살린 항목을 처음 추가한 기여에서 오므로,
+      그 기여를 되돌리면 되살릴 것도 없다.
     상위 항목이 남지 않은(그 기여를 되돌린) 항목은 페이지 바로 아래로 올린다.
     """
     entries: dict[str, dict[str, Any]] = {}
+    removed: dict[str, dict[str, Any]] = {}
     for artifact in operation_artifacts:
         for change in artifact.get("entry_changes", []):
             if not isinstance(change, dict) or not change.get("entry_id"):
@@ -43,8 +47,12 @@ def replay_concept_entries(
                 if entry_id not in _ancestors(entries, parent_id):
                     entries[entry_id]["parent_entry_id"] = parent_id
             elif op == "remove":
-                for removed in [item for item in entries if entry_id in _ancestors(entries, item)]:
-                    del entries[removed]
+                for removed_id in [item for item in entries if entry_id in _ancestors(entries, item)]:
+                    removed[removed_id] = entries.pop(removed_id)
+            elif op == "revive" and entry_id in removed and entry_id not in entries:
+                pool = {**removed, **entries}
+                for revived in [item for item in removed if entry_id in _ancestors(pool, item)]:
+                    entries[revived] = removed.pop(revived)
     for entry_id, entry in entries.items():
         if entry["parent_entry_id"] not in entries or entry_id in _ancestors(entries, entry["parent_entry_id"]):
             entry["parent_entry_id"] = None
