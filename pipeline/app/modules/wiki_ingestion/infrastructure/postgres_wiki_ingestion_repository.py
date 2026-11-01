@@ -1998,17 +1998,9 @@ def lint_concept_entries(
                         reference_targets.update(_entry_reference_targets(item.contribution or {}))
 
         load(changed_rows, history=True)
-        # 하위 항목·참조가 있거나 분리로 만든 자식(비었어도 다시 합칠 후보)이거나 지난 lint가 미룬 페이지만 판정한다.
-        changed = {
-            page_id
-            for page_id, page in pages.items()
-            if page.entries
-            or page.split_record
-            or page_id in deferred
-            or any(link.get("relation") == "entry_reference" for link in page.links)
-        } | {
-            page_id for page_id, page in pages.items() if page.ref in reference_targets
-        }
+        # 바뀐 페이지는 모두 본다. 마지막 항목이 빠져 빈 페이지도 이웃을 읽어야 그 항목을 가리키던 참조를 지운다.
+        # 하위 항목이 없는 페이지는 판정할 항목이 없어 비용이 작다.
+        changed = set(pages)
         missing_targets = {ref.removeprefix("concept:") for ref in reference_targets} - {
             page.slug for page in pages.values()
         }

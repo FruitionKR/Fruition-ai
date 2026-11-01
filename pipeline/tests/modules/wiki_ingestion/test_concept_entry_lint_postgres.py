@@ -143,7 +143,13 @@ class World:
                 "schema_version": 1, "operation_id": operation_id, "document_id": document_id, "page_id": page_id,
                 "concept": {"slug": slug, "title": data.get("title", slug.title()), "definition": f"{slug} 정의",
                             "source_document_ids": [document_id]},
-                "evidence_units": evidence, "source_blocks": [], "links": data.get("links", []),
+                # evidence: 항목에 딸리지 않은 페이지 근거(블록 이름 목록).
+                "evidence_units": evidence + [
+                    {"evidence_id": f"ev-{operation_id}-{block}", "claim": f"{slug} 근거 {block}({document_id})",
+                     "anchor_reference_ids": [block], "related_concept_slugs": [slug], "source_document_id": document_id}
+                    for block in data.get("evidence", [])
+                ],
+                "source_blocks": [], "links": data.get("links", []),
                 "entry_changes": data.get("entry_changes", []),
             }
             self.write(f"wiki/{WS}/pages/{page_id}/ops/{operation_id}.json", json.dumps(payload, ensure_ascii=False))
@@ -744,3 +750,60 @@ def test_split_reuses_vectors_of_moved_entries(world: World) -> None:
     world.lint("lint-split")
 
     assert vectors() == before
+
+
+def test_merge_back_carries_plain_child_evidence_to_the_parent(world: World) -> None:
+    _merged_back_rollout(world)
+    world.ingest("op-p", "doc-p", {"rollout": {"title": "Rollout", "evidence": ["B70"]}})
+
+    merged = world.lint("lint-merge")
+
+    assert merged["deleted_pages"] == [world.page_id("rollout")]
+    carried = [row for row in merged["ledger_contributions"] if row["operation_id"] == "op-p"]
+    assert [(row["page_id"], row["linked_by_operation_id"]) for row in carried] == [
+        (world.page_id("deployment"), "lint-merge")]
+    body = world.state()["pages"]["deployment"][2]
+    assert "doc-p:B70" in body
+    assert body == world.ledger_rebuild("deployment").markdown
+
+
+def test_child_with_much_own_evidence_is_not_merged_back(world: World) -> None:
+    _merged_back_rollout(world)
+    world.ingest("op-p", "doc-p", {"rollout": {"title": "Rollout", "evidence": [f"B{70 + index}" for index in range(6)]}})
+
+    result = world.lint("lint-merge")
+
+    assert result["deleted_pages"] == []
+    assert "rollout" in world.state()["pages"]
+
+
+def test_references_between_entries_split_in_the_same_lint_follow_both_moves(world: World) -> None:
+    world.ingest("op-x", "doc-x", {
+        "alpha": {"title": "Alpha", "entry_changes": _thick("e-xen", "Xen", 1),
+                  "links": [{**_reference("alpha", "beta", "e-yak", "Yak"), "parent_entry_id": "e-xen"}]},
+        "beta": {"title": "Beta", "entry_changes": _thick("e-yak", "Yak", 20)},
+    })
+
+    result = world.lint("lint-split")
+
+    assert sorted(item["entry_id"] for item in result["entry_decisions"]) == ["e-xen", "e-yak"]
+    references = {link for link in world.state()["links"] if link[2] == "entry_reference"}
+    assert references == {("alpha", "xen", "entry_reference"), ("beta", "yak", "entry_reference"),
+                          ("xen", "yak", "entry_reference")}
+    for slug in ("alpha", "xen"):
+        assert world.state()["pages"][slug][2] == world.ledger_rebuild(slug).markdown
+
+
+def test_references_to_a_page_that_lost_its_last_entry_are_removed(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("e-scale", "Scale", refs=["B1"])]}})
+    world.ingest("op-w", "doc-w", {"deployment": {"title": "Deployment", "evidence": ["B2"]}})
+    world.ingest("op-q", "doc-q", {"kubectl": {"title": "kubectl", "links": [
+        _reference("kubectl", "deployment", "e-scale", "Scale")]}})
+    world.lint("lint-first")
+    world.restore_ingest("op-x")
+
+    world.lint("lint-clean")
+
+    assert ("kubectl", "deployment", "entry_reference") not in world.state()["links"]
+    assert world.contribution("kubectl", "lint-clean")["removed_links"][0]["entry_id"] == "e-scale"
