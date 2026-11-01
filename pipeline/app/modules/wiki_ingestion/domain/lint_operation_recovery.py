@@ -37,6 +37,18 @@ def calculate_lint_link_changes(
     ]
     if redirects:
         changes["redirects"] = redirects
+    # 다시 합치기 롤백: 지운 자식의 합친 기록(merged_into)에 남긴 간선을 자식으로 되돌린다. 자식은 재조립으로 되살아난다.
+    reversed_redirects = [
+        {
+            "page_id": contribution["page_id"],
+            "merged_into_page_id": contribution["merged_into"]["page_id"],
+            "links": contribution.get("redirected_links", []),
+        }
+        for contribution in target_contributions
+        if isinstance(contribution.get("merged_into"), dict)
+    ]
+    if reversed_redirects:
+        changes["reversed_redirects"] = reversed_redirects
     return changes
 
 

@@ -342,6 +342,7 @@ def _apply_restored_wiki_state(
                     title = COALESCE(%s, title),
                     summary = COALESCE(%s, summary),
                     status = 'active',
+                    merged_into_page_id = NULL,
                     updated_at = now()
                 WHERE id = %s AND workspace_id = %s
                 """,
@@ -481,6 +482,7 @@ def _apply_restored_wiki_state(
                     workspace_id,
                 )
         _redirect_pages(conn, workspace_id, link_changes.get("redirects", []))
+        _reverse_redirects(conn, workspace_id, link_changes.get("reversed_redirects", []))
     return skipped_page_ids
 
 
@@ -1995,8 +1997,32 @@ def lint_concept_entries(
     if not apply or not plan.page_changes:
         return result
 
+    with _connection_scope(connection) as conn:
+        for child, parent in plan.redirects.items():
+            # 다른 페이지에서 자식으로 오던 링크는 부모로 옮긴다. lint 복원이 되돌리도록 옮긴 간선과
+            # 부모 쪽에 새로 생기는 간선인지를 자식의 합친 기록에 남긴다.
+            plan.page_changes[child]["redirected_links"] = [
+                {"from_page_id": str(row["from_page_id"]), "link_type": str(row["link_type"]),
+                 "created": not row["existed"]}
+                for row in conn.execute(
+                    """
+                    SELECT link.from_page_id, link.link_type,
+                           EXISTS (
+                               SELECT 1 FROM wiki_page_links other
+                               WHERE other.from_page_id = link.from_page_id
+                                 AND other.to_page_id = %s AND other.link_type = link.link_type
+                           ) AS existed
+                    FROM wiki_page_links link
+                    WHERE link.to_page_id = %s AND link.from_page_id NOT IN (%s, %s)
+                    ORDER BY link.from_page_id, link.link_type
+                    """,
+                    (parent, child, child, parent),
+                ).fetchall()
+            ]
     linked_by_page: dict[str, list[dict[str, Any]]] = {}
     for item in plan.linked:
+        # 이 lint가 원래 작업 id로 이은 기록이다. lint 복원은 이 표시로 이은 기록을 함께 뺀다.
+        item["linked_by_operation_id"] = str(operation_id)
         linked_by_page.setdefault(str(item["page_id"]), []).append(item)
     page_changes = []
     state_pages = []
@@ -2020,6 +2046,9 @@ def lint_concept_entries(
         ]
         rebuilt = rebuild_concept_page(simulated)
         page_changes.append({**change, "markdown": rebuilt.markdown, "claims": []})
+        if page_id in plan.redirects:
+            # 합쳐 지울 자식은 기록만 남기고 현재 상태는 지운다. 항목 사본을 다시 쓰면 부모로 옮긴 항목을 빼앗는다.
+            continue
         state_pages.append(
             {
                 "page_id": page_id,
@@ -2041,6 +2070,7 @@ def lint_concept_entries(
         ]
     result["_lint_page_changes"] = page_changes
     result["_entry_state"] = {
+        "page_ids": sorted(plan.page_changes),
         "pages": state_pages,
         "link_changes": link_changes,
         "linked": plan.linked,
@@ -2084,6 +2114,30 @@ def _redirect_pages(conn: psycopg.Connection, workspace_id: str, redirects: list
             """,
             (target, workspace_id, source, source),
         )
+
+
+def _reverse_redirects(conn: psycopg.Connection, workspace_id: str, reversals: list[dict[str, Any]]) -> None:
+    """다시 합치기를 lint 복원할 때 옮겼던 간선을 자식으로 되돌린다. 부모 쪽에 새로 생겼던 간선만 지운다."""
+    for reversal in reversals:
+        child, parent = str(reversal["page_id"]), str(reversal["merged_into_page_id"])
+        for link in reversal.get("links", []):
+            source, link_type = str(link["from_page_id"]), str(link["link_type"])
+            if link.get("created"):
+                conn.execute(
+                    "DELETE FROM wiki_page_links WHERE from_page_id = %s AND to_page_id = %s AND link_type = %s",
+                    (source, parent, link_type),
+                )
+            conn.execute(
+                """
+                INSERT INTO wiki_page_links (
+                    from_page_id, to_page_id, link_type, label, confidence, workspace_id, created_at, updated_at
+                )
+                SELECT %s, %s, %s, NULL, NULL, %s, now(), now()
+                WHERE EXISTS (SELECT 1 FROM wiki_pages WHERE id = %s AND status = 'active')
+                ON CONFLICT (from_page_id, link_type, to_page_id) DO NOTHING
+                """,
+                (source, child, link_type, workspace_id, source),
+            )
 
 
 def lint_shared_object_keys(workspace_id: str, lint_date: str) -> list[str]:
@@ -2214,13 +2268,14 @@ def _persist_entry_lint(
     `ledger_contributions`는 document-svc가 기여 원장에 더할 행이다. 이 lint의 하위 항목 기록과, 원래 작업 id로
     다른 페이지에 이은 편입 기록이다. 원장에 있어야 이후 편입·lint 복원이 이 기록을 재생한다.
     """
-    entry_page_ids = {str(page["page_id"]) for page in entry_state["pages"]}
+    entry_page_ids = set(entry_state["page_ids"])
     ledger = [
         {
             "page_id": artifact["page_id"],
             "operation_id": operation_id,
             "document_id": None,
             "contribution_key": artifact["contribution_key"],
+            "linked_by_operation_id": None,
         }
         for artifact in artifacts
         if artifact["page_id"] in entry_page_ids
@@ -2238,6 +2293,7 @@ def _persist_entry_lint(
                 "operation_id": item["operation_id"],
                 "document_id": item.get("document_id"),
                 "contribution_key": key,
+                "linked_by_operation_id": operation_id,
             }
         )
     result["ledger_contributions"] = ledger

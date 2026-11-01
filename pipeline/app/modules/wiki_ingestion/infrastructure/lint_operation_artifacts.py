@@ -7,7 +7,14 @@ from typing import Any
 
 
 ArtifactWriter = Callable[[str, str, str], str]
-ENTRY_LINT_FIELDS = ("entry_changes", "split_from", "linked_operation_ids", "merged_pages")
+ENTRY_LINT_FIELDS = (
+    "entry_changes",
+    "split_from",
+    "linked_operation_ids",
+    "merged_pages",
+    "merged_into",
+    "redirected_links",
+)
 
 
 def persist_lint_operation_artifacts(
@@ -21,7 +28,7 @@ def persist_lint_operation_artifacts(
     for change in page_changes:
         payload = lint_contribution(operation_id, change)
         if payload["content_action"] not in {"create", "append_evidence"} and not (
-            payload["added_links"] or payload["removed_links"] or payload.get("entry_changes")
+            payload["added_links"] or payload["removed_links"] or any(payload.get(key) for key in ENTRY_LINT_FIELDS)
         ):
             raise ValueError("lint artifact must contain a replayable action")
 

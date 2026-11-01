@@ -1,8 +1,8 @@
 """lint 하위 항목 재검사(ADR 0042 3단계)를 실제 PostgreSQL과 기록 재생으로 확인한다.
 
 document-svc 기여 원장은 가짜다. lint 결과의 `ledger_contributions`를 원장에 더하고 `deleted_pages`의 기여를
-비활성으로 바꾸며, 복원 계획은 지금 planner처럼 만든다(lint가 만든 페이지는 삭제, 바꾼 페이지는 그 lint 기록을 뺀
-활성 기여로 재조립). 이 계약은 document-svc에 아직 없다.
+비활성으로 바꾼다. lint 복원은 lint가 만든 페이지를 지우고, 바꾼 페이지는 그 lint 기록과 그 lint가 이은 기록
+(`linked_by_operation_id`)을 빼고, 그 lint가 지운 페이지의 기여는 다시 활성으로 돌려 재조립한다.
 """
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ class World:
         self.objects: dict[str, str] = {}
         self.ledger: list[dict] = []
         self.created: dict[str, list[str]] = {}
+        self.deactivated: dict[str, list[dict]] = {}
         self.runs = 0
         monkeypatch.setenv("S3_BUCKET", "wiki")
         monkeypatch.setattr(database, "connect", self.connect)
@@ -112,8 +113,9 @@ class World:
     def read_contributions(self, page_ids: list[str], _workspace_id: str) -> list[dict]:
         return [dict(row) for row in self.ledger if row["page_id"] in page_ids]
 
-    def _record(self, page_id: str, operation_id: str, document_id: str | None) -> None:
+    def _record(self, page_id: str, operation_id: str, document_id: str | None, linked_by: str | None = None) -> None:
         self.ledger.append({"page_id": page_id, "ingest_operation_id": operation_id, "document_id": document_id,
+                            "linked_by_operation_id": linked_by,
                             "sequence_revision": len(self.ledger) + 1, "active": True,
                             "object_key": f"wiki/{WS}/pages/{page_id}/ops/{operation_id}.json"})
 
@@ -127,13 +129,14 @@ class World:
         for slug, data in pages.items():
             with self.connect() as conn:
                 page_id = database._resolve_or_create_wiki_page_id(conn, "user", WS, "concept", slug)
+            adds = [entry for entry in data.get("entry_changes", []) if entry["op"] == "add"]
             evidence = [
                 {"evidence_id": f"ev-{entry['entry_id']}", "claim": f"{entry['name']} 근거({document_id})",
                  "anchor_reference_ids": entry["anchor_reference_ids"], "related_concept_slugs": [slug],
                  "source_document_id": document_id}
-                for entry in data.get("entry_changes", [])
+                for entry in adds
             ]
-            for entry, unit in zip(data.get("entry_changes", []), evidence):
+            for entry, unit in zip(adds, evidence):
                 entry["evidence_claim_ids"] = [unit["evidence_id"]]
             payload = {
                 "schema_version": 1, "operation_id": operation_id, "document_id": document_id, "page_id": page_id,
@@ -155,7 +158,8 @@ class World:
         return tuple(
             RestoreContributionCommand(row["ingest_operation_id"], row["document_id"])
             for row in self.ledger
-            if row["page_id"] == page_id and row["active"] and row["ingest_operation_id"] != without
+            if row["page_id"] == page_id and row["active"]
+            and (without is None or without not in (row["ingest_operation_id"], row["linked_by_operation_id"]))
         )
 
     def _rebuild(self, operation_id: str, page_id: str, without: str | None = None) -> dict:
@@ -188,11 +192,13 @@ class World:
                          (Json({"task_result": result}), run_id))
         known = {row["page_id"] for row in self.ledger}
         for row in result["ledger_contributions"]:
-            self._record(row["page_id"], row["operation_id"], row["document_id"])
+            self._record(row["page_id"], row["operation_id"], row["document_id"], row["linked_by_operation_id"])
         self.created[operation_id] = sorted(
             {row["page_id"] for row in result["ledger_contributions"] if row["operation_id"] == operation_id} - known
         )
-        self._deactivate(lambda row: row["page_id"] in result["deleted_pages"])
+        self.deactivated[operation_id] = [
+            row for row in self.ledger if row["page_id"] in result["deleted_pages"] and row["active"]]
+        self._deactivate(lambda row: row in self.deactivated[operation_id])
         return result
 
     def _deactivate(self, predicate) -> None:
@@ -216,6 +222,8 @@ class World:
         self._run("restore_ingest", {"changed_pages": [{"page_id": page["page_id"]} for page in changed]})
 
     def restore_lint(self, operation_id: str) -> dict:
+        for row in self.deactivated.get(operation_id, []):
+            row["active"] = True
         updated = sorted({
             row["page_id"] for row in self.ledger
             if row["ingest_operation_id"] == operation_id and row["page_id"] not in self.created[operation_id]
@@ -227,7 +235,8 @@ class World:
                 deleted_pages=tuple(self.created[operation_id]),
             )
         )
-        self._deactivate(lambda row: row["ingest_operation_id"] == operation_id or row["page_id"] in self.created[operation_id])
+        self._deactivate(lambda row: operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"])
+                         or row["page_id"] in self.created[operation_id])
         self._run("restore_lint", {"changed_pages": result["changed_pages"]})
         return result
 
@@ -446,3 +455,82 @@ def test_only_pages_changed_since_last_lint_are_rechecked(world: World) -> None:
     # Deployment도 분리 기준을 넘지만 지난 lint 뒤 바뀌지 않아 보지 않는다.
     assert [(item["action"], item["entry_id"]) for item in result["entry_decisions"]] == [("split", "e-port")]
     assert "rollout" not in world.state()["pages"]
+
+
+def _thick(entry_id: str, name: str, refs: int) -> list[dict]:
+    """세부 항목 5개를 가진 항목(분리 기준 C=5)."""
+    return [_add(entry_id, name, refs=[f"B{refs}"]),
+            *(_add(f"{entry_id}-{index}", f"{name} {index}", entry_id, [f"B{refs + index + 1}"]) for index in range(5))]
+
+
+def test_merging_two_children_at_once_combines_records_of_one_operation(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
+        *_thick("e-alpha", "Alpha", 1), *_thick("e-beta", "Beta", 20)]}})
+    world.lint("lint-split")
+    # 분리 뒤 한 문서가 두 자식에만 기여한다.
+    world.ingest("op-z", "doc-z", {
+        "alpha": {"title": "Alpha", "entry_changes": [_add("e-alpha-z", "Alpha Z", "e-alpha", ["B40"])]},
+        "beta": {"title": "Beta", "entry_changes": [_add("e-beta-z", "Beta Z", "e-beta", ["B41"])]},
+    })
+    world.restore_ingest("op-x")
+    world.lint("lint-wait")
+
+    merged = world.lint("lint-merge")
+    
+    assert sorted(item["action"] for item in merged["entry_decisions"]) == ["merge_back", "merge_back"]
+    linked = [row for row in merged["ledger_contributions"] if row["operation_id"] == "op-z"]
+    assert linked == [{"page_id": world.page_id("deployment"), "operation_id": "op-z", "document_id": "doc-z",
+                       "contribution_key": f"wiki/{WS}/pages/{world.page_id('deployment')}/ops/op-z.json",
+                       "linked_by_operation_id": "lint-merge"}]
+    state = world.state()
+    replayed = world.ledger_rebuild("deployment")
+    assert state["pages"]["deployment"][2] == replayed.markdown
+    assert {entry["entry_id"] for entry in replayed.entries} == {"e-alpha-z", "e-beta-z"}
+    assert {entry[0] for entry in state["entries"] if entry[1] == "deployment"} == {"e-alpha-z", "e-beta-z"}
+
+
+def test_nested_entries_split_parent_first_even_when_child_id_sorts_first(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [
+        _add("z-parent", "Parent", refs=["B1"]),
+        *(_add(f"m-sibling-{index}", f"Sibling {index}", "z-parent", [f"B{index + 2}"]) for index in range(4)),
+        *_thick("a-child", "Child", 10),
+    ]}})
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [
+        {"op": "move", "entry_id": "a-child", "parent_entry_id": "z-parent"}]}})
+
+    result = world.lint("lint-split")
+
+    assert [(item["action"], item["entry_id"], item.get("skipped_reason")) for item in result["entry_decisions"]] == [
+        ("split", "z-parent", None), ("split", "a-child", "ancestor_moved")]
+    homes = {}
+    for entry_id, slug, _name, _parent in world.state()["entries"]:
+        homes.setdefault(entry_id, []).append(slug)
+    assert all(len(pages) == 1 for pages in homes.values())
+    assert homes["a-child-0"] == ["parent"]
+    for slug in ("deployment", "parent"):
+        assert {entry["entry_id"] for entry in world.ledger_rebuild(slug).entries} == {
+            entry[0] for entry in world.state()["entries"] if entry[1] == slug}
+
+
+def test_lint_restore_of_merge_back_recreates_child_with_its_entries_and_links(world: World) -> None:
+    _deployment_with_thick_rollout(world)
+    world.lint("lint-split")
+    # 분리 뒤 자식에만 기여한 편입과 자식으로 가는 링크.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "entry_changes": [
+        _add("e-canary", "Canary", refs=["B30"])]}})
+    world.ingest("op-z", "doc-z", {"service": {"title": "Service", "links": [
+        {"source": "concept:service", "target": "concept:rollout", "relation": "concept_related_to"},
+    ]}})
+    world.restore_ingest("op-x")
+    world.lint("lint-wait")
+    before = world.state()
+
+    merged = world.lint("lint-merge")
+    assert merged["deleted_pages"] == [world.page_id("rollout")]
+    assert "rollout" not in world.state()["pages"]
+    assert world.contribution("rollout", "lint-merge")["merged_into"]["slug"] == "deployment"
+
+    result = world.restore_lint("lint-merge")
+
+    assert result["link_changes"]["reversed_redirects"][0]["page_id"] == world.page_id("rollout")
+    assert world.state() == before

@@ -64,6 +64,20 @@ class EntryLintPlan:
     # 롤백 직후라 이번에 합치지 않은 자식 페이지. 다음 lint가 다시 본다.
     deferred_page_ids: list[str] = field(default_factory=list)
 
+    def link(self, record: dict[str, Any]) -> None:
+        """기록은 페이지·작업마다 하나다. 같은 작업을 같은 페이지에 여러 번 이으면 한 기록으로 합친다."""
+        same = next(
+            (item for item in self.linked
+             if item["page_id"] == record["page_id"] and item["operation_id"] == record["operation_id"]),
+            None,
+        )
+        if same is None:
+            self.linked.append(record)
+            return
+        same["entry_changes"].extend(record["entry_changes"])
+        known = {unit.get("evidence_id") for unit in same["evidence_units"]}
+        same["evidence_units"].extend(unit for unit in record["evidence_units"] if unit.get("evidence_id") not in known)
+
     def change(self, page_id: str, slug: str, title: str) -> dict[str, Any]:
         return self.page_changes.setdefault(
             page_id,
@@ -130,8 +144,18 @@ def plan_entry_lint(
             targets[entry["entry_id"]] = (page, entry)
 
     moved: set[str] = set()
-    # 합치기를 먼저 한다. 합쳐 없어질 페이지의 항목은 분리·승격하지 않는다.
-    for decision in sorted(decide_entry_changes(nodes), key=lambda item: item.action != "merge_back"):
+    depth = {
+        entry["entry_id"]: len(_ancestors({item["entry_id"]: item for item in page.entries}, entry["entry_id"]))
+        for page, entry in targets.values()
+        if entry is not None
+    }
+    # 합치기를 먼저 한다. 합쳐 없어질 페이지의 항목은 분리·승격하지 않는다. 분리·승격은 위 항목부터 해서
+    # 이미 옮긴 항목의 아래 항목을 다시 옮기지 않는다(id 순서가 계층과 달라도).
+    decisions = sorted(
+        decide_entry_changes(nodes),
+        key=lambda item: (item.action != "merge_back", depth.get(item.entry_id, 0), item.entry_id),
+    )
+    for decision in decisions:
         page, entry = targets[decision.entry_id]
         if entry is None:
             reason = _merge_back(plan, pages, page)
@@ -190,7 +214,7 @@ def _move_to_new_page(
             if isinstance(change, dict) and change.get("entry_id") in moved_ids
         ]
         if changes and contribution.get("artifact_type") not in (_LINT, _MANUAL):
-            plan.linked.append(_linked_copy(contribution, page_id, slug, changes))
+            plan.link(_linked_copy(contribution, page_id, slug, changes))
             linked_operation_ids.append(str(contribution["operation_id"]))
     child = plan.change(page_id, slug, entry["name"])
     child.update(
@@ -225,7 +249,8 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
         if operation_id in parent_operations:
             return "operation_on_both_pages"
         copies.append(_linked_copy(contribution, parent.page_id, parent.slug, changes))
-    plan.linked.extend(copies)
+    for copy in copies:
+        plan.link(copy)
     change = plan.change(parent.page_id, parent.slug, parent.title)
     # 분리 때 지운 항목을 되살린다. 뿌리 항목이 빠졌어도 남은 아래 항목은 각자 되살린다.
     change["entry_changes"].extend(
@@ -244,6 +269,11 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
         parent.ref,
         {parent.page_id, child.page_id},
     )
+    # 자식에도 합친 기록을 남겨 lint 복원이 자식을 다시 만들 수 있게 한다. 자식이 내던 링크는 이 기록이 지운 것으로
+    # 남겨 복원 때 되살린다. 다른 페이지에서 옮겨 간 링크(redirected_links)는 저장할 때 채운다.
+    child_change = plan.change(child.page_id, child.slug, child.title)
+    child_change["merged_into"] = {"page_id": parent.page_id, "slug": parent.slug}
+    child_change["removed_links"].extend(link for link in child.links if link not in child_change["removed_links"])
     plan.redirects[child.page_id] = parent.page_id
     return None
 
@@ -259,7 +289,7 @@ def _linked_copy(
     return {
         **{key: contribution[key] for key in ("schema_version", "artifact_type", "operation_id", "document_id") if key in contribution},
         "page_id": page_id,
-        "entry_changes": changes,
+        "entry_changes": list(changes),
         "evidence_units": [
             {**unit, "related_concept_slugs": [slug]}
             for unit in contribution.get("evidence_units", [])
