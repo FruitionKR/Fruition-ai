@@ -20,7 +20,6 @@ from app.modules.wiki_generation.application.evaluation_guards import (
     clear_resolved_number_issues,
     demote_unsupported_core_concepts,
     drop_unsupported_number_items,
-    reference_list_refs,
 )
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
@@ -1024,13 +1023,12 @@ def run_pipeline(
             clear_resolved_number_issues(generation_evaluations[-1], normalized, block_texts)
         normalized.setdefault("warnings", []).append(f"원문에 없는 숫자를 쓴 항목을 뺌: {', '.join(number_dropped)}")
 
-    # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
-    reference_refs = reference_list_refs(blocks)
-    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, reference_refs)
+    # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 언급으로 둔다.
+    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, blocks)
     if demoted_concepts:
         if generation_evaluations:
             clear_resolved_core_concept_issues(generation_evaluations[-1], demoted_concepts)
-        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림: {', '.join(demoted_concepts)}")
+        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 언급으로 내림: {', '.join(demoted_concepts)}")
 
     # 4. Backend normalize/merge/mention expansion.
     log.emit(
@@ -1070,10 +1068,10 @@ def run_pipeline(
                 existing_source_artifact,
             )
             # 기존 원본 산출물의 핵심 개념도 합친 근거로 다시 검증한다. 합치면서 강등이 되돌려지지 않게 한다.
-            resolved, reingest_demoted = demote_unsupported_core_concepts(resolved, reference_refs)
+            resolved, reingest_demoted = demote_unsupported_core_concepts(resolved, blocks)
             if reingest_demoted:
                 resolved.setdefault("warnings", []).append(
-                    f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림(재편입): {', '.join(reingest_demoted)}"
+                    f"근거 주장이 없는 핵심 개념을 언급으로 내림(재편입): {', '.join(reingest_demoted)}"
                 )
         if args.save_debug_json:
             write_json(out / "normalized.json", resolved)
