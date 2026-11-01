@@ -463,3 +463,64 @@ def test_relation_from_concept_moved_into_entry_starts_from_its_home_page() -> N
     deployment = next(page for page in ConceptPageAssembler().build_top(result, top_n=None)
                       if page["slug"] == "deployment")
     assert "[[service|Service]]" in deployment["markdown"]
+
+
+def test_child_of_merged_parent_is_searched_under_the_matched_entry_name() -> None:
+    existing = _with_kubectl_entry()
+    existing[0]["entries"].append(
+        {"entry_id": "e-limit", "name": "Deployment Scale Limit", "definition": "상한", "parent_entry_id": "e-scale"})
+
+    result = apply_concept_entries(_normalized(NESTED, existing), judge_same=FakeSame("merge_into"))
+
+    # 위 항목이 kubectl > scale과 같으면 아래 항목은 "scale > ..."로 찾아 기존 항목 id를 다시 쓴다.
+    kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
+    assert kubectl["Deployment Scale Limit"]["entry_id"] == "e-limit"
+    assert kubectl["Deployment Scale Limit"]["parent_entry_id"] == "e-scale"
+
+
+def test_manually_deleted_reference_stays_deleted_after_next_ingest(scoped_dsn, monkeypatch) -> None:
+    from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+
+    stored = _stored_markdown(monkeypatch)
+    monkeypatch.setattr(database, "storage_uri", lambda key: key)
+    monkeypatch.setattr(database, "read_text_object", lambda key: stored[key])
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    first = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
+    second = manifest("op-x", _normalized(concepts), _with_kubectl_entry(), judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()
+
+    # 사람이 본문에서 참조 줄을 지운다. 수동 저장은 지운 [[kubectl]]의 간선 삭제를 이 반영 함수로 적용한다.
+    manual_markdown = stored[page["markdown_uri"]].replace("- [[kubectl|scale]]\n", "")
+    stored["manual.md"] = manual_markdown
+    removed = [{"source": "concept:deployment", "target": "concept:kubectl", "relation": "entry_reference"}]
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        database._apply_restored_wiki_state(
+            "ws-1",
+            [{"page_id": page["id"], "page_type": "concept", "markdown_key": "manual.md", "title": None,
+              "summary": None, "source_document_ids": ["doc-1"]}],
+            {"removed_links": removed, "restored_links": []},
+            False,
+            conn=conn,
+        )
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": []}]
+    third = manifest("op-y", _normalized([DEPLOYMENT[0], _concept("deployment-strategy", "Deployment Strategy", "B0006")]),
+                     existing)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-2", third)
+        markdown_uri = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()["markdown_uri"]
+
+    manual = _page(page["id"], "op-m", 2, {"schema_version": 1, "artifact_type": "manual", "operation_id": "op-m",
+                                            "markdown": manual_markdown, "added_links": [], "removed_links": removed})
+    replayed = rebuild_concept_page([
+        _page(page["id"], "op-x", 1, second["concept_contributions"]["deployment"]),
+        manual,
+        _page(page["id"], "op-y", 3, third["concept_contributions"]["deployment"]),
+    ])
+    assert "[[kubectl|scale]]" not in _section(stored[markdown_uri])
+    assert _section(stored[markdown_uri]) == _section(replayed.markdown)

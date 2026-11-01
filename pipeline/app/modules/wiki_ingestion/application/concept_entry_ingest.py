@@ -45,16 +45,21 @@ def apply_concept_entries(
     title_of = {**{slug: c.get("title") or slug for slug, c in existing.items()},
                 **{slug: c.get("title") or slug for slug, c in by_slug.items()}}
     pool = _existing_entries(existing)
-    queries = {
-        detail: {
-            "slug": f"incoming:{detail}",
-            "title": f"{title_of[parent or page]} > {title_of[detail]}",
-            "aliases": [],
-            "definition": by_slug[detail].get("definition") or "",
-        }
-        for detail, (page, parent) in placements.items()
-    }
-    matched = _match_entries(queries, pool, judge_same)
+    # 같은 것 찾기는 위 항목부터 깊이별로 한다. 위 항목이 기존 항목과 같으면 아래 항목은 그 항목 이름 아래에서 찾는다.
+    depth = {detail: _depth(placements, detail) for detail in placements}
+    matched: dict[str, dict[str, Any]] = {}
+    for level in sorted(set(depth.values())):
+        queries = {}
+        for detail in (slug for slug in placements if depth[slug] == level):
+            page, parent = placements[detail]
+            parent_name = matched[parent]["name"] if parent in matched else title_of[parent or page]
+            queries[detail] = {
+                "slug": f"incoming:{detail}",
+                "title": f"{parent_name} > {title_of[detail]}",
+                "aliases": [],
+                "definition": by_slug[detail].get("definition") or "",
+            }
+        matched.update(_match_entries(queries, pool, judge_same))
 
     document_id = str(result.get("document", {}).get("document_id") or "")
     evidence_by_id = {item.get("evidence_id"): item for item in result.get("evidence_units", [])}
@@ -63,7 +68,7 @@ def apply_concept_entries(
     home_of: dict[str, str] = {}
     entry_changes: dict[str, list[dict[str, Any]]] = {}
     references: list[dict[str, Any]] = []
-    for detail in sorted(placements, key=lambda slug: _depth(placements, slug)):
+    for detail in sorted(placements, key=lambda slug: depth[slug]):
         page, parent = placements[detail]
         concept = by_slug[detail]
         # 이 항목이 놓일 페이지와 그 페이지 안의 바로 위 항목이다.

@@ -474,6 +474,21 @@ def _apply_restored_wiki_state(
                     """,
                     (source["id"], target_id, link.get("relation") or "related_to"),
                 )
+            if link.get("relation") == ENTRY_REFERENCE:
+                # 본문 목록을 그리는 참조 사본도 함께 지운다. entry_id가 없으면 재생처럼 그 페이지 쌍의 참조를 모두 지운다.
+                conn.execute(
+                    """
+                    DELETE FROM wiki_page_entry_references
+                    WHERE page_id = %s AND target_slug = %s
+                      AND (%s::text IS NULL OR entry_id = %s)
+                    """,
+                    (
+                        source["id"],
+                        str(link.get("target") or "").split(":", 1)[-1],
+                        link.get("entry_id"),
+                        link.get("entry_id"),
+                    ),
+                )
         for link in link_changes.get("restored_links", []):
             source = by_ref.get(str(link.get("source")))
             if source is None:
