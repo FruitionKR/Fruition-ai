@@ -79,6 +79,8 @@ class World:
         self.ledger: list[dict] = []
         self.runs = 0
         monkeypatch.setenv("S3_BUCKET", "wiki")
+        # 페이지 이동 판정은 임베딩 서버가 있어야 한다. 실제 서버·LLM을 부르지 않게 끈다.
+        monkeypatch.delenv("EMBEDDING_SERVICE_URL", raising=False)
         monkeypatch.setattr(database, "connect", self.connect)
         monkeypatch.setattr(database, "read_text_object", self.read)
         monkeypatch.setattr(database, "write_text_object", self.write)

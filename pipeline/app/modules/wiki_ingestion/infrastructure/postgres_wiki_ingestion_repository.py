@@ -47,10 +47,16 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     load_concept_contributions,
     rebuild_concept_page,
 )
+from app.modules.wiki_ingestion.application.concept_entry_ingest import Similarity, rank_part_of
+from app.modules.wiki_generation.application.judge_candidates import PartOfJudge
 from app.modules.wiki_ingestion.domain.concept_entry_lint import (
+    EntryLintPlan,
     EntryPage,
+    choose_page_moves,
+    move_page_under,
     plan_entry_lint,
     retarget_split_relations,
+    standalone,
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
@@ -2082,10 +2088,13 @@ def lint_concept_entries(
     skip: bool = False,
     connection: psycopg.Connection | None = None,
     concept_judge: JevConceptResolver | None = None,
+    judge_part_of: PartOfJudge | None = None,
+    similarity: Similarity | None = None,
 ) -> dict[str, Any]:
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
 
     concept_judge가 있으면 분리한 부모의 개념 관계를 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(결정 6).
+    judge_part_of·similarity가 있으면 바뀐 페이지 중 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
@@ -2299,6 +2308,8 @@ def lint_concept_entries(
                 return None if found is None else {f"concept:{slug}" for slug in found}
 
             retarget_split_relations(plan, pages, related)
+        if judge_part_of is not None and similarity is not None and apply:
+            _plan_page_moves(conn, workspace_id, plan, pages, changed, summaries, load, judge_part_of, similarity)
         if plan.deleted_page_ids:
             # 합쳐 지울 자식으로 오던 일반 링크는 그 링크를 낸 개념 페이지의 lint 기록에서 지운다(ADR 0042 결정 2).
             # 합치기 복원이 이 기록을 빼면 원래 기록이 아직 잇는 링크만 되살아난다. 참조는 plan이 부모로 옮겼다.
@@ -2390,6 +2401,83 @@ def lint_concept_entries(
         "deleted_pages": sorted(plan.deleted_page_ids),
     }
     return result
+
+
+def _plan_page_moves(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    plan: EntryLintPlan,
+    pages: dict[str, EntryPage],
+    changed: set[str],
+    summaries: dict[str, str],
+    load: Callable[[list[dict[str, Any]]], None],
+    judge_part_of: PartOfJudge,
+    similarity: Similarity,
+) -> None:
+    """바뀐 페이지 중 홀로 선 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 옮긴다(ADR 0042 4의 이동).
+
+    편입 순서 때문에 먼저 들어온 세부 개념이 페이지로 남은 것을 뒤에 들어온 상위 개념 아래로 옮긴다. 후보와 판정은 편입
+    배정과 같다. 후보는 다른 활성 개념 페이지와 그 하위 항목의 임베딩("이름: 정의") 상위 `PART_OF_CANDIDATE_LIMIT`개이고,
+    판정기의 part_of만 따른다. 옮기는 것은 항목 하나를 이미 있는 페이지에 다는 일이라 `K`를 보지 않는다.
+    다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
+    """
+    busy = set(plan.page_changes)
+    movers = {
+        page.slug: page for page_id, page in pages.items()
+        if page_id in changed and page_id not in busy and standalone(page) and summaries.get(page_id, "").strip()
+    }
+    if not movers:
+        return
+    page_rows = conn.execute(
+        """
+        SELECT id, slug, title, summary FROM wiki_pages
+        WHERE workspace_id = %s AND page_type = 'concept' AND status = 'active'
+        """,
+        (workspace_id,),
+    ).fetchall()
+    entry_rows = conn.execute(
+        """
+        SELECT entry.entry_id, entry.name, entry.definition, entry.parent_entry_id, page.id AS page_id, page.title
+        FROM wiki_page_entries entry
+        JOIN wiki_pages page ON page.id = entry.page_id
+        WHERE entry.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
+        ORDER BY entry.entry_id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    # 상위 후보: 페이지는 slug, 하위 항목은 entry_id로 둔다. 항목 이름은 "바로 위 이름 > 이름"이다.
+    heads: dict[str, dict[str, Any]] = {}
+    head_pages: dict[str, tuple[str, str | None]] = {}
+    for row in page_rows:
+        heads[str(row["slug"])] = {"slug": str(row["slug"]), "title": str(row["title"]), "aliases": [],
+                                   "definition": str(row.get("summary") or "")}
+        head_pages[str(row["slug"])] = (str(row["id"]), None)
+    names = {str(row["entry_id"]): str(row["name"]) for row in entry_rows}
+    for row in entry_rows:
+        entry_id = str(row["entry_id"])
+        parent_name = names.get(str(row["parent_entry_id"] or "")) or str(row["title"])
+        heads[entry_id] = {"slug": entry_id, "title": f"{parent_name} > {row['name']}", "aliases": [],
+                           "definition": str(row.get("definition") or "")}
+        head_pages[entry_id] = (str(row["page_id"]), entry_id)
+    heads = {key: head for key, head in heads.items() if head["definition"].strip()}
+    details = [heads[slug] for slug in sorted(movers) if slug in heads]
+    ranked = [
+        (probability, head, movers[detail].page_id)
+        for probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity)
+        if detail in movers
+    ]
+    moves, deferred = choose_page_moves(ranked, head_pages, busy)
+    load([row for row in page_rows if str(row["id"]) in {target for _, target, _ in moves} - set(pages)])
+    for page_id, target, parent_entry_id in moves:
+        reason = (
+            move_page_under(plan, pages[page_id], summaries[page_id], pages[target], parent_entry_id)
+            if target in pages else "target_missing"
+        )
+        plan.decisions.append({"action": "move", "page_id": page_id, "entry_id": None, "target_page_id": target,
+                               "parent_entry_id": parent_entry_id, **({"skipped_reason": reason} if reason else {})})
+    for page_id, reason in deferred:
+        plan.decisions.append({"action": "move", "page_id": page_id, "entry_id": None, "skipped_reason": reason})
+        plan.deferred_page_ids.append(page_id)
 
 
 def _entry_reference_targets(contribution: dict[str, Any]) -> set[str]:

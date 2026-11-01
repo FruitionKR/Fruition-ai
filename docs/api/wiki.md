@@ -633,8 +633,11 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 하위 항목 재검사([ADR 0042](../adr/0042-hierarchical-concept-pages.md) 3단계)도 함께 한다. 지난 lint 뒤 바뀐 개념 페이지의
 하위 항목으로 분리·여러 부모 승격·다시 합치기를 정하고 사라진 항목을 가리키는 참조를 지운다(형식은
 [data-model](../data-model.md)). 분리한 부모의 개념 관계(`concept_related_to`)는 Jev 같음·관련 판정으로
-자식·부모 중 관련인 쪽으로 옮기고, Jev를 쓸 수 없으면 옮기지 않는다(ADR 0042 결정 6). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`),
-`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다. 그 자식에는 이 lint의
+자식·부모 중 관련인 쪽으로 옮기고, Jev를 쓸 수 없으면 옮기지 않는다(ADR 0042 결정 6). 바뀐 페이지 중 홀로 선 페이지는
+`part_of` 판정(Jev, 꺼져 있으면 이 lint의 `provider`·`model`)으로 다른 페이지나 그 하위 항목 아래 하위 항목으로 옮긴다(ADR 0042
+페이지 이동, dry run은 판정하지 않는다). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`.
+페이지 이동은 `action: "move"`와 `target_page_id`·`parent_entry_id`),
+`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지와 다른 페이지로 옮겨 지운 페이지다. 그 페이지에는 이 lint의
 재생 가능한 삭제 기록(`content_action: "delete"`)이 남고, 그 기록은 `changed_pages`와 `ledger_contributions`에 함께 실린다
 (document-svc는 `changed_pages`에 없는 페이지의 원장 행을 받지 않는다). 삭제 기록은 그때까지의 기록을 모두 지운 것과 같아,
 재생이 삭제 기록에서 끝나면 페이지가 없다. `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·

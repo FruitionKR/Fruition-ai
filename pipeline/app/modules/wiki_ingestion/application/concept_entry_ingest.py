@@ -173,24 +173,36 @@ def _assign_heads(
         if _has_definition(concept)
     }
     details = [concept for concept in ledger if concept["slug"] not in existing and concept["slug"] in heads]
+    assigned: dict[str, str] = {}
+    for _, head, detail in rank_part_of(details, heads, judge_part_of, similarity):
+        if detail not in assigned and detail not in existing and not _creates_cycle(assigned, detail, head):
+            assigned[detail] = head
+    # 본문 목록 순서는 이번 문서 개념 순서를 따른다.
+    return {concept["slug"]: assigned[concept["slug"]] for concept in ledger if concept["slug"] in assigned}
+
+
+def rank_part_of(
+    details: list[dict[str, Any]],
+    heads: dict[str, dict[str, Any]],
+    judge_part_of: PartOfJudge,
+    similarity: Similarity,
+) -> list[tuple[float, str, str]]:
+    """판정기가 part_of라 한 (P(part_of), 상위 slug, 세부 slug)를 확률이 높은 순으로 돌려준다.
+
+    세부 항목마다 상위 후보는 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다(편입 배정과 lint 페이지 이동이 같이 쓴다).
+    서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 판정기·임베딩 서버를 쓸 수 없으면 빈 목록이다.
+    """
     try:
         pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
         decisions = judge_part_of(pairs) if pairs else {}
     except JevUnavailable as exc:
         logger.warning("[part_of 판정 생략] %s", exc)
-        return {}
+        return []
     part_of = {pair: item["probability"] for pair, item in decisions.items() if item.get("part_of")}
-    # 서로가 서로에 딸린다는 판정은 애매하다고 보고 배정하지 않는다.
-    ranked = sorted(
+    return sorted(
         ((probability, head, detail) for (head, detail), probability in part_of.items() if (detail, head) not in part_of),
         key=lambda row: (-row[0], row[2], row[1]),
     )
-    assigned: dict[str, str] = {}
-    for _, head, detail in ranked:
-        if detail not in assigned and detail not in existing and not _creates_cycle(assigned, detail, head):
-            assigned[detail] = head
-    # 본문 목록 순서는 이번 문서 개념 순서를 따른다.
-    return {concept["slug"]: assigned[concept["slug"]] for concept in ledger if concept["slug"] in assigned}
 
 
 def _candidate_heads(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:

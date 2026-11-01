@@ -6,6 +6,9 @@
 - 다시 합치기: 부모에 자식 항목마다 `revive`를 남겨 분리 때 지운 항목을 되살리고, 분리 뒤 자식에만 쌓인 편입 기록을
   부모에 잇는다. 자식에는 재생 가능한 삭제 기록을 남긴다. 방향 전환은 두지 않는다.
 - 다른 페이지의 참조는 옮긴 항목을 따라 대상을 바꾸고, 가리키던 항목이 없어진 참조는 지운다.
+- 페이지 이동: 홀로 선 페이지를 판정기가 고른 다른 페이지(그 페이지나 그 항목 아래)의 하위 항목으로 옮긴다. 다시 합치기와
+  같은 기록이다. 대상 페이지에는 옮긴 페이지의 원래 편입 기록을 원래 작업 id로 잇고(항목 `add`와 근거), 옮긴 페이지에는
+  재생 가능한 삭제 기록을 남긴다.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from app.modules.wiki_ingestion.domain.concept_entries import (
     ENTRY_EVIDENCE_FIELDS,
     ENTRY_REFERENCE,
     _ancestors,
+    new_entry_id,
 )
 from app.modules.wiki_ingestion.domain.concept_split_rules import (
     EntryNode,
@@ -325,13 +329,112 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
         parent.ref,
         {parent.page_id, child.page_id},
     )
-    # 자식에는 재생 가능한 삭제 기록을 남긴다. 자식의 기존 기여는 그대로 두고, 이 기록이 그때까지의 기록을 지운다.
-    # lint 복원이 이 기록과 이은 기록을 빼면 자식이 다시 재생된다. 자식이 내던 링크는 이 기록이 지운 것으로 남겨
-    # 복원 때 되살린다. 다른 페이지에서 자식으로 오던 일반 링크는 저장할 때 그 페이지 기록에서 지운다.
-    child_change = plan.change(child.page_id, child.slug, child.title)
-    child_change["content_action"] = "delete"
-    child_change["removed_links"].extend(link for link in child.links if link not in child_change["removed_links"])
-    plan.deleted_page_ids.append(child.page_id)
+    _delete_page(plan, child)
+    return None
+
+
+def _delete_page(plan: EntryLintPlan, page: EntryPage) -> None:
+    """옮겨 없어질 페이지에 재생 가능한 삭제 기록을 남긴다(다시 합치기·페이지 이동).
+
+    기존 기여는 그대로 두고, 이 기록이 그때까지의 기록을 지운다. lint 복원이 이 기록과 이은 기록을 빼면 페이지가 다시
+    재생된다. 페이지가 내던 링크는 이 기록이 지운 것으로 남겨 복원 때 되살린다. 다른 페이지에서 이 페이지로 오던 일반
+    링크는 저장할 때 그 페이지 기록에서 지운다.
+    """
+    change = plan.change(page.page_id, page.slug, page.title)
+    change["content_action"] = "delete"
+    change["removed_links"].extend(link for link in page.links if link not in change["removed_links"])
+    plan.deleted_page_ids.append(page.page_id)
+
+
+def standalone(page: EntryPage) -> bool:
+    """다른 페이지의 하위 항목으로 옮길 수 있는 홀로 선 페이지인지.
+
+    하위 항목·분리 기록·사람이 고친 기록·다른 페이지 항목 참조가 없고, 근거를 가진 lint 기록(클러스터 승격·병합)도 없다.
+    lint 기록은 원래 작업 id로 잇지 않으므로 근거가 있으면 옮길 때 잃는다.
+    """
+    return not (
+        page.entries
+        or page.split_record
+        or any(link.get("relation") == ENTRY_REFERENCE for link in page.links)
+        or any(
+            item.get("artifact_type") == _MANUAL
+            or (item.get("artifact_type") == _LINT and item.get("evidence_units"))
+            for item in page.contributions
+        )
+    )
+
+
+def choose_page_moves(
+    ranked: list[tuple[float, str, str]],
+    head_pages: dict[str, tuple[str, str | None]],
+    busy: set[str],
+) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, str]]]:
+    """part_of 판정(확률, 상위, 옮길 page_id, 확률 순)에서 이번 lint에 옮길 페이지를 고른다.
+
+    페이지마다 확률이 가장 높은 상위 하나만 본다. head_pages는 상위 → (그 상위가 있는 page_id, 상위 항목 id 또는 None),
+    busy는 이번 lint의 다른 판정(분리·승격·합치기·참조 정리)이 바꾸는 페이지다. 옮길 페이지나 상위 페이지가 busy면
+    `page_busy`, 이번에 옮긴 페이지를 상위로 두거나 이번에 상위가 된 페이지를 옮기면 `chained`로 다음 lint에 미룬다.
+    결과는 ([(page_id, 대상 page_id, 상위 항목 id)], [(page_id, 미룬 이유)])다.
+    """
+    moves: list[tuple[str, str, str | None]] = []
+    deferred: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _, head, page_id in ranked:
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        target, parent_entry_id = head_pages[head]
+        if page_id in busy or target in busy:
+            deferred.append((page_id, "page_busy"))
+        elif any(target == moved for moved, _, _ in moves) or any(page_id == item[1] for item in moves):
+            deferred.append((page_id, "chained"))
+        else:
+            moves.append((page_id, target, parent_entry_id))
+    return moves, deferred
+
+
+def move_page_under(
+    plan: EntryLintPlan,
+    page: EntryPage,
+    definition: str,
+    target: EntryPage,
+    parent_entry_id: str | None,
+) -> str | None:
+    """홀로 선 페이지를 target의 하위 항목 하나로 옮긴다. 옮기지 못하면 이유를 돌려준다.
+
+    페이지의 편입 기록마다 같은 작업 id로 target에 기록을 잇는다. 그 기록은 페이지 이름·정의로 한 항목을 `add`하고
+    (근거는 그 기록의 개념 인용과 근거 단위) 근거 단위를 모두 옮긴다. 그래서 그 편입을 되돌리면 target에서도 그 근거가
+    빠지고, 모두 되돌리면 항목이 사라진다. 기록은 페이지·작업마다 하나라 같은 작업이 target에도 기여했으면 옮기지 않는다.
+    """
+    target_operations = {str(item.get("operation_id")) for item in target.contributions}
+    entry_id = new_entry_id(target.slug, page.slug)
+    copies = []
+    for contribution in page.contributions:
+        if contribution.get("artifact_type") == _LINT:
+            continue
+        if str(contribution.get("operation_id")) in target_operations:
+            return "operation_on_both_pages"
+        units = [unit for unit in contribution.get("evidence_units", []) if isinstance(unit, dict)]
+        add = {
+            "op": "add",
+            "entry_id": entry_id,
+            "name": page.title,
+            "definition": definition,
+            "parent_entry_id": parent_entry_id,
+            "anchor_reference_ids": list(dict.fromkeys([
+                *(contribution.get("concept") or {}).get("anchor_reference_ids", []),
+                *(ref for unit in units for ref in unit.get("anchor_reference_ids", [])),
+            ])),
+            "evidence_claim_ids": [str(unit["evidence_id"]) for unit in units if unit.get("evidence_id")],
+        }
+        copies.append(_linked_copy(contribution, target.page_id, target.slug, [add], all_evidence=True))
+    for copy in copies:
+        plan.link(copy)
+    # 대상 페이지에도 이 lint 기록을 둔다. 이은 기록만 있으면 document-svc가 그 페이지 행을 받지 않는다.
+    # 기록에는 이은 작업을 남긴다(재생에는 쓰지 않는다).
+    linked = plan.change(target.page_id, target.slug, target.title).setdefault("linked_operation_ids", [])
+    linked.extend(str(copy["operation_id"]) for copy in copies if str(copy["operation_id"]) not in linked)
+    _delete_page(plan, page)
     return None
 
 
