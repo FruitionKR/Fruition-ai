@@ -352,16 +352,27 @@ def standalone(page: EntryPage) -> bool:
     하위 항목·분리 기록·사람이 고친 기록·다른 페이지 항목 참조가 없고, 근거를 가진 lint 기록(클러스터 승격·병합)도 없다.
     lint 기록은 원래 작업 id로 잇지 않으므로 근거가 있으면 옮길 때 잃는다.
     """
+    live = _since_last_delete(page.contributions)
     return not (
         page.entries
-        or page.split_record
+        or any(isinstance(item.get("split_from"), dict) for item in live)
         or any(link.get("relation") == ENTRY_REFERENCE for link in page.links)
         or any(
             item.get("artifact_type") == _MANUAL
             or (item.get("artifact_type") == _LINT and item.get("evidence_units"))
-            for item in page.contributions
+            for item in live
         )
     )
+
+
+def _since_last_delete(contributions: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    """재생에 남는 기록. 재생은 마지막 삭제 기록(lint `content_action: "delete"`)과 그 앞 기록을 빼고 한다."""
+    last = max(
+        (index for index, item in enumerate(contributions)
+         if item.get("artifact_type") == _LINT and item.get("content_action") == "delete"),
+        default=-1,
+    )
+    return contributions[last + 1:]
 
 
 def choose_page_moves(
@@ -409,7 +420,8 @@ def move_page_under(
     target_operations = {str(item.get("operation_id")) for item in target.contributions}
     entry_id = new_entry_id(target.slug, page.slug)
     copies = []
-    for contribution in page.contributions:
+    # 지웠다가 다시 편입한 페이지면 삭제 기록 앞 기록은 이미 다른 페이지로 옮겼거나 지운 것이라 잇지 않는다.
+    for contribution in _since_last_delete(page.contributions):
         if contribution.get("artifact_type") == _LINT:
             continue
         if str(contribution.get("operation_id")) in target_operations:

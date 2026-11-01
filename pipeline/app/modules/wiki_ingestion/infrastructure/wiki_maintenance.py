@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.llm_env import resolve_llm_provider_defaults
+from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import (
     BgeM3EmbeddingModel,
 )
@@ -24,7 +25,6 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     JevConceptResolver,
     embedding_server_model,
-    embedding_similarity,
     jev_concept_judge,
 )
 from app.modules.wiki_ingestion.application.models import (
@@ -81,7 +81,7 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
             nullcontext(None) if command.dry_run else database.connect()
         )
         concept_judge = jev_concept_judge() if not command.dry_run else None
-        judge_part_of, similarity = _part_of_judge(command, concept_judge) if not command.dry_run else (None, None)
+        judge_part_of, embedding_model = _part_of_judge(command, concept_judge) if not command.dry_run else (None, None)
         with lock, transaction as connection:
             result = database.lint_wiki_workspace(
                 command.user_id,
@@ -112,7 +112,7 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     connection=connection,
                     concept_judge=concept_judge,
                     judge_part_of=judge_part_of,
-                    similarity=similarity,
+                    embedding_model=embedding_model,
                 )
             )
             if not command.dry_run:
@@ -258,8 +258,8 @@ def _lint_api_client(command: WikiMaintenanceCommand) -> ChatCompletionsJsonClie
 def _part_of_judge(
     command: WikiMaintenanceCommand,
     concept_judge: JevConceptResolver | None,
-) -> tuple[PartOfJudge | None, Callable[[str, list[str]], list[float]] | None]:
-    """페이지 이동(ADR 0042)의 part_of 판정기와 후보 임베딩 유사도. 편입 배정과 같은 판정기·벡터·캐시를 쓴다.
+) -> tuple[PartOfJudge | None, EmbeddingModelPort | None]:
+    """페이지 이동(ADR 0042)의 part_of 판정기와 후보를 고를 임베딩 모델. 편입 배정과 같은 판정기·모델·캐시를 쓴다.
 
     Jev가 켜져 있으면 Jev, 아니면 이 lint 작업의 LLM이 같은 프롬프트로 판정한다. 임베딩 서버나 LLM 설정이 없으면
     옮기지 않는다(lint는 실패시키지 않는다).
@@ -268,14 +268,14 @@ def _part_of_judge(
     if model is None:
         return None, None
     if concept_judge is not None:
-        return concept_judge.judge_part_of, embedding_similarity(model)
+        return concept_judge.judge_part_of, model
     try:
         client = _lint_api_client(command)
     except WikiMaintenanceConfigurationError as exc:
         logger.warning("[lint 페이지 이동 판정 꺼짐] %s", exc)
         return None, None
     prompt = Path("prompts/concept_part_of.system.md").read_text(encoding="utf-8")
-    return llm_part_of_judge(RetryOnceJsonCompletion(client), prompt), embedding_similarity(model)
+    return llm_part_of_judge(RetryOnceJsonCompletion(client), prompt), model
 
 
 def _promotion_concept_system_prompt() -> str:

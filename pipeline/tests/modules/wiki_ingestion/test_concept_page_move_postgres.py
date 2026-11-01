@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 import pytest
 
-from app.core.jev_client import JevUnavailable
 from app.modules.wiki_ingestion.domain.concept_entries import new_entry_id
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # noqa: F401
@@ -42,19 +42,41 @@ class FakeJudge:
         return None
 
 
-def _similarity(_query: str, texts: list[str]) -> list[float]:
-    return [1.0] * len(texts)
+class FakeModel:
+    """모든 텍스트를 같은 벡터로 둔다. 프로세스 임베딩 캐시가 테스트끼리 섞이지 않게 모델 이름을 매번 다르게 한다."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.model_name = f"fake-{uuid4().hex}"
+        self.fail = fail
+        self.embedded: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if self.fail:
+            raise RuntimeError("임베딩 서버 없음")
+        self.embedded.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
 
 
 @pytest.fixture
 def judged(world: World, monkeypatch):
-    def use(answers: dict[tuple[str, str], float] | None, similarity=_similarity) -> FakeJudge:
+    def use(answers: dict[tuple[str, str], float] | None, model: FakeModel | None = None) -> FakeJudge:
         judge = FakeJudge(answers)
+        judge.model = model or FakeModel()
         monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: judge)
-        monkeypatch.setattr(wiki_maintenance, "embedding_server_model", lambda: object())
-        monkeypatch.setattr(wiki_maintenance, "embedding_similarity", lambda _model: similarity)
+        monkeypatch.setattr(wiki_maintenance, "embedding_server_model", lambda: judge.model)
         return judge
     return use
+
+
+def _store_page_vectors(world: World, model: FakeModel, vectors: dict[str, list[float]]) -> None:
+    """임베딩 작업이 끝나 저장된 페이지 벡터. 바뀌지 않은 페이지는 이 벡터로만 후보가 된다."""
+    with world.connect() as conn:
+        for slug, vector in vectors.items():
+            conn.execute(
+                "INSERT INTO wiki_page_embeddings (page_id, embedding_model, representation_hash, embedding_vector, "
+                "embedding_dimension) VALUES (%s, %s, %s, %s, %s)",
+                (world.page_id(slug), model.model_name, slug, vector, len(vector)),
+            )
 
 
 def _lifecycle_then_pod(world: World) -> None:
@@ -152,9 +174,7 @@ def test_no_move_without_a_confident_judgment(world: World, judged, monkeypatch,
     elif case == "judge_unavailable":
         judged(None)
     elif case == "embedding_unavailable":
-        def failing(_query, _texts):
-            raise JevUnavailable("임베딩 실패")
-        judge = judged(MOVE_ANSWERS, failing)
+        judge = judged(MOVE_ANSWERS, FakeModel(fail=True))
     else:
         # Jev가 꺼져 있으면 이 lint의 LLM이 같은 part_of 프롬프트로 답한다.
         class Completion:
@@ -275,11 +295,15 @@ def test_pages_linted_before_the_head_arrived_move_when_the_head_page_changes(wo
     assert world.lint("lint-first")["deleted_pages"] == []
     world.ingest("op-p", "doc-p", {"pod": {"title": "파드 (Pod)", "evidence": ["P1"], "entry_changes": [
         {**_add("e-container", "Container", refs=["P2"]), "definition": "컨테이너 정의"}]}})
+    _store_page_vectors(world, judge.model, {slug: [1.0, 0.0] for slug in MOVERS})
     before = world.state()
     judge.asked.clear()
+    judge.model.embedded.clear()
 
     result = world.lint("lint-move")
 
+    # 임베딩은 바뀐 파드 페이지와 그 항목만 한다. 라이프사이클 페이지는 저장된 벡터로 찾는다.
+    assert sorted(judge.model.embedded) == ["파드 (Pod) > Container: 컨테이너 정의", "파드 (Pod): pod 정의"]
     # 바뀐 파드 페이지에서 찾은 가까운 홀로 선 페이지가 후보다.
     assert {detail for _, detail in judge.asked} == set(MOVERS)
     assert sorted(result["deleted_pages"]) == sorted(world.page_id(slug) for slug in MOVERS)
@@ -290,5 +314,69 @@ def test_pages_linted_before_the_head_arrived_move_when_the_head_page_changes(wo
     assert ("doc-l", "pod") in state["documents"]
 
     world.restore_lint("lint-move")
+
+    assert world.state() == before
+
+
+def _manual_edit(world: World, slug: str) -> None:
+    """사람이 고친 기록을 원장에 더한다. 그 페이지는 홀로 선 페이지가 아니다."""
+    page_id = world.page_id(slug)
+    operation_id = f"op-manual-{slug}"
+    world.write(f"wiki/ws-entry/pages/{page_id}/ops/{operation_id}.json", json.dumps(
+        {"schema_version": 1, "artifact_type": "manual", "operation_id": operation_id, "page_id": page_id,
+         "added_links": [], "removed_links": []}))
+    world.write(f"wiki/ws-entry/pages/{page_id}/ops/{operation_id}.md", f"# {slug}\n\n사람이 고친 본문\n")
+    world._record(page_id, operation_id, None)
+
+
+def test_reverse_search_skips_ineligible_nearest_pages_and_judges_eligible_ones_further_down(
+    world: World, judged
+) -> None:
+    edited = [f"edited-{index}" for index in range(5)]
+    world.ingest("op-l", "doc-l", {
+        "pod-termination": {"title": "파드 종료", "evidence": ["L1"]},
+        **{slug: {"title": slug, "evidence": [f"E{index}"]} for index, slug in enumerate(edited)},
+    })
+    for slug in edited:
+        _manual_edit(world, slug)
+    judge = judged({("pod", "pod-termination"): 0.95})
+    world.lint("lint-first")
+    world.ingest("op-p", "doc-p", {"pod": {"title": "파드 (Pod)", "evidence": ["P1"]}})
+    # 파드(임베딩 [1, 0])에는 사람이 고친 페이지 5개가 파드 종료보다 가깝다. 파드 종료에는 파드가 가장 가깝다.
+    _store_page_vectors(world, judge.model, {**{slug: [0.8, -0.6] for slug in edited}, "pod-termination": [0.6, 0.8]})
+    judge.asked.clear()
+
+    result = world.lint("lint-move")
+
+    assert "pod-termination" in {detail for _, detail in judge.asked}
+    assert not {detail for _, detail in judge.asked} & set(edited)
+    assert result["deleted_pages"] == [world.page_id("pod-termination")]
+
+
+def test_move_of_a_page_deleted_and_ingested_again_carries_only_records_after_the_delete(
+    world: World, judged
+) -> None:
+    world.ingest("op-l", "doc-l", {"pod-termination": {"title": "파드 종료", "evidence": ["L1"]}})
+    world.ingest("op-p", "doc-p", {"pod": {"title": "파드 (Pod)", "evidence": ["P1"]}})
+    judge = judged({("pod", "pod-termination"): 0.95})
+    world.lint("lint-move")
+    # 옮겨 지운 페이지가 같은 slug로 다시 편입되고, 이번에는 노드 아래로 간다.
+    world.ingest("op-l2", "doc-l2", {"pod-termination": {"title": "파드 종료", "evidence": ["M1"]}})
+    world.ingest("op-n", "doc-n", {"node": {"title": "노드", "evidence": ["N1"]}})
+    judge.answers = {("node", "pod-termination"): 0.95}
+    before = world.state()
+
+    result = world.lint("lint-again")
+
+    assert result["deleted_pages"] == [world.page_id("pod-termination")]
+    assert world.contribution("node", "op-l2")["entry_changes"][0]["name"] == "파드 종료"
+    state = world.state()
+    node, pod = state["pages"]["node"][2], state["pages"]["pod"][2]
+    assert "doc-l2:M1" in node and "doc-l:L1" not in node
+    assert "doc-l:L1" in pod
+    assert node == world.ledger_rebuild("node").markdown
+    assert ("doc-l", "node") not in state["documents"]
+
+    world.restore_lint("lint-again")
 
     assert world.state() == before

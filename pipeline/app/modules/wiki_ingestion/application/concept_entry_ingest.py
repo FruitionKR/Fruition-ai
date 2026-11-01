@@ -193,7 +193,7 @@ def rank_part_of(
     서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 판정기·임베딩 서버를 쓸 수 없으면 빈 목록이다.
     """
     try:
-        pairs = [(heads[head], detail) for detail in details for head in nearest_concepts(detail, heads, similarity)]
+        pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
         decisions = judge_part_of(pairs) if pairs else {}
     except JevUnavailable as exc:
         logger.warning("[part_of 판정 생략] %s", exc)
@@ -205,20 +205,17 @@ def rank_part_of(
     )
 
 
-def nearest_concepts(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
-    """part_of로 물을 후보. 임베딩("이름: 정의") 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다(자기 자신 제외).
-
-    임베딩 서버를 쓸 수 없으면 similarity가 JevUnavailable을 낸다.
-    """
+def _candidate_heads(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
+    """part_of로 물을 상위 후보. 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
     others = [slug for slug in sorted(heads) if slug != detail["slug"]]
     if not others:
         return []
-    scores = similarity(_concept_text(detail), [_concept_text(heads[slug]) for slug in others])
+    scores = similarity(concept_text(detail), [concept_text(heads[slug]) for slug in others])
     ranked = sorted(zip(others, scores, strict=True), key=lambda row: (-row[1], row[0]))
     return [slug for slug, _ in ranked[:PART_OF_CANDIDATE_LIMIT]]
 
 
-def _concept_text(concept: dict[str, Any]) -> str:
+def concept_text(concept: dict[str, Any]) -> str:
     """임베딩 텍스트 "이름: 정의". DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다."""
     return f"{concept.get('title') or concept['slug']}: {concept.get('definition') or concept.get('summary') or ''}"
 

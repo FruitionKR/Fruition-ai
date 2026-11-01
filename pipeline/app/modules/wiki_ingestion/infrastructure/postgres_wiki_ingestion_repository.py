@@ -47,7 +47,13 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     load_concept_contributions,
     rebuild_concept_page,
 )
-from app.modules.wiki_ingestion.application.concept_entry_ingest import Similarity, nearest_concepts, rank_part_of
+from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import cached_embeddings, vector_similarity
+from app.modules.wiki_ingestion.application.concept_entry_ingest import (
+    PART_OF_CANDIDATE_LIMIT,
+    concept_text,
+    rank_part_of,
+)
 from app.modules.wiki_generation.application.judge_candidates import PartOfJudge
 from app.modules.wiki_ingestion.domain.concept_entry_lint import (
     EntryLintPlan,
@@ -2089,12 +2095,12 @@ def lint_concept_entries(
     connection: psycopg.Connection | None = None,
     concept_judge: JevConceptResolver | None = None,
     judge_part_of: PartOfJudge | None = None,
-    similarity: Similarity | None = None,
+    embedding_model: EmbeddingModelPort | None = None,
 ) -> dict[str, Any]:
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
 
     concept_judge가 있으면 분리한 부모의 개념 관계를 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(결정 6).
-    judge_part_of·similarity가 있으면 바뀐 페이지와 그 가까이의 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
+    judge_part_of·embedding_model이 있으면 바뀐 페이지와 그 가까이의 홀로 선 페이지를 다른 페이지의 하위 항목으로 옮길지 판정한다.
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
@@ -2308,8 +2314,8 @@ def lint_concept_entries(
                 return None if found is None else {f"concept:{slug}" for slug in found}
 
             retarget_split_relations(plan, pages, related)
-        if judge_part_of is not None and similarity is not None and apply:
-            _plan_page_moves(conn, workspace_id, plan, pages, changed, summaries, load, judge_part_of, similarity)
+        if judge_part_of is not None and embedding_model is not None and apply:
+            _plan_page_moves(conn, workspace_id, plan, pages, changed, summaries, load, judge_part_of, embedding_model)
         if plan.deleted_page_ids:
             # 합쳐 지울 자식으로 오던 일반 링크는 그 링크를 낸 개념 페이지의 lint 기록에서 지운다(ADR 0042 결정 2).
             # 합치기 복원이 이 기록을 빼면 원래 기록이 아직 잇는 링크만 되살아난다. 참조는 plan이 부모로 옮겼다.
@@ -2403,6 +2409,11 @@ def lint_concept_entries(
     return result
 
 
+# 역방향 후보를 찾을 때 바뀐 페이지마다 유사도 순으로 살펴볼 페이지 수 상한. 그 안에서 홀로 선 페이지를
+# `PART_OF_CANDIDATE_LIMIT`개까지 고른다. 가까운 페이지가 사람이 고친 페이지 등이라 옮길 수 없으면 다음 페이지를 본다.
+REVERSE_SCAN_LIMIT = 4 * PART_OF_CANDIDATE_LIMIT
+
+
 def _plan_page_moves(
     conn: psycopg.Connection,
     workspace_id: str,
@@ -2412,13 +2423,14 @@ def _plan_page_moves(
     summaries: dict[str, str],
     load: Callable[[list[dict[str, Any]]], None],
     judge_part_of: PartOfJudge,
-    similarity: Similarity,
+    embedding_model: EmbeddingModelPort,
 ) -> None:
     """바뀐 페이지와 바뀐 페이지 가까이의 홀로 선 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 옮긴다(ADR 0042 4의 이동).
 
     편입 순서 때문에 먼저 들어온 세부 개념이 페이지로 남은 것을 뒤에 들어온 상위 개념 아래로 옮긴다. 후보와 판정은 편입
-    배정과 같다. 후보는 다른 활성 개념 페이지와 그 하위 항목의 임베딩("이름: 정의") 상위 `PART_OF_CANDIDATE_LIMIT`개이고,
-    판정기의 part_of만 따른다. 옮기는 것은 항목 하나를 이미 있는 페이지에 다는 일이라 `K`를 보지 않는다.
+    배정과 같다. 후보는 다른 활성 개념 페이지와 그 하위 항목의 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개이고,
+    판정기의 part_of만 따른다. 벡터는 저장된 페이지·`sub_entry` 벡터를 쓰고, 바뀐 페이지(와 벡터가 없는 그 하위 항목)만
+    지금 "이름: 정의"로 임베딩한다. 그래서 임베딩 요청은 바뀐 만큼이고, 벡터가 아직 없는 다른 페이지·항목은 후보가 아니다. 옮기는 것은 항목 하나를 이미 있는 페이지에 다는 일이라 `K`를 보지 않는다.
     다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
     """
     busy = set(plan.page_changes)
@@ -2454,23 +2466,50 @@ def _plan_page_moves(
                            "definition": str(row.get("definition") or "")}
         head_pages[entry_id] = (str(row["page_id"]), entry_id)
     heads = {key: head for key, head in heads.items() if head["definition"].strip()}
-    # 역방향: 바뀐 페이지(새 상위 후보)마다 가까운 홀로 선 페이지를 상위 `PART_OF_CANDIDATE_LIMIT`개까지 후보로 더한다.
-    # 그 페이지가 바뀌지 않았어도(세부 페이지 뒤 lint가 한 번 돈 다음 상위 페이지가 들어온 경우) 옮길 수 있다.
-    # 비용은 바뀐 페이지 수에 비례한다. 하위 항목이 있는 페이지는 홀로 서지 않아 미리 뺀다.
-    with_entries = {str(row["page_id"]) for row in entry_rows}
-    pool = {
-        str(row["slug"]): heads[str(row["slug"])] for row in page_rows
-        if str(row["id"]) not in changed and str(row["id"]) not in with_entries and str(row["slug"]) in heads
-    }
-    nearby: set[str] = set()
+    vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
+    fresh = [key for key in heads if head_pages[key][0] in changed and (head_pages[key][1] is None or key not in vectors)]
     try:
-        for page_id in sorted(changed - set(plan.deleted_page_ids)):
-            if pool and pages[page_id].slug in heads:
-                nearby.update(nearest_concepts(heads[pages[page_id].slug], pool, similarity))
-    except JevUnavailable as exc:
-        logger.warning("[lint 페이지 이동 역방향 후보 생략] %s", exc)
+        embedded = cached_embeddings(embedding_model, [concept_text(heads[key]) for key in fresh])
+    except Exception as exc:  # 임베딩 서버를 쓸 수 없으면 옮기지 않는다.
+        logger.warning("[lint 페이지 이동 생략] 임베딩 실패: %s", type(exc).__name__)
         return
-    load([row for row in page_rows if str(row["slug"]) in nearby and str(row["id"]) not in pages])
+    vectors.update({key: embedded[concept_text(heads[key])] for key in fresh})
+    heads = {key: head for key, head in heads.items() if key in vectors}
+    # 역방향: 바뀐 페이지(새 상위 후보)마다 가까운 홀로 선 페이지를 `PART_OF_CANDIDATE_LIMIT`개까지 후보로 더한다.
+    # 그 페이지가 바뀌지 않았어도(세부 페이지 뒤 lint가 한 번 돈 다음 상위 페이지가 들어온 경우) 옮길 수 있다.
+    # 하위 항목이나 참조가 있는 페이지는 미리 빼고, 나머지는 유사도 순으로 읽어 홀로 선 페이지인지 본다.
+    slug_ids = {str(row["slug"]): str(row["id"]) for row in page_rows}
+    excluded = changed | {str(row["page_id"]) for row in entry_rows} | {
+        str(row["from_page_id"])
+        for row in conn.execute(
+            """
+            SELECT DISTINCT link.from_page_id FROM wiki_page_links link
+            JOIN wiki_pages page ON page.id = link.from_page_id
+            WHERE link.link_type = 'entry_reference' AND page.workspace_id = %s
+            """,
+            (workspace_id,),
+        ).fetchall()
+    }
+    pool = [slug for slug in sorted(heads) if slug in slug_ids and slug_ids[slug] not in excluded]
+    eligible: dict[str, bool] = {}
+    nearby: set[str] = set()
+    for page_id in sorted(changed - set(plan.deleted_page_ids)):
+        query = vectors.get(pages[page_id].slug)
+        if query is None:
+            continue
+        ranked_pool = sorted(pool, key=lambda slug: -vector_similarity(query, vectors[slug]))[:REVERSE_SCAN_LIMIT]
+        found: list[str] = []
+        for start in range(0, len(ranked_pool), PART_OF_CANDIDATE_LIMIT):
+            batch = [slug for slug in ranked_pool[start:start + PART_OF_CANDIDATE_LIMIT]]
+            load([row for row in page_rows if str(row["slug"]) in batch and str(row["id"]) not in pages
+                  and str(row["slug"]) not in eligible])
+            for slug in batch:
+                page = pages.get(slug_ids[slug])
+                eligible.setdefault(slug, page is not None and page.page_id not in busy and standalone(page))
+            found.extend(slug for slug in batch if eligible[slug])
+            if len(found) >= PART_OF_CANDIDATE_LIMIT:
+                break
+        nearby.update(found[:PART_OF_CANDIDATE_LIMIT])
     movers = {
         page.slug: page for page_id, page in pages.items()
         if (page_id in changed or page.slug in nearby)
@@ -2479,6 +2518,11 @@ def _plan_page_moves(
     details = [heads[slug] for slug in sorted(movers) if slug in heads]
     if not details:
         return
+    by_text = {concept_text(head): vectors[key] for key, head in heads.items()}
+
+    def similarity(query: str, texts: list[str]) -> list[float]:
+        return [vector_similarity(by_text[query], by_text[text]) for text in texts]
+
     ranked = [
         (probability, head, movers[detail].page_id)
         for probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity)
@@ -2496,6 +2540,28 @@ def _plan_page_moves(
     for page_id, reason in deferred:
         plan.decisions.append({"action": "move", "page_id": page_id, "entry_id": None, "skipped_reason": reason})
         plan.deferred_page_ids.append(page_id)
+
+
+def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embedding_model: str) -> dict[str, array]:
+    """활성 개념 페이지(slug)와 하위 항목(entry_id)의 저장된 벡터. 아직 임베딩하지 않은 것은 빠진다."""
+    rows = conn.execute(
+        """
+        SELECT page.slug AS key, embedding.embedding_vector
+        FROM wiki_page_embeddings embedding
+        JOIN wiki_pages page ON page.id = embedding.page_id
+        WHERE page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
+          AND embedding.embedding_model = %s AND embedding.status = 'completed'
+        UNION ALL
+        SELECT DISTINCT ON (unit.entry_id) unit.entry_id, vector.embedding_vector
+        FROM wiki_embedding_units unit
+        JOIN wiki_pages page ON page.id = unit.page_id
+        JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
+        WHERE page.workspace_id = %s AND page.status = 'active' AND unit.unit_type = 'sub_entry'
+          AND vector.embedding_model = %s AND vector.status = 'completed'
+        """,
+        (workspace_id, embedding_model, workspace_id, embedding_model),
+    ).fetchall()
+    return {str(row["key"]): array("f", row["embedding_vector"]) for row in rows}
 
 
 def _entry_reference_targets(contribution: dict[str, Any]) -> set[str]:
