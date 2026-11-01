@@ -80,8 +80,9 @@ def _global_entry_change(
             document_id,
             change.get("anchor_reference_ids", []),
         )
+        # 기존 항목의 근거를 이어받은 `{operation_id}:{evidence_id}`는 그대로 두고 이번 작업의 로컬 id만 바꾼다.
         change["evidence_claim_ids"] = [
-            _global_evidence_id(operation_id, evidence_id)
+            str(evidence_id) if ":" in str(evidence_id) else _global_evidence_id(operation_id, evidence_id)
             for evidence_id in change.get("evidence_claim_ids", [])
             if evidence_id
         ]
