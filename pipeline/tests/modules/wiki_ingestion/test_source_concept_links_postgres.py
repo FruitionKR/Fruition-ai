@@ -12,6 +12,7 @@ from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliatio
     apply_structural_reconciliation,
 )
 from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # noqa: F401
+    pytestmark,
     WS,
     World,
     _add,

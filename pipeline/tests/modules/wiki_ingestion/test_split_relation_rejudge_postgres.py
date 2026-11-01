@@ -5,6 +5,7 @@ import pytest
 
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # noqa: F401
+    pytestmark,
     World,
     _add,
     world,
