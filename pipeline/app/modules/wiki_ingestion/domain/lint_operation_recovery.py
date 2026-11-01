@@ -43,6 +43,7 @@ def calculate_lint_link_changes(
             "page_id": contribution["page_id"],
             "merged_into_page_id": contribution["merged_into"]["page_id"],
             "links": contribution.get("redirected_links", []),
+            "pages": contribution.get("redirected_pages", []),
         }
         for contribution in target_contributions
         if isinstance(contribution.get("merged_into"), dict)

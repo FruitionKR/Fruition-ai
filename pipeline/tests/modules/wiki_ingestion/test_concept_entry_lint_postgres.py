@@ -142,7 +142,8 @@ class World:
             payload = {
                 "schema_version": 1, "operation_id": operation_id, "document_id": document_id, "page_id": page_id,
                 "concept": {"slug": slug, "title": data.get("title", slug.title()), "definition": f"{slug} 정의",
-                            "source_document_ids": [document_id]},
+                            "source_document_ids": [document_id],
+                            "anchor_reference_ids": data.get("concept_refs", [])},
                 # evidence: 항목에 딸리지 않은 페이지 근거(블록 이름 목록).
                 "evidence_units": evidence + [
                     {"evidence_id": f"ev-{operation_id}-{block}", "claim": f"{slug} 근거 {block}({document_id})",
@@ -150,6 +151,8 @@ class World:
                     for block in data.get("evidence", [])
                 ],
                 "source_blocks": [], "links": data.get("links", []),
+                "source_key_points": [{"text": text, "anchor_reference_ids": [block]}
+                                      for text, block in data.get("key_points", [])],
                 "entry_changes": data.get("entry_changes", []),
             }
             self.write(f"wiki/{WS}/pages/{page_id}/ops/{operation_id}.json", json.dumps(payload, ensure_ascii=False))
@@ -807,3 +810,47 @@ def test_references_to_a_page_that_lost_its_last_entry_are_removed(world: World)
 
     assert ("kubectl", "deployment", "entry_reference") not in world.state()["links"]
     assert world.contribution("kubectl", "lint-clean")["removed_links"][0]["entry_id"] == "e-scale"
+
+
+def test_split_drops_key_points_of_moved_entries_from_parent_body_and_units(world: World) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {
+        "title": "Deployment",
+        "entry_changes": [*_thick("e-rollout", "Rollout", 1), _add("e-scale", "Scale", refs=["B9"])],
+        # B3는 옮길 Rollout 아래 항목만, B9는 남는 Scale이 인용한다.
+        "key_points": [("롤아웃 단계 요약", "B3"), ("스케일 요약", "B9")],
+        # 편입은 개념 인용에 모든 근거 블록을 둔다.
+        "concept_refs": ["B3", "B9"],
+    }})
+    assert "롤아웃 단계 요약" in world.state()["pages"]["deployment"][2]
+
+    world.lint("lint-split")
+
+    body = world.state()["pages"]["deployment"][2]
+    assert "롤아웃 단계 요약" not in body
+    assert "스케일 요약" in body
+    with world.connect() as conn:
+        texts = [row["text"] for row in conn.execute(
+            "SELECT text FROM wiki_embedding_units WHERE page_id = %s", (world.page_id("deployment"),)).fetchall()]
+    assert texts and not [text for text in texts if "롤아웃 단계 요약" in text]
+
+
+def test_lint_restore_of_merge_back_restores_chained_redirects(world: World) -> None:
+    _merged_back_rollout(world)
+    # 앞서 Rollout으로 합쳐 지운 손자 페이지가 있다.
+    rollout_id = world.page_id("rollout")
+    with world.connect() as conn:
+        grandchild = database._resolve_or_create_wiki_page_id(conn, "user", WS, "concept", "rollout-history")
+        conn.execute("UPDATE wiki_pages SET status = 'deleted', merged_into_page_id = %s WHERE id = %s",
+                     (rollout_id, grandchild))
+
+    def target() -> str:
+        with world.connect() as conn:
+            return conn.execute("SELECT merged_into_page_id FROM wiki_pages WHERE id = %s",
+                                (grandchild,)).fetchone()["merged_into_page_id"]
+
+    world.lint("lint-merge")
+    assert target() == world.page_id("deployment")
+
+    world.restore_lint("lint-merge")
+
+    assert target() == rollout_id
