@@ -75,13 +75,14 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
         transaction = (
             nullcontext(None) if command.dry_run else database.connect()
         )
+        concept_judge = jev_concept_judge() if not command.dry_run else None
         with lock, transaction as connection:
             result = database.lint_wiki_workspace(
                 command.user_id,
                 command.workspace_id,
                 materialize_promotions=should_materialize,
                 promotion_page_generator=promotion_generator,
-                concept_judge=jev_concept_judge() if should_materialize else None,
+                concept_judge=concept_judge if should_materialize else None,
                 apply_reconciliation=not command.dry_run,
                 operation_id=command.operation_id,
                 write_log=False,
@@ -103,6 +104,7 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     # 같은 lint의 승격이 바꾼 페이지와 기록이 겹치지 않게, 승격이 있으면 다음 lint로 미룬다.
                     skip=bool(result.get("_lint_page_changes")),
                     connection=connection,
+                    concept_judge=concept_judge,
                 )
             )
             if not command.dry_run:

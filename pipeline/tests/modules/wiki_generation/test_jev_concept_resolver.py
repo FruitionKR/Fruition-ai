@@ -10,6 +10,7 @@ from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     CANDIDATE_LIMIT,
+    CONCEPT_PAIR_RULE,
     ENTRY_CANDIDATE_LIMIT,
     PART_OF_RULE,
     JevConceptResolver,
@@ -536,3 +537,25 @@ class NameMatchConceptResolverTest(unittest.TestCase):
 
         self.assertEqual(cyclic["resolutions"][0], {"incoming_slug": "x", "decision": "merge_into", "canonical_slug": "a", "alias_to_add": None})
         self.assertEqual(missing["resolutions"][0]["canonical_slug"], "a")
+
+
+class JudgeRelatedTest(unittest.TestCase):
+    """분리 관계 재판정(ADR 0042 결정 6)은 같음·관련 판정 기준과 0.9 문턱을 그대로 쓴다."""
+
+    def test_same_and_confident_related_count_low_related_and_unrelated_do_not(self) -> None:
+        jev = PairJev({
+            ("sorting", "stable-sort"): ("related", {"related": 0.95}),
+            ("sorting", "pivot"): ("related", {"related": 0.6}),
+            ("sorting", "sorting-copy"): ("same", {"same": 0.7}),
+        })
+        copy = {**HEAD, "slug": "sorting-copy"}
+        other = {**PIVOT, "slug": "other"}
+
+        found = _resolver(jev).judge_related(HEAD, [STABLE, PIVOT, copy, other])
+
+        self.assertEqual(found, {"stable-sort", "sorting-copy"})
+        self.assertIn(CONCEPT_PAIR_RULE, jev.requests[0]["state"])
+
+    def test_missing_definition_or_unavailable_jev_is_no_judgment(self) -> None:
+        self.assertIsNone(_resolver(PairJev()).judge_related(HEAD, [STABLE, {**PIVOT, "definition": ""}]))
+        self.assertIsNone(_resolver(FailingJev()).judge_related(HEAD, [STABLE]))

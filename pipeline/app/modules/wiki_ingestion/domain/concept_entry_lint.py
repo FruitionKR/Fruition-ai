@@ -26,6 +26,7 @@ from app.modules.wiki_ingestion.domain.concept_split_rules import (
 # 편입이 아닌 기록. 수동 기록은 옮길 수 없고, lint 기록은 클러스터 승격·병합의 `add`만 옮길 근거를 가진다.
 _LINT = "lint"
 _MANUAL = "manual"
+CONCEPT_RELATION = "concept_related_to"
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ class EntryLintPlan:
             self.linked.append(record)
             return
         same["entry_changes"].extend(record["entry_changes"])
+        for field in ("links", "added_links"):
+            same.setdefault(field, []).extend(link for link in record.get(field, []) if link not in same[field])
         known = {unit.get("evidence_id") for unit in same["evidence_units"]}
         same["evidence_units"].extend(unit for unit in record["evidence_units"] if unit.get("evidence_id") not in known)
 
@@ -413,3 +416,77 @@ def _subtree(entries: tuple[dict[str, Any], ...], root: str) -> list[dict[str, A
 
 def _evidence_count(entries: Any) -> int:
     return len({value for entry in entries for key in ENTRY_EVIDENCE_FIELDS for value in entry.get(key, [])})
+
+
+def retarget_split_relations(
+    plan: EntryLintPlan,
+    pages: dict[str, EntryPage],
+    related: Callable[[EntryPage, list[str]], set[str] | None],
+) -> None:
+    """분리로 나간 자식 D와 남은 부모 B 중 어느 쪽과 관련인지 다시 정해 B의 개념 관계를 옮긴다(ADR 0042 결정 6).
+
+    B의 `concept_related_to`(나가는·들어오는 쪽 모두)마다 상대 개념 A를 묻는다. related(A, [B ref, D ref...])는 관련인
+    후보 ref 집합이고, 판정할 수 없으면 None이다. D 쪽만이면 A–B를 A–D로 옮기고, B와 D 모두면 A–D를 더하고, B 쪽이거나
+    판정할 수 없으면 그대로 둔다. 옮긴 링크는 원래 링크를 낸 기록에 종속된다. B가 내던 링크는 그 기록을 원래 작업 id로
+    D에 잇고(`linked`), A가 내던 링크는 A의 lint 기록에 `requires_operation_id`로 둔다. 그래서 원래 링크를 만든 작업을
+    되돌리면 옮긴 링크도 사라지고, 이 lint를 되돌리면 원래 링크가 돌아온다.
+    """
+    children: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {}
+    for page_id, change in plan.page_changes.items():
+        if isinstance(change.get("split_from"), dict):
+            children.setdefault(str(change["split_from"]["page_id"]), {})[f"concept:{change['slug']}"] = (page_id, change)
+    by_ref = {page.ref: page for page in pages.values()}
+    for home_id, child_refs in sorted(children.items()):
+        home = pages.get(home_id)
+        if home is None:
+            continue
+        for emitter in list(pages.values()):
+            for link in emitter.links:
+                if link.get("relation") != CONCEPT_RELATION:
+                    continue
+                outgoing = emitter.page_id == home_id
+                if not outgoing and link.get("target") != home.ref:
+                    continue
+                other = by_ref.get(str(link.get("target"))) if outgoing else emitter
+                if other is None or other.ref in child_refs:
+                    continue
+                found = related(other, [home.ref, *child_refs])
+                if not found or not found & set(child_refs):
+                    continue
+                supporting = [
+                    item for item in emitter.contributions
+                    if _link_key(link) in {
+                        _link_key(record)
+                        for record in item.get("added_links" if item.get("artifact_type") in (_LINT, _MANUAL) else "links", [])
+                    }
+                ]
+                if not supporting:
+                    continue
+                for child_ref in sorted(found & set(child_refs)):
+                    child_id, child_change = child_refs[child_ref]
+                    if outgoing:
+                        for item in supporting:
+                            if item.get("artifact_type") == _MANUAL:
+                                continue
+                            copy = _linked_copy(item, child_id, child_change["slug"], [])
+                            copy["added_links" if item.get("artifact_type") == _LINT else "links"] = [
+                                {**link, "source": child_ref}
+                            ]
+                            plan.link(copy)
+                            if str(item["operation_id"]) not in child_change["linked_operation_ids"]:
+                                child_change["linked_operation_ids"].append(str(item["operation_id"]))
+                    else:
+                        change = plan.change(emitter.page_id, emitter.slug, emitter.title)
+                        change["added_links"].extend(
+                            {**link, "target": child_ref,
+                             "requires_operation_id": str(link.get("requires_operation_id") or item["operation_id"])}
+                            for item in supporting
+                        )
+                if home.ref not in found:
+                    change = plan.change(emitter.page_id, emitter.slug, emitter.title)
+                    if link not in change["removed_links"]:
+                        change["removed_links"].append(link)
+
+
+def _link_key(link: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(link.get("source") or ""), str(link.get("target") or ""), str(link.get("relation") or "related_to"))

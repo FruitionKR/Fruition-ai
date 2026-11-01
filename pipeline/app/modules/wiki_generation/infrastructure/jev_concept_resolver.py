@@ -305,6 +305,26 @@ class JevConceptResolver(ConceptResolver):
             )
         return resolutions
 
+    def judge_related(self, concept: JsonDict, candidates: list[JsonDict]) -> set[str] | None:
+        """개념과 후보마다 같음·관련 쌍 판정(`judge_concepts`와 같은 기준)으로 관련인 후보 slug를 돌려준다(ADR 0042 결정 6).
+
+        `same`이거나 P(related)가 `RELATED_MIN_PROBABILITY` 이상인 `related`가 관련이다. 개념이나 후보 중 정의가 없는 것이
+        있거나 Jev를 쓸 수 없으면 판정하지 않고 None을 돌려준다.
+        """
+        if not _has_definition(concept) or not candidates or not all(_has_definition(item) for item in candidates):
+            return None
+        try:
+            answers = self._client.choose(**_request(concept, _shuffled(concept, candidates)))
+        except JevUnavailable as exc:
+            logger.warning("[Jev 관계 재판정 생략] %s", exc)
+            return None
+        return {
+            slug
+            for slug, answer in answers.items()
+            if answer["choice"] == "same"
+            or (answer["choice"] == "related" and choice_probability(answer, "related") >= RELATED_MIN_PROBABILITY)
+        }
+
     def judge_part_of(self, pairs: list[tuple[JsonDict, JsonDict]]) -> dict[tuple[str, str], JsonDict]:
         """(상위 항목, 세부 항목) 쌍마다 세부 항목이 상위 항목에 딸리는지 판정한다.
 

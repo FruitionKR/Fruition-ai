@@ -47,7 +47,11 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     load_concept_contributions,
     rebuild_concept_page,
 )
-from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryPage, plan_entry_lint
+from app.modules.wiki_ingestion.domain.concept_entry_lint import (
+    EntryPage,
+    plan_entry_lint,
+    retarget_split_relations,
+)
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
 from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
@@ -1981,8 +1985,11 @@ def lint_concept_entries(
     apply: bool,
     skip: bool = False,
     connection: psycopg.Connection | None = None,
+    concept_judge: JevConceptResolver | None = None,
 ) -> dict[str, Any]:
     """지난 lint 뒤 바뀐 페이지의 하위 항목만 다시 본다(ADR 0042 4·6).
+
+    concept_judge가 있으면 분리한 부모의 개념 관계를 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(결정 6).
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
@@ -2157,6 +2164,45 @@ def lint_concept_entries(
             return _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug), slug
 
         plan = plan_entry_lint(pages, changed, new_page, deleted_refs)
+        homes = sorted({
+            str(change["split_from"]["page_id"])
+            for change in plan.page_changes.values()
+            if isinstance(change.get("split_from"), dict)
+        })
+        if concept_judge is not None and homes and apply:
+            # 분리한 부모의 개념 관계 상대도 읽어 자식·부모 중 어느 쪽과 관련인지 다시 판정한다(ADR 0042 결정 6).
+            load(conn.execute(
+                """
+                SELECT DISTINCT page.id, page.slug, page.title, page.summary
+                FROM wiki_pages page
+                JOIN wiki_page_links link
+                  ON (link.from_page_id = page.id AND link.to_page_id = ANY(%s))
+                  OR (link.to_page_id = page.id AND link.from_page_id = ANY(%s))
+                WHERE link.link_type = 'concept_related_to'
+                  AND page.workspace_id = %s
+                  AND page.page_type = 'concept'
+                  AND page.status = 'active'
+                  AND NOT page.id = ANY(%s)
+                """,
+                (homes, homes, workspace_id, list(pages)),
+            ).fetchall())
+            entry_definitions = {
+                entry["entry_id"]: str(entry.get("definition") or "") for page in pages.values() for entry in page.entries
+            }
+
+            def concept(ref: str) -> dict[str, Any]:
+                page = next((item for item in pages.values() if item.ref == ref), None)
+                if page is not None:
+                    return {"slug": page.slug, "title": page.title, "definition": summaries.get(page.page_id, "")}
+                change = next(item for item in plan.page_changes.values() if f"concept:{item['slug']}" == ref)
+                return {"slug": change["slug"], "title": change["title"],
+                        "definition": entry_definitions.get(change["split_from"]["entry_id"], "")}
+
+            def related(other: EntryPage, refs: list[str]) -> set[str] | None:
+                found = concept_judge.judge_related(concept(other.ref), [concept(ref) for ref in refs])
+                return None if found is None else {f"concept:{slug}" for slug in found}
+
+            retarget_split_relations(plan, pages, related)
         if plan.deleted_page_ids:
             # 합쳐 지울 자식으로 오던 일반 링크는 그 링크를 낸 개념 페이지의 lint 기록에서 지운다(ADR 0042 결정 2).
             # 합치기 복원이 이 기록을 빼면 원래 기록이 아직 잇는 링크만 되살아난다. 참조는 plan이 부모로 옮겼다.
