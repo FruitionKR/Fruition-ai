@@ -581,11 +581,20 @@ def _resolve_pipeline_concepts(
         judge_same = (
             llm_same_entry_judge(llm, read_prompt("prompts/concept_same_entry.system.md"), similarity) if similarity else None
         )
+    # 기존 개념과 같다고 판정받은 섹션·언급은 이미 그 개념의 근거라 하위 항목으로 배정하지 않는다.
+    same_candidate_ids = {
+        item["candidate_id"] for item in resolved["concept_update_decisions"] if item.get("decision") == "same_concept"
+    }
     resolved = apply_concept_entries(
         resolved,
         judge_part_of=judge_part_of,
         judge_same=judge_same,
         similarity=similarity,
+        consumed_terms={
+            (candidate["candidate_type"], candidate["slug"])
+            for candidate in resolved_candidates
+            if candidate["candidate_id"] in same_candidate_ids
+        },
     )
     log.emit(
         "4-보조. Concept Resolution",

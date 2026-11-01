@@ -38,12 +38,17 @@ def apply_concept_entries(
     judge_part_of: PartOfJudge | None = None,
     judge_same: PairJudge | None = None,
     similarity: Similarity | None = None,
+    consumed_terms: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """개념 판정이 끝난 정규화 결과에서 세부 항목을 개념 목록에서 빼고 집 페이지의 하위 항목으로 옮긴다.
 
+    세부 항목은 핵심 개념·섹션 후보·언급 모두다. 섹션·언급은 맨 위가 핵심 개념이나 기존 페이지·항목일 때만 하위 항목이
+    되고(배정받은 것에는 `assigned_entry`를 표시해 의미 클러스터 후보에서 뺀다), 나머지는 지금처럼 의미 클러스터로 간다.
+    `consumed_terms`는 개념 갱신 판정이 기존 개념과 같다고 본 (후보 종류, slug)다. 이미 그 개념의 근거라 배정하지 않는다.
     결과의 `entry_changes`는 집 페이지 slug별 `add` 목록, `entry_references`는 참조 링크다.
     """
     ledger = [concept for concept in resolved.get("concept_ledger", []) if concept.get("slug")]
+    terms = _source_terms(resolved, consumed_terms or set())
     existing = {concept["slug"]: concept for concept in resolved.get("existing_concept_index", []) if concept.get("slug")}
     # 기존 하위 항목도 상위 후보다(항목 id → 그 항목). 집 페이지의 그 항목 아래로 놓는다.
     existing_entries = {
@@ -51,14 +56,15 @@ def apply_concept_entries(
         for page_slug, concept in existing.items()
         for entry in concept.get("entries") or []
     }
-    assigned = _assign_heads(ledger, existing, existing_entries, judge_part_of, similarity)
-    placements = _place(assigned, set(existing), existing_entries)
+    assigned = _assign_heads([*ledger, *terms.values()], existing, existing_entries, judge_part_of, similarity)
+    placements = _place(assigned, set(existing), existing_entries, set(terms))
     if not placements:
         return resolved
     result = copy.deepcopy(resolved)
     by_slug = {concept["slug"]: concept for concept in result["concept_ledger"]}
+    details_of = {**by_slug, **terms}
     title_of = {**{slug: c.get("title") or slug for slug, c in existing.items()},
-                **{slug: c.get("title") or slug for slug, c in by_slug.items()},
+                **{slug: c.get("title") or slug for slug, c in details_of.items()},
                 **{entry_id: entry["name"] for entry_id, entry in existing_entries.items()}}
     pool = _existing_entries(existing)
     # 같은 것 찾기는 위 항목부터 깊이별로 한다. 위 항목이 기존 항목과 같으면 아래 항목은 그 항목 이름 아래에서 찾는다.
@@ -76,7 +82,7 @@ def apply_concept_entries(
                 "slug": f"incoming:{detail}",
                 "title": f"{parent_name} > {title_of[detail]}",
                 "aliases": [],
-                "definition": by_slug[detail].get("definition") or "",
+                "definition": details_of[detail].get("definition") or "",
             }
         matched.update(_match_entries(queries, pool, judge_same))
         siblings.update(_match_siblings(
@@ -94,7 +100,7 @@ def apply_concept_entries(
     adds: dict[str, dict[str, Any]] = {}
     for detail in sorted(placements, key=lambda slug: depth[slug]):
         page, parent = placements[detail]
-        concept = by_slug[detail]
+        concept = details_of[detail]
         # 이 항목이 놓일 페이지와 그 페이지 안의 바로 위 항목이다.
         container = home_of[parent] if parent else page
         parent_entry_id = entry_ids[parent] if parent else None
@@ -122,7 +128,7 @@ def apply_concept_entries(
             "anchor_reference_ids": refs,
             "evidence_claim_ids": list(concept.get("evidence_claim_ids", [])),
             # 원래 개념의 정체성은 항목에 남긴다. 부모 페이지 별칭·태그로 섞으면 다른 개념을 동의어로 오인한다.
-            "slug": detail,
+            "slug": concept.get("term_slug") or detail,
             "aliases": list(concept.get("aliases") or []),
             "tags": list(concept.get("tags") or []),
         }
@@ -154,7 +160,7 @@ def apply_concept_entries(
     slug_map = result.setdefault("concept_slug_map", {})
     for slug, target in list(slug_map.items()):
         slug_map[slug] = home_of.get(target, target)
-    slug_map.update(home_of)
+    slug_map.update({detail: home_of[detail] for detail in placements if detail not in terms})
     for evidence in result.get("evidence_units", []):
         evidence["related_concept_slugs"] = unique_keep_order(
             [home_of.get(slug, slug) for slug in evidence.get("related_concept_slugs", [])]
@@ -166,6 +172,12 @@ def apply_concept_entries(
         if detail in home_of:
             decision["concept_slug"] = home_of[detail]
             decision["entry"] = {key: adds[detail][key] for key in ("entry_id", "name", "definition", "parent_entry_id")}
+    # 배정받은 섹션·언급은 하위 항목이 됐다. 소스 페이지 목록·검색 단위에는 그대로 두고 의미 클러스터 후보에서만 뺀다.
+    for kind, field in (("section", "section_candidates"), ("mention", "mentions")):
+        for item in result.get(field, []):
+            key = f"{kind}:{item.get('slug')}"
+            if key in placements:
+                item["assigned_entry"] = {"page_slug": home_of[key], "entry_id": entry_ids[key]}
     result["entry_changes"] = entry_changes
     result["entry_references"] = references
     logger.info("[하위 항목 배정] 배정=%d 하위 항목=%d 같은 항목=%d 참조=%d",
@@ -273,11 +285,12 @@ def _place(
     assigned: dict[str, str],
     existing: set[str],
     existing_entries: dict[str, dict[str, Any]],
+    terms: set[str],
 ) -> dict[str, tuple[str, str | None]]:
     """세부 항목 slug → (집 페이지 slug, 바로 위 세부 항목 slug·기존 하위 항목 id 또는 None).
 
     배정을 따라 올라간 맨 위가 집이다. 기존 하위 항목이면 그 항목의 집 페이지 그 항목 아래다. 깊은 세부 항목도 같은 페이지
-    안에서 중첩된다.
+    안에서 중첩된다. 맨 위가 섹션·언급인 가지는 페이지가 될 개념이 없어 놓지 않는다(의미 클러스터로 간다).
     """
     def root(slug: str) -> str:
         while slug in assigned:
@@ -287,6 +300,8 @@ def _place(
     placements = {}
     for detail in assigned:
         top = root(detail)
+        if top in terms:
+            continue
         page = existing_entries[top]["page_slug"] if top in existing_entries else top
         placements[detail] = (page, assigned[detail] if assigned[detail] != page else None)
     return placements
@@ -400,6 +415,50 @@ def _match_siblings(
         ):
             found[detail] = target
     return found
+
+
+# 문서마다 part_of로 물을 언급 수와, 같은 근거 블록에서 물을 언급 수. 언급은 많고 정의가 원문 발췌라 잠금 안 판정량을 묶는다.
+# 근거 블록이 많은 언급부터, 같으면 문서 순서로 고른다. 넘친 언급은 지금처럼 의미 클러스터로 간다.
+MENTION_DETAIL_LIMIT = 20
+MENTION_DETAILS_PER_BLOCK = 2
+
+
+def _source_terms(resolved: dict[str, Any], consumed: set[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+    """배정 세부 항목이 될 섹션 후보·언급("section:{slug}"·"mention:{slug}" → 개념 모양). 정의가 있는 것만이다.
+
+    섹션은 근거 주장(`evidence_claim_ids`)으로, 언급은 근거 블록으로 근거를 옮긴다.
+    """
+    terms: dict[str, dict[str, Any]] = {}
+    for item in resolved.get("section_candidates", []):
+        if ("section", item.get("slug")) not in consumed and _has_definition(item):
+            terms[f"section:{item['slug']}"] = _term(item, "section", item.get("title"))
+    mentions = sorted(
+        (item for item in resolved.get("mentions", [])
+         if ("mention", item.get("slug")) not in consumed and _has_definition(item) and item.get("anchor_reference_ids")),
+        key=lambda item: (-len(set(item["anchor_reference_ids"])), min(item["anchor_reference_ids"])),
+    )
+    per_block: Counter[str] = Counter()
+    for item in mentions:
+        block = min(item["anchor_reference_ids"])
+        if len([key for key in terms if key.startswith("mention:")]) >= MENTION_DETAIL_LIMIT:
+            break
+        if per_block[block] >= MENTION_DETAILS_PER_BLOCK:
+            continue
+        per_block[block] += 1
+        terms[f"mention:{item['slug']}"] = _term(item, "mention", item.get("name"))
+    return terms
+
+
+def _term(item: dict[str, Any], kind: str, title: Any) -> dict[str, Any]:
+    return {
+        "slug": f"{kind}:{item['slug']}",
+        "term_slug": item["slug"],
+        "title": str(title or item["slug"]),
+        "definition": str(item.get("definition") or ""),
+        "aliases": [],
+        "anchor_reference_ids": list(item.get("anchor_reference_ids") or []),
+        "evidence_claim_ids": list(item.get("evidence_claim_ids") or []),
+    }
 
 
 def _existing_concept_entry(concept: dict[str, Any], document_id: str) -> dict[str, Any]:

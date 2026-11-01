@@ -303,6 +303,75 @@ def test_update_decision_on_a_concept_that_became_an_entry_adds_evidence_to_that
     assert "op-1:cand-1" in replayed[rollout["entry_id"]]["evidence_claim_ids"]
     assert replayed[rollout["entry_id"]]["name"] == "Deployment Rollout"
 
+
+def _section_term(slug: str, title: str, block: str, evidence: list[str] | None = None) -> dict:
+    return {"slug": slug, "title": title, "context": f"{title} 설명", "definition": f"{title} 정의",
+            "anchor_reference_ids": [block], "evidence_claim_ids": evidence or []}
+
+
+def _mention_term(slug: str, name: str, blocks: list[str]) -> dict:
+    return {"slug": slug, "name": name, "anchor_reference_ids": blocks, "source_text": f"{name} 원문",
+            "definition": f"{name}이 나온 문장"}
+
+
+def test_section_and_mention_under_a_core_concept_become_its_entries_and_leave_the_cluster_path() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    normalized["section_candidates"] = [_section_term("deployment-strategy", "Deployment Strategy", "B0005", ["ev-x"]),
+                                        # 맨 위가 섹션인 가지는 페이지가 될 개념이 없어 놓지 않는다.
+                                        _section_term("cache", "Cache", "B0006"),
+                                        _section_term("cache-ttl", "Cache TTL", "B0007")]
+    normalized["mentions"] = [_mention_term("deployment-strategy-recreate", "Deployment Strategy Recreate", ["B0008"])]
+
+    result = _apply(normalized)
+
+    entries = _entries(result, "deployment")
+    assert set(entries) == {"Deployment Strategy", "Deployment Strategy Recreate"}
+    strategy = entries["Deployment Strategy"]
+    assert (strategy["slug"], strategy["evidence_claim_ids"], strategy["anchor_reference_ids"]) == (
+        "deployment-strategy", ["ev-x"], ["B0005"])
+    assert entries["Deployment Strategy Recreate"]["parent_entry_id"] == strategy["entry_id"]
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assigned = {item["slug"]: item.get("assigned_entry") for item in [*result["section_candidates"], *result["mentions"]]}
+    assert assigned == {"deployment-strategy": {"page_slug": "deployment", "entry_id": strategy["entry_id"]},
+                        "cache": None, "cache-ttl": None,
+                        "deployment-strategy-recreate": {"page_slug": "deployment",
+                                                         "entry_id": entries["Deployment Strategy Recreate"]["entry_id"]}}
+    # 섹션·언급 slug는 개념 slug 대응에 들어가지 않는다.
+    assert "deployment-strategy" not in result["concept_slug_map"]
+
+    from app.modules.wiki_generation.infrastructure.meaning_cluster_artifact import MeaningClusterArtifactAssembler
+    before = MeaningClusterArtifactAssembler().candidate_claims(normalized)
+    after = MeaningClusterArtifactAssembler().candidate_claims(result)
+    # 배정받은 섹션·언급만 빠지고, 남은 후보 번호는 배정 전(개념 갱신 판정이 쓴 번호)과 같다.
+    assert [(c["candidate_id"], c["slug"]) for c in after] == [
+        (c["candidate_id"], c["slug"]) for c in before if c["slug"] in {"cache", "cache-ttl"}]
+
+
+def test_terms_judged_same_as_an_existing_concept_are_not_assigned() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    normalized["section_candidates"] = [_section_term("deployment-strategy", "Deployment Strategy", "B0005")]
+
+    result = _apply(normalized, consumed_terms={("section", "deployment-strategy")})
+
+    assert result is normalized
+
+
+def test_mentions_are_capped_per_document_and_per_block_by_evidence_blocks_then_order() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    many = [_mention_term(f"deployment-m{index:02d}", f"Deployment M{index:02d}", [f"B{100 + index:04d}"]) for index in range(25)]
+    # 블록 하나에 언급 셋: 근거 블록이 둘인 언급이 먼저고, 그 블록에서는 두 개까지만 묻는다.
+    crowded = [_mention_term("deployment-wide", "Deployment Wide", ["B0050", "B0051"]),
+               *(_mention_term(f"deployment-c{index}", f"Deployment C{index}", ["B0050"]) for index in range(2))]
+    normalized["mentions"] = [*many, *crowded]
+    judge = PrefixPartOf()
+
+    _apply(normalized, judge_part_of=judge)
+
+    asked = {detail for _head, detail in judge.pairs if detail.startswith("mention:")}
+    assert len(asked) == 20
+    assert {"mention:deployment-wide", "mention:deployment-c0"} <= asked
+    assert "mention:deployment-c1" not in asked
+
 def _ingest_contributions(operation_id: str, result: dict) -> dict[str, dict]:
     return build_concept_contributions(
         operation_id=operation_id,
