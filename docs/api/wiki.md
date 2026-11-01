@@ -610,7 +610,7 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 [data-model](../data-model.md)). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`),
 `deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지다(그 자식에도 이 lint의
 합친 기록이 남고 `changed_pages`에 실린다). `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·
-`linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다.
+`linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다. 이 lint가 저장한 기록(`operation_artifacts`)은 하위 항목·승격·병합·링크만 바꾼 기록 모두 행이 되며,
 `operation_id`가 이 lint, `document_id`·`linked_by_operation_id`가 null이다. 원래 작업 id로 다른 페이지에 이은 편입 기록은
 `operation_id`·`document_id`가 원래 편입이고 `linked_by_operation_id`가 이 lint다. 같은 작업을 같은 페이지에 여러 번 이으면 한
 기록·한 행으로 합친다. document-svc는 `deleted_pages`의 기여를 비활성으로 바꾸고, 이 lint를 복원할 때 `operation_id`나

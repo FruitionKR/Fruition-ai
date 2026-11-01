@@ -2314,7 +2314,6 @@ def persist_lint_operation_result(
         str(change["slug"]): dict(change)
         for change in result.pop("_lint_page_changes", [])
     }
-    lint_page_ids = {str(change["page_id"]) for change in page_changes.values()}
     removed_links = [
         _normalized_relation_link(item)
         for reconciliation in result.get("applied_reconciliations", [])
@@ -2373,16 +2372,15 @@ def persist_lint_operation_result(
         page_changes=list(page_changes.values()),
         write_text=write_text_object,
     )
+    # 저장한 lint 기록은 모두 원장 행이다. 빠진 기록은 이후 복구 재생에 들어가지 않는다(ADR 0042).
+    result["ledger_contributions"] = _lint_ledger_rows(operation_id, artifacts)
     entry_state = result.pop("_entry_state", None)
     if entry_state:
-        _persist_entry_lint(workspace_id, operation_id, result, artifacts, entry_state, connection)
-    elif lint_page_ids:
-        # 클러스터 승격·병합 기록(하위 항목 포함)도 원장 행으로 남겨야 이후 복구 재생에 들어간다(ADR 0042).
-        result["ledger_contributions"] = _lint_ledger_rows(operation_id, artifacts, lint_page_ids)
+        _persist_entry_lint(workspace_id, operation_id, result, entry_state, connection)
     return artifacts
 
 
-def _lint_ledger_rows(operation_id: str, artifacts: list[dict[str, Any]], page_ids: set[str]) -> list[dict[str, Any]]:
+def _lint_ledger_rows(operation_id: str, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """이 lint 기록의 원장 행. 기록 순서(재생 순서)대로다."""
     return [
         {
@@ -2393,7 +2391,6 @@ def _lint_ledger_rows(operation_id: str, artifacts: list[dict[str, Any]], page_i
             "linked_by_operation_id": None,
         }
         for artifact in artifacts
-        if artifact["page_id"] in page_ids
     ]
 
 
@@ -2401,16 +2398,15 @@ def _persist_entry_lint(
     workspace_id: str,
     operation_id: str,
     result: dict[str, Any],
-    artifacts: list[dict[str, Any]],
     entry_state: dict[str, Any],
     connection: psycopg.Connection | None,
 ) -> None:
     """하위 항목 재검사 기록을 쓰고 현재 상태에 반영한다.
 
-    `ledger_contributions`는 document-svc가 기여 원장에 더할 행이다. 이 lint의 하위 항목 기록과, 원래 작업 id로
-    다른 페이지에 이은 편입 기록이다. 원장에 있어야 이후 편입·lint 복원이 이 기록을 재생한다.
+    `ledger_contributions`는 document-svc가 기여 원장에 더할 행이다. 이 lint의 기록 뒤에, 원래 작업 id로
+    다른 페이지에 이은 편입 기록을 더한다. 원장에 있어야 이후 편입·lint 복원이 이 기록을 재생한다.
     """
-    ledger = _lint_ledger_rows(operation_id, artifacts, set(entry_state["page_ids"]))
+    ledger = result["ledger_contributions"]
     for item in entry_state["linked"]:
         key = f"wiki/{workspace_id}/pages/{item['page_id']}/ops/{item['operation_id']}.json"
         write_text_object(
@@ -2427,7 +2423,6 @@ def _persist_entry_lint(
                 "linked_by_operation_id": operation_id,
             }
         )
-    result["ledger_contributions"] = ledger
     with _connection_scope(connection) as conn:
         _lock_concept_persistence(conn, workspace_id)
         _apply_restored_wiki_state(
