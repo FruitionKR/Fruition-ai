@@ -9,6 +9,7 @@ from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_generation.domain.text_utils import clean_concept_tags
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
 from app.modules.wiki_ingestion.domain.concept_entries import (
+    entry_document_ids,
     render_entry_index,
     replay_concept_entries,
 )
@@ -282,6 +283,10 @@ def _authoritative_document_ids(
 ) -> list[str]:
     document_ids: list[str] = []
     for contribution in contributions:
+        if contribution.get("artifact_type") == "lint":
+            # lint 승격·병합이 둔 하위 항목 근거의 문서(ADR 0042). 그 lint를 되돌리면 문서 연결도 빠진다.
+            document_ids.extend(entry_document_ids(contribution.get("entry_changes", [])))
+            continue
         if contribution.get("artifact_type") not in (None, "ingest", "document"):
             continue
         contribution_document_ids: list[str] = []

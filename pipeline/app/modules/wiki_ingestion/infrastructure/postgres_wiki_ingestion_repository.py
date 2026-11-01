@@ -56,7 +56,12 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
 )
-from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id, render_entry_index
+from app.modules.wiki_ingestion.domain.concept_entries import (
+    ENTRY_REFERENCE,
+    entry_document_ids,
+    new_entry_id,
+    render_entry_index,
+)
 from app.modules.wiki_ingestion.domain.concept_split_rules import cluster_reaches_promotion
 from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
@@ -2367,6 +2372,7 @@ def persist_lint_operation_result(
         str(change["slug"]): dict(change)
         for change in result.pop("_lint_page_changes", [])
     }
+    lint_page_ids = {str(change["page_id"]) for change in page_changes.values()}
     added_links = [
         _normalized_relation_link(item)
         for item in result.get("materialized_relations", [])
@@ -2442,7 +2448,25 @@ def persist_lint_operation_result(
     entry_state = result.pop("_entry_state", None)
     if entry_state:
         _persist_entry_lint(workspace_id, operation_id, result, artifacts, entry_state, connection)
+    elif lint_page_ids:
+        # 클러스터 승격·병합 기록(하위 항목 포함)도 원장 행으로 남겨야 이후 복구 재생에 들어간다(ADR 0042).
+        result["ledger_contributions"] = _lint_ledger_rows(operation_id, artifacts, lint_page_ids)
     return artifacts
+
+
+def _lint_ledger_rows(operation_id: str, artifacts: list[dict[str, Any]], page_ids: set[str]) -> list[dict[str, Any]]:
+    """이 lint 기록의 원장 행. 기록 순서(재생 순서)대로다."""
+    return [
+        {
+            "page_id": artifact["page_id"],
+            "operation_id": operation_id,
+            "document_id": None,
+            "contribution_key": artifact["contribution_key"],
+            "linked_by_operation_id": None,
+        }
+        for artifact in artifacts
+        if artifact["page_id"] in page_ids
+    ]
 
 
 def _persist_entry_lint(
@@ -2458,18 +2482,7 @@ def _persist_entry_lint(
     `ledger_contributions`는 document-svc가 기여 원장에 더할 행이다. 이 lint의 하위 항목 기록과, 원래 작업 id로
     다른 페이지에 이은 편입 기록이다. 원장에 있어야 이후 편입·lint 복원이 이 기록을 재생한다.
     """
-    entry_page_ids = set(entry_state["page_ids"])
-    ledger = [
-        {
-            "page_id": artifact["page_id"],
-            "operation_id": operation_id,
-            "document_id": None,
-            "contribution_key": artifact["contribution_key"],
-            "linked_by_operation_id": None,
-        }
-        for artifact in artifacts
-        if artifact["page_id"] in entry_page_ids
-    ]
+    ledger = _lint_ledger_rows(operation_id, artifacts, set(entry_state["page_ids"]))
     for item in entry_state["linked"]:
         key = f"wiki/{workspace_id}/pages/{item['page_id']}/ops/{item['operation_id']}.json"
         write_text_object(
@@ -2937,10 +2950,22 @@ def _add_promotion_entries(
     markdown: str,
     entry_changes: list[dict[str, Any]],
 ) -> str:
-    """편입과 같게 하위 항목을 사본에 더하고 본문 목록을 사본 전체로 다시 그린다. 임베딩 단위보다 먼저 써야 한다."""
+    """편입과 같게 하위 항목을 사본에 더하고 본문 목록을 사본 전체로 다시 그린다. 임베딩 단위보다 먼저 써야 한다.
+
+    항목 근거의 문서는 그 페이지의 문서 연결(`extracted_concept`)이 된다. 복구 재생도 lint 기록의 항목에서 같은 연결을 만든다.
+    """
     if not entry_changes:
         return markdown
     _upsert_page_entries(conn, workspace_id, page_id, entry_changes)
+    for document_id in entry_document_ids(entry_changes):
+        conn.execute(
+            """
+            INSERT INTO document_wiki_links (document_id, wiki_page_id, relation_type, confidence, workspace_id, created_at)
+            VALUES (%s, %s, 'extracted_concept', NULL, %s, now())
+            ON CONFLICT (document_id, wiki_page_id, relation_type) DO NOTHING
+            """,
+            (document_id, page_id, workspace_id),
+        )
     entries, references = _stored_entry_index(conn, page_id)
     return render_entry_index(markdown, entries, references)
 

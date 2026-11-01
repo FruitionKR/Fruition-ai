@@ -1,7 +1,7 @@
 """클러스터 승격(ADR 0042 4단계)을 실제 PostgreSQL과 기록 재생으로 확인한다.
 
 세부 항목이 P개 이상인 클러스터만 승격하고, 세부 항목은 승격 페이지(또는 병합 대상 개념)의 하위 항목이 된다.
-document-svc 원장은 가짜이며 lint 기록(`operation_artifacts`)을 원장 행으로 더한다.
+document-svc 원장은 가짜이며 lint 결과의 `ledger_contributions`만 원장 행으로 더하고, 그 페이지가 `changed_pages`에 없으면 거절한다.
 """
 from __future__ import annotations
 
@@ -55,9 +55,12 @@ def _lint(world: World, monkeypatch, operation_id: str, active: str) -> dict:
         conn.execute("UPDATE pipeline_runs SET status = 'succeeded', manifest = %s WHERE id = %s",
                      (Json({"task_result": result}), run_id))
     known = {row["page_id"] for row in world.ledger}
-    for artifact in result["operation_artifacts"]:
-        world._record(artifact["page_id"], operation_id, None)
-    world.created[operation_id] = sorted({artifact["page_id"] for artifact in result["operation_artifacts"]} - known)
+    changed = {page["page_id"] for page in result["changed_pages"]}
+    for row in result["ledger_contributions"]:
+        assert row["page_id"] in changed
+        assert (row["operation_id"], row["document_id"], row["linked_by_operation_id"]) == (operation_id, None, None)
+        world._record(row["page_id"], row["operation_id"], row["document_id"], row["linked_by_operation_id"])
+    world.created[operation_id] = sorted({row["page_id"] for row in result["ledger_contributions"]} - known)
     world.deactivated[operation_id] = []
     return result
 
@@ -100,6 +103,8 @@ def test_promoted_page_gets_detail_items_as_sub_entries_and_lint_restore_removes
     # 관련 개념 링크는 만들지 않는다.
     assert result["materialized_relations"] == []
     assert not [link for link in after["links"] if link[2] == "concept_related_to"]
+    # 항목 근거의 문서가 승격 페이지의 문서 연결이 된다.
+    assert ("doc-c", "rollout") in after["documents"]
 
     world.restore_lint("lint-promote")
 
@@ -128,3 +133,17 @@ def test_cluster_merged_into_core_concept_adds_distinct_detail_items_as_sub_entr
     world.restore_lint("lint-merge-cluster")
 
     assert world.state() == before
+
+
+def test_lint_sub_entries_on_merged_concept_survive_restore_of_an_unrelated_ingest(world: World, monkeypatch) -> None:
+    world.ingest("op-x", "doc-x", {"deployment": {"title": "Deployment", "entry_changes": [_add("e-scale", "Scale", refs=["B1"])]}})
+    _lint(world, monkeypatch, "lint-merge-cluster", _cluster("deploy-terms", ["Rollout History", "Rollout Undo"], target="deployment"))
+    world.ingest("op-y", "doc-y", {"deployment": {"title": "Deployment", "entry_changes": [_add("e-pause", "Pause", refs=["B2"])]}})
+
+    world.restore_ingest("op-y")
+
+    state = world.state()
+    entries = sorted(name for _id, slug, name, _parent in state["entries"] if slug == "deployment")
+    assert entries == ["Rollout History", "Rollout Undo", "Scale"]
+    assert ("doc-c", "deployment") in state["documents"]
+    assert ("doc-y", "deployment") not in state["documents"]

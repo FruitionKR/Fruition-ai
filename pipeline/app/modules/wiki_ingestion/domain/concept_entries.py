@@ -15,6 +15,17 @@ def new_entry_id(page_slug: str, detail_slug: str) -> str:
     return "entry:" + hashlib.sha256(f"{page_slug}/{detail_slug}".encode("utf-8")).hexdigest()[:24]
 
 
+def entry_document_ids(entry_changes: list[dict[str, Any]]) -> list[str]:
+    """`add`가 인용한 전역 근거 블록(`문서ID:블록ID`)의 문서. lint 승격 페이지의 문서 연결이다."""
+    return list(dict.fromkeys(
+        str(ref).split(":", 1)[0]
+        for change in entry_changes
+        if isinstance(change, dict) and change.get("op") == "add"
+        for ref in change.get("anchor_reference_ids", [])
+        if ":" in str(ref) and not str(ref).startswith("lint:")
+    ))
+
+
 def replay_concept_entries(
     operation_artifacts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
