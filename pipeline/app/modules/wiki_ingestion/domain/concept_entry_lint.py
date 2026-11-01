@@ -6,9 +6,9 @@
 - 다시 합치기: 부모에 자식 항목마다 `revive`를 남겨 분리 때 지운 항목을 되살리고, 분리 뒤 자식에만 쌓인 편입 기록을
   부모에 잇는다. 자식에는 재생 가능한 삭제 기록을 남긴다. 방향 전환은 두지 않는다.
 - 다른 페이지의 참조는 옮긴 항목을 따라 대상을 바꾸고, 가리키던 항목이 없어진 참조는 지운다.
-- 페이지 이동: 홀로 선 페이지를 판정기가 고른 다른 페이지(그 페이지나 그 항목 아래)의 하위 항목으로 옮긴다. 다시 합치기와
-  같은 기록이다. 대상 페이지에는 옮긴 페이지의 원래 편입 기록을 원래 작업 id로 잇고(항목 `add`와 근거), 옮긴 페이지에는
-  재생 가능한 삭제 기록을 남긴다.
+- 페이지 이동: 페이지를 판정기가 고른 다른 페이지(그 페이지나 그 항목 아래)의 하위 항목으로 통째로 옮긴다. 다시 합치기와
+  같은 기록이다. 대상 페이지에는 옮긴 페이지의 기록을 원래 작업 id로 잇고(페이지 자신의 항목 `add`, 그 아래로 옮긴 하위
+  항목 변경, 근거, 참조), 옮긴 페이지에는 재생 가능한 삭제 기록을 남긴다. 다른 페이지의 참조는 대상 페이지를 가리킨다.
 """
 from __future__ import annotations
 
@@ -342,21 +342,22 @@ def _delete_page(plan: EntryLintPlan, page: EntryPage) -> None:
     plan.deleted_page_ids.append(page.page_id)
 
 
-def standalone(page: EntryPage) -> bool:
-    """다른 페이지의 하위 항목으로 옮길 수 있는 홀로 선 페이지인지.
+def movable(page: EntryPage) -> bool:
+    """다른 페이지의 하위 항목으로 통째로 옮길 수 있는 페이지인지.
 
-    하위 항목·분리 기록·사람이 고친 기록·다른 페이지 항목 참조가 없고, 근거를 가진 lint 기록(클러스터 승격·병합)도 없다.
-    lint 기록은 원래 작업 id로 잇지 않으므로 근거가 있으면 옮길 때 잃는다.
+    사람이 고친 기록은 옮길 수 없다. 분리로 만든 자식 페이지는 다시 합치기가 맡는다.
+    ponytail: 분리한 자식 페이지를 가진 페이지(lint 기록이 낸 참조)도 옮기지 않는다. 자식의 분리 기록이 옮긴 페이지를
+    가리켜 다시 합칠 곳이 없어진다. 자식의 부모를 대상 페이지로 바꾸는 기록은 필요해지면 더한다.
     """
     live = _since_last_delete(page.contributions)
     return not (
-        page.entries
-        or page.split_record
-        or any(link.get("relation") == ENTRY_REFERENCE for link in page.links)
+        page.split_record
+        or any(item.get("artifact_type") == _MANUAL for item in live)
         or any(
-            item.get("artifact_type") == _MANUAL
-            or (item.get("artifact_type") == _LINT and item.get("evidence_units"))
+            item.get("artifact_type") == _LINT and link.get("relation") == ENTRY_REFERENCE
             for item in live
+            for link in item.get("added_links", [])
+            if isinstance(link, dict)
         )
     )
 
@@ -402,42 +403,74 @@ def choose_page_moves(
 
 def move_page_under(
     plan: EntryLintPlan,
+    pages: dict[str, EntryPage],
     page: EntryPage,
     definition: str,
     target: EntryPage,
     parent_entry_id: str | None,
 ) -> str | None:
-    """홀로 선 페이지를 target의 하위 항목 하나로 옮긴다. 옮기지 못하면 이유를 돌려준다.
+    """페이지를 target의 하위 항목으로 통째로 옮긴다. 옮기지 못하면 이유를 돌려준다.
 
-    페이지의 편입 기록마다 같은 작업 id로 target에 기록을 잇는다. 그 기록은 페이지 이름·정의로 한 항목을 `add`하고
-    (근거는 그 기록의 개념 인용과 근거 단위) 근거 단위를 모두 옮긴다. 그래서 그 편입을 되돌리면 target에서도 그 근거가
-    빠지고, 모두 되돌리면 항목이 사라진다. 기록은 페이지·작업마다 하나라 같은 작업이 target에도 기여했으면 옮기지 않는다.
+    페이지의 기록(편입, 클러스터 승격·병합·분리 lint)마다 같은 작업 id로 target에 기록을 잇는다. 그 기록은 페이지 이름·
+    정의로 페이지 자신의 항목을 `add`하고(근거는 그 기록에서 하위 항목에 딸리지 않은 개념 인용과 근거 단위), 그 기록의
+    하위 항목 변경을 그대로 싣되 맨 위 항목은 페이지 항목 아래로 둔다. 근거 단위와 하위 항목이 낸 참조도 옮긴다. 그래서 그
+    작업을 되돌리면 target에서도 그 근거·항목이 빠지고, 모두 되돌리면 페이지 항목도 사라진다. 다른 페이지가 이 페이지
+    항목을 가리키던 참조는 target을 가리키고, target이 가리키던 참조는 이제 자기 항목이라 지운다. 기록은 페이지·작업마다
+    하나라 같은 작업이 target에도 기여했으면 옮기지 않는다.
     """
     target_operations = {str(item.get("operation_id")) for item in target.contributions}
     entry_id = new_entry_id(target.slug, page.slug)
     copies = []
     # 지웠다가 다시 편입한 페이지면 삭제 기록 앞 기록은 이미 다른 페이지로 옮겼거나 지운 것이라 잇지 않는다.
     for contribution in _since_last_delete(page.contributions):
-        if contribution.get("artifact_type") == _LINT:
+        lint = contribution.get("artifact_type") == _LINT
+        changes = [
+            {**change, "parent_entry_id": change.get("parent_entry_id") or entry_id}
+            if change.get("op") in ("add", "move") else dict(change)
+            for change in contribution.get("entry_changes", [])
+            if isinstance(change, dict) and change.get("entry_id")
+        ]
+        references = [
+            {**link, "source": target.ref, "parent_entry_id": link.get("parent_entry_id") or entry_id}
+            for link in contribution.get("added_links" if lint else "links", [])
+            if isinstance(link, dict) and link.get("relation") == ENTRY_REFERENCE and link.get("source") == page.ref
+        ]
+        units = [unit for unit in contribution.get("evidence_units", []) if isinstance(unit, dict)]
+        # 페이지 이동·병합 등 근거·항목·참조가 없는 lint 기록은 옮길 것이 없다.
+        if lint and not (changes or units or references):
             continue
         if str(contribution.get("operation_id")) in target_operations:
             return "operation_on_both_pages"
-        units = [unit for unit in contribution.get("evidence_units", []) if isinstance(unit, dict)]
-        add = {
+        entry_claims = {claim for change in changes for claim in change.get("evidence_claim_ids", [])}
+        concept = contribution.get("concept") or {}
+        root = {
             "op": "add",
             "entry_id": entry_id,
             "name": page.title,
             "definition": definition,
             "parent_entry_id": parent_entry_id,
+            **{key: list(concept[key]) for key in ("aliases", "tags") if concept.get(key)},
             "anchor_reference_ids": list(dict.fromkeys([
-                *(contribution.get("concept") or {}).get("anchor_reference_ids", []),
-                *(ref for unit in units for ref in unit.get("anchor_reference_ids", [])),
+                *concept.get("anchor_reference_ids", []),
+                *(ref for unit in units if unit.get("evidence_id") not in entry_claims
+                  for ref in unit.get("anchor_reference_ids", [])),
             ])),
-            "evidence_claim_ids": [str(unit["evidence_id"]) for unit in units if unit.get("evidence_id")],
+            "evidence_claim_ids": [
+                str(unit["evidence_id"]) for unit in units
+                if unit.get("evidence_id") and unit.get("evidence_id") not in entry_claims
+            ],
         }
-        copies.append(_linked_copy(contribution, target.page_id, target.slug, [add], all_evidence=True))
+        copy = _linked_copy(contribution, target.page_id, target.slug, [root, *changes], all_evidence=True)
+        copy["added_links" if lint else "links"] = references
+        copies.append(copy)
     for copy in copies:
         plan.link(copy)
+    moved_ids = {item["entry_id"] for item in page.entries}
+    _retarget_references(plan, pages, page, moved_ids, target.ref, {page.page_id, target.page_id})
+    target_change = plan.change(target.page_id, target.slug, target.title)
+    target_change["removed_links"].extend(
+        link for link in target.links if _references(link, page.ref, moved_ids) and link not in target_change["removed_links"]
+    )
     # 대상 페이지에도 이 lint 기록을 둔다. 이은 기록만 있으면 document-svc가 그 페이지 행을 받지 않는다.
     # 기록에는 이은 작업을 남긴다(재생에는 쓰지 않는다).
     linked = plan.change(target.page_id, target.slug, target.title).setdefault("linked_operation_ids", [])
