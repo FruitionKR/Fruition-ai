@@ -265,8 +265,13 @@ class JevConceptResolver(ConceptResolver):
                 hybrid_score(vector_similarity(vectors[entry["slug"]], vectors[candidate["slug"]]), lexical, CANDIDATE_EMBEDDING_WEIGHT)
                 for candidate, lexical in zip(pool, self._text_search.score(texts[entry["slug"]], pool_texts), strict=True)
             ]
-            ranked = sorted(zip(scores, pool, strict=True), key=lambda row: (-row[0], row[1]["slug"]))
-            tasks.append((entry, [candidate for _, candidate in ranked[:ENTRY_CANDIDATE_LIMIT]]))
+            # 같은 항목끼리 묻는 형제 찾기는 항목 자신도 pool에 있다. 자기 자신은 후보가 아니다.
+            ranked = sorted(
+                ((score, candidate) for score, candidate in zip(scores, pool, strict=True) if candidate["slug"] != entry["slug"]),
+                key=lambda row: (-row[0], row[1]["slug"]),
+            )
+            if ranked:
+                tasks.append((entry, [candidate for _, candidate in ranked[:ENTRY_CANDIDATE_LIMIT]]))
         return self._judge_candidates(tasks)
 
     def _judge_candidates(self, tasks: list[tuple[JsonDict, list[JsonDict]]]) -> dict[str, JsonDict]:
@@ -382,6 +387,19 @@ class JevConceptResolver(ConceptResolver):
             return cached_embeddings(self._embedding_model, texts)
         except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
             raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+
+
+def embedding_similarity(model: EmbeddingModelPort) -> Callable[[str, list[str]], list[float]]:
+    """(질의, 텍스트 목록) → 임베딩 유사도. 개념 판정과 같은 벡터·캐시다. 임베딩 실패는 JevUnavailable로 알린다."""
+
+    def similarity(query: str, texts: list[str]) -> list[float]:
+        try:
+            vectors = cached_embeddings(model, [query, *texts])
+        except Exception as exc:
+            raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+        return [vector_similarity(vectors[query], vectors[text]) for text in texts]
+
+    return similarity
 
 
 def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, array]:

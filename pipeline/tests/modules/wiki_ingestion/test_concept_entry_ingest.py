@@ -1,7 +1,9 @@
 """편입 배정과 승격(ADR 0042 2단계): 이름 규칙·part_of 배정, K 승격, 같은 하위 항목 찾기, 기여·복구·임베딩 단위."""
 from __future__ import annotations
 
+import json
 import os
+from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -14,7 +16,8 @@ from psycopg.rows import dict_row
 from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler, LinkBuilder
 from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
-from app.modules.wiki_ingestion.application.concept_entry_ingest import apply_concept_entries
+from app.modules.wiki_generation.application.judge_candidates import llm_part_of_judge, llm_same_entry_judge
+from app.modules.wiki_ingestion.application.concept_entry_ingest import PART_OF_CANDIDATE_LIMIT, apply_concept_entries
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, plan_page_recovery
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import rebuild_concept_page
@@ -46,6 +49,37 @@ def _normalized(concepts: list[dict], existing: list[dict] | None = None) -> dic
     }
 
 
+def _same_score(_query: str, texts: list[str]) -> list[float]:
+    """가짜 임베딩 유사도. 모든 후보가 같은 점수라 후보는 slug 순 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
+    return [1.0] * len(texts)
+
+
+class PrefixPartOf:
+    """가짜 판정기(LLM·Jev 자리). 세부 항목 제목이 상위 항목 제목·별칭으로 시작하거나 `(상위)`를 가지면 part_of라고 답한다."""
+
+    def __init__(self) -> None:
+        self.pairs: list[tuple[str, str]] = []
+
+    def __call__(self, pairs):
+        self.pairs.extend((head["slug"], detail["slug"]) for head, detail in pairs)
+        answers = {}
+        for head, detail in pairs:
+            title = str(detail.get("title") or "").lower()
+            names = [name.lower() for name in (head.get("title"), *(head.get("aliases") or [])) if name]
+            hits = [name for name in names if title.startswith(name + " ") or f"({name})" in title]
+            # 더 구체적인(긴) 상위 항목일수록 확신한다.
+            probability = 0.9 + max(map(len, hits)) / 1000 if hits else 0.1
+            answers[(head["slug"], detail["slug"])] = {"part_of": bool(hits), "probability": probability}
+        return answers
+
+
+def _apply(normalized: dict, **kwargs) -> dict:
+    """판정기와 임베딩이 있는 편입. 배정은 늘 판정기가 한다."""
+    return apply_concept_entries(
+        normalized, **{"judge_part_of": PrefixPartOf(), "similarity": _same_score, **kwargs},
+    )
+
+
 DEPLOYMENT = [
     _concept("deployment", "Deployment", "B0001"),
     _concept("deployment-rollout", "Deployment Rollout", "B0002"),
@@ -58,8 +92,8 @@ def _entries(result: dict, page: str) -> dict[str, dict]:
     return {change["name"]: change for change in result["entry_changes"][page]}
 
 
-def test_name_rule_assigns_details_under_head_that_reaches_k() -> None:
-    result = apply_concept_entries(_normalized(DEPLOYMENT))
+def test_judge_assigns_details_under_head_that_reaches_k() -> None:
+    result = _apply(_normalized(DEPLOYMENT))
 
     assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
     entries = _entries(result, "deployment")
@@ -79,13 +113,13 @@ def test_name_rule_assigns_details_under_head_that_reaches_k() -> None:
 def test_head_below_k_keeps_todays_pages() -> None:
     normalized = _normalized(DEPLOYMENT[:3])
 
-    assert apply_concept_entries(normalized) is normalized
+    assert _apply(normalized) is normalized
 
 
 def test_existing_page_is_a_head_without_k_and_joins_the_ledger() -> None:
     existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
 
-    result = apply_concept_entries(_normalized([DEPLOYMENT[1]], existing))
+    result = _apply(_normalized([DEPLOYMENT[1]], existing))
 
     assert [(item["slug"], item["title"], item["definition"]) for item in result["concept_ledger"]] == [
         ("deployment", "Deployment", "기존 정의")]
@@ -95,7 +129,7 @@ def test_existing_page_is_a_head_without_k_and_joins_the_ledger() -> None:
 def test_nested_detail_keeps_its_parent_entry() -> None:
     concepts = [*DEPLOYMENT, _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")]
 
-    entries = _entries(apply_concept_entries(_normalized(concepts)), "deployment")
+    entries = _entries(_apply(_normalized(concepts)), "deployment")
 
     assert entries["Deployment Rollout History"]["parent_entry_id"] == entries["Deployment Rollout"]["entry_id"]
     assert entries["Deployment Rollout"]["parent_entry_id"] is None
@@ -130,7 +164,7 @@ def test_part_of_judge_assigns_only_confident_one_way_answers() -> None:
         ("liveness-probe", "readiness-probe"): 0.99, ("readiness-probe", "liveness-probe"): 0.99,
     })
 
-    result = apply_concept_entries(_normalized(POD), judge_part_of=judge)
+    result = _apply(_normalized(POD), judge_part_of=judge)
 
     assert ("pod", "liveness-probe") in judge.pairs
     assert sorted(concept["slug"] for concept in result["concept_ledger"]) == ["container-image", "pod"]
@@ -139,13 +173,13 @@ def test_part_of_judge_assigns_only_confident_one_way_answers() -> None:
     assert all(entry["parent_entry_id"] is None for entry in entries.values())
 
 
-def test_unavailable_part_of_judge_leaves_name_rule_only() -> None:
+def test_unavailable_part_of_judge_keeps_concepts_separate() -> None:
     def unavailable(_pairs):
         raise JevUnavailable("down")
 
     normalized = _normalized(POD)
 
-    assert apply_concept_entries(normalized, judge_part_of=unavailable) is normalized
+    assert _apply(normalized, judge_part_of=unavailable) is normalized
 
 
 def _with_kubectl_entry(definition: str = "Pod 수를 바꾼다") -> list[dict]:
@@ -172,7 +206,7 @@ def test_same_entry_on_another_page_adds_evidence_there_and_references_it() -> N
     concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
     judge = FakeSame("merge_into")
 
-    result = apply_concept_entries(_normalized(concepts, _with_kubectl_entry()), judge_same=judge)
+    result = _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=judge)
 
     assert judge.calls[0][1] == ["kubectl > scale"]
     assert "Deployment Scale" not in _entries(result, "deployment")
@@ -191,7 +225,7 @@ def test_same_entry_on_another_page_adds_evidence_there_and_references_it() -> N
 def test_unsure_same_entry_stays_a_separate_new_entry(decision) -> None:
     concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
 
-    result = apply_concept_entries(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame(decision))
+    result = _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame(decision))
 
     assert _entries(result, "deployment")["Deployment Scale"]["entry_id"].startswith("entry:")
     assert "kubectl" not in result["entry_changes"]
@@ -199,12 +233,12 @@ def test_unsure_same_entry_stays_a_separate_new_entry(decision) -> None:
 
 
 def test_reingest_matches_its_own_entry_by_name_without_judge() -> None:
-    first = _entries(apply_concept_entries(_normalized(DEPLOYMENT)), "deployment")
+    first = _entries(_apply(_normalized(DEPLOYMENT)), "deployment")
     existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
         {"entry_id": entry["entry_id"], "name": entry["name"], "definition": entry["definition"], "parent_entry_id": None}
         for entry in first.values()]}]
 
-    second = _entries(apply_concept_entries(_normalized(DEPLOYMENT, existing)), "deployment")
+    second = _entries(_apply(_normalized(DEPLOYMENT, existing)), "deployment")
 
     assert {name: entry["entry_id"] for name, entry in second.items()} == {
         name: entry["entry_id"] for name, entry in first.items()}
@@ -228,7 +262,7 @@ def _page(page_id: str, operation_id: str, sequence: int, contribution: dict) ->
 def test_ingest_contribution_replays_entries_and_restore_drops_them() -> None:
     concepts = [*DEPLOYMENT, _concept("deployment-scale", "Deployment Scale", "B0009")]
     contributions = _ingest_contributions(
-        "op-x", apply_concept_entries(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame("merge_into")))
+        "op-x", _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame("merge_into")))
     kubectl_base = _ingest_contributions("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]))["kubectl"]
     deployment = [_page("page-deploy", "op-x", 1, contributions["deployment"])]
     kubectl = [_page("page-kubectl", "op-w", 1, kubectl_base), _page("page-kubectl", "op-x", 2, contributions["kubectl"])]
@@ -315,7 +349,7 @@ def _stored_markdown(monkeypatch) -> dict[str, str]:
 
 def manifest(operation_id: str, normalized: dict, existing: list[dict] | None = None, judge_same=None,
              entry_changes: dict | None = None) -> dict:
-    result = apply_concept_entries({**normalized, "existing_concept_index": existing or []}, judge_same=judge_same)
+    result = _apply({**normalized, "existing_concept_index": existing or []}, judge_same=judge_same)
     if entry_changes:
         result = {**result, "entry_changes": entry_changes}
     links = LinkBuilder().build(result)
@@ -383,7 +417,7 @@ NESTED = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B00
 
 
 def test_child_of_parent_merged_into_another_page_lives_under_it_there() -> None:
-    result = apply_concept_entries(_normalized(NESTED, _with_kubectl_entry()), judge_same=FakeSame("merge_into"))
+    result = _apply(_normalized(NESTED, _with_kubectl_entry()), judge_same=FakeSame("merge_into"))
 
     kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
     assert set(kubectl) == {"scale", "Deployment Scale Limit"}
@@ -451,7 +485,7 @@ def test_relation_from_concept_moved_into_entry_starts_from_its_home_page() -> N
          "link_targets": ["service", "deployment"], "confidence": 0.95},
     ]
 
-    result = apply_concept_entries(normalized)
+    result = _apply(normalized)
     links = [link for link in LinkBuilder().build(result) if link["relation"] == "concept_related_to"]
     contributions = _ingest_contributions("op-x", result)
     replayed = rebuild_concept_page([_page("page-deploy", "op-x", 1, contributions["deployment"])])
@@ -470,7 +504,7 @@ def test_child_of_merged_parent_is_searched_under_the_matched_entry_name() -> No
     existing[0]["entries"].append(
         {"entry_id": "e-limit", "name": "Deployment Scale Limit", "definition": "상한", "parent_entry_id": "e-scale"})
 
-    result = apply_concept_entries(_normalized(NESTED, existing), judge_same=FakeSame("merge_into"))
+    result = _apply(_normalized(NESTED, existing), judge_same=FakeSame("merge_into"))
 
     # 위 항목이 kubectl > scale과 같으면 아래 항목은 "scale > ..."로 찾아 기존 항목 id를 다시 쓴다.
     kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
@@ -571,17 +605,17 @@ def test_new_sibling_entries_of_one_ingest_merge_by_name_rule_and_same_judgment(
         _concept("deployment-pod-template", "Deployment Pod Template", "B0003"),
         _concept("deployment-pod-template-2", "deployment pod-template", "B0004"),
     ]
-    asked: list[tuple[str, list[str]]] = []
+    asked: list[tuple[list[str], list[str]]] = []
 
     def judge(entries, pool):
-        asked.append((entries[0]["title"], [item["title"] for item in pool]))
+        asked.append(([item["title"] for item in entries], [item["title"] for item in pool]))
         return {
             entry["slug"]: {"incoming_slug": entry["slug"], "decision": "merge_into",
                             "canonical_slug": "incoming:deployment-rolling-update"}
             for entry in entries if entry["title"].endswith("디플로이먼트 롤링 업데이트")
         }
 
-    result = apply_concept_entries(_normalized(concepts, existing), judge_same=judge)
+    result = _apply(_normalized(concepts, existing), judge_same=judge)
 
     adds = result["entry_changes"]["deployment"]
     ids = {change["entry_id"] for change in adds}
@@ -592,9 +626,10 @@ def test_new_sibling_entries_of_one_ingest_merge_by_name_rule_and_same_judgment(
     assert [change["anchor_reference_ids"] for change in rolling] == [["B0001"], ["B0002"]]
     pod = [change for change in adds if change["name"] == "Deployment Pod Template"]
     assert [change["anchor_reference_ids"] for change in pod] == [["B0003"], ["B0004"]]
-    # 이름 규칙으로 합친 항목은 묻지 않는다. 판정은 먼저 나온 형제하고만 한다.
-    assert [title for title, _pool in asked if "pod-template" in title] == []
-    assert ("Deployment > 디플로이먼트 롤링 업데이트", ["Deployment > Deployment Rolling Update"]) in asked
+    # 같은 이름(정체성)으로 합친 항목은 묻지 않는다. 나머지 형제는 판정기 한 번에 묻고, 먼저 나온 형제로 합친 판정만 쓴다.
+    titles = ["Deployment > Deployment Rolling Update", "Deployment > 디플로이먼트 롤링 업데이트",
+              "Deployment > Deployment Pod Template"]
+    assert asked == [(titles, titles)]
 
 
 def test_unsure_or_unavailable_sibling_judgment_keeps_entries_apart() -> None:
@@ -606,5 +641,99 @@ def test_unsure_or_unavailable_sibling_judgment_keeps_entries_apart() -> None:
         raise JevUnavailable("Jev HTTP 402")
 
     for judge in (FakeSame(None), unavailable, None):
-        adds = apply_concept_entries(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
+        adds = _apply(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
         assert len({change["entry_id"] for change in adds}) == 2
+
+
+def test_names_alone_never_assign_without_a_judge_or_embeddings() -> None:
+    # 이름이 상위 항목으로 시작해도 코드가 배정하지 않는다. 판정기와 임베딩이 모두 있어야 묻는다.
+    normalized = _normalized(DEPLOYMENT)
+
+    def embedding_down(_query, _texts):
+        raise JevUnavailable("embedding server down")
+
+    assert apply_concept_entries(normalized) is normalized
+    assert apply_concept_entries(normalized, judge_part_of=PrefixPartOf()) is normalized
+    assert apply_concept_entries(normalized, judge_part_of=PrefixPartOf(), similarity=embedding_down) is normalized
+
+
+POD_PAGE = {"slug": "pod", "title": "파드 (Pod)", "aliases": ["Pod"], "definition": "컨테이너를 묶어 실행하는 단위", "entries": []}
+
+
+def test_candidates_come_from_embeddings_including_existing_pages_whatever_the_names() -> None:
+    concepts = [
+        _concept("static-pod-ko", "스태틱 파드", "B0001"),
+        _concept("static-pods", "Static Pods", "B0002"),
+        _concept("sidecar-container", "사이드카 컨테이너", "B0003"),
+        *(_concept(f"other-{index}", f"Other {index}", f"B00{10 + index}") for index in range(6)),
+    ]
+
+    def similarity(_query, texts):
+        # 기존 Pod 페이지가 가장 가깝고 나머지는 멀다(이름이 겹치지 않는 사이드카도 임베딩으로 후보가 된다).
+        return [1.0 if text.startswith("파드 (Pod)") else 0.1 for text in texts]
+
+    asked: list[tuple[str, str]] = []
+
+    def judge(pairs):
+        asked.extend((head["slug"], detail["slug"]) for head, detail in pairs)
+        return {(head["slug"], detail["slug"]): {"part_of": True, "probability": 0.95}
+                for head, detail in pairs if head["slug"] == "pod" and not detail["slug"].startswith("other")}
+
+    result = apply_concept_entries(_normalized(concepts, [POD_PAGE]), judge_part_of=judge, similarity=similarity)
+
+    # 한국어 뒤 수식("스태틱 파드"), 영어 복수형("Static Pods"), 이름이 겹치지 않는 항목 모두 판정기에 간다.
+    assert {("pod", "static-pod-ko"), ("pod", "static-pods"), ("pod", "sidecar-container")} <= set(asked)
+    # 후보는 세부 항목마다 상한까지다.
+    assert max(Counter(detail for _head, detail in asked).values()) == PART_OF_CANDIDATE_LIMIT
+    assert set(_entries(result, "pod")) == {"스태틱 파드", "Static Pods", "사이드카 컨테이너"}
+
+
+class FakeCompletion:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.calls: list[tuple[str, dict]] = []
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
+        payload = json.loads(user_prompt)
+        self.calls.append((system_prompt, payload))
+        return self.answer(payload)
+
+
+def test_ingest_llm_answers_part_of_when_jev_is_disabled() -> None:
+    concepts = [_concept("static-pod-ko", "스태틱 파드", "B0001"), _concept("image-registry", "이미지 레지스트리", "B0002")]
+
+    def answer(payload):
+        return {"judgments": [
+            {"id": question["id"],
+             "decision": "part_of" if question["detail"]["slug"] == "static-pod-ko" and question["head"]["slug"] == "pod"
+             else "not_part_of",
+             # 애매한 part_of는 배정하지 않는다.
+             "confidence": 0.97 if question["detail"]["slug"] == "static-pod-ko" else 0.6}
+            for question in payload["questions"]
+        ]}
+
+    completion = FakeCompletion(answer)
+    judge = llm_part_of_judge(completion, "part_of 규칙")
+
+    result = apply_concept_entries(_normalized(concepts, [POD_PAGE]), judge_part_of=judge, similarity=_same_score)
+
+    assert len(completion.calls) == 1 and completion.calls[0][0] == "part_of 규칙"
+    assert set(_entries(result, "pod")) == {"스태틱 파드"}
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["image-registry", "pod"]
+
+
+def test_ingest_llm_judges_same_entries_and_keeps_unsure_apart() -> None:
+    entries = [{"slug": "incoming:a", "title": "Pod > Static Pods", "definition": "정적 파드"},
+               {"slug": "incoming:b", "title": "Pod > 스태틱 파드", "definition": "정적 파드"},
+               {"slug": "incoming:c", "title": "Pod > Sidecar", "definition": "보조 컨테이너"}]
+
+    def answer(payload):
+        return {"judgments": [
+            {"id": "incoming:b", "same_as": "incoming:a", "confidence": 0.95},
+            {"id": "incoming:c", "same_as": "incoming:a", "confidence": 0.5},
+        ]}
+
+    judge = llm_same_entry_judge(FakeCompletion(answer), "same 규칙", _same_score)
+
+    assert judge(entries, entries) == {"incoming:b": {"incoming_slug": "incoming:b", "decision": "merge_into",
+                                                     "canonical_slug": "incoming:a", "alias_to_add": None}}

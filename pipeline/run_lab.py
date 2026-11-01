@@ -28,6 +28,8 @@ from app.modules.wiki_generation.application.run_generation_loop import (
 )
 from app.modules.wiki_generation.application.judge_candidates import (
     judge_concept_update_candidates,
+    llm_part_of_judge,
+    llm_same_entry_judge,
     normalize_concept_update_decisions,
 )
 from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
@@ -54,7 +56,12 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
     RetryOnceJsonCompletion,
 )
-from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver, with_jev_concept_merge
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+    JevConceptResolver,
+    embedding_server_model,
+    embedding_similarity,
+    with_jev_concept_merge,
+)
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
     load_existing_concept_index,
@@ -557,17 +564,28 @@ def _resolve_pipeline_concepts(
         candidates=resolved_candidates,
         concept_slug_map=resolved.get("concept_slug_map", {}),
     )
-    # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). Jev가 없으면 이름 규칙만 쓴다.
-    # 같은 하위 항목 후보는 DB에 저장된 sub_entry 벡터로 고른다. 기존 하위 항목은 DB 개념 목록에만 있다.
+    # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). 배정과 같은 하위 항목 판정은 Jev가 있으면 Jev,
+    # 없으면 편입 LLM이 한다. 상위 후보는 임베딩 서버로만 고르고, 서버가 없으면 배정하지 않는다.
+    # 같은 하위 항목 후보는 Jev면 DB에 저장된 sub_entry 벡터로 고른다. 기존 하위 항목은 DB 개념 목록에만 있다.
     jev = resolver.inner if isinstance(resolver.inner, JevConceptResolver) else None
+    embedding_model = embedding_server_model()
+    similarity = embedding_similarity(embedding_model) if embedding_model else None
+    llm = RetryOnceJsonCompletion(api_client)
+    if jev:
+        judge_part_of = jev.judge_part_of
+        judge_same = lambda entries, pool: jev.judge_entries(  # noqa: E731
+            entries, pool, lambda model: database.list_sub_entry_vectors(args.workspace_id, model)
+        )
+    else:
+        judge_part_of = llm_part_of_judge(llm, read_prompt("prompts/concept_part_of.system.md"))
+        judge_same = (
+            llm_same_entry_judge(llm, read_prompt("prompts/concept_same_entry.system.md"), similarity) if similarity else None
+        )
     resolved = apply_concept_entries(
         resolved,
-        judge_part_of=jev.judge_part_of if jev else None,
-        judge_same=(
-            lambda entries, pool: jev.judge_entries(
-                entries, pool, lambda model: database.list_sub_entry_vectors(args.workspace_id, model)
-            )
-        ) if jev else None,
+        judge_part_of=judge_part_of,
+        judge_same=judge_same,
+        similarity=similarity,
     )
     log.emit(
         "4-보조. Concept Resolution",

@@ -1,7 +1,9 @@
 """편입 배정과 승격(ADR 0042 2단계). 이번 문서의 개념을 상위 항목과 세부 항목으로 나눠 하위 항목으로 둔다.
 
-1. 배정: 세부 항목 이름이 상위 항목 이름·별칭으로 시작하거나 그 이름을 괄호 수식어로 가지면 판정 없이 배정한다.
-   나머지는 이번 문서 개념끼리 `part_of` 쌍 판정으로 묻는다. 애매하거나 판정기를 쓸 수 없으면 배정하지 않는다.
+1. 배정: 어느 개념이 다른 개념에 딸리는지는 판정기(Jev `part_of` 또는 편입 LLM)가 정한다. 코드는 후보만 고른다.
+   세부 항목마다 상위 후보는 임베딩("이름: 정의") 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개이고, 이번 문서 개념과
+   워크스페이스 기존 개념 페이지가 모두 후보다(기존 페이지는 상위 항목만 된다). 이름 규칙으로 배정하거나 후보를
+   고르지 않는다. 임베딩을 쓸 수 없거나, 애매하거나, 판정기를 쓸 수 없으면 배정하지 않는다.
 2. 승격: 배정을 따라 올라간 맨 위 항목이 기존 개념 페이지이거나 세부 항목이 `K`개 이상이면 그 페이지의 하위 항목이 된다.
    모자라면 배정을 버리고 지금처럼 각자 개념 페이지로 둔다.
 3. 같은 것 찾기: 새 하위 항목마다 워크스페이스의 기존 하위 항목과 "바로 위 이름 > 이름"이 같거나 쌍 판정이 same이면
@@ -13,6 +15,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from app.core.jev_client import JevUnavailable
@@ -22,6 +25,11 @@ from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, n
 from app.modules.wiki_ingestion.domain.concept_split_rules import reaches_page_threshold
 
 logger = logging.getLogger(__name__)
+# 세부 항목마다 part_of로 물을 상위 후보 수. 편입 잠금 안의 판정이라 작게 둔다.
+PART_OF_CANDIDATE_LIMIT = 5
+# (질의 텍스트, 후보 텍스트 목록) → 후보별 임베딩 유사도. 개념 판정과 같은 BGE-M3 벡터·캐시를 쓴다.
+# 임베딩 서버를 쓸 수 없으면 JevUnavailable을 낸다.
+Similarity = Callable[[str, list[str]], list[float]]
 
 
 def apply_concept_entries(
@@ -29,6 +37,7 @@ def apply_concept_entries(
     *,
     judge_part_of: PartOfJudge | None = None,
     judge_same: PairJudge | None = None,
+    similarity: Similarity | None = None,
 ) -> dict[str, Any]:
     """개념 판정이 끝난 정규화 결과에서 세부 항목을 개념 목록에서 빼고 집 페이지의 하위 항목으로 옮긴다.
 
@@ -36,7 +45,7 @@ def apply_concept_entries(
     """
     ledger = [concept for concept in resolved.get("concept_ledger", []) if concept.get("slug")]
     existing = {concept["slug"]: concept for concept in resolved.get("existing_concept_index", []) if concept.get("slug")}
-    assigned = _assign_heads(ledger, existing, judge_part_of)
+    assigned = _assign_heads(ledger, existing, judge_part_of, similarity)
     placements = _place(assigned, set(existing))
     if not placements:
         return resolved
@@ -152,50 +161,50 @@ def _assign_heads(
     ledger: list[dict[str, Any]],
     existing: dict[str, dict[str, Any]],
     judge_part_of: PartOfJudge | None,
+    similarity: Similarity | None,
 ) -> dict[str, str]:
-    """세부 항목 slug → 상위 항목 slug. 기존 개념 페이지는 세부 항목이 되지 않는다(옮기는 일은 lint가 한다)."""
-    heads = {**existing, **{concept["slug"]: concept for concept in ledger}}
-    details = [concept for concept in ledger if concept["slug"] not in existing]
-    assigned: dict[str, str] = {}
-    for detail in details:
-        head = _name_rule_head(detail, heads)
-        if head and not _creates_cycle(assigned, detail["slug"], head):
-            assigned[detail["slug"]] = head
-    rest = [detail for detail in details if detail["slug"] not in assigned]
-    if judge_part_of is None or not rest:
-        return assigned
-    # ponytail: 이번 문서 개념끼리 모든 쌍을 묻는다(O(n²)). 개념 수가 커지면 근거 블록이 겹치는 쌍으로 줄인다.
-    pairs = [(head, detail) for detail in rest for head in ledger if head["slug"] != detail["slug"]]
+    """세부 항목 slug → 상위 항목 slug. 판정기의 part_of만 배정한다. 기존 개념 페이지는 세부 항목이 되지 않는다."""
+    if judge_part_of is None or similarity is None:
+        return {}
+    heads = {slug: concept for slug, concept in {**existing, **{c["slug"]: c for c in ledger}}.items() if _has_definition(concept)}
+    details = [concept for concept in ledger if concept["slug"] not in existing and concept["slug"] in heads]
     try:
-        decisions = judge_part_of(pairs)
+        pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
+        decisions = judge_part_of(pairs) if pairs else {}
     except JevUnavailable as exc:
         logger.warning("[part_of 판정 생략] %s", exc)
-        return assigned
+        return {}
     part_of = {pair: item["probability"] for pair, item in decisions.items() if item.get("part_of")}
     # 서로가 서로에 딸린다는 판정은 애매하다고 보고 배정하지 않는다.
     ranked = sorted(
         ((probability, head, detail) for (head, detail), probability in part_of.items() if (detail, head) not in part_of),
         key=lambda row: (-row[0], row[2], row[1]),
     )
+    assigned: dict[str, str] = {}
     for _, head, detail in ranked:
-        if detail not in assigned and not _creates_cycle(assigned, detail, head):
+        if detail not in assigned and detail not in existing and not _creates_cycle(assigned, detail, head):
             assigned[detail] = head
-    return assigned
+    # 본문 목록 순서는 이번 문서 개념 순서를 따른다.
+    return {concept["slug"]: assigned[concept["slug"]] for concept in ledger if concept["slug"] in assigned}
 
 
-def _name_rule_head(detail: dict[str, Any], heads: dict[str, dict[str, Any]]) -> str | None:
-    """이름이 상위 항목 이름으로 시작하거나 `(상위 항목)` 수식어를 가지면 그 상위 항목. 가장 긴 이름이 이긴다."""
-    name = name_key(detail.get("title") or "")
-    best: tuple[int, str] | None = None
-    for slug in sorted(heads):
-        if slug == detail["slug"]:
-            continue
-        head = heads[slug]
-        for head_name in {name_key(value) for value in (head.get("title"), *(head.get("aliases") or [])) if value}:
-            if head_name and head_name != name and (name.startswith(head_name + " ") or f"({head_name})" in name):
-                if best is None or len(head_name) > best[0]:
-                    best = (len(head_name), slug)
-    return best[1] if best else None
+def _candidate_heads(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
+    """part_of로 물을 상위 후보. 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
+    others = [slug for slug in sorted(heads) if slug != detail["slug"]]
+    if not others:
+        return []
+    scores = similarity(_concept_text(detail), [_concept_text(heads[slug]) for slug in others])
+    ranked = sorted(zip(others, scores, strict=True), key=lambda row: (-row[1], row[0]))
+    return [slug for slug, _ in ranked[:PART_OF_CANDIDATE_LIMIT]]
+
+
+def _concept_text(concept: dict[str, Any]) -> str:
+    """임베딩 텍스트 "이름: 정의". DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary에 정의를 담는다."""
+    return f"{concept.get('title') or concept['slug']}: {concept.get('definition') or concept.get('summary') or ''}"
+
+
+def _has_definition(concept: dict[str, Any]) -> bool:
+    return bool(str(concept.get("definition") or concept.get("summary") or "").strip())
 
 
 def _creates_cycle(assigned: dict[str, str], detail: str, head: str) -> bool:
@@ -296,41 +305,38 @@ def _match_siblings(
 ) -> dict[str, str]:
     """같은 집 페이지·같은 위 항목 아래 이번 문서의 새 세부 항목끼리 같은 것을 찾는다(기존 항목 찾기와 같은 규칙).
 
-    "바로 위 이름 > 이름"이 같으면 판정 없이, 나머지는 먼저 나온 형제들과의 쌍 판정 same만 같은 항목으로 본다.
-    서로가 서로에 합쳐지지 않게 먼저 나온 항목에만 합친다. 애매하거나 판정기를 쓸 수 없으면 따로 둔다.
+    "바로 위 이름 > 이름"이 같으면 판정 없이(같은 이름은 정체성이다), 나머지는 쌍 판정 same만 같은 항목으로 본다.
+    한 단계의 항목을 판정기 한 번에 묻고, 같은 형제 무리 안에서 먼저 나온 항목에 합친 판정만 쓴다(서로 합쳐지지 않게).
+    애매하거나 판정기를 쓸 수 없으면 따로 둔다.
     """
-    groups: dict[tuple[str, str | None], list[str]] = {}
-    for detail in queries:
-        groups.setdefault(placements[detail], []).append(detail)
+    order = {detail: index for index, detail in enumerate(queries)}
     found: dict[str, str] = {}
-    for members in groups.values():
-        canonical: list[str] = []
-        for detail in members:
-            by_name = next(
-                (other for other in canonical if name_key(queries[other]["title"]) == name_key(queries[detail]["title"])),
-                None,
-            )
-            target = by_name or (_same_sibling(queries[detail], [queries[other] for other in canonical], judge_same)
-                                 if canonical else None)
-            if target:
-                found[detail] = target.removeprefix("incoming:")
-            else:
-                canonical.append(detail)
-    return found
-
-
-def _same_sibling(query: dict[str, Any], earlier: list[dict[str, Any]], judge_same: PairJudge | None) -> str | None:
-    if judge_same is None:
-        return None
+    first_by_name: dict[tuple[Any, str], str] = {}
+    for detail, query in queries.items():
+        key = (placements[detail], name_key(query["title"]))
+        if key in first_by_name:
+            found[detail] = first_by_name[key]
+        else:
+            first_by_name[key] = detail
+    rest = [detail for detail in queries if detail not in found]
+    groups = Counter(placements[detail] for detail in rest)
+    asked = [detail for detail in rest if groups[placements[detail]] > 1]
+    if judge_same is None or not asked:
+        return found
     try:
-        decision = judge_same([query], earlier).get(query["slug"]) or {}
+        decisions = judge_same([queries[detail] for detail in asked], [queries[detail] for detail in asked])
     except JevUnavailable as exc:
         logger.warning("[같은 형제 항목 판정 생략] %s", exc)
-        return None
-    target = decision.get("canonical_slug")
-    if decision.get("decision") == "merge_into" and target in {item["slug"] for item in earlier}:
-        return str(target)
-    return None
+        return found
+    for detail in asked:
+        decision = decisions.get(queries[detail]["slug"]) or {}
+        target = str(decision.get("canonical_slug") or "").removeprefix("incoming:")
+        if (
+            decision.get("decision") == "merge_into" and target in order and target not in found
+            and placements.get(target) == placements[detail] and order[target] < order[detail]
+        ):
+            found[detail] = target
+    return found
 
 
 def _existing_concept_entry(concept: dict[str, Any], document_id: str) -> dict[str, Any]:

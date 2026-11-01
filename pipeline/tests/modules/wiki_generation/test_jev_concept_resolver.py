@@ -559,3 +559,16 @@ class JudgeRelatedTest(unittest.TestCase):
     def test_missing_definition_or_unavailable_jev_is_no_judgment(self) -> None:
         self.assertIsNone(_resolver(PairJev()).judge_related(HEAD, [STABLE, {**PIVOT, "definition": ""}]))
         self.assertIsNone(_resolver(FailingJev()).judge_related(HEAD, [STABLE]))
+
+
+class EmbeddingSimilarityTest(unittest.TestCase):
+    """배정 후보(ADR 0042)는 개념 판정과 같은 임베딩으로 고른다. 서버가 없으면 판정 불가로 알린다."""
+
+    def test_scores_by_vectors_and_reports_unavailable_server(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import embedding_similarity
+
+        scores = embedding_similarity(AngleEmbedder({"a": 0.0, "b": 0.0, "c": math.pi / 2}))("a 질의", ["b 후보", "c 후보"])
+        self.assertAlmostEqual(scores[0], 1.0)
+        self.assertAlmostEqual(scores[1], 0.0)
+        with self.assertRaises(JevUnavailable):
+            embedding_similarity(FailingEmbedder())("a", ["b"])
