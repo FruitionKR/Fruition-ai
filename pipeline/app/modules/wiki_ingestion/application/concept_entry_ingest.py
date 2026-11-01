@@ -104,11 +104,13 @@ def apply_concept_entries(
             })
         entry_changes.setdefault(home, []).append(add)
         home_of[detail] = home
-        target = by_slug.get(home)
-        if target is None:
-            # 이번 문서에 없던 기존 페이지는 개념 판정이 기존 개념에 병합할 때와 같게 목록에 넣는다.
-            target = by_slug[home] = _existing_concept_entry(existing[home], document_id)
-            result["concept_ledger"].append(target)
+        # 이번 문서에 없던 기존 페이지는 개념 판정이 기존 개념에 병합할 때와 같게 목록에 넣는다.
+        # 참조를 둔 페이지(container)도 넣어야 그 페이지 기여·본문에 참조가 남아 복구 재생이 된다.
+        for slug in dict.fromkeys((home, container)):
+            if slug not in by_slug:
+                by_slug[slug] = _existing_concept_entry(existing[slug], document_id)
+                result["concept_ledger"].append(by_slug[slug])
+        target = by_slug[home]
         for field in ("anchor_reference_ids", "evidence_claim_ids"):
             target[field] = unique_keep_order([*target.get(field, []), *concept.get(field, [])])
 
