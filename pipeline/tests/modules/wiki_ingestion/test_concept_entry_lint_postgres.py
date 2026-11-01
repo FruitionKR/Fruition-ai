@@ -865,3 +865,24 @@ def test_split_drops_key_points_of_moved_entries_from_parent_body_and_units(worl
         texts = [row["text"] for row in conn.execute(
             "SELECT text FROM wiki_embedding_units WHERE page_id = %s", (world.page_id("deployment"),)).fetchall()]
     assert texts and not [text for text in texts if "롤아웃 단계 요약" in text]
+
+
+def test_child_recreated_under_the_same_slug_after_merge_back_is_judged_by_records_after_the_delete(world: World) -> None:
+    _merged_back_rollout(world)
+    world.lint("lint-merge")
+    # 합쳐 지운 자식 slug로 다른 문서가 페이지를 다시 만든다. 삭제 기록 앞의 분리 기록은 이 페이지의 것이 아니다.
+    world.ingest("op-w", "doc-w", {"rollout": {"title": "Rollout", "evidence": ["W1"]}})
+    before = world.state()
+
+    result = world.lint("lint-again")
+
+    assert not [item for item in result["entry_decisions"] if item["action"] == "merge_back"]
+    state = world.state()
+    assert "rollout" in state["pages"]
+    assert "doc-w" not in state["pages"]["deployment"][2]
+    for slug in ("deployment", "rollout"):
+        assert state["pages"][slug][2] == world.ledger_rebuild(slug).markdown
+
+    world.restore_lint("lint-again")
+
+    assert world.state() == before

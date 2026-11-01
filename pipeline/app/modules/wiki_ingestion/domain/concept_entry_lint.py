@@ -49,9 +49,12 @@ class EntryPage:
 
     @property
     def split_record(self) -> dict[str, Any] | None:
-        """이 페이지를 만든 분리 기록. 분리로 만든 자식 페이지만 가진다."""
+        """이 페이지를 만든 분리 기록. 분리로 만든 자식 페이지만 가진다.
+
+        재생처럼 마지막 삭제 기록 뒤만 본다. 합쳐 지운 뒤 같은 slug로 다시 만든 페이지는 자식 페이지가 아니다.
+        """
         return next(
-            (item for item in reversed(self.contributions) if isinstance(item.get("split_from"), dict)),
+            (item for item in reversed(_since_last_delete(self.contributions)) if isinstance(item.get("split_from"), dict)),
             None,
         )
 
@@ -297,7 +300,8 @@ def _merge_back(plan: EntryLintPlan, pages: dict[str, EntryPage], child: EntryPa
     linked = set(record.get("linked_operation_ids", []))
     parent_operations = {str(item.get("operation_id")) for item in parent.contributions}
     copies = []
-    for contribution in child.contributions:
+    # 재생처럼 마지막 삭제 기록 뒤 기록만 옮긴다.
+    for contribution in _since_last_delete(child.contributions):
         operation_id = str(contribution.get("operation_id"))
         changes = [change for change in contribution.get("entry_changes", []) if isinstance(change, dict)]
         # 사람이 고친 자식 본문은 부모로 옮길 수 없다.
@@ -355,7 +359,7 @@ def standalone(page: EntryPage) -> bool:
     live = _since_last_delete(page.contributions)
     return not (
         page.entries
-        or any(isinstance(item.get("split_from"), dict) for item in live)
+        or page.split_record
         or any(link.get("relation") == ENTRY_REFERENCE for link in page.links)
         or any(
             item.get("artifact_type") == _MANUAL
