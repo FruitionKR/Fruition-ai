@@ -7,6 +7,7 @@ import psycopg
 from minio.error import S3Error
 
 from app.modules.wiki_generation.domain.text_utils import slugify
+from app.modules.wiki_generation.infrastructure.ref_format import ref_label
 
 from app.modules.wiki_ingestion.infrastructure.embedding_units import (
     dedupe_units,
@@ -38,6 +39,35 @@ def persist_embedding_units(
         if block.get("block_id") and block.get("text")
     )
     units = dedupe_units(units)
+    # 하위 항목 단위와 그 항목에 딸린 근거 단위(ADR 0042). 참조는 집 페이지 항목이 아니라 벡터를 두지 않는다.
+    entries = conn.execute(
+        """
+        SELECT entry.entry_id, entry.name, entry.definition, entry.block_refs,
+               COALESCE(parent.name, page.title, page.slug) AS parent_name
+        FROM wiki_page_entries entry
+        JOIN wiki_pages page ON page.id = entry.page_id
+        LEFT JOIN wiki_page_entries parent
+          ON parent.workspace_id = entry.workspace_id
+         AND parent.entry_id = entry.parent_entry_id
+         AND parent.page_id = entry.page_id
+        WHERE entry.page_id = %s
+        ORDER BY entry.entry_id
+        """,
+        (page_id,),
+    ).fetchall()
+    for unit in units:
+        unit["entry_id"] = _unit_entry_id(unit["block_refs"], entries)
+    units.extend(
+        {
+            "unit_type": "sub_entry",
+            "block_refs": list(entry["block_refs"] or []),
+            # 표현 텍스트는 "바로 위 이름 > 이름"과 정의다. 근거가 늘어도 바뀌지 않아 벡터를 다시 쓴다.
+            "text": f"{entry['parent_name']} > {entry['name']}" + (f": {entry['definition']}" if entry["definition"] else ""),
+            "weight": 1.0,
+            "entry_id": entry["entry_id"],
+        }
+        for entry in entries
+    )
     previous_vectors = conn.execute(
         """
         SELECT DISTINCT embedding_vector_id
@@ -89,9 +119,10 @@ def persist_embedding_units(
                 block_refs,
                 text,
                 weight,
+                entry_id,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (id) DO UPDATE SET
                 embedding_vector_id = EXCLUDED.embedding_vector_id,
                 page_id = EXCLUDED.page_id,
@@ -100,6 +131,7 @@ def persist_embedding_units(
                 block_refs = EXCLUDED.block_refs,
                 text = EXCLUDED.text,
                 weight = EXCLUDED.weight,
+                entry_id = EXCLUDED.entry_id,
                 updated_at = now()
             """,
             (
@@ -111,6 +143,7 @@ def persist_embedding_units(
                 unit["block_refs"],
                 unit["text"],
                 unit["weight"],
+                unit["entry_id"],
             ),
         )
     previous_vector_ids = [row["embedding_vector_id"] for row in previous_vectors]
@@ -126,6 +159,100 @@ def persist_embedding_units(
             """,
             (previous_vector_ids,),
         )
+
+
+def _unit_entry_id(block_refs: list[str], entries: list[dict]) -> str | None:
+    """근거 단위의 블록이 모두 한 하위 항목의 근거 블록이면 그 항목. 없거나 여러 항목에 걸리면 페이지 단위다."""
+    # ponytail: 블록으로 근거를 항목에 붙인다. 상위 항목과 같은 블록을 쓰는 근거도 항목에 붙는다. 근거 id로 잇는 것은 4단계 검색 평가로 정한다.
+    refs = {_ref_key(ref) for ref in block_refs}
+    owners = [entry["entry_id"] for entry in entries if refs and refs <= {_ref_key(ref) for ref in entry["block_refs"] or []}]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _ref_key(ref: str) -> str:
+    # 본문은 블록을 B0001처럼 짧게 표시한다(display_ref).
+    document_id, _, block_id = str(ref).rpartition(":")
+    return f"{document_id}:{ref_label(block_id)}"
+
+
+def upsert_page_entries(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    entry_adds: list[dict],
+) -> None:
+    """편입이 둔 하위 항목을 조회용 사본에 더한다. 있는 항목은 재생처럼 이름·정의·위치를 두고 근거 블록만 더한다."""
+    for change in entry_adds:
+        conn.execute(
+            """
+            INSERT INTO wiki_page_entries
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id, entry_id) DO UPDATE SET
+                block_refs = ARRAY(
+                    SELECT DISTINCT ref
+                    FROM unnest(wiki_page_entries.block_refs || EXCLUDED.block_refs) AS ref
+                    ORDER BY ref
+                )
+            """,
+            (
+                workspace_id,
+                change["entry_id"],
+                page_id,
+                change.get("name") or "",
+                change.get("parent_entry_id"),
+                change.get("definition") or "",
+                list(change.get("anchor_reference_ids") or []),
+            ),
+        )
+
+
+def upsert_entry_references(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    references: list[dict],
+) -> None:
+    """참조 사본을 쓴다. 같은 항목 참조를 다시 두면 재생처럼 위치는 두고 내용만 바꾼다."""
+    for link in references:
+        conn.execute(
+            """
+            INSERT INTO wiki_page_entry_references
+                (page_id, entry_id, workspace_id, target_slug, name, parent_entry_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (page_id, entry_id) DO UPDATE SET
+                target_slug = EXCLUDED.target_slug,
+                name = EXCLUDED.name,
+                parent_entry_id = EXCLUDED.parent_entry_id
+            """,
+            (
+                page_id,
+                link["entry_id"],
+                workspace_id,
+                str(link.get("target") or "").removeprefix("concept:"),
+                link.get("name") or link["entry_id"],
+                link.get("parent_entry_id"),
+            ),
+        )
+
+
+def stored_entry_index(conn: psycopg.Connection, page_id: str) -> tuple[list[dict], list[dict]]:
+    """본문 목록을 그릴 저장된 항목과 참조. render_entry_index 입력 형식이다."""
+    entries = conn.execute(
+        "SELECT entry_id, name, parent_entry_id FROM wiki_page_entries WHERE page_id = %s ORDER BY position",
+        (page_id,),
+    ).fetchall()
+    references = conn.execute(
+        """
+        SELECT entry_id, 'concept:' || target_slug AS target, name, parent_entry_id,
+               'entry_reference' AS relation
+        FROM wiki_page_entry_references
+        WHERE page_id = %s
+        ORDER BY position
+        """,
+        (page_id,),
+    ).fetchall()
+    return [dict(row) for row in entries], [dict(row) for row in references]
 
 
 def upload_wiki_markdown(markdown: str, object_name: str) -> str:

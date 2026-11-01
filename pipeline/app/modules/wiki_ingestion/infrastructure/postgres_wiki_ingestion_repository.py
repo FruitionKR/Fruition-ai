@@ -56,6 +56,7 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
 )
+from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE
 from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     read_text_object,
@@ -78,6 +79,7 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     delete_source_related_links as _delete_source_related_links,
     load_existing_concept_ids_by_slug as _load_existing_concept_ids_by_slug,
     persist_embedding_units as _persist_embedding_units,
+    upsert_entry_references,
     read_optional_text_object as _read_optional_text_object,
     resolve_or_create_wiki_page_id as _resolve_or_create_wiki_page_id,
     upload_wiki_markdown as _upload_wiki_markdown,
@@ -199,6 +201,10 @@ def _cleanup_deleted_wiki_pages(
         )
     conn.execute(
         "DELETE FROM wiki_page_entries WHERE page_id = ANY(%s)",
+        (target_ids,),
+    )
+    conn.execute(
+        "DELETE FROM wiki_page_entry_references WHERE page_id = ANY(%s)",
         (target_ids,),
     )
     conn.execute(
@@ -355,7 +361,9 @@ def _apply_restored_wiki_state(
                 ),
             )
             if page.get("entries") is not None:
-                _replace_page_entries(conn, workspace_id, str(page["page_id"]), page["entries"])
+                _replace_page_entries(
+                    conn, workspace_id, str(page["page_id"]), page["entries"], page.get("supported_links") or [],
+                )
 
             source_document_ids = page.get("source_document_ids")
             if source_document_ids is not None:
@@ -491,20 +499,32 @@ def _replace_page_entries(
     workspace_id: str,
     page_id: str,
     entries: list[dict[str, Any]],
+    supported_links: list[dict[str, Any]],
 ) -> None:
     # 재생 결과의 조회용 사본(ADR 0042). 항목의 집은 하나라 다른 페이지에서 옮겨 온 항목은 집만 바꾼다.
+    # 재생 순서대로 다시 넣어 본문 목록 순서(position)를 재생과 맞춘다.
     conn.execute("DELETE FROM wiki_page_entries WHERE page_id = %s", (page_id,))
+    conn.execute("DELETE FROM wiki_page_entry_references WHERE page_id = %s", (page_id,))
+    upsert_entry_references(
+        conn, workspace_id, page_id, [link for link in supported_links if link.get("relation") == ENTRY_REFERENCE],
+    )
     for entry in entries:
         conn.execute(
             """
-            INSERT INTO wiki_page_entries (workspace_id, entry_id, page_id, name, parent_entry_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO wiki_page_entries
+                (workspace_id, entry_id, page_id, name, parent_entry_id, definition, block_refs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (workspace_id, entry_id)
             DO UPDATE SET page_id = EXCLUDED.page_id,
                           name = EXCLUDED.name,
-                          parent_entry_id = EXCLUDED.parent_entry_id
+                          parent_entry_id = EXCLUDED.parent_entry_id,
+                          definition = EXCLUDED.definition,
+                          block_refs = EXCLUDED.block_refs
             """,
-            (workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"]),
+            (
+                workspace_id, entry["entry_id"], page_id, entry["name"], entry["parent_entry_id"],
+                entry.get("definition") or "", list(entry.get("anchor_reference_ids") or []),
+            ),
         )
 
 
@@ -1380,10 +1400,31 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
             """,
             (workspace_id,),
         ).fetchall()
+        # 같은 하위 항목 찾기(ADR 0042)의 후보다. 집 페이지 개념 아래에 둔다.
+        entry_rows = conn.execute(
+            """
+            SELECT page.slug, entry.entry_id, entry.name, entry.definition, entry.parent_entry_id
+            FROM wiki_page_entries entry
+            JOIN wiki_pages page ON page.id = entry.page_id
+            WHERE entry.workspace_id = %s
+              AND page.page_type = 'concept'
+              AND page.status = 'active'
+            ORDER BY entry.entry_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+    entries_by_slug: dict[str, list[dict[str, Any]]] = {}
+    for row in entry_rows:
+        entries_by_slug.setdefault(row["slug"], []).append(
+            {key: row[key] for key in ("entry_id", "name", "definition", "parent_entry_id")}
+        )
     concepts = []
     for row in rows:
         markdown = _read_optional_text_object(row["markdown_uri"])
-        concepts.append(_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown))
+        concepts.append({
+            **_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown),
+            "entries": entries_by_slug.get(row["slug"], []),
+        })
     try:
         put_concept_index(workspace_id, concepts)
     except Exception:

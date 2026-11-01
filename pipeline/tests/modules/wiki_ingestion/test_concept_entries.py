@@ -11,7 +11,8 @@ from app.modules.wiki_ingestion.domain.operation_recovery import (
     PageContribution,
     plan_page_recovery,
 )
-from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links
+from app.modules.wiki_ingestion.domain.contribution_identity import globalize_contribution_identity
+from app.modules.wiki_ingestion.domain.orphan_link_lint import find_orphan_links, replay_supported_links
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
@@ -79,7 +80,7 @@ def test_replay_adds_moves_and_removes_entries_by_id() -> None:
     ])
 
     # Rollout을 지우면 그 아래 History도 함께 빠진다. 먼저 옮긴 Undo는 남는다.
-    assert entries == [{"entry_id": "e-undo", "name": "Undo", "parent_entry_id": None,
+    assert entries == [{"entry_id": "e-undo", "name": "Undo", "definition": "", "parent_entry_id": None,
                         "anchor_reference_ids": [], "evidence_claim_ids": []}]
 
 
@@ -115,6 +116,30 @@ def test_reference_to_entry_on_another_page_is_a_link_per_entry() -> None:
     # 같은 두 페이지 사이라도 항목마다 참조가 남는다. DB 간선은 페이지 단위 하나다.
     assert [link["entry_id"] for link in rebuilt.supported_links] == ["e-rollout", "e-scale"]
     assert "- Commands\n  - [[deploy|Rollout]]\n- [[deploy|Scale]]\n" in rebuilt.markdown
+
+
+def test_manual_removal_without_entry_id_removes_all_references_of_the_page_pair() -> None:
+    supported = replay_supported_links([
+        {"artifact_type": "ingest", "links": [
+            _reference("kubectl", "deploy", "e-rollout", "Rollout"),
+            _reference("kubectl", "deploy", "e-scale", "Scale"),
+        ]},
+        # 수동 편집은 페이지 간선 기준이라 entry_id 없이 지운다.
+        {"artifact_type": "manual", "removed_links": [
+            {"source": "concept:kubectl", "target": "concept:deploy", "relation": "entry_reference"},
+        ]},
+    ])
+
+    assert supported == []
+
+
+def test_entry_evidence_from_another_operation_keeps_its_global_id() -> None:
+    globalized = globalize_contribution_identity({
+        "document_id": "doc-s", "operation_id": "S",
+        "entry_changes": [{**_add("e-rollout", "Rollout"), "evidence_claim_ids": ["X:E1", "E2"]}],
+    })
+
+    assert globalized["entry_changes"][0]["evidence_claim_ids"] == ["X:E1", "S:E2"]
 
 
 def test_restoring_entry_operation_removes_entry_and_orphans_its_reference() -> None:
@@ -194,7 +219,8 @@ def test_restore_replaces_queryable_entry_copy() -> None:
     changed = [{
         "page_id": "page-deploy",
         "markdown_key": "wiki/ws-1/pages/page-deploy/ops/restore-1.md",
-        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "parent_entry_id": None}],
+        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "definition": "롤아웃 정의", "parent_entry_id": None,
+                     "anchor_reference_ids": ["doc-1:B0001"]}],
     }]
 
     with (
@@ -208,4 +234,4 @@ def test_restore_replaces_queryable_entry_copy() -> None:
     delete_index = calls.index(("DELETE FROM wiki_page_entries WHERE page_id = %s", ("page-deploy",)))
     insert = next(index for index, (query, _) in enumerate(calls) if query.startswith("INSERT INTO wiki_page_entries"))
     assert delete_index < insert
-    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None)
+    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None, "롤아웃 정의", ["doc-1:B0001"])

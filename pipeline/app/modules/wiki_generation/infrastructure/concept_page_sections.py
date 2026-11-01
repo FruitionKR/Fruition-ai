@@ -86,6 +86,7 @@ def concept_related_lines(
     for key in ("concept_resolutions", "hint_resolutions"):
         for resolution in normalized.get(key, []):
             source_slug = resolution.get("canonical_slug") or resolution.get("incoming_slug")
+            source_slug = slug_map.get(source_slug, source_slug)
             targets = [slug_map.get(t, t) for t in resolution.get("link_targets", []) if slug_map.get(t, t) in titles]
             if source_slug == slug:
                 related_slugs.extend(targets)

@@ -14,7 +14,7 @@ def replay_concept_entries(
 ) -> list[dict[str, Any]]:
     """한 페이지의 기여를 적용 순서대로 받아 남은 하위 항목을 돌려준다.
 
-    - add: 없으면 만들고, 있으면 근거만 더한다(이름·상위 항목은 처음 추가한 기여를 따른다).
+    - add: 없으면 만들고, 있으면 근거만 더한다(이름·정의·상위 항목은 처음 추가한 기여를 따른다).
     - move: 상위 항목만 바꾼다. 없는 항목이거나 자기 아래로 옮기면 무시한다.
     - remove: 항목과 그 아래 항목을 함께 지운다.
     - revive: 앞서 remove로 지운 항목과 그때 함께 지운 아래 항목을 근거째 되살린다. 지운 적 없으면 무시한다.
@@ -37,6 +37,7 @@ def replay_concept_entries(
                     {
                         "entry_id": entry_id,
                         "name": str(change.get("name") or ""),
+                        "definition": str(change.get("definition") or ""),
                         "parent_entry_id": parent_id,
                         **{field: [] for field in ENTRY_EVIDENCE_FIELDS},
                     },

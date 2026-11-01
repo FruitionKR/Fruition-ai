@@ -7,6 +7,10 @@ from typing import Any
 import psycopg
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.modules.wiki_ingestion.domain.concept_entries import (
+    ENTRY_REFERENCE,
+    render_entry_index,
+)
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
 )
@@ -26,6 +30,9 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     resolve_or_create_wiki_page_id,
     upload_wiki_markdown,
     upsert_document_wiki_link,
+    stored_entry_index,
+    upsert_entry_references,
+    upsert_page_entries,
     upsert_wiki_page,
     upsert_wiki_page_link,
 )
@@ -320,9 +327,9 @@ def _persist_concept_pages(
         concept_markdown = concept_page["markdown"]
         title = concept.get("title") or slug
         summary = concept.get("definition") or concept.get("why_page_worthy") or ""
+        contribution = (manifest.get("concept_contributions") or {}).get(slug) or {}
         if existing:
             current_markdown = read_optional_text_object(existing["markdown_uri"])
-            contribution = (manifest.get("concept_contributions") or {}).get(slug) or {}
             updates = concept_evidence_updates(contribution)
             concept_markdown = (
                 sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
@@ -331,6 +338,16 @@ def _persist_concept_pages(
             concept_page["markdown"] = concept_markdown
             title = existing.get("title") or title
             summary = existing.get("summary") or summary
+        # 이번 편입이 둔 하위 항목·참조(ADR 0042)를 사본에 더하고, 본문 목록은 저장된 사본 전체로 다시 그린다.
+        # 기여 JSON과 같은 전역 근거 형식이다. 페이지 행이 있어야 사본을 쓸 수 있어 페이지 id를 먼저 잡는다.
+        entry_adds = [change for change in contribution.get("entry_changes", []) if change.get("op") == "add"]
+        entry_references = [link for link in contribution.get("links", []) if link.get("relation") == ENTRY_REFERENCE]
+        if entry_adds or entry_references:
+            upsert_page_entries(conn, workspace_id, page_id, entry_adds)
+            upsert_entry_references(conn, workspace_id, page_id, entry_references)
+            stored_entries, stored_references = stored_entry_index(conn, page_id)
+            concept_markdown = render_entry_index(concept_markdown, stored_entries, stored_references)
+            concept_page["markdown"] = concept_markdown
         concept_markdown_uri = upload_wiki_markdown(
             concept_markdown,
             f"wiki/{workspace_id}/concepts/{slug}.md",
