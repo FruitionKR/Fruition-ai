@@ -289,7 +289,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         # 사용자 원문에 있던 링크는 지키고, AI가 새로 넣은 외부 이미지·링크만 무력화한다.
         restored = sanitize_ai_markdown(restored, keep_urls=external_urls(request.markdown))
         failures.extend(validate_markdown_output(actual_request, restored))
-        failures.extend(validate_markdown_syntax(restored))
+        failures.extend(validate_markdown_syntax(restored, source=request.markdown))
         restored_result = MarkdownEditResult(
             edit=MarkdownEditOperation(
                 operation=result.edit.operation,

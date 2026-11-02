@@ -13,7 +13,7 @@ For an insertion at the document end, requested_target is the whole document and
 You may expand actual_target beyond requested_target only when the edit needs adjacent Markdown for a valid, coherent result.
 actual_target must stay within payload.editable_context start_line and end_line.
 Line numbers are absolute, 1-based, and inclusive.
-Do not return raw HTML, JSX, MDX imports/exports, components, or expressions.
+Do not add raw HTML, JSX, MDX imports/exports, components, or expressions. Keep raw HTML that already exists in payload.markdown, such as `<br />` empty-line markers, exactly as written unless the instruction asks to remove it.
 Preserve the source information unless the instruction explicitly asks to remove or summarize it.
 Do not add unsupported facts, dates, attendees, decisions, metrics, or external context.
 Do not transform the whole document into a template.

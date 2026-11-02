@@ -74,6 +74,23 @@ class MarkdownSyntaxValidationTest(unittest.TestCase):
                     validate_markdown_syntax(markdown),
                 )
 
+    def test_allows_raw_html_already_in_source_but_rejects_added_html(self) -> None:
+        # 편집기는 빈 줄을 `<br />`로 저장한다. 원문에 있던 HTML은 그대로 둘 수 있고, 새로 넣거나 늘리면 막는다.
+        source = "**연구 질문**\n\n<br />\n\n**연구 배경**"
+        self.assertEqual(
+            [],
+            validate_markdown_syntax("**연구 질문**\n\n<br />\n\n**연구 배경** 보강", source=source),
+        )
+        for markdown in (
+            "**연구 질문**\n\n<br />\n\n<br />\n\n**연구 배경**",
+            "**연구 질문**\n\n<br />\n\n<div>추가</div>",
+        ):
+            with self.subTest(markdown=markdown):
+                self.assertIn(
+                    "raw HTML and MDX are not supported",
+                    validate_markdown_syntax(markdown, source=source),
+                )
+
     def test_rejects_comments_combined_with_raw_html_or_mdx(self) -> None:
         cases = (
             "<!-- ok --><script>alert(1)</script><!-- end -->",
