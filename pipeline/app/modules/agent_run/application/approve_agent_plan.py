@@ -2,7 +2,11 @@ from uuid import uuid4
 
 from app.modules.agent_run.application.ports import AgentApprovalRepositoryPort
 from app.modules.agent_run.domain.entities import AgentRun
-from app.modules.agent_run.domain.plan import selected_operation_ids, validate_operation_ids_format
+from app.modules.agent_run.domain.plan import (
+    APPROVED_BY_USER,
+    selected_operation_ids,
+    validate_operation_ids_format,
+)
 
 
 class ApproveAgentPlanUseCase:
@@ -18,6 +22,7 @@ class ApproveAgentPlanUseCase:
         plan_version: int,
         operation_hash: str,
         operation_ids: list[str] | None = None,
+        approved_by: str = APPROVED_BY_USER,
     ) -> AgentRun:
         validate_operation_ids_format(operation_ids)
         current = self._repository.get_current_plan_for_user(workspace_id, user_id, run_id)
@@ -36,4 +41,5 @@ class ApproveAgentPlanUseCase:
             approval_id=str(uuid4()),
             job_id=str(uuid4()),
             selected_operation_ids=selected,
+            approved_by=approved_by,
         )

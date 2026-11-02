@@ -95,6 +95,7 @@ def main() -> None:
                     plan_generator=plan_generator,
                     checkpointer=checkpointer,
                     folder_content_reader=folder_content_reader,
+                    plan_ready_notifier=tool_gateway,
                 )
             except Exception as exc:
                 logger.exception("Agent worker setup 실패: job_id=%s", job.id)
