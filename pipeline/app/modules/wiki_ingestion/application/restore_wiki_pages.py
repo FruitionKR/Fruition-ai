@@ -151,8 +151,7 @@ class RestoreWikiPagesUseCase:
         changed_pages = _without_pages(changed_pages, skipped_page_ids)
         result = self._result(
             operation_id=command.operation_id,
-            operation_type="restore_rebuild",
-            target_operation_id=command.target_operation_id,
+            operation_type="page_rebuild",
             changed_pages=changed_pages,
             deleted_pages=deleted_pages,
         )

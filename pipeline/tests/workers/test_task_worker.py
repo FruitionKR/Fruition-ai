@@ -1079,7 +1079,7 @@ def test_post_ingest_reports_skipped_quality_as_needs_review() -> None:
     fail.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint", "restore_rebuild"])
+@pytest.mark.parametrize("kind", ["query", "post_ingest", "lint", "meeting_notes", "restore_ingest", "restore_lint", "rebuild_pages"])
 @pytest.mark.parametrize("status", [None, "running", "failed", "cancel_requested", "rolling_back", "rollback_failed", "cancelled"])
 def test_failure_is_durable_only_with_registered_terminal_or_rollback_state(kind, status):
     connection = MagicMock()
@@ -2015,12 +2015,10 @@ def test_agent_command_startup_requires_folder_tree_config_even_when_skills_disa
 
 def test_rebuild_only_command_runs_the_page_rebuild_without_an_excluded_operation() -> None:
     # 재편입이 대체한 기여를 잃은 페이지의 재조립 명령(ADR 0042). 복원과 같은 흐름·결과로 처리한다.
-    # document-svc 명령 레코드 그대로다. target_operation_id(재편입)는 추적용이라 빼지 않는다.
-    command = {"run_id": "rebuild-1", "kind": "restore_rebuild", "workspace_id": "ws-1", "user_id": "u-1",
-               "operation_id": "rebuild-op", "target_operation_id": "op-reingest", "restore_to_operation_id": None,
-               "cancel_operation_ids": None, "source_page": None, "rebuild_pages": [
+    command = {"run_id": "rebuild-1", "kind": task_worker.REBUILD_PAGES_KIND, "workspace_id": "ws-1", "user_id": "u-1",
+               "operation_id": "rebuild-op", "rebuild_pages": [
                    {"page_id": "page-q", "keep_contributions": [{"operation_id": "op-o", "document_id": "doc-o"}]}],
-               "deleted_pages": ["page-l"], "expected_contributions": {"page-q": ["op-o:3:1"]}}
+               "deleted_pages": ["page-l"]}
     use_case = MagicMock()
     use_case.execute_rebuild.return_value = {"status": "succeeded", "changed_pages": [], "deleted_pages": ["page-l"]}
     with (
@@ -2028,36 +2026,11 @@ def test_rebuild_only_command_runs_the_page_rebuild_without_an_excluded_operatio
         patch.object(task_worker.database, "create_pipeline_run"),
         patch.object(task_worker.database, "finish_pipeline_run") as finish,
         patch.object(task_worker, "get_restore_wiki_pages_use_case", return_value=use_case),
-        patch.object(task_worker, "read_contributions", return_value=[
-            {"page_id": "page-q", "ingest_operation_id": "op-o", "sequence_revision": 3, "active": True}]) as ledger,
     ):
         result = task_worker._handle(command)
 
-    # 복원처럼 원장 서명(expected_contributions)을 확인한다.
-    ledger.assert_called_once_with(["page-q"], "ws-1")
-    use_case.execute_lint.assert_not_called()
     rebuilt = use_case.execute_rebuild.call_args.args[0]
-    assert rebuilt.target_operation_id == "op-reingest"
     assert (rebuilt.operation_id, rebuilt.deleted_pages) == ("rebuild-op", ("page-l",))
     assert rebuilt.rebuild_pages[0].keep_contributions[0].operation_id == "op-o"
     assert result["deleted_pages"] == ["page-l"]
     finish.assert_called_once()
-
-
-def test_restore_rebuild_with_a_stale_ledger_signature_fails_before_rebuilding() -> None:
-    command = {"run_id": "rebuild-2", "kind": "restore_rebuild", "workspace_id": "ws-1", "user_id": "u-1",
-               "operation_id": "rebuild-op", "target_operation_id": "op-reingest", "rebuild_pages": [],
-               "deleted_pages": [], "expected_contributions": {"page-q": ["op-o:3:1"]}}
-    use_case = MagicMock()
-    with (
-        patch.object(task_worker.database, "get_pipeline_run", return_value=None),
-        patch.object(task_worker.database, "create_pipeline_run"),
-        patch.object(task_worker.database, "fail_pipeline_run") as fail,
-        patch.object(task_worker, "get_restore_wiki_pages_use_case", return_value=use_case),
-        patch.object(task_worker, "read_contributions", return_value=[]),
-        pytest.raises(ValueError, match="stale"),
-    ):
-        task_worker._handle(command)
-
-    use_case.execute_rebuild.assert_not_called()
-    fail.assert_called_once()

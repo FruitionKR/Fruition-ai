@@ -208,7 +208,7 @@ def test_rebuild_only_command_after_reingest_drops_the_superseded_document_from_
     ))
 
     state = world.state()
-    assert result["operation_type"] == "restore_rebuild"
+    assert result["operation_type"] == "page_rebuild"
     assert [page["page_id"] for page in result["changed_pages"]] == [world.page_id("queue")]
     assert result["deleted_pages"] == [world.page_id("lonely")]
     assert "doc-r" not in state["pages"]["queue"][2] and "doc-o" in state["pages"]["queue"][2]
