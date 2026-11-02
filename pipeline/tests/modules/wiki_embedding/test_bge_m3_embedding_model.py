@@ -42,3 +42,20 @@ def test_embeds_one_text_at_a_time_to_bound_padding_memory() -> None:
 
     assert model.embed(["짧은 문단", "긴 문단 " * 100]) == [[1.0, 0.0], [1.0, 0.0]]
     assert calls == [1]
+
+
+def test_input_key_is_the_truncated_tokens_encode_sees() -> None:
+    class Ids(list):
+        def tolist(self):
+            return list(self)
+
+    class FakeModel:
+        def tokenize(self, texts):
+            # 최대 길이 3에서 자르는 토크나이저
+            return {"input_ids": [Ids([0, *[len(word) for word in texts[0].split()][:1], 2])]}
+
+    model = BgeM3EmbeddingModel("test-model")
+    model._model = FakeModel()
+
+    assert model.input_key("abc 뒤쪽") == model.input_key("abc 바뀐 뒤쪽") == "0 3 2"
+    assert model.input_key("ab 뒤쪽") != model.input_key("abc 뒤쪽")

@@ -102,3 +102,12 @@ def test_database_cache_outage_falls_back_to_model(monkeypatch):
         assert cache.embed_cached(Model(),['ab']) == [[2.,.125]]
     finally:
         task_run_id.reset(token)
+
+
+def test_keys_reuse_vector_when_model_input_is_unchanged(db):
+    # 긴 페이지에서 잘린 뒤쪽만 바뀌면 모델 입력이 같으므로 다시 계산하지 않는다.
+    model=Model()
+    first=cache.embed_cached(model,['head tail-1'],keys=['head'])
+    task_run_id.set('run2')
+    assert cache.embed_cached(model,['head tail-2','other'],keys=['head','other']) == [first[0],[5.,.125]]
+    assert model.calls == [['head tail-1'],['other']]

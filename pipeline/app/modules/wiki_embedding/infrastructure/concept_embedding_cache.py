@@ -12,11 +12,12 @@ logger = logging.getLogger(__name__)
 CACHE_LIMIT = 20_000
 
 
-def embed_cached(model: EmbeddingModelPort, texts: list[str]) -> list[list[float]]:
+def embed_cached(model: EmbeddingModelPort, texts: list[str], keys: list[str] | None = None) -> list[list[float]]:
+    """keys를 주면 텍스트 대신 그 값(모델이 실제로 보는 입력)으로 재사용 여부를 판단한다."""
     run_id = task_run_id.get()
     if not run_id or not texts:
         return model.embed(texts)
-    hashes = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts]
+    hashes = [hashlib.sha256(key.encode("utf-8")).hexdigest() for key in keys or texts]
     workspace_id = None
     found = {}
     try:
