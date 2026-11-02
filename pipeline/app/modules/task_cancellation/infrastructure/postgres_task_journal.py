@@ -58,7 +58,7 @@ def connect():
 
 
 def register(command: dict[str, Any]) -> dict[str, Any]:
-    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "rebuild_pages", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "skill_test_run", "convert_batch"}:
+    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "skill_test_run", "convert_batch"}:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:

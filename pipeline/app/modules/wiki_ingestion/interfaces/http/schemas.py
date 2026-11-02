@@ -7,7 +7,6 @@ from app.core.llm_env import resolve_workspace_llm_selection
 from app.modules.wiki_ingestion.application.models import (
     IngestOperationRestoreCommand,
     LintOperationRestoreCommand,
-    PageRebuildCommand,
     RebuildPageCommand,
     RestoreContributionCommand,
     SourceSnapshotRestoreCommand,
@@ -255,18 +254,6 @@ class LintOperationRestoreIn(_OperationRestoreIn):
         return LintOperationRestoreCommand(
             operation_id=self.operation_id,
             target_operation_id=self.target_operation_id,
-            workspace_id=self.workspace_id,
-            rebuild_pages=self.rebuild_commands(),
-            deleted_pages=tuple(self.deleted_pages),
-        )
-
-
-class PageRebuildIn(_OperationRestoreIn):
-    """재편입이 대체한 기여를 잃은 페이지의 재조립 명령. 빼는 작업이 없다(ADR 0042)."""
-
-    def to_command(self) -> PageRebuildCommand:
-        return PageRebuildCommand(
-            operation_id=self.operation_id,
             workspace_id=self.workspace_id,
             rebuild_pages=self.rebuild_commands(),
             deleted_pages=tuple(self.deleted_pages),

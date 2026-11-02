@@ -5,7 +5,6 @@ from typing import Any
 from app.modules.wiki_ingestion.application.models import (
     IngestOperationRestoreCommand,
     LintOperationRestoreCommand,
-    PageRebuildCommand,
 )
 from app.modules.wiki_ingestion.application.ports import (
     WikiEmbeddingJobPort,
@@ -129,35 +128,6 @@ class RestoreWikiPagesUseCase:
         self._start_embeddings(command.operation_id, changed_pages)
         return result
 
-    def execute_rebuild(
-        self,
-        command: PageRebuildCommand,
-    ) -> dict[str, Any]:
-        """빼는 작업 없이 남은 기여로 다시 만든다(재편입이 대체한 이전 기여를 잃은 페이지, ADR 0042).
-
-        결과는 복원과 같다. 재생이 삭제로 끝난 페이지는 `deleted_pages`에 더하고, 나가는 링크·문서 연결·자동 소스 링크는
-        재생 결과로 바꾼다.
-        """
-        changed_pages, replay_deleted = self._rebuild_pages(command)
-        deleted_pages = list(dict.fromkeys([*command.deleted_pages, *replay_deleted]))
-        skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
-            command.operation_id,
-            command.workspace_id,
-            changed_pages,
-            {"removed_links": [], "restored_links": [link for page in changed_pages for link in page.get("supported_links", [])]},
-            True,
-            deleted_pages,
-        )
-        changed_pages = _without_pages(changed_pages, skipped_page_ids)
-        result = self._result(
-            operation_id=command.operation_id,
-            operation_type="page_rebuild",
-            changed_pages=changed_pages,
-            deleted_pages=deleted_pages,
-        )
-        self._start_embeddings(command.operation_id, changed_pages)
-        return result
-
     def _start_embeddings(
         self,
         run_id: str,
@@ -171,7 +141,7 @@ class RestoreWikiPagesUseCase:
 
     def _rebuild_pages(
         self,
-        command: IngestOperationRestoreCommand | LintOperationRestoreCommand | PageRebuildCommand,
+        command: IngestOperationRestoreCommand | LintOperationRestoreCommand,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """재조립한 페이지와, 재생 결과 삭제로 끝난 페이지 id(ADR 0042)."""
         # 모든 페이지와 링크를 준비한 뒤 현재 상태를 한 번에 반영한다.
