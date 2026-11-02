@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS wiki_page_links (
 CREATE INDEX IF NOT EXISTS idx_wiki_page_links_workspace
     ON wiki_page_links (workspace_id);
 
+-- 개념 페이지 하위 항목의 조회용 사본(ADR 0042). 원본은 기여 기록이고, 복구 재생 결과로 페이지마다 다시 쓴다.
+-- 항목 id는 워크스페이스 안에서 고유하고 집(page_id)은 하나다. 참조는 wiki_page_links의 entry_reference 간선이다.
+CREATE TABLE IF NOT EXISTS wiki_page_entries (
+    workspace_id varchar(255) NOT NULL,
+    entry_id varchar(255) NOT NULL,
+    page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    parent_entry_id varchar(255),
+    PRIMARY KEY (workspace_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_page_entries_page
+    ON wiki_page_entries (page_id);
+
 CREATE TABLE IF NOT EXISTS source_blocks (
     document_id varchar(255) NOT NULL,
     block_id varchar(255) NOT NULL,
@@ -599,7 +613,8 @@ DECLARE item text[];
 BEGIN
     FOREACH item SLICE 1 IN ARRAY ARRAY[
         ['pipeline_runs','id'], ['wiki_pages','id'], ['document_wiki_links','document_id,relation_type,wiki_page_id'],
-        ['wiki_page_links','from_page_id,link_type,to_page_id'], ['source_blocks','block_id,document_id'], ['source_block_snapshots','document_id'],
+        ['wiki_page_links','from_page_id,link_type,to_page_id'], ['wiki_page_entries','workspace_id,entry_id'],
+        ['source_blocks','block_id,document_id'], ['source_block_snapshots','document_id'],
         ['wiki_page_embeddings','page_id,embedding_model'], ['wiki_embedding_vectors','id'],
         ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id']
     ] LOOP
