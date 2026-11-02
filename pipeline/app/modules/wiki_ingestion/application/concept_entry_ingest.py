@@ -289,18 +289,24 @@ def _place(
 ) -> dict[str, tuple[str, str | None]]:
     """세부 항목 slug → (집 페이지 slug, 바로 위 세부 항목 slug·기존 하위 항목 id 또는 None).
 
-    배정을 따라 올라간 맨 위가 집이다. 기존 하위 항목이면 그 항목의 집 페이지 그 항목 아래다. 깊은 세부 항목도 같은 페이지
-    안에서 중첩된다. 맨 위가 섹션·언급인 가지는 페이지가 될 개념이 없어 놓지 않는다(의미 클러스터로 간다).
+    배정을 따라 올라가며 만난 가장 위의 핵심 개념·기존 페이지·기존 하위 항목이 집이다. 기존 하위 항목이면 그 항목의 집 페이지
+    그 항목 아래다. 깊은 세부 항목도 같은 페이지 안에서 중첩된다. 그보다 위의 섹션·언급 배정은 페이지가 될 개념이 아니라 버린다.
+    핵심 개념이 섹션·언급에 딸린다고 판정돼도 그 핵심 개념이 집이 되고, 그 아래 세부 항목은 그대로 놓인다. 핵심 개념을 만나지 못한
+    섹션·언급 가지만 놓지 않는다(의미 클러스터로 간다).
     """
-    def root(slug: str) -> str:
-        while slug in assigned:
+    def root(slug: str) -> str | None:
+        top = None
+        while True:
+            if slug not in terms:
+                top = slug
+            if slug not in assigned:
+                return top
             slug = assigned[slug]
-        return slug
 
     placements = {}
     for detail in assigned:
         top = root(detail)
-        if top in terms:
+        if top is None or top == detail:
             continue
         page = existing_entries[top]["page_slug"] if top in existing_entries else top
         placements[detail] = (page, assigned[detail] if assigned[detail] != page else None)

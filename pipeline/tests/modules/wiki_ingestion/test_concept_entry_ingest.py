@@ -347,6 +347,19 @@ def test_section_and_mention_under_a_core_concept_become_its_entries_and_leave_t
         (c["candidate_id"], c["slug"]) for c in before if c["slug"] in {"cache", "cache-ttl"}]
 
 
+def test_core_concept_judged_under_a_section_stays_the_home_of_its_entries() -> None:
+    # 핵심 개념이 섹션에 딸린다고 판정돼도 섹션은 페이지가 아니다. 그 핵심 개념이 집이 되고 그 아래 항목은 그대로 놓인다.
+    normalized = _normalized([_concept("deployment", "Kube Deployment", "B0001"),
+                              _concept("deployment-rollout", "Kube Deployment Rollout", "B0002")])
+    normalized["section_candidates"] = [_section_term("kube", "Kube", "B0003")]
+
+    result = _apply(normalized)
+
+    assert set(_entries(result, "deployment")) == {"Kube Deployment Rollout"}
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert result["section_candidates"][0].get("assigned_entry") is None
+
+
 def test_terms_judged_same_as_an_existing_concept_are_not_assigned() -> None:
     normalized = _normalized([DEPLOYMENT[0]])
     normalized["section_candidates"] = [_section_term("deployment-strategy", "Deployment Strategy", "B0005")]
