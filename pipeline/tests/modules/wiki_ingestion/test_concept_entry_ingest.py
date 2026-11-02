@@ -200,6 +200,105 @@ def test_unavailable_part_of_judge_keeps_concepts_separate() -> None:
     assert _apply(normalized, judge_part_of=unavailable) is normalized
 
 
+def test_every_accepted_parent_gets_the_entry_or_a_reference() -> None:
+    concepts = [_concept(slug, slug.upper(), f"B000{index}")
+                for index, slug in enumerate(("a", "b", "c", "detail"), 1)]
+    judge = FakePartOf({(head, "detail"): score for head, score in (("a", .99), ("b", .95), ("c", .9))})
+
+    result = _apply(_normalized(concepts), judge_part_of=judge)
+
+    entry = _entries(result, "a")["DETAIL"]
+    assert set(result["entry_changes"]) == {"a"}
+    assert {(link["source"], link["target"], link["entry_id"]) for link in result["entry_references"]} == {
+        ("concept:b", "concept:a", entry["entry_id"]),
+        ("concept:c", "concept:a", entry["entry_id"]),
+    }
+    contributions = _ingest_contributions("op-multi", result)
+    for page in ("b", "c"):
+        rebuilt = rebuild_concept_page([_page(page, "op-multi", 1, contributions[page])])
+        assert "[[a|DETAIL]]" in rebuilt.markdown
+        assert plan_page_recovery([_page(page, "op-multi", 1, contributions[page])], {"op-multi"}).action == "delete"
+
+
+def test_dangling_section_does_not_hide_a_valid_parent_and_section_chains_resolve() -> None:
+    normalized = _normalized([_concept("core", "Core", "B0001")])
+    normalized["section_candidates"] = [
+        {"slug": slug, "title": slug, "definition": slug, "anchor_reference_ids": ["B0002"]}
+        for slug in ("orphan", "middle", "detail")
+    ]
+    judge = FakePartOf({
+        ("section:orphan", "section:detail"): 1.0,
+        ("section:middle", "section:detail"): .95,
+        ("core", "section:middle"): .95,
+    })
+
+    result = _apply(normalized, judge_part_of=judge)
+
+    entries = _entries(result, "core")
+    assert entries["detail"]["parent_entry_id"] == entries["middle"]["entry_id"]
+    assert "assigned_entry" not in result["section_candidates"][0]
+    assert all("assigned_entry" in item for item in result["section_candidates"][1:])
+
+
+def test_multiple_parents_on_one_page_survive_contribution_replay() -> None:
+    concepts = [_concept(slug, slug.upper(), f"B000{index}")
+                for index, slug in enumerate(("root", "a", "b", "c", "detail"), 1)]
+    judge = FakePartOf({
+        **{("root", head): .99 for head in ("a", "b", "c")},
+        **{(head, "detail"): score for head, score in (("a", .99), ("b", .95), ("c", .9))},
+    })
+
+    result = _apply(_normalized(concepts), judge_part_of=judge)
+
+    entries = _entries(result, "root")
+    assert entries["DETAIL"]["parent_entry_id"] == entries["A"]["entry_id"]
+    assert {link["parent_entry_id"] for link in result["entry_references"]} == {
+        entries["B"]["entry_id"], entries["C"]["entry_id"],
+    }
+    contribution = _ingest_contributions("op-multi", result)["root"]
+    rebuilt = rebuild_concept_page([_page("root", "op-multi", 1, contribution)])
+    assert len(rebuilt.supported_links) == 2
+    assert rebuilt.markdown.count("[[root|DETAIL]]") == 2
+
+
+def test_reference_locations_survive_database_upsert_and_replay(scoped_dsn) -> None:
+    from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import upsert_entry_references, stored_entry_index
+    from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
+
+    links = [{"source": "concept:root", "target": "concept:home", "relation": "entry_reference",
+              "entry_id": "detail", "name": "Detail", "parent_entry_id": parent}
+             for parent in (None, "a", "b")]
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        conn.execute("INSERT INTO wiki_pages (id, workspace_id, user_id, page_type, slug, title, status, created_at, updated_at) "
+                     "VALUES ('root', 'ws-1', 'user-1', 'concept', 'root', 'Root', 'active', now(), now())")
+        # 기존 단일 위치 키의 행을 보존하면서 새 스키마를 반복 적용할 수 있다.
+        upsert_entry_references(conn, "ws-1", "root", links[:1])
+        conn.execute("DROP INDEX wiki_entry_reference_location")
+        conn.execute("ALTER TABLE wiki_page_entry_references DROP CONSTRAINT wiki_page_entry_references_pkey")
+        conn.execute("ALTER TABLE wiki_page_entry_references ADD PRIMARY KEY (page_id, entry_id)")
+        conn.execute(AI_SCHEMA_SQL)
+        conn.execute(AI_SCHEMA_SQL)
+        upsert_entry_references(conn, "ws-1", "root", links)
+        upsert_entry_references(conn, "ws-1", "root", links)
+        _, stored = stored_entry_index(conn, "root")
+        assert {link["parent_entry_id"] for link in stored} == {None, "a", "b"}
+    artifacts = [{"operation_id": "op-1", "links": links},
+                 {"operation_id": "op-2", "artifact_type": "lint", "removed_links": [links[1]]}]
+    assert replay_supported_links(artifacts) == [links[0], links[2]]
+
+
+def test_multiple_parent_graph_rejects_cycles_without_losing_other_parents() -> None:
+    concepts = [_concept(slug, slug, f"B000{index}") for index, slug in enumerate(("a", "b", "c", "root"), 1)]
+    result = _apply(_normalized(concepts), judge_part_of=FakePartOf({
+        ("a", "b"): .99, ("b", "c"): .98, ("c", "a"): .97, ("root", "c"): .96,
+    }))
+    entries = _entries(result, "a")
+    assert entries["c"]["parent_entry_id"] == entries["b"]["entry_id"]
+    assert [(link["source"], link["entry_id"]) for link in result["entry_references"]] == [
+        ("concept:root", entries["c"]["entry_id"]),
+    ]
+
+
 def _with_kubectl_entry(definition: str = "Pod 수를 바꾼다") -> list[dict]:
     return [
         {"slug": "kubectl", "title": "kubectl", "aliases": [], "definition": "CLI",
@@ -564,8 +663,10 @@ def test_child_of_parent_merged_into_another_page_lives_under_it_there() -> None
     assert set(kubectl) == {"scale", "Deployment Scale Limit"}
     assert kubectl["Deployment Scale Limit"]["parent_entry_id"] == "e-scale"
     assert "Deployment Scale Limit" not in _entries(result, "deployment")
-    # 참조는 같은 항목으로 본 위 항목 하나뿐이다. 아래 항목은 그 항목의 집에서 함께 보인다.
-    assert [link["entry_id"] for link in result["entry_references"]] == ["e-scale"]
+    # 자식도 Deployment에 딸린다고 판정됐으므로 그 직접 배정은 참조로 남는다.
+    assert [link["entry_id"] for link in result["entry_references"]] == [
+        "e-scale", kubectl["Deployment Scale Limit"]["entry_id"],
+    ]
     assert result["concept_slug_map"]["deployment-scale-limit"] == "kubectl"
 
 
@@ -615,7 +716,7 @@ def test_child_added_to_existing_entry_is_drawn_under_it(scoped_dsn, monkeypatch
 
     assert _section(stored[markdown_uri]) == (
         "## Sub-entries\n- Deployment Rollout\n  - Deployment Rollout History\n- Deployment Rollback\n"
-        "- Label Selector (Deployment)")
+        "- Label Selector (Deployment)\n- [[deployment|Deployment Rollout History]]")
 
 
 def test_relation_from_concept_moved_into_entry_starts_from_its_home_page() -> None:

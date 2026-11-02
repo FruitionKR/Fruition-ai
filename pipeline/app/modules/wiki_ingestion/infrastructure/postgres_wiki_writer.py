@@ -234,10 +234,9 @@ def upsert_entry_references(
             INSERT INTO wiki_page_entry_references
                 (page_id, entry_id, workspace_id, target_slug, name, parent_entry_id)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (page_id, entry_id) DO UPDATE SET
+            ON CONFLICT (page_id, entry_id, parent_entry_id) DO UPDATE SET
                 target_slug = EXCLUDED.target_slug,
-                name = EXCLUDED.name,
-                parent_entry_id = EXCLUDED.parent_entry_id
+                name = EXCLUDED.name
             """,
             (
                 page_id,

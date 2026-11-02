@@ -232,6 +232,7 @@ def _unique_dicts(
             value.get("source"),
             value.get("target"),
             value.get("entry_id"),
+            value.get("parent_entry_id"),
         )
         if key not in seen:
             seen.add(key)

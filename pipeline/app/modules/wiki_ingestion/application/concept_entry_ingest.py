@@ -155,6 +155,30 @@ def apply_concept_entries(
         for field in ("anchor_reference_ids", "evidence_claim_ids"):
             target[field] = unique_keep_order([*target.get(field, []), *concept.get(field, [])])
 
+    # 원본 집은 하나지만 통과한 모든 배정은 해당 상위 위치의 참조로 남긴다.
+    for detail in placements:
+        add = adds[detail]
+        home = home_of[detail]
+        for head in assigned[detail]:
+            if head in home_of:
+                container, parent_id = home_of[head], entry_ids[head]
+            elif head not in terms:
+                container, parent_id = head, None
+            else:
+                continue
+            if parent_id == add["entry_id"] or (container, parent_id) == (home, add["parent_entry_id"]):
+                continue
+            reference = {
+                "source": f"concept:{container}", "target": f"concept:{home}",
+                "relation": ENTRY_REFERENCE, "decided_by": "concept_entry",
+                "entry_id": add["entry_id"], "name": add["name"], "parent_entry_id": parent_id,
+            }
+            if reference not in references:
+                references.append(reference)
+            if container not in by_slug:
+                by_slug[container] = _existing_concept_entry(existing[container], document_id)
+                result["concept_ledger"].append(by_slug[container])
+
     result["concept_ledger"] = [concept for concept in result["concept_ledger"] if concept["slug"] not in home_of]
     # 세부 항목을 가리키던 근거·연결·갱신 판정은 그 항목의 집 페이지를 가리킨다.
     slug_map = result.setdefault("concept_slug_map", {})
@@ -191,8 +215,8 @@ def _assign_heads(
     existing_entries: dict[str, dict[str, Any]],
     judge_part_of: PartOfJudge | None,
     similarity: Similarity | None,
-) -> dict[str, str]:
-    """세부 항목 slug → 상위 항목 slug 또는 기존 하위 항목 id. 판정기의 part_of만 배정한다.
+) -> dict[str, list[str]]:
+    """세부 항목 slug → 통과한 모든 상위 항목 slug·기존 항목 id. 순환 관계만 제외한다.
 
     기존 개념 페이지와 하위 항목은 세부 항목이 되지 않는다(기존 페이지를 옮기는 일은 lint 이동이 한다).
     """
@@ -218,10 +242,10 @@ def _assign_heads(
         if str(entry.get("definition") or "").strip()
     })
     details = [concept for concept in ledger if concept["slug"] not in existing and concept["slug"] in heads]
-    assigned: dict[str, str] = {}
+    assigned: dict[str, list[str]] = {}
     for _, head, detail in rank_part_of(details, heads, judge_part_of, similarity):
-        if detail not in assigned and detail not in existing and not _creates_cycle(assigned, detail, head):
-            assigned[detail] = head
+        if detail not in existing and not _creates_cycle(assigned, detail, head):
+            assigned.setdefault(detail, []).append(head)
     # 본문 목록 순서는 이번 문서 개념 순서를 따른다.
     return {concept["slug"]: assigned[concept["slug"]] for concept in ledger if concept["slug"] in assigned}
 
@@ -269,48 +293,53 @@ def _has_definition(concept: dict[str, Any]) -> bool:
     return bool(str(concept.get("definition") or concept.get("summary") or "").strip())
 
 
-def _creates_cycle(assigned: dict[str, str], detail: str, head: str) -> bool:
+def _creates_cycle(assigned: dict[str, list[str]], detail: str, head: str) -> bool:
     seen = set()
-    while head not in seen:
+    pending = [head]
+    while pending:
+        head = pending.pop()
         if head == detail:
             return True
+        if head in seen:
+            continue
         seen.add(head)
-        if head not in assigned:
-            return False
-        head = assigned[head]
-    return True
+        pending.extend(assigned.get(head, []))
+    return False
 
 
 def _place(
-    assigned: dict[str, str],
+    assigned: dict[str, list[str]],
     existing: set[str],
     existing_entries: dict[str, dict[str, Any]],
     terms: set[str],
 ) -> dict[str, tuple[str, str | None]]:
-    """세부 항목 slug → (집 페이지 slug, 바로 위 세부 항목 slug·기존 하위 항목 id 또는 None).
+    """원본 집을 정한다. 집에 닿지 않는 섹션 가지가 유효한 다른 배정을 가리지 않게 한다.
 
-    배정을 따라 올라가며 만난 가장 위의 핵심 개념·기존 페이지·기존 하위 항목이 집이다. 기존 하위 항목이면 그 항목의 집 페이지
-    그 항목 아래다. 깊은 세부 항목도 같은 페이지 안에서 중첩된다. 그보다 위의 섹션·언급 배정은 페이지가 될 개념이 아니라 버린다.
-    핵심 개념이 섹션·언급에 딸린다고 판정돼도 그 핵심 개념이 집이 되고, 그 아래 세부 항목은 그대로 놓인다. 핵심 개념을 만나지 못한
-    섹션·언급 가지만 놓지 않는다(의미 클러스터로 간다).
+    상위부터 해석하므로 섹션 체인도 집에 닿는다. 나머지 배정은 호출자가 참조로 남긴다.
     """
-    def root(slug: str) -> str | None:
-        top = None
-        while True:
-            if slug not in terms:
-                top = slug
-            if slug not in assigned:
-                return top
-            slug = assigned[slug]
+    locations: dict[str, tuple[str, str | None] | None] = {}
 
-    placements = {}
-    for detail in assigned:
-        top = root(detail)
-        if top is None or top == detail:
-            continue
-        page = existing_entries[top]["page_slug"] if top in existing_entries else top
-        placements[detail] = (page, assigned[detail] if assigned[detail] != page else None)
-    return placements
+    def locate(slug: str) -> tuple[str, str | None] | None:
+        if slug in locations:
+            return locations[slug]
+        if slug in existing_entries:
+            location = (existing_entries[slug]["page_slug"], None)
+        elif slug in existing:
+            location = (slug, None)
+        else:
+            location = None
+            for head in assigned.get(slug, []):
+                parent = locate(head)
+                if parent is not None:
+                    location = (parent[0], head if head != parent[0] else None)
+                    break
+            if location is None and slug not in terms:
+                location = (slug, None)
+        locations[slug] = location
+        return location
+
+    return {detail: location for detail in assigned
+            if (location := locate(detail)) is not None and location[0] != detail}
 
 
 def _depth(placements: dict[str, tuple[str, str | None]], detail: str) -> int:

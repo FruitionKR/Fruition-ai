@@ -72,6 +72,27 @@ def _reference(source: str, target: str, entry_id: str, name: str) -> dict:
             "entry_id": entry_id, "name": name, "parent_entry_id": None}
 
 
+def test_split_and_restore_preserve_multiple_reference_locations(world):
+    entries = [_add(item, item, refs=[f"B{index}"]) for index, item in enumerate(("a", "b", "c"))]
+    entries += [_add(item, item, parent="a", refs=[f"C{index}"])
+                for index, item in enumerate(("detail", "x1", "x2", "x3", "x4"))]
+    references = [{**_reference("root", "root", "detail", "detail"), "parent_entry_id": parent}
+                  for parent in ("b", "c")]
+    world.ingest("ingest-multi", "doc-multi", {
+        "root": {"entry_changes": entries, "links": references, "concept_refs": ["ROOT"]},
+    })
+    before = world.state()
+    assert len(before["references"]) == 2
+
+    world.lint("lint-multi")
+
+    moved = [row for row in world.state()["references"] if row[1] == "detail"]
+    assert {row[-1] for row in moved} == {"b", "c"}
+    assert all(row[2] != "root" for row in moved)
+    world.restore_lint("lint-multi")
+    assert world.state() == before
+
+
 class World:
     def __init__(self, dsn: str, monkeypatch) -> None:
         self.dsn = dsn
