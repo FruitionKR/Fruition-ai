@@ -43,7 +43,9 @@ def replay_supported_links(
 ) -> list[dict[str, Any]]:
     # 하위 항목 참조(entry_reference)는 같은 두 페이지 사이에도 항목마다 따로 남긴다.
     # DB 간선과 고아 판정은 페이지 단위(_link_key)라, 참조가 하나라도 남으면 간선이 남는다.
-    supported: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    supported: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    # lint가 옮긴 관계 링크는 원래 링크를 낸 기록(`requires_operation_id`)이 남아 있을 때만 잇는다(ADR 0042 결정 6).
+    present = {str(artifact.get("operation_id")) for artifact in operation_artifacts}
     for artifact in operation_artifacts:
         for link in artifact.get("removed_links", []):
             if not isinstance(link, dict):
@@ -60,13 +62,13 @@ def replay_supported_links(
             else artifact.get("links", [])
         )
         for link in added:
-            if isinstance(link, dict):
+            if isinstance(link, dict) and str(link.get("requires_operation_id") or artifact.get("operation_id")) in present:
                 supported[_replay_key(link)] = link
     return list(supported.values())
 
 
-def _replay_key(link: dict[str, Any]) -> tuple[str, str, str, str]:
-    return (*_link_key(link), str(link.get("entry_id") or ""))
+def _replay_key(link: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (*_link_key(link), str(link.get("entry_id") or ""), str(link.get("parent_entry_id") or ""))
 
 
 def _link_key(link: dict[str, Any]) -> tuple[str, str, str]:

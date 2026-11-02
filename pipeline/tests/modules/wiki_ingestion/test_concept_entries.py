@@ -80,8 +80,8 @@ def test_replay_adds_moves_and_removes_entries_by_id() -> None:
     ])
 
     # Rollout을 지우면 그 아래 History도 함께 빠진다. 먼저 옮긴 Undo는 남는다.
-    assert entries == [{"entry_id": "e-undo", "name": "Undo", "parent_entry_id": None,
-                        "anchor_reference_ids": [], "evidence_claim_ids": []}]
+    assert entries == [{"entry_id": "e-undo", "name": "Undo", "definition": "", "parent_entry_id": None,
+                        "anchor_reference_ids": [], "evidence_claim_ids": [], "slugs": [], "aliases": [], "tags": []}]
 
 
 def test_rebuild_globalizes_entry_evidence_and_renders_nested_index() -> None:
@@ -213,13 +213,16 @@ def test_restore_replaces_queryable_entry_copy() -> None:
             cursor.fetchall.return_value = [{"id": "page-deploy", "page_type": "concept", "slug": "deploy"}]
         else:
             cursor.fetchall.return_value = []
+        # 항목 충돌 검사: 다른 페이지가 집인 항목이 없다.
+        cursor.fetchone.return_value = None
         return cursor
 
     connection.execute.side_effect = execute
     changed = [{
         "page_id": "page-deploy",
         "markdown_key": "wiki/ws-1/pages/page-deploy/ops/restore-1.md",
-        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "parent_entry_id": None}],
+        "entries": [{"entry_id": "e-rollout", "name": "Rollout", "definition": "롤아웃 정의", "parent_entry_id": None,
+                     "anchor_reference_ids": ["doc-1:B0001"]}],
     }]
 
     with (
@@ -233,4 +236,15 @@ def test_restore_replaces_queryable_entry_copy() -> None:
     delete_index = calls.index(("DELETE FROM wiki_page_entries WHERE page_id = %s", ("page-deploy",)))
     insert = next(index for index, (query, _) in enumerate(calls) if query.startswith("INSERT INTO wiki_page_entries"))
     assert delete_index < insert
-    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None)
+    assert calls[insert][1] == ("ws-1", "e-rollout", "page-deploy", "Rollout", None, "롤아웃 정의", ["doc-1:B0001"],
+                                [], [], [])
+
+
+def test_replay_adds_the_concept_identity_of_every_contribution() -> None:
+    entries = replay_concept_entries([
+        {"entry_changes": [{**_add("e-a", "A"), "slug": "a", "aliases": ["에이"], "tags": ["t1"]}]},
+        {"entry_changes": [{**_add("e-a", "다른 이름"), "slug": "a-2", "aliases": ["에이", "A1"], "tags": []}]},
+    ])
+
+    assert [(e["name"], e["slugs"], e["aliases"], e["tags"]) for e in entries] == [
+        ("A", ["a", "a-2"], ["에이", "A1"], ["t1"])]

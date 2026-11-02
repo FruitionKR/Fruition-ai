@@ -1,7 +1,7 @@
 """RAG 근거 선택 Jev 켬/끔 비교. 운영 질의 경로(후보 검색 → 그래프 → 근거 선택 → 답변)를 이 프로세스에서 부른다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_rag.py <workspace.json> [--limit N]
-- 끔: 기존 근거 선택기 / 켬: JEV_EVIDENCE_ENABLED=true. 답변은 둘 다 Haiku, 웹 검색은 끈다.
+- 끔: 기존 근거 선택기 / 켬: JEV_EVIDENCE_ENABLED=true. 답변은 둘 다 GPT Luna, 웹 검색은 끈다.
 - 질의 워커 환경을 따르되, 임베딩 서버 포트가 밖으로 열려 있지 않아 같은 BGE-M3를 이 프로세스에 올려 쓴다(평가 전용).
 - 근거 채점(정답 문장 포함 여부)은 여기서 하고, 답변 채점은 grade_rag.py(Codex)가 한다.
 """
@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, RUNS, results_dir, verify_gold, write_jsonl  # noqa: E402
 from stack_env import load_container_env  # noqa: E402
 
 
@@ -53,7 +53,6 @@ def main() -> None:
 
     load_container_env("fruition-query-task-worker-dev")
     os.environ.pop("EMBEDDING_SERVICE_URL", None)
-    os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.core.jev_client import JEV_EVIDENCE_ENABLED_ENV
     from functools import lru_cache
 
@@ -86,7 +85,7 @@ def main() -> None:
     use_cases = {}
     for variant, enabled in (("off", "false"), ("on", "true")):
         os.environ[JEV_EVIDENCE_ENABLED_ENV] = enabled
-        use_cases[variant] = build_answer_query_use_case(provider=HAIKU[0], model=HAIKU[1], allow_web_search=False)
+        use_cases[variant] = build_answer_query_use_case(provider="openai", model="gpt-6-luna", allow_web_search=False)
     # 최종 결과의 근거는 답변이 인용한 것만 남는다(renumber_used_evidence). 선택기가 고른 근거와
     # 답변 프롬프트를 따로 남기려고 질의 문맥 생성을 감싸 스레드별로 마지막 문맥을 기록한다.
     import threading
@@ -129,6 +128,7 @@ def main() -> None:
         return {
             "id": case["id"], "category": case["category"], "answerable": case["answerable"], "variant": variant,
             "run": run_index, "answer": answer, "cited_evidence": snippets, "evidence": selected, "pages": pages,
+            "provider": "openai", "model": "gpt-6-luna",
             "answer_context": context.answer_context if context else None, "error": error,
             **evidence_hits(case, selected, source_by_document), "seconds": round(time.monotonic() - started, 2),
         }

@@ -44,6 +44,8 @@ class RebuiltConceptPage:
     source_document_ids: tuple[str, ...]
     # 기여 재생으로 남은 하위 항목. 이 페이지가 집이다(ADR 0042).
     entries: tuple[dict[str, Any], ...]
+    # 재생 결과 페이지가 없다. 나머지 값은 비어 있다(ADR 0042).
+    deleted: bool = False
 
 
 def load_concept_contributions(
@@ -107,6 +109,12 @@ def rebuild_concept_page(
         )
 
     page_id = ordered[0].page_id
+    # 다시 합치기는 자식에 삭제 기록(lint `content_action: "delete"`)을 남긴다(ADR 0042). 삭제는 그때까지의 기록을
+    # 모두 지운 것과 같고, 뒤에 기록이 없으면 페이지가 없다. 삭제 기록을 되돌리면 앞 기록이 다시 재생된다.
+    last_delete = max((index for index, item in enumerate(ordered) if _is_delete(item)), default=-1)
+    ordered = ordered[last_delete + 1:]
+    if not ordered:
+        return _deleted_page(page_id)
     manual = [item for item in ordered if _is_manual(item)]
     generated = [item for item in ordered if not _is_manual(item)]
     # 페이지 identity는 page_id다. 분리로 자식 페이지에 이어 붙인 원래 편입 기록은
@@ -122,10 +130,54 @@ def rebuild_concept_page(
         if item.contribution is not None
     ]
     contribution_json = [item for item in artifacts if item.get("artifact_type") != "manual"]
+    original_json = contribution_json
+    # 개념도 항목 변경도 없는 기록은 깨진 기록이다. 근거 없음으로 보고 페이지를 지우지 않는다.
+    if any(not (item.get("concept") or {}).get("slug") and "entry_changes" not in item for item in contribution_json):
+        raise ConceptContributionError("concept contribution has neither concept nor entry changes")
     # 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생해야 사람이 지운 edge가 되살아나지 않는다.
     supported_links = tuple(replay_supported_links(artifacts))
     entries = tuple(replay_concept_entries(artifacts))
-    source_document_ids = tuple(_authoritative_document_ids(contribution_json))
+    # 남은 유효 근거가 없으면 페이지도 없다. lint 메타데이터(분리·링크 기록)만으로 존속시키지 않는다(ADR 0042 결정 3).
+    if not (manual or entries or any(_supports_page(item) for item in contribution_json)):
+        return _deleted_page(page_id)
+    # 다른 페이지로 옮겼거나 지운 하위 항목의 근거는 본문에 두지 않는다. 옮긴 근거는 새 집이 보인다(ADR 0042).
+    entry_claims = {
+        claim_id
+        for item in contribution_json
+        for change in item.get("entry_changes", [])
+        if change.get("op") == "add"
+        for claim_id in change.get("evidence_claim_ids", [])
+    }
+    dropped_claims = entry_claims - {claim_id for entry in entries for claim_id in entry["evidence_claim_ids"]}
+    if dropped_claims:
+        contribution_json = [
+            {
+                **item,
+                "evidence_units": [
+                    unit for unit in item.get("evidence_units", []) if unit.get("evidence_id") not in dropped_claims
+                ],
+            }
+            for item in contribution_json
+        ]
+    # 그 항목들만 인용한 블록의 핵심 내용과 개념 인용도 뺀다. 남은 항목·근거와 같이 쓰는 블록은 남긴다.
+    entry_refs = {
+        ref
+        for item in contribution_json
+        for change in item.get("entry_changes", [])
+        if change.get("op") == "add"
+        for ref in change.get("anchor_reference_ids", [])
+    }
+    kept_refs = {ref for entry in entries for ref in entry["anchor_reference_ids"]} | {
+        ref
+        for item in contribution_json
+        for unit in item.get("evidence_units", [])
+        for ref in unit.get("anchor_reference_ids", [])
+    }
+    dropped_refs = entry_refs - kept_refs
+    if dropped_refs or dropped_claims:
+        contribution_json = [_without_moved_citations(item, dropped_refs, dropped_claims) for item in contribution_json]
+    # 문서 연결(그리고 소스 → 개념 자동 링크)은 최종 생존 근거로 정한다(ADR 0042 결정 5).
+    source_document_ids = tuple(_source_document_ids(original_json, contribution_json, entries))
     if manual:
         # 사람이 마지막으로 고친 본문을 기준으로 삼는다. 그 전 AI 기여는 사람이 본 본문에 이미
         # 들어 있으므로, 그 뒤 AI 기여의 근거만 재편입과 같은 방식으로 덧붙인다.
@@ -188,6 +240,47 @@ def rebuild_concept_page(
         source_document_ids=source_document_ids,
         entries=entries,
     )
+
+
+def _without_moved_citations(
+    contribution: dict[str, Any],
+    dropped_refs: set[str],
+    dropped_claims: set[str],
+) -> dict[str, Any]:
+    concept = dict(contribution["concept"])
+    for field in ("anchor_reference_ids", "mention_reference_ids", "display_reference_ids"):
+        concept[field] = [ref for ref in concept.get(field, []) if ref not in dropped_refs]
+    concept["evidence_claim_ids"] = [
+        claim_id for claim_id in concept.get("evidence_claim_ids", []) if claim_id not in dropped_claims
+    ]
+    return {
+        **contribution,
+        "concept": concept,
+        "source_key_points": [
+            item
+            for item in contribution.get("source_key_points", [])
+            if not (item.get("anchor_reference_ids") and set(item["anchor_reference_ids"]) <= dropped_refs)
+        ],
+    }
+
+
+def _deleted_page(page_id: str) -> RebuiltConceptPage:
+    return RebuiltConceptPage(
+        page_id=page_id, markdown="", operation_ids=(), supported_links=(), title=None, summary=None,
+        source_document_ids=(), entries=(), deleted=True,
+    )
+
+
+def _supports_page(contribution: dict[str, Any]) -> bool:
+    """페이지를 받치는 기록: 근거 단위가 있거나, lint가 아닌 기록의 직접 개념 기여다."""
+    if contribution.get("evidence_units"):
+        return True
+    return contribution.get("artifact_type") != "lint" and bool((contribution.get("concept") or {}).get("slug"))
+
+
+def _is_delete(item: PageContribution) -> bool:
+    contribution = item.contribution or {}
+    return contribution.get("artifact_type") == "lint" and contribution.get("content_action") == "delete"
 
 
 def _is_manual(item: PageContribution) -> bool:
@@ -258,33 +351,42 @@ def _merge_contributions(
     }
 
 
-def _authoritative_document_ids(
-    contributions: list[dict[str, Any]],
+def _source_document_ids(
+    original: list[dict[str, Any]],
+    surviving: list[dict[str, Any]],
+    entries: tuple[dict[str, Any], ...],
 ) -> list[str]:
+    """재생 결과 이 페이지를 받치는 문서. 소스 → 개념 자동 링크도 이 목록에서 파생한다(ADR 0042 결정 5).
+
+    - 직접 개념 기여: lint가 아닌 기록의 개념. 인용이 모두 다른 페이지로 옮겨 간 개념(하위 개념만 그 문서와 관계있음)은 뺀다.
+      인용 없이 이름만 나온 개념은 센다.
+    - 남은 근거 단위의 문서와 남은 하위 항목 근거 블록(`문서ID:블록ID`)의 문서. lint 승격·병합 근거도 센다.
+    옮긴 근거는 새 집 페이지가 센다. 취소한 기록은 재생에 없으므로 세지 않는다.
+    """
     document_ids: list[str] = []
-    for contribution in contributions:
-        if contribution.get("artifact_type") not in (None, "ingest", "document"):
-            continue
-        contribution_document_ids: list[str] = []
-        concept = contribution.get("concept") or {}
-        contribution_document_ids.extend(
-            str(document_id)
-            for document_id in concept.get("source_document_ids", [])
-            if document_id and not str(document_id).startswith("lint:")
+    for before, after in zip(original, surviving, strict=True):
+        concept = after.get("concept") or {}
+        if after.get("artifact_type") in (None, "ingest", "document") and concept.get("slug"):
+            cited = [*concept.get("anchor_reference_ids", []), *concept.get("evidence_claim_ids", [])]
+            was_cited = [
+                *(before.get("concept") or {}).get("anchor_reference_ids", []),
+                *(before.get("concept") or {}).get("evidence_claim_ids", []),
+            ]
+            if cited or not was_cited:
+                document_ids.extend(
+                    str(document_id) for document_id in concept.get("source_document_ids", []) if document_id
+                )
+                if not concept.get("source_document_ids") and after.get("document_id"):
+                    document_ids.append(str(after["document_id"]))
+        document_ids.extend(
+            str(unit["source_document_id"])
+            for unit in after.get("evidence_units", [])
+            if isinstance(unit, dict) and unit.get("source_document_id")
         )
-        contribution_document_ids.extend(
-            str(item["source_document_id"])
-            for item in contribution.get("evidence_units", [])
-            if isinstance(item, dict)
-            and item.get("source_document_id")
-            and not str(item["source_document_id"]).startswith("lint:")
-        )
-        if not contribution_document_ids:
-            document_id = str(contribution.get("document_id") or "")
-            if document_id and not document_id.startswith("lint:"):
-                contribution_document_ids.append(document_id)
-        document_ids.extend(contribution_document_ids)
-    return _unique(document_ids)
+    document_ids.extend(
+        str(ref).split(":", 1)[0] for entry in entries for ref in entry.get("anchor_reference_ids", []) if ":" in str(ref)
+    )
+    return _unique(document_id for document_id in document_ids if not document_id.startswith("lint:"))
 
 
 def _merge_source_key_points(

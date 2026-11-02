@@ -262,6 +262,26 @@ class EvidenceSelectorTest(unittest.TestCase):
 
         self.assertEqual([snippet.source_document_id for snippet in snippets], ["doc-valid"])
 
+    def test_stored_entry_unit_keeps_its_entry_path(self) -> None:
+        page = WikiPage(id="concept:deployment", page_type="concept", title="Deployment", slug="deployment", summary="")
+        units = [
+            WikiEmbeddingUnit("entry", page.id, "doc-a", "sub_entry", ["B0002"], "Rollout > History: 이력 조회",
+                              entry_path="Deployment > Rollout > History"),
+            WikiEmbeddingUnit("page", page.id, "doc-a", "key_point", ["B0001"], "페이지 근거"),
+        ]
+
+        for embedding_search in (EmptySearch(), None):
+            selector = EvidenceSelector(embedding_search=embedding_search, text_search=EmptySearch())
+            snippets = selector.select(
+                question="이력",
+                related_pages=[RetrievedPage(page=page, score=1.0, role="focus_concept")],
+                embedding_units_by_page_id={page.id: units},
+            )
+
+            paths = {snippet.text: snippet.entry_path for snippet in snippets}
+            self.assertEqual(paths["Rollout > History: 이력 조회"], "Deployment > Rollout > History")
+            self.assertIsNone(paths.get("페이지 근거"))
+
     def test_returns_only_global_top_k_evidence(self) -> None:
         first_page = WikiPage(
             id="concept:first",

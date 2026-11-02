@@ -60,3 +60,24 @@ def clean_concept_tags(tags: Iterable[str], title: str, aliases: Iterable[str], 
 def name_key(name: object) -> str:
     """이름 일치 비교용 키. 대소문자·전각/반각·공백·하이픈·밑줄만 맞추고 기호는 남긴다."""
     return " ".join(unicodedata.normalize("NFKC", str(name)).casefold().replace("-", " ").replace("_", " ").split())
+
+
+# 언급의 정의로 쓰는 원문 길이. 개념 갱신·클러스터 후보 문장 한 줄 분량이다.
+MENTION_SOURCE_TEXT_CHARS = 300
+
+
+def mention_source_text(name: str, block_text: str) -> str:
+    """언급의 정의. 언급은 설명을 받지 않으므로 근거 블록에서 언급이 나온 문장을 앞에 둔 원문 300자를 쓴다.
+
+    클러스터 판정과 하위 항목 배정(part_of)이 이 원문으로 판단한다. 이름이 블록에 없으면 블록 앞부분을 쓴다.
+    """
+    text = " ".join(block_text.split())
+    at = text.lower().find(name.strip().lower()) if name.strip() else -1
+    if at < 0:
+        return text[:MENTION_SOURCE_TEXT_CHARS]
+    # 언급이 든 문장의 시작. 문장이 길면 언급을 가운데 둔다.
+    sentence_start = max(
+        (text.rfind(mark, 0, at) + len(mark) for mark in (". ", "? ", "! ") if text.rfind(mark, 0, at) >= 0), default=0
+    )
+    start = max(sentence_start, at - MENTION_SOURCE_TEXT_CHARS // 2)
+    return text[start:start + MENTION_SOURCE_TEXT_CHARS].strip()

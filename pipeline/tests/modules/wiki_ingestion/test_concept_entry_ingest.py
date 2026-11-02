@@ -1,0 +1,1060 @@
+"""편입 배정(ADR 0042 2단계): part_of 배정과 놓기, 같은 하위 항목 찾기, 기여·복구·임베딩 단위."""
+from __future__ import annotations
+
+import json
+import os
+from collections import Counter
+from pathlib import Path
+from urllib.parse import quote
+from uuid import uuid4
+
+import psycopg
+import pytest
+from psycopg import sql
+from psycopg.rows import dict_row
+
+from app.core.jev_client import JevUnavailable
+from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler, LinkBuilder
+from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
+from app.modules.wiki_generation.application.judge_candidates import llm_part_of_judge, llm_same_entry_judge
+from app.modules.wiki_ingestion.application.concept_entry_ingest import PART_OF_CANDIDATE_LIMIT, apply_concept_entries
+from app.modules.wiki_ingestion.domain.concept_entries import replay_concept_entries
+from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, plan_page_recovery
+from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
+from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import rebuild_concept_page
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import persist_embedding_units
+
+DSN = os.environ.get("TEST_AGENT_DATABASE_URL") or os.environ.get("CONCEPT_LOCK_TEST_DSN")
+AI_SCHEMA_SQL = (Path(__file__).resolve().parents[3] / "db" / "ai_schema.sql").read_text(encoding="utf-8")
+
+
+def _concept(slug: str, title: str, block: str, aliases: list[str] | None = None) -> dict:
+    return {"slug": slug, "title": title, "aliases": aliases or [title], "definition": f"{title} 정의",
+            "anchor_reference_ids": [block], "evidence_claim_ids": [f"ev-{slug}"],
+            "source_document_ids": ["doc-1"], "importance_score": 1.0}
+
+
+def _normalized(concepts: list[dict], existing: list[dict] | None = None) -> dict:
+    return {
+        "document": {"document_id": "doc-1", "title": "문서"},
+        "concept_ledger": concepts,
+        "existing_concept_index": existing or [],
+        "evidence_units": [
+            {"evidence_id": concept["evidence_claim_ids"][0], "claim": f"{concept['title']} 근거",
+             "anchor_reference_ids": concept["anchor_reference_ids"], "related_concept_slugs": [concept["slug"]],
+             "source_document_id": "doc-1"}
+            for concept in concepts
+        ],
+        "concept_slug_map": {concept["slug"]: concept["slug"] for concept in concepts},
+        "concept_update_decisions": [],
+    }
+
+
+def _same_score(_query: str, texts: list[str]) -> list[float]:
+    """가짜 임베딩 유사도. 모든 후보가 같은 점수라 후보는 slug 순 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
+    return [1.0] * len(texts)
+
+
+class PrefixPartOf:
+    """가짜 판정기(LLM·Jev 자리). 세부 항목 제목이 상위 항목 제목·별칭으로 시작하거나 `(상위)`를 가지면 part_of라고 답한다."""
+
+    def __init__(self) -> None:
+        self.pairs: list[tuple[str, str]] = []
+
+    def __call__(self, pairs):
+        self.pairs.extend((head["slug"], detail["slug"]) for head, detail in pairs)
+        answers = {}
+        for head, detail in pairs:
+            title = str(detail.get("title") or "").lower()
+            names = [name.lower() for name in (head.get("title"), *(head.get("aliases") or [])) if name]
+            hits = [name for name in names if title.startswith(name + " ") or f"({name})" in title]
+            # 더 구체적인(긴) 상위 항목일수록 확신한다.
+            probability = 0.9 + max(map(len, hits)) / 1000 if hits else 0.1
+            answers[(head["slug"], detail["slug"])] = {"part_of": bool(hits), "probability": probability}
+        return answers
+
+
+def _apply(normalized: dict, **kwargs) -> dict:
+    """판정기와 임베딩이 있는 편입. 배정은 늘 판정기가 한다."""
+    return apply_concept_entries(
+        normalized, **{"judge_part_of": PrefixPartOf(), "similarity": _same_score, **kwargs},
+    )
+
+
+DEPLOYMENT = [
+    _concept("deployment", "Deployment", "B0001"),
+    _concept("deployment-rollout", "Deployment Rollout", "B0002"),
+    _concept("deployment-rollback", "Deployment Rollback", "B0003"),
+    _concept("label-selector-deployment", "Label Selector (Deployment)", "B0004"),
+]
+
+
+def _entries(result: dict, page: str) -> dict[str, dict]:
+    return {change["name"]: change for change in result["entry_changes"][page]}
+
+
+def test_judge_assigns_details_under_their_head() -> None:
+    result = _apply(_normalized(DEPLOYMENT))
+
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    entries = _entries(result, "deployment")
+    assert set(entries) == {"Deployment Rollout", "Deployment Rollback", "Label Selector (Deployment)"}
+    rollout = entries["Deployment Rollout"]
+    assert (rollout["parent_entry_id"], rollout["anchor_reference_ids"], rollout["evidence_claim_ids"]) == (
+        None, ["B0002"], ["ev-deployment-rollout"])
+    # 세부 항목 근거는 집 페이지 개념의 근거가 되고, 근거·연결은 집 페이지를 가리킨다.
+    head = result["concept_ledger"][0]
+    assert head["evidence_claim_ids"] == ["ev-deployment", "ev-deployment-rollout", "ev-deployment-rollback",
+                                         "ev-label-selector-deployment"]
+    assert {slug for item in result["evidence_units"] for slug in item["related_concept_slugs"]} == {"deployment"}
+    assert result["concept_slug_map"]["deployment-rollout"] == "deployment"
+    assert result["entry_references"] == []
+
+
+def test_one_detail_under_a_new_head_still_becomes_its_entry() -> None:
+    # 세부 항목 수로 페이지 여부를 정하지 않는다. 배정은 버리지 않고, 많아지면 lint 분리 규칙이 나눈다.
+    result = _apply(_normalized(DEPLOYMENT[:2]))
+
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert list(_entries(result, "deployment")) == ["Deployment Rollout"]
+
+
+def test_detail_judged_part_of_an_existing_entry_goes_under_it_on_its_page() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": [
+        # 가짜 판정기는 제목·별칭 접두로 답한다. 항목 후보 제목은 "바로 위 이름 > 이름"이라 별칭으로 맞춘다.
+        {"entry_id": "e-rollout", "name": "Deployment Rollout", "definition": "롤아웃 정의", "parent_entry_id": None,
+         "aliases": ["Deployment Rollout"]}]}]
+    history = _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")
+
+    result = _apply(_normalized([history], existing))
+
+    entry = _entries(result, "deployment")["Deployment Rollout History"]
+    assert entry["parent_entry_id"] == "e-rollout"
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert result["concept_slug_map"]["deployment-rollout-history"] == "deployment"
+
+
+def test_existing_page_is_a_head_and_joins_the_ledger() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
+
+    result = _apply(_normalized([DEPLOYMENT[1]], existing))
+
+    assert [(item["slug"], item["title"], item["definition"]) for item in result["concept_ledger"]] == [
+        ("deployment", "Deployment", "기존 정의")]
+    assert list(_entries(result, "deployment")) == ["Deployment Rollout"]
+
+
+def test_nested_detail_keeps_its_parent_entry() -> None:
+    concepts = [*DEPLOYMENT, _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")]
+
+    entries = _entries(_apply(_normalized(concepts)), "deployment")
+
+    assert entries["Deployment Rollout History"]["parent_entry_id"] == entries["Deployment Rollout"]["entry_id"]
+    assert entries["Deployment Rollout"]["parent_entry_id"] is None
+
+
+class FakePartOf:
+    def __init__(self, answers: dict[tuple[str, str], float]) -> None:
+        self.answers = answers
+        self.pairs: list[tuple[str, str]] = []
+
+    def __call__(self, pairs):
+        self.pairs = [(head["slug"], detail["slug"]) for head, detail in pairs]
+        return {pair: {"part_of": probability >= 0.9, "probability": probability}
+                for pair, probability in self.answers.items() if pair in self.pairs}
+
+
+POD = [
+    _concept("pod", "Pod", "B0001"),
+    _concept("liveness-probe", "Liveness Probe", "B0002"),
+    _concept("readiness-probe", "Readiness Probe", "B0003"),
+    _concept("restart-policy", "Restart Policy", "B0004"),
+    _concept("container-image", "Container Image", "B0005"),
+]
+
+
+def test_part_of_judge_assigns_only_confident_one_way_answers() -> None:
+    judge = FakePartOf({
+        ("pod", "liveness-probe"): 0.97, ("pod", "readiness-probe"): 0.95, ("pod", "restart-policy"): 0.93,
+        # 애매하면(0.9 미만) 배정하지 않는다.
+        ("pod", "container-image"): 0.6,
+        # 서로가 서로에 딸린다는 판정은 버린다.
+        ("liveness-probe", "readiness-probe"): 0.99, ("readiness-probe", "liveness-probe"): 0.99,
+    })
+
+    result = _apply(_normalized(POD), judge_part_of=judge)
+
+    assert ("pod", "liveness-probe") in judge.pairs
+    assert sorted(concept["slug"] for concept in result["concept_ledger"]) == ["container-image", "pod"]
+    entries = _entries(result, "pod")
+    assert set(entries) == {"Liveness Probe", "Readiness Probe", "Restart Policy"}
+    assert all(entry["parent_entry_id"] is None for entry in entries.values())
+
+
+def test_unavailable_part_of_judge_keeps_concepts_separate() -> None:
+    def unavailable(_pairs):
+        raise JevUnavailable("down")
+
+    normalized = _normalized(POD)
+
+    assert _apply(normalized, judge_part_of=unavailable) is normalized
+
+
+def test_every_accepted_parent_gets_the_entry_or_a_reference() -> None:
+    concepts = [_concept(slug, slug.upper(), f"B000{index}")
+                for index, slug in enumerate(("a", "b", "c", "detail"), 1)]
+    judge = FakePartOf({(head, "detail"): score for head, score in (("a", .99), ("b", .95), ("c", .9))})
+
+    result = _apply(_normalized(concepts), judge_part_of=judge)
+
+    entry = _entries(result, "a")["DETAIL"]
+    assert set(result["entry_changes"]) == {"a"}
+    assert {(link["source"], link["target"], link["entry_id"]) for link in result["entry_references"]} == {
+        ("concept:b", "concept:a", entry["entry_id"]),
+        ("concept:c", "concept:a", entry["entry_id"]),
+    }
+    contributions = _ingest_contributions("op-multi", result)
+    for page in ("b", "c"):
+        rebuilt = rebuild_concept_page([_page(page, "op-multi", 1, contributions[page])])
+        assert "[[a|DETAIL]]" in rebuilt.markdown
+        assert plan_page_recovery([_page(page, "op-multi", 1, contributions[page])], {"op-multi"}).action == "delete"
+
+
+def test_dangling_section_does_not_hide_a_valid_parent_and_section_chains_resolve() -> None:
+    normalized = _normalized([_concept("core", "Core", "B0001")])
+    normalized["section_candidates"] = [
+        {"slug": slug, "title": slug, "definition": slug, "anchor_reference_ids": ["B0002"]}
+        for slug in ("orphan", "middle", "detail")
+    ]
+    judge = FakePartOf({
+        ("section:orphan", "section:detail"): 1.0,
+        ("section:middle", "section:detail"): .95,
+        ("core", "section:middle"): .95,
+    })
+
+    result = _apply(normalized, judge_part_of=judge)
+
+    entries = _entries(result, "core")
+    assert entries["detail"]["parent_entry_id"] == entries["middle"]["entry_id"]
+    assert "assigned_entry" not in result["section_candidates"][0]
+    assert all("assigned_entry" in item for item in result["section_candidates"][1:])
+
+
+def test_multiple_parents_on_one_page_survive_contribution_replay() -> None:
+    concepts = [_concept(slug, slug.upper(), f"B000{index}")
+                for index, slug in enumerate(("root", "a", "b", "c", "detail"), 1)]
+    judge = FakePartOf({
+        **{("root", head): .99 for head in ("a", "b", "c")},
+        **{(head, "detail"): score for head, score in (("a", .99), ("b", .95), ("c", .9))},
+    })
+
+    result = _apply(_normalized(concepts), judge_part_of=judge)
+
+    entries = _entries(result, "root")
+    assert entries["DETAIL"]["parent_entry_id"] == entries["A"]["entry_id"]
+    assert {link["parent_entry_id"] for link in result["entry_references"]} == {
+        entries["B"]["entry_id"], entries["C"]["entry_id"],
+    }
+    contribution = _ingest_contributions("op-multi", result)["root"]
+    rebuilt = rebuild_concept_page([_page("root", "op-multi", 1, contribution)])
+    assert len(rebuilt.supported_links) == 2
+    assert rebuilt.markdown.count("[[root|DETAIL]]") == 2
+
+
+def test_reference_locations_survive_database_upsert_and_replay(scoped_dsn) -> None:
+    from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import upsert_entry_references, stored_entry_index
+    from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
+
+    links = [{"source": "concept:root", "target": "concept:home", "relation": "entry_reference",
+              "entry_id": "detail", "name": "Detail", "parent_entry_id": parent}
+             for parent in (None, "a", "b")]
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        conn.execute("INSERT INTO wiki_pages (id, workspace_id, user_id, page_type, slug, title, status, created_at, updated_at) "
+                     "VALUES ('root', 'ws-1', 'user-1', 'concept', 'root', 'Root', 'active', now(), now())")
+        # 기존 단일 위치 키의 행을 보존하면서 새 스키마를 반복 적용할 수 있다.
+        upsert_entry_references(conn, "ws-1", "root", links[:1])
+        conn.execute("DROP INDEX wiki_entry_reference_location")
+        conn.execute("ALTER TABLE wiki_page_entry_references DROP CONSTRAINT wiki_page_entry_references_pkey")
+        conn.execute("ALTER TABLE wiki_page_entry_references ADD PRIMARY KEY (page_id, entry_id)")
+        conn.execute(AI_SCHEMA_SQL)
+        conn.execute(AI_SCHEMA_SQL)
+        upsert_entry_references(conn, "ws-1", "root", links)
+        upsert_entry_references(conn, "ws-1", "root", links)
+        _, stored = stored_entry_index(conn, "root")
+        assert {link["parent_entry_id"] for link in stored} == {None, "a", "b"}
+    artifacts = [{"operation_id": "op-1", "links": links},
+                 {"operation_id": "op-2", "artifact_type": "lint", "removed_links": [links[1]]}]
+    assert replay_supported_links(artifacts) == [links[0], links[2]]
+
+
+def test_multiple_parent_graph_rejects_cycles_without_losing_other_parents() -> None:
+    concepts = [_concept(slug, slug, f"B000{index}") for index, slug in enumerate(("a", "b", "c", "root"), 1)]
+    result = _apply(_normalized(concepts), judge_part_of=FakePartOf({
+        ("a", "b"): .99, ("b", "c"): .98, ("c", "a"): .97, ("root", "c"): .96,
+    }))
+    entries = _entries(result, "a")
+    assert entries["c"]["parent_entry_id"] == entries["b"]["entry_id"]
+    assert [(link["source"], link["entry_id"]) for link in result["entry_references"]] == [
+        ("concept:root", entries["c"]["entry_id"]),
+    ]
+
+
+def test_section_neighbors_do_not_push_core_parents_out_of_the_judge_candidates() -> None:
+    normalized = _normalized([_concept("core", "Core", "B0001")])
+    normalized["section_candidates"] = [
+        {"slug": slug, "title": slug, "definition": slug, "anchor_reference_ids": ["B0002"]}
+        for slug in ("detail", *(f"neighbor-{index}" for index in range(8)))
+    ]
+    judge = FakePartOf({("core", "section:detail"): .95})
+
+    def similarity(_query, texts):
+        return [.1 if text.startswith("Core:") else 1. for text in texts]
+
+    result = _apply(normalized, judge_part_of=judge, similarity=similarity)
+
+    assert ("core", "section:detail") in judge.pairs
+    assert len([head for head, detail in judge.pairs if detail == "section:detail"]) == 1 + PART_OF_CANDIDATE_LIMIT
+    assert "detail" in _entries(result, "core")
+
+
+def _with_kubectl_entry(definition: str = "Pod 수를 바꾼다") -> list[dict]:
+    return [
+        {"slug": "kubectl", "title": "kubectl", "aliases": [], "definition": "CLI",
+         "entries": [{"entry_id": "e-scale", "name": "scale", "definition": definition, "parent_entry_id": None}]},
+    ]
+
+
+class FakeSame:
+    def __init__(self, decision: str | None) -> None:
+        self.decision = decision
+        self.calls: list[tuple[list[str], list[str]]] = []
+
+    def __call__(self, concepts, pool):
+        self.calls.append(([concept["title"] for concept in concepts], [item["title"] for item in pool]))
+        if self.decision is None:
+            return {}
+        return {concept["slug"]: {"incoming_slug": concept["slug"], "decision": self.decision, "canonical_slug": "e-scale"}
+                for concept in concepts if concept["title"] == "Deployment > Deployment Scale"}
+
+
+def test_same_entry_on_another_page_adds_evidence_there_and_references_it() -> None:
+    concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
+    judge = FakeSame("merge_into")
+
+    result = _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=judge)
+
+    assert judge.calls[0][1] == ["kubectl > scale"]
+    assert "Deployment Scale" not in _entries(result, "deployment")
+    # 기존 항목의 이름·정의·위치를 따르고, 근거는 집 페이지에 더한다.
+    assert result["entry_changes"]["kubectl"] == [{
+        "op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다", "parent_entry_id": None,
+        "anchor_reference_ids": ["B0009"], "evidence_claim_ids": ["ev-deployment-scale"],
+        # 원래 개념의 정체성은 기존 항목에 합쳐도 항목에 남는다.
+        "slug": "deployment-scale", "aliases": ["Deployment Scale"], "tags": []}]
+    kubectl = next(concept for concept in result["concept_ledger"] if concept["slug"] == "kubectl")
+    assert kubectl["evidence_claim_ids"] == ["ev-deployment-scale"]
+    assert result["entry_references"] == [{
+        "source": "concept:deployment", "target": "concept:kubectl", "relation": "entry_reference",
+        "decided_by": "concept_entry", "entry_id": "e-scale", "name": "scale", "parent_entry_id": None}]
+
+
+@pytest.mark.parametrize("decision", ["link_to", None])
+def test_unsure_same_entry_stays_a_separate_new_entry(decision) -> None:
+    concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
+
+    result = _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame(decision))
+
+    assert _entries(result, "deployment")["Deployment Scale"]["entry_id"].startswith("entry:")
+    assert "kubectl" not in result["entry_changes"]
+    assert result["entry_references"] == []
+
+
+def test_reingest_matches_its_own_entry_by_name_without_judge() -> None:
+    first = _entries(_apply(_normalized(DEPLOYMENT)), "deployment")
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
+        {"entry_id": entry["entry_id"], "name": entry["name"], "definition": entry["definition"], "parent_entry_id": None}
+        for entry in first.values()]}]
+
+    second = _entries(_apply(_normalized(DEPLOYMENT, existing)), "deployment")
+
+    assert {name: entry["entry_id"] for name, entry in second.items()} == {
+        name: entry["entry_id"] for name, entry in first.items()}
+
+
+
+def test_entry_keeps_the_concept_identity_and_reingest_finds_it_by_its_original_slug() -> None:
+    first = _entries(_apply(_normalized(DEPLOYMENT)), "deployment")
+    rollout = first["Deployment Rollout"]
+    # 원래 개념 slug·별칭·태그는 항목에 남고 집 페이지 개념에는 섞이지 않는다.
+    assert (rollout["slug"], rollout["aliases"], rollout["tags"]) == ("deployment-rollout", ["Deployment Rollout"], [])
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
+        {"entry_id": rollout["entry_id"], "name": "롤아웃", "definition": "다른 정의", "parent_entry_id": None,
+         "slugs": ["deployment-rollout"], "aliases": []}]}]
+
+    # 이름이 달라 이름 일치는 없고 판정기도 없지만, 원래 slug가 같아 같은 항목에 근거를 더한다.
+    second = _entries(_apply(_normalized(DEPLOYMENT, existing), judge_same=None), "deployment")
+
+    assert second["롤아웃"]["entry_id"] == rollout["entry_id"]
+
+
+def test_update_decision_on_a_concept_that_became_an_entry_adds_evidence_to_that_entry() -> None:
+    normalized = _normalized(DEPLOYMENT)
+    normalized["concept_update_decisions"] = [{"decision": "same_concept", "concept_slug": "deployment-rollout",
+                                               "claim_id": "cand-1", "claim": "롤아웃 근거 더", "refs": ["B0007"]}]
+
+    result = _apply(normalized)
+    contributions = build_concept_contributions(
+        operation_id="op-1", normalized=result, links=[],
+        source_blocks=[{"block_id": f"B000{index}", "text": f"블록 {index}"} for index in range(1, 10)],
+        concept_update_decisions=result["concept_update_decisions"],
+    )
+
+    decision = result["concept_update_decisions"][0]
+    rollout = _entries(result, "deployment")["Deployment Rollout"]
+    assert (decision["concept_slug"], decision["entry"]["entry_id"]) == ("deployment", rollout["entry_id"])
+    added = [change for change in contributions["deployment"]["entry_changes"]
+             if change["entry_id"] == rollout["entry_id"] and "op-1:cand-1" in change["evidence_claim_ids"]]
+    assert [(change["name"], change["anchor_reference_ids"]) for change in added] == [
+        ("Deployment Rollout", ["doc-1:B0007"])]
+    replayed = {entry["entry_id"]: entry for entry in replay_concept_entries([contributions["deployment"]])}
+    assert "op-1:cand-1" in replayed[rollout["entry_id"]]["evidence_claim_ids"]
+    assert replayed[rollout["entry_id"]]["name"] == "Deployment Rollout"
+
+
+def _section_term(slug: str, title: str, block: str, evidence: list[str] | None = None) -> dict:
+    return {"slug": slug, "title": title, "context": f"{title} 설명", "definition": f"{title} 정의",
+            "anchor_reference_ids": [block], "evidence_claim_ids": evidence or []}
+
+
+def _mention_term(slug: str, name: str, blocks: list[str]) -> dict:
+    return {"slug": slug, "name": name, "anchor_reference_ids": blocks, "source_text": f"{name} 원문",
+            "definition": f"{name}이 나온 문장"}
+
+
+def test_section_and_mention_under_a_core_concept_become_its_entries_and_leave_the_cluster_path() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    normalized["section_candidates"] = [_section_term("deployment-strategy", "Deployment Strategy", "B0005", ["ev-x"]),
+                                        # 맨 위가 섹션인 가지는 페이지가 될 개념이 없어 놓지 않는다.
+                                        _section_term("cache", "Cache", "B0006"),
+                                        _section_term("cache-ttl", "Cache TTL", "B0007")]
+    normalized["mentions"] = [_mention_term("deployment-strategy-recreate", "Deployment Strategy Recreate", ["B0008"])]
+
+    result = _apply(normalized)
+
+    entries = _entries(result, "deployment")
+    assert set(entries) == {"Deployment Strategy", "Deployment Strategy Recreate"}
+    strategy = entries["Deployment Strategy"]
+    assert (strategy["slug"], strategy["evidence_claim_ids"], strategy["anchor_reference_ids"]) == (
+        "deployment-strategy", ["ev-x"], ["B0005"])
+    assert entries["Deployment Strategy Recreate"]["parent_entry_id"] == strategy["entry_id"]
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assigned = {item["slug"]: item.get("assigned_entry") for item in [*result["section_candidates"], *result["mentions"]]}
+    assert assigned == {"deployment-strategy": {"page_slug": "deployment", "entry_id": strategy["entry_id"]},
+                        "cache": None, "cache-ttl": None,
+                        "deployment-strategy-recreate": {"page_slug": "deployment",
+                                                         "entry_id": entries["Deployment Strategy Recreate"]["entry_id"]}}
+    # 섹션·언급 slug는 개념 slug 대응에 들어가지 않는다.
+    assert "deployment-strategy" not in result["concept_slug_map"]
+
+    from app.modules.wiki_generation.infrastructure.meaning_cluster_artifact import MeaningClusterArtifactAssembler
+    before = MeaningClusterArtifactAssembler().candidate_claims(normalized)
+    after = MeaningClusterArtifactAssembler().candidate_claims(result)
+    # 배정받은 섹션·언급만 빠지고, 남은 후보 번호는 배정 전(개념 갱신 판정이 쓴 번호)과 같다.
+    assert [(c["candidate_id"], c["slug"]) for c in after] == [
+        (c["candidate_id"], c["slug"]) for c in before if c["slug"] in {"cache", "cache-ttl"}]
+
+
+def test_core_concept_judged_under_a_section_stays_the_home_of_its_entries() -> None:
+    # 핵심 개념이 섹션에 딸린다고 판정돼도 섹션은 페이지가 아니다. 그 핵심 개념이 집이 되고 그 아래 항목은 그대로 놓인다.
+    normalized = _normalized([_concept("deployment", "Kube Deployment", "B0001"),
+                              _concept("deployment-rollout", "Kube Deployment Rollout", "B0002")])
+    normalized["section_candidates"] = [_section_term("kube", "Kube", "B0003")]
+
+    result = _apply(normalized)
+
+    assert set(_entries(result, "deployment")) == {"Kube Deployment Rollout"}
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["deployment"]
+    assert result["section_candidates"][0].get("assigned_entry") is None
+
+
+def test_terms_judged_same_as_an_existing_concept_are_not_assigned() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    normalized["section_candidates"] = [_section_term("deployment-strategy", "Deployment Strategy", "B0005")]
+
+    result = _apply(normalized, consumed_terms={("section", "deployment-strategy")})
+
+    assert result is normalized
+
+
+def test_mentions_are_capped_per_document_and_per_block_by_evidence_blocks_then_order() -> None:
+    normalized = _normalized([DEPLOYMENT[0]])
+    many = [_mention_term(f"deployment-m{index:02d}", f"Deployment M{index:02d}", [f"B{100 + index:04d}"]) for index in range(25)]
+    # 블록 하나에 언급 셋: 근거 블록이 둘인 언급이 먼저고, 그 블록에서는 두 개까지만 묻는다.
+    crowded = [_mention_term("deployment-wide", "Deployment Wide", ["B0050", "B0051"]),
+               *(_mention_term(f"deployment-c{index}", f"Deployment C{index}", ["B0050"]) for index in range(2))]
+    normalized["mentions"] = [*many, *crowded]
+    judge = PrefixPartOf()
+
+    _apply(normalized, judge_part_of=judge)
+
+    asked = {detail for _head, detail in judge.pairs if detail.startswith("mention:")}
+    assert len(asked) == 20
+    assert {"mention:deployment-wide", "mention:deployment-c0"} <= asked
+    assert "mention:deployment-c1" not in asked
+
+def _ingest_contributions(operation_id: str, result: dict) -> dict[str, dict]:
+    return build_concept_contributions(
+        operation_id=operation_id,
+        normalized=result,
+        source_blocks=[{"block_id": f"B000{index}", "text": f"블록 {index}"} for index in range(1, 10)],
+        links=LinkBuilder().build(result),
+    )
+
+
+def _page(page_id: str, operation_id: str, sequence: int, contribution: dict) -> PageContribution:
+    return PageContribution(page_id=page_id, page_type="concept", operation_id=operation_id, sequence=sequence,
+                            markdown_key=f"wiki/ws/pages/{page_id}/ops/{operation_id}.md",
+                            contribution={**contribution, "page_id": page_id})
+
+
+def test_ingest_contribution_replays_entries_and_restore_drops_them() -> None:
+    concepts = [*DEPLOYMENT, _concept("deployment-scale", "Deployment Scale", "B0009")]
+    contributions = _ingest_contributions(
+        "op-x", _apply(_normalized(concepts, _with_kubectl_entry()), judge_same=FakeSame("merge_into")))
+    kubectl_base = _ingest_contributions("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]))["kubectl"]
+    deployment = [_page("page-deploy", "op-x", 1, contributions["deployment"])]
+    kubectl = [_page("page-kubectl", "op-w", 1, kubectl_base), _page("page-kubectl", "op-x", 2, contributions["kubectl"])]
+
+    rebuilt = rebuild_concept_page(deployment)
+    assert {entry["name"]: entry["anchor_reference_ids"] for entry in rebuilt.entries} == {
+        "Deployment Rollout": ["doc-1:B0002"], "Deployment Rollback": ["doc-1:B0003"],
+        "Label Selector (Deployment)": ["doc-1:B0004"]}
+    assert [link["entry_id"] for link in rebuilt.supported_links if link["relation"] == "entry_reference"] == ["e-scale"]
+    assert "- [[kubectl|scale]]" in rebuilt.markdown and "- Deployment Rollout" in rebuilt.markdown
+    assert [entry["evidence_claim_ids"] for entry in rebuild_concept_page(kubectl).entries] == [["op-x:ev-deployment-scale"]]
+
+    # 편입 X를 되돌리면 X가 둔 항목·참조·근거가 함께 빠진다.
+    assert plan_page_recovery(deployment, {"op-x"}).action == "delete"
+    restored_kubectl = rebuild_concept_page(plan_page_recovery(kubectl, {"op-x"}).kept_contributions)
+    assert restored_kubectl.entries == ()
+    assert "Deployment Scale 근거" not in restored_kubectl.markdown
+
+
+class EntryConnection:
+    def __init__(self, entries: list[dict]) -> None:
+        self.entries = entries
+        self.units: list[tuple] = []
+
+    def execute(self, query: str, params: tuple):
+        rows: list[dict] = []
+        if "FROM wiki_page_entries entry" in query:
+            rows = self.entries
+        elif "INSERT INTO wiki_embedding_vectors" in query:
+            rows = [{"id": params[0]}]
+        elif "INSERT INTO wiki_embedding_units" in query:
+            self.units.append(params)
+        return type("Cursor", (), {"fetchall": lambda _self: rows, "fetchone": lambda _self: rows[0]})()
+
+
+def test_embedding_units_have_sub_entry_units_and_entry_ids_on_their_evidence() -> None:
+    conn = EntryConnection([
+        {"entry_id": "e-rollout", "name": "Rollout", "definition": "새 버전으로 바꾼다", "block_refs": ["doc-1:B0002"],
+         "aliases": [], "parent_name": "Deployment"},
+    ])
+
+    persist_embedding_units(conn, "page-deploy", "doc-1", (
+        "## Evidence\n- 디플로이먼트 근거 [doc-1:B0001]\n- 롤아웃 근거 [doc-1:B0002]\n- 둘 다 [doc-1:B0001, doc-1:B0002]\n"))
+
+    rows = {(row[4], row[6]): row[8] for row in conn.units}
+    assert rows == {
+        ("source_block", "디플로이먼트 근거"): None,
+        ("source_block", "롤아웃 근거"): "e-rollout",
+        ("source_block", "둘 다"): None,
+        ("sub_entry", "Deployment > Rollout: 새 버전으로 바꾼다"): "e-rollout",
+    }
+
+
+@pytest.fixture
+def scoped_dsn():
+    if not DSN:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    name = "test_entry_ingest_" + uuid4().hex
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(name)))
+    separator = "&" if "?" in DSN else "?"
+    scoped = f"{DSN}{separator}options={quote(f'-csearch_path={name}')}"
+    with psycopg.connect(scoped) as conn:
+        conn.execute(AI_SCHEMA_SQL)
+    try:
+        yield scoped
+    finally:
+        with psycopg.connect(DSN, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(name)))
+
+
+def _stored_markdown(monkeypatch) -> dict[str, str]:
+    stored: dict[str, str] = {}
+
+    def write(markdown: str, key: str) -> str:
+        stored[key] = markdown
+        return key
+
+    monkeypatch.setattr(persistence, "upload_wiki_markdown", write)
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
+    monkeypatch.setattr(persistence, "write_text_object", lambda key, text, *_args: write(text, key))
+    return stored
+
+
+def manifest(operation_id: str, normalized: dict, existing: list[dict] | None = None, judge_same=None,
+             entry_changes: dict | None = None) -> dict:
+    result = _apply({**normalized, "existing_concept_index": existing or []}, judge_same=judge_same)
+    if entry_changes:
+        result = {**result, "entry_changes": entry_changes}
+    links = LinkBuilder().build(result)
+    return {
+        "operation_id": operation_id, "workspace_id": "ws-1", "user_id": "user-1", "normalized": result,
+        "source_page": {"markdown": "# 문서\n"}, "source_blocks": [],
+        "concept_pages": [{"slug": concept["slug"], "markdown": f"# {concept['title']}\n\n## Evidence\n"
+                           + "".join(f"- {item['claim']} [doc-1:{item['anchor_reference_ids'][0]}]\n"
+                                     for item in result["evidence_units"] if concept["slug"] in item["related_concept_slugs"])
+                           + "\n## Related Concepts\n- 관련 개념 없음\n"}
+                          for concept in result["concept_ledger"]],
+        "concept_contributions": _ingest_contributions(operation_id, result), "links": links,
+    }
+
+
+def _section(markdown: str) -> str:
+    start = markdown.index("## Sub-entries")
+    end = markdown.find("\n## ", start + 1)
+    return markdown[start:end if end >= 0 else None].strip()
+
+
+def test_ingest_persists_entries_references_and_entry_units(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")])))
+        conn.execute("INSERT INTO wiki_page_entries (workspace_id, entry_id, page_id, name, definition) "
+                     "SELECT 'ws-1', 'e-scale', id, 'scale', 'Pod 수를 바꾼다' FROM wiki_pages WHERE slug = 'kubectl'")
+    concepts = [*DEPLOYMENT, _concept("deployment-scale", "Deployment Scale", "B0009")]
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", manifest(
+            "op-x", _normalized(concepts), _with_kubectl_entry(), judge_same=FakeSame("merge_into")))
+        entries = conn.execute(
+            "SELECT p.slug, e.name, e.parent_entry_id, e.block_refs FROM wiki_page_entries e "
+            "JOIN wiki_pages p ON p.id = e.page_id ORDER BY p.slug, e.name").fetchall()
+        units = conn.execute(
+            "SELECT p.slug, u.unit_type, u.text, u.entry_id FROM wiki_embedding_units u "
+            "JOIN wiki_pages p ON p.id = u.page_id WHERE u.entry_id IS NOT NULL ORDER BY u.unit_type, u.text").fetchall()
+        references = conn.execute(
+            "SELECT f.slug AS source, t.slug AS target FROM wiki_page_links l JOIN wiki_pages f ON f.id = l.from_page_id "
+            "JOIN wiki_pages t ON t.id = l.to_page_id WHERE l.link_type = 'entry_reference'").fetchall()
+        markdown_uri = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()["markdown_uri"]
+
+    assert [(row["slug"], row["name"], row["block_refs"]) for row in entries] == [
+        ("deployment", "Deployment Rollback", ["doc-1:B0003"]),
+        ("deployment", "Deployment Rollout", ["doc-1:B0002"]),
+        ("deployment", "Label Selector (Deployment)", ["doc-1:B0004"]),
+        ("kubectl", "scale", ["doc-1:B0009"]),
+    ]
+    assert references == [{"source": "deployment", "target": "kubectl"}]
+    assert ("deployment", "sub_entry", "Deployment > Deployment Rollout: Deployment Rollout 정의") in {
+        (row["slug"], row["unit_type"], row["text"]) for row in units}
+    # 같은 항목으로 본 근거는 집 페이지(kubectl) 근거로 붙고 그 항목 id를 가진다.
+    assert [(row["unit_type"], row["entry_id"]) for row in units if row["slug"] == "kubectl"] == [
+        ("source_block", "e-scale"), ("sub_entry", "e-scale")]
+    assert "Deployment Scale 근거" in next(row["text"] for row in units if row["slug"] == "kubectl")
+    # 참조는 벡터를 두지 않는다.
+    assert not any(row["slug"] == "deployment" and row["entry_id"] == "e-scale" for row in units)
+    markdown = stored[markdown_uri]
+    assert "## Sub-entries\n- Deployment Rollout\n- Deployment Rollback\n- Label Selector (Deployment)\n- [[kubectl|scale]]\n" in markdown
+
+
+NESTED = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009"),
+          _concept("deployment-scale-limit", "Deployment Scale Limit", "B0007")]
+
+
+def test_child_of_parent_merged_into_another_page_lives_under_it_there() -> None:
+    result = _apply(_normalized(NESTED, _with_kubectl_entry()), judge_same=FakeSame("merge_into"))
+
+    kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
+    assert set(kubectl) == {"scale", "Deployment Scale Limit"}
+    assert kubectl["Deployment Scale Limit"]["parent_entry_id"] == "e-scale"
+    assert "Deployment Scale Limit" not in _entries(result, "deployment")
+    # 자식도 Deployment에 딸린다고 판정됐으므로 그 직접 배정은 참조로 남는다.
+    assert [link["entry_id"] for link in result["entry_references"]] == [
+        "e-scale", kubectl["Deployment Scale Limit"]["entry_id"],
+    ]
+    assert result["concept_slug_map"]["deployment-scale-limit"] == "kubectl"
+
+
+def test_nested_merge_stored_state_equals_replay(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    first = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    second = manifest("op-x", _normalized(NESTED), _with_kubectl_entry(), judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'kubectl'").fetchone()
+        rows = conn.execute("SELECT entry_id, name, parent_entry_id FROM wiki_page_entries WHERE page_id = %s "
+                            "ORDER BY position", (page["id"],)).fetchall()
+        units = conn.execute("SELECT text FROM wiki_embedding_units WHERE unit_type = 'sub_entry' AND page_id = %s "
+                             "ORDER BY text", (page["id"],)).fetchall()
+
+    replayed = rebuild_concept_page([
+        _page(page["id"], "op-w", 1, first["concept_contributions"]["kubectl"]),
+        _page(page["id"], "op-x", 2, second["concept_contributions"]["kubectl"]),
+    ])
+    assert rows == [{key: entry[key] for key in ("entry_id", "name", "parent_entry_id")} for entry in replayed.entries]
+    assert _section(stored[page["markdown_uri"]]) == _section(replayed.markdown) == (
+        "## Sub-entries\n- scale\n  - Deployment Scale Limit")
+    # 임베딩도 실제 바로 위 항목 이름을 쓴다.
+    assert [row["text"] for row in units] == [
+        "kubectl > scale (Deployment Scale): Pod 수를 바꾼다", "scale > Deployment Scale Limit: Deployment Scale Limit 정의"]
+
+
+def test_child_added_to_existing_entry_is_drawn_under_it(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    first = manifest("op-w", _normalized(DEPLOYMENT))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": [
+        {"entry_id": change["entry_id"], "name": change["name"], "definition": change["definition"], "parent_entry_id": None}
+        for change in first["normalized"]["entry_changes"]["deployment"]]}]
+    # 다시 나온 Rollout은 이름으로 같은 항목이 되고, 새 History는 그 아래 항목이다.
+    second = manifest("op-x", _normalized([DEPLOYMENT[0], DEPLOYMENT[1],
+                                           _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")]),
+                      existing)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        markdown_uri = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()["markdown_uri"]
+
+    assert _section(stored[markdown_uri]) == (
+        "## Sub-entries\n- Deployment Rollout\n  - Deployment Rollout History\n- Deployment Rollback\n"
+        "- Label Selector (Deployment)\n- [[deployment|Deployment Rollout History]]")
+
+
+def test_relation_from_concept_moved_into_entry_starts_from_its_home_page() -> None:
+    concepts = [*DEPLOYMENT, _concept("service", "Service", "B0006")]
+    normalized = _normalized(concepts)
+    normalized["concept_resolutions"] = [
+        {"incoming_slug": "deployment-rollout", "decision": "link_to", "canonical_slug": "deployment-rollout",
+         "link_targets": ["service", "deployment"], "confidence": 0.95},
+    ]
+
+    result = _apply(normalized)
+    links = [link for link in LinkBuilder().build(result) if link["relation"] == "concept_related_to"]
+    contributions = _ingest_contributions("op-x", result)
+    replayed = rebuild_concept_page([_page("page-deploy", "op-x", 1, contributions["deployment"])])
+
+    # 집 페이지로 옮긴 연결만 남고, 집 페이지 자신을 가리키는 연결은 버린다.
+    assert [(link["source"], link["target"]) for link in links] == [("concept:deployment", "concept:service")]
+    assert [(link["source"], link["target"]) for link in replayed.supported_links
+            if link["relation"] == "concept_related_to"] == [("concept:deployment", "concept:service")]
+    deployment = next(page for page in ConceptPageAssembler().build_top(result, top_n=None)
+                      if page["slug"] == "deployment")
+    assert "[[service|Service]]" in deployment["markdown"]
+
+
+def test_child_of_merged_parent_is_searched_under_the_matched_entry_name() -> None:
+    existing = _with_kubectl_entry()
+    existing[0]["entries"].append(
+        {"entry_id": "e-limit", "name": "Deployment Scale Limit", "definition": "상한", "parent_entry_id": "e-scale"})
+
+    result = _apply(_normalized(NESTED, existing), judge_same=FakeSame("merge_into"))
+
+    # 위 항목이 kubectl > scale과 같으면 아래 항목은 "scale > ..."로 찾아 기존 항목 id를 다시 쓴다.
+    kubectl = {change["name"]: change for change in result["entry_changes"]["kubectl"]}
+    assert kubectl["Deployment Scale Limit"]["entry_id"] == "e-limit"
+    assert kubectl["Deployment Scale Limit"]["parent_entry_id"] == "e-scale"
+
+
+def test_manually_deleted_reference_stays_deleted_after_next_ingest(scoped_dsn, monkeypatch) -> None:
+    from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+
+    stored = _stored_markdown(monkeypatch)
+    monkeypatch.setattr(database, "storage_uri", lambda key: key)
+    monkeypatch.setattr(database, "read_text_object", lambda key: stored[key])
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    first = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    concepts = [*DEPLOYMENT[:3], _concept("deployment-scale", "Deployment Scale", "B0009")]
+    second = manifest("op-x", _normalized(concepts), _with_kubectl_entry(), judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-0", first)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", second)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()
+
+    # 사람이 본문에서 참조 줄을 지운다. 수동 저장은 지운 [[kubectl]]의 간선 삭제를 이 반영 함수로 적용한다.
+    manual_markdown = stored[page["markdown_uri"]].replace("- [[kubectl|scale]]\n", "")
+    stored["manual.md"] = manual_markdown
+    removed = [{"source": "concept:deployment", "target": "concept:kubectl", "relation": "entry_reference"}]
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        database._apply_restored_wiki_state(
+            "ws-1",
+            [{"page_id": page["id"], "page_type": "concept", "markdown_key": "manual.md", "title": None,
+              "summary": None, "source_document_ids": ["doc-1"]}],
+            {"removed_links": removed, "restored_links": []},
+            False,
+            conn=conn,
+        )
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "정의", "entries": []}]
+    third = manifest("op-y", _normalized([DEPLOYMENT[0], _concept("deployment-strategy", "Deployment Strategy", "B0006")]),
+                     existing)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-2", third)
+        markdown_uri = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()["markdown_uri"]
+
+    manual = _page(page["id"], "op-m", 2, {"schema_version": 1, "artifact_type": "manual", "operation_id": "op-m",
+                                            "markdown": manual_markdown, "added_links": [], "removed_links": removed})
+    replayed = rebuild_concept_page([
+        _page(page["id"], "op-x", 1, second["concept_contributions"]["deployment"]),
+        manual,
+        _page(page["id"], "op-y", 3, third["concept_contributions"]["deployment"]),
+    ])
+    assert "[[kubectl|scale]]" not in _section(stored[markdown_uri])
+    assert _section(stored[markdown_uri]) == _section(replayed.markdown)
+
+
+def test_reference_from_existing_parent_not_in_this_document_round_trips(scoped_dsn, monkeypatch) -> None:
+    stored = _stored_markdown(monkeypatch)
+    scale = {"op": "add", "entry_id": "e-scale", "name": "scale", "definition": "Pod 수를 바꾼다",
+             "parent_entry_id": None, "anchor_reference_ids": ["B0008"], "evidence_claim_ids": []}
+    kubectl = manifest("op-w", _normalized([_concept("kubectl", "kubectl", "B0008")]), entry_changes={"kubectl": [scale]})
+    deployment = manifest("op-v", _normalized([DEPLOYMENT[0]]))
+    existing = [*_with_kubectl_entry(),
+                {"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "Deployment 정의", "entries": []}]
+    # 이번 문서는 Deployment Scale만 뽑는다. 기존 Deployment 아래 배정되고 kubectl의 scale과 같은 항목이다.
+    scale_doc = manifest("op-x", _normalized([_concept("deployment-scale", "Deployment Scale", "B0009")]), existing,
+                         judge_same=FakeSame("merge_into"))
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        for document_id, item in (("doc-0", kubectl), ("doc-9", deployment)):
+            persistence.persist_wiki_outputs(conn, document_id, item)
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", scale_doc)
+        page = conn.execute("SELECT id, markdown_uri FROM wiki_pages WHERE slug = 'deployment'").fetchone()
+        copies = conn.execute("SELECT entry_id, target_slug FROM wiki_page_entry_references WHERE page_id = %s",
+                              (page["id"],)).fetchall()
+
+    reference = [link for link in scale_doc["concept_contributions"]["deployment"]["links"]
+                 if link["relation"] == "entry_reference"]
+    assert [(link["source"], link["target"], link["entry_id"]) for link in reference] == [
+        ("concept:deployment", "concept:kubectl", "e-scale")]
+    assert copies == [{"entry_id": "e-scale", "target_slug": "kubectl"}]
+    history = [_page(page["id"], "op-v", 1, deployment["concept_contributions"]["deployment"]),
+               _page(page["id"], "op-x", 2, scale_doc["concept_contributions"]["deployment"])]
+    replayed = rebuild_concept_page(history)
+    assert _section(stored[page["markdown_uri"]]) == _section(replayed.markdown) == "## Sub-entries\n- [[kubectl|scale]]"
+    # 편입 X를 되돌리면 참조도 함께 빠진다.
+    restored = rebuild_concept_page(plan_page_recovery(history, {"op-x"}).kept_contributions)
+    assert not [link for link in restored.supported_links if link["relation"] == "entry_reference"]
+    assert "## Sub-entries" not in restored.markdown
+
+
+def test_new_sibling_entries_of_one_ingest_merge_by_name_rule_and_same_judgment() -> None:
+    # 같은 집·같은 위 항목 아래 이번 문서의 새 세부 항목끼리도 같은 것을 찾는다. 다른 표기의 같은 항목은 쌍 판정 same만 합친다.
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": ["디플로이먼트"], "definition": "기존 정의",
+                 "entries": []}]
+    concepts = [
+        _concept("deployment-rolling-update", "Deployment Rolling Update", "B0001"),
+        _concept("ko-rolling-update", "디플로이먼트 롤링 업데이트", "B0002"),
+        _concept("deployment-pod-template", "Deployment Pod Template", "B0003"),
+        _concept("deployment-pod-template-2", "deployment pod-template", "B0004"),
+    ]
+    asked: list[tuple[list[str], list[str]]] = []
+
+    def judge(entries, pool):
+        asked.append(([item["title"] for item in entries], [item["title"] for item in pool]))
+        return {
+            entry["slug"]: {"incoming_slug": entry["slug"], "decision": "merge_into",
+                            "canonical_slug": "incoming:deployment-rolling-update"}
+            for entry in entries if entry["title"].endswith("디플로이먼트 롤링 업데이트")
+        }
+
+    result = _apply(_normalized(concepts, existing), judge_same=judge)
+
+    adds = result["entry_changes"]["deployment"]
+    ids = {change["entry_id"] for change in adds}
+    assert len(ids) == 2
+    rolling = [change for change in adds if change["name"] == "Deployment Rolling Update"]
+    # 먼저 나온 항목의 이름·id로 근거를 더한다.
+    assert {change["entry_id"] for change in rolling} == {adds[1]["entry_id"]} == {adds[0]["entry_id"]}
+    assert [change["anchor_reference_ids"] for change in rolling] == [["B0001"], ["B0002"]]
+    pod = [change for change in adds if change["name"] == "Deployment Pod Template"]
+    assert [change["anchor_reference_ids"] for change in pod] == [["B0003"], ["B0004"]]
+    # 같은 이름(정체성)으로 합친 항목은 묻지 않는다. 나머지 형제는 판정기 한 번에 묻고, 먼저 나온 형제로 합친 판정만 쓴다.
+    titles = ["Deployment > Deployment Rolling Update", "Deployment > 디플로이먼트 롤링 업데이트",
+              "Deployment > Deployment Pod Template"]
+    assert asked == [(titles, titles)]
+
+
+def test_unsure_or_unavailable_sibling_judgment_keeps_entries_apart() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
+    concepts = [_concept("deployment-rollout", "Deployment Rollout", "B0001"),
+                _concept("deployment-scale", "Deployment Scale", "B0002")]
+
+    def unavailable(_entries, _pool):
+        raise JevUnavailable("Jev HTTP 402")
+
+    for judge in (FakeSame(None), unavailable, None):
+        adds = _apply(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
+        assert len({change["entry_id"] for change in adds}) == 2
+
+
+def test_names_alone_never_assign_without_a_judge_or_embeddings() -> None:
+    # 이름이 상위 항목으로 시작해도 코드가 배정하지 않는다. 판정기와 임베딩이 모두 있어야 묻는다.
+    normalized = _normalized(DEPLOYMENT)
+
+    def embedding_down(_query, _texts):
+        raise JevUnavailable("embedding server down")
+
+    assert apply_concept_entries(normalized) is normalized
+    assert apply_concept_entries(normalized, judge_part_of=PrefixPartOf()) is normalized
+    assert apply_concept_entries(normalized, judge_part_of=PrefixPartOf(), similarity=embedding_down) is normalized
+
+
+POD_PAGE = {"slug": "pod", "title": "파드 (Pod)", "aliases": ["Pod"], "definition": "컨테이너를 묶어 실행하는 단위", "entries": []}
+
+
+def test_candidates_come_from_embeddings_including_existing_pages_whatever_the_names() -> None:
+    concepts = [
+        _concept("static-pod-ko", "스태틱 파드", "B0001"),
+        _concept("static-pods", "Static Pods", "B0002"),
+        _concept("sidecar-container", "사이드카 컨테이너", "B0003"),
+        *(_concept(f"other-{index}", f"Other {index}", f"B00{10 + index}") for index in range(6)),
+    ]
+
+    def similarity(_query, texts):
+        # 기존 Pod 페이지가 가장 가깝고 나머지는 멀다(이름이 겹치지 않는 사이드카도 임베딩으로 후보가 된다).
+        return [1.0 if text.startswith("파드 (Pod)") else 0.1 for text in texts]
+
+    asked: list[tuple[str, str]] = []
+
+    def judge(pairs):
+        asked.extend((head["slug"], detail["slug"]) for head, detail in pairs)
+        return {(head["slug"], detail["slug"]): {"part_of": True, "probability": 0.95}
+                for head, detail in pairs if head["slug"] == "pod" and not detail["slug"].startswith("other")}
+
+    result = apply_concept_entries(_normalized(concepts, [POD_PAGE]), judge_part_of=judge, similarity=similarity)
+
+    # 한국어 뒤 수식("스태틱 파드"), 영어 복수형("Static Pods"), 이름이 겹치지 않는 항목 모두 판정기에 간다.
+    assert {("pod", "static-pod-ko"), ("pod", "static-pods"), ("pod", "sidecar-container")} <= set(asked)
+    # 후보는 세부 항목마다 상한까지다.
+    assert max(Counter(detail for _head, detail in asked).values()) == PART_OF_CANDIDATE_LIMIT
+    assert set(_entries(result, "pod")) == {"스태틱 파드", "Static Pods", "사이드카 컨테이너"}
+
+
+class FakeCompletion:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.calls: list[tuple[str, dict]] = []
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
+        payload = json.loads(user_prompt)
+        self.calls.append((system_prompt, payload))
+        return self.answer(payload)
+
+
+def test_ingest_llm_answers_part_of_when_jev_is_disabled() -> None:
+    concepts = [_concept("static-pod-ko", "스태틱 파드", "B0001"), _concept("image-registry", "이미지 레지스트리", "B0002")]
+
+    def answer(payload):
+        return {"judgments": [
+            {"id": question["id"],
+             "decision": "part_of" if question["detail"]["slug"] == "static-pod-ko" and question["head"]["slug"] == "pod"
+             else "not_part_of",
+             # 애매한 part_of는 배정하지 않는다.
+             "confidence": 0.97 if question["detail"]["slug"] == "static-pod-ko" else 0.6}
+            for question in payload["questions"]
+        ]}
+
+    completion = FakeCompletion(answer)
+    judge = llm_part_of_judge(completion, "part_of 규칙")
+
+    result = apply_concept_entries(_normalized(concepts, [POD_PAGE]), judge_part_of=judge, similarity=_same_score)
+
+    assert len(completion.calls) == 1 and completion.calls[0][0] == "part_of 규칙"
+    assert set(_entries(result, "pod")) == {"스태틱 파드"}
+    assert [concept["slug"] for concept in result["concept_ledger"]] == ["image-registry", "pod"]
+
+
+def test_ingest_llm_judges_same_entries_and_keeps_unsure_apart() -> None:
+    entries = [{"slug": "incoming:a", "title": "Pod > Static Pods", "definition": "정적 파드"},
+               {"slug": "incoming:b", "title": "Pod > 스태틱 파드", "definition": "정적 파드"},
+               {"slug": "incoming:c", "title": "Pod > Sidecar", "definition": "보조 컨테이너"}]
+
+    def answer(payload):
+        return {"judgments": [
+            {"id": "incoming:b", "same_as": "incoming:a", "confidence": 0.95},
+            {"id": "incoming:c", "same_as": "incoming:a", "confidence": 0.5},
+        ]}
+
+    judge = llm_same_entry_judge(FakeCompletion(answer), "same 규칙", _same_score)
+
+    assert judge(entries, entries) == {"incoming:b": {"incoming_slug": "incoming:b", "decision": "merge_into",
+                                                     "canonical_slug": "incoming:a", "alias_to_add": None}}
+
+
+def test_existing_page_from_the_file_index_is_judged_with_its_summary_as_definition() -> None:
+    # 파일 개념 인덱스는 정의를 summary에 둔다. Jev처럼 정의 없는 쌍을 건너뛰는 판정기에도 정의로 넘긴다.
+    file_page = {"slug": "pod", "title": "파드 (Pod)", "aliases": [], "summary": "컨테이너를 묶어 실행하는 단위", "entries": []}
+
+    def jev_like(pairs):
+        return {(head["slug"], detail["slug"]): {"part_of": True, "probability": 0.95}
+                for head, detail in pairs
+                if head["slug"] == "pod" and str(head.get("definition") or "").strip() and detail.get("definition")}
+
+    result = apply_concept_entries(
+        _normalized([_concept("sidecar-container", "사이드카 컨테이너", "B0001")], [file_page]),
+        judge_part_of=jev_like, similarity=_same_score,
+    )
+
+    assert set(_entries(result, "pod")) == {"사이드카 컨테이너"}
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("timeout"), ValueError("bad json after retries")])
+def test_llm_judge_failures_are_no_decision_but_cancellation_still_stops(failure) -> None:
+    from app.core.pipeline_control import DeadlineExceededError
+
+    class Failing:
+        def __init__(self, error) -> None:
+            self.error = error
+
+        def complete_json(self, _system, _user):
+            raise self.error
+
+    concepts = [_concept("static-pod-ko", "스태틱 파드", "B0001")]
+    normalized = _normalized(concepts, [POD_PAGE])
+    entries = [{"slug": "incoming:a", "title": "Pod > A", "definition": "a"},
+               {"slug": "incoming:b", "title": "Pod > B", "definition": "b"}]
+
+    # 전송 오류·JSON 재시도 소진은 판정 없음이다. 편입은 배정 없이 계속된다.
+    assert apply_concept_entries(normalized, judge_part_of=llm_part_of_judge(Failing(failure), "r"),
+                                 similarity=_same_score) is normalized
+    assert llm_same_entry_judge(Failing(failure), "r", _same_score)(entries, entries) == {}
+    # 작업 취소·기한 초과는 그대로 올린다.
+    with pytest.raises(DeadlineExceededError):
+        llm_part_of_judge(Failing(DeadlineExceededError("deadline")), "r")([(POD_PAGE, concepts[0])])
+    with pytest.raises(DeadlineExceededError):
+        llm_same_entry_judge(Failing(DeadlineExceededError("deadline")), "r", _same_score)(entries, entries)
+
+
+def test_sibling_merge_chain_resolves_to_the_first_sibling() -> None:
+    existing = [{"slug": "deployment", "title": "Deployment", "aliases": [], "definition": "기존 정의", "entries": []}]
+    concepts = [_concept("deployment-a", "Deployment A", "B0001"), _concept("deployment-b", "Deployment B", "B0002"),
+                _concept("deployment-c", "Deployment C", "B0003")]
+
+    def judge(entries, _pool):
+        # B→A, C→B. C는 B가 합쳐진 최종 항목 A로 가야 한다.
+        targets = {"incoming:deployment-b": "incoming:deployment-a", "incoming:deployment-c": "incoming:deployment-b"}
+        return {entry["slug"]: {"incoming_slug": entry["slug"], "decision": "merge_into", "canonical_slug": targets[entry["slug"]]}
+                for entry in entries if entry["slug"] in targets}
+
+    adds = _apply(_normalized(concepts, existing), judge_same=judge)["entry_changes"]["deployment"]
+
+    assert len({change["entry_id"] for change in adds}) == 1
+    assert [change["anchor_reference_ids"] for change in adds] == [["B0001"], ["B0002"], ["B0003"]]

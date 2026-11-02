@@ -529,7 +529,7 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
                 WikiPageLink(
                     "source:seed",
                     "concept:allowed",
-                    "part_of",
+                    "source_mentions_concept",
                     confidence=0.98,
                 ),
             ],
@@ -1904,16 +1904,11 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
         self.assertEqual(max(item.depth for item in graph_context.nodes), 2)
         self.assertEqual(stop_reason, "max_depth")
 
-    def test_traverses_materialized_lint_relations_and_excludes_non_materialized_links(self) -> None:
+    def test_traverses_only_judged_relations_and_excludes_other_links(self) -> None:
         relation_types = [
             "source_mentions_concept",
             "concept_related_to",
             "related_to",
-            "part_of",
-            "child_of",
-            "uses_or_depends_on",
-            "contrasts_with",
-            "supports_or_enables",
         ]
         pages = [source_page("source:seed", "Seed Source")]
         links = []
@@ -1925,12 +1920,15 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
             [
                 concept_page("concept:related-evidence", "Related Evidence"),
                 concept_page("concept:unknown", "Unknown Concept"),
+                concept_page("concept:part-of", "Part Of"),
             ]
         )
         links.extend(
             [
                 WikiPageLink("source:seed", "concept:related-evidence", "related_evidence", confidence=0.99),
                 WikiPageLink("source:seed", "concept:unknown", "unknown", confidence=0.99),
+                # 클러스터 관계 후보 링크(종류 있는 관계)는 더 만들지 않아 탐색하지 않는다(ADR 0042).
+                WikiPageLink("source:seed", "concept:part-of", "part_of", confidence=0.99),
             ]
         )
 
@@ -1955,13 +1953,13 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
         )
         self.assertEqual(
             {item.page.id for item in graph_context.nodes},
-            {"source:seed", *(f"concept:{index}" for index in range(1, 9))},
+            {"source:seed", *(f"concept:{index}" for index in range(1, 4))},
         )
         self.assertFalse(
             any(
                 excluded_id in path.nodes
                 for path in paths
-                for excluded_id in ("concept:related-evidence", "concept:unknown")
+                for excluded_id in ("concept:related-evidence", "concept:unknown", "concept:part-of")
             )
         )
 

@@ -9,6 +9,7 @@ import psycopg
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     parse_active_cluster_lint,
 )
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import sync_source_concept_links
 
 
 def list_reconciliation_candidates(
@@ -86,6 +87,8 @@ def apply_structural_reconciliation(
             candidate["document_id"],
             candidate["stale_concept_slugs"],
         )
+        # 문서 연결을 지웠으니 그 문서의 자동 소스 → 개념 링크도 맞춘다(ADR 0042 결정 5).
+        sync_source_concept_links(conn, candidate["workspace_id"], document_ids=[candidate["document_id"]])
         removed_relations = _remove_stale_relations(
             conn,
             candidate["stale_relations"],
@@ -169,7 +172,6 @@ def source_contribution_payload(manifest: dict[str, Any]) -> dict[str, Any]:
         "links": _manifest_links(manifest),
         "source_block_changes": manifest.get("source_block_changes") or {},
         "claim_signatures": _claim_signatures(active_cluster_markdown),
-        "relation_signatures": _relation_signatures(active_cluster_markdown),
     }
 
 
@@ -238,10 +240,8 @@ def _reconciliation_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "_cluster_reconciliation_ready": (
             isinstance(stored_contribution, dict)
             and isinstance(stored_contribution.get("claim_signatures"), list)
-            and isinstance(stored_contribution.get("relation_signatures"), list)
         ),
         "_current_claim_signatures": payload.get("claim_signatures", []),
-        "_current_relation_signatures": payload.get("relation_signatures", []),
     }
 
 
@@ -265,21 +265,6 @@ def _claim_signatures(markdown: Any) -> list[list[str]]:
         [cluster["id"], str(claim.get("id") or ""), str(claim.get("text") or "")]
         for cluster in parse_active_cluster_lint(markdown)
         for claim in cluster.get("claims", [])
-    ]
-
-
-def _relation_signatures(markdown: Any) -> list[list[Any]]:
-    if not isinstance(markdown, str):
-        return []
-    return [
-        [
-            cluster["id"],
-            str(relation.get("target") or ""),
-            str(relation.get("relation") or ""),
-            [str(item) for item in relation.get("evidence", [])],
-        ]
-        for cluster in parse_active_cluster_lint(markdown)
-        for relation in cluster.get("relations", [])
     ]
 
 

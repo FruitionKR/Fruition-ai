@@ -322,19 +322,8 @@ generated_by: backend_skeleton
 
 class LinkBuilder:
     def build(self, normalized: dict[str, Any], generated_concept_pages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        doc = normalized["document"]
-        ledger = normalized["concept_ledger"]
+        # 소스 → 개념 링크는 만들지 않는다. 개념 기록 재생의 문서 연결에서 파생한다(ADR 0042 결정 5).
         links = []
-        source_page_id = f"source:{doc['document_id']}"
-        for c in ledger:
-            links.append(
-                {
-                    "source": source_page_id,
-                    "target": f"concept:{c['slug']}",
-                    "relation": "source_mentions_concept",
-                    "decided_by": "backend",
-                    }
-                )
         # 개념끼리의 링크는 판단을 거친 관계만 만든다. 병합 판단이 '따로 두고 연결(link_to)'로 고른 관계로,
         # 다른 문서의 기존 개념과도 이어진다. 같은 근거에 함께 나온 정도의 약한 관계는 본문 Related Concepts에만 둔다.
         # 연결 대상이 같은 편입에서 병합됐으면 병합된 개념으로 잇는다.
@@ -343,7 +332,8 @@ class LinkBuilder:
         for resolution in normalized.get("concept_resolutions", []):
             if resolution.get("decision") != "link_to":
                 continue
-            source = resolution.get("incoming_slug")
+            # 하위 항목으로 옮긴 개념(ADR 0042)의 연결은 그 집 페이지에서 나간다.
+            source = slug_map.get(resolution.get("incoming_slug"), resolution.get("incoming_slug"))
             # 대상별 확신도(Jev 판정)는 병합 반영 전 대상 slug로 찾고, 없으면 판정 전체 확신도를 쓴다.
             confidences = resolution.get("link_confidences") or {}
             for original in resolution.get("link_targets", []):
@@ -377,6 +367,8 @@ class LinkBuilder:
                     "decided_by": "alias_overlap",
                 }
             )
+        # 다른 페이지 하위 항목을 가리키는 참조(ADR 0042). 항목마다 하나다.
+        links.extend(normalized.get("entry_references", []))
         return links
 
 

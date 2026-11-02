@@ -108,6 +108,25 @@ def test_cancel_before_delivery_never_calls_handler(journal_database):
     assert journal.status("run", "ws", "user")["status"] == "cancelled"
 
 
+def test_cancel_preserves_other_locations_of_the_same_entry_reference(journal_database):
+    from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import upsert_entry_references
+
+    connect = journal_database
+    reference = {"entry_id": "entry", "target": "concept:home", "name": "Entry", "parent_entry_id": "a"}
+    with connect() as conn:
+        insert_page(conn)
+        upsert_entry_references(conn, "ws", "page", [reference])
+    journal.register(command())
+    with connect() as conn:
+        conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+        upsert_entry_references(conn, "ws", "page", [{**reference, "parent_entry_id": "b"}])
+    journal.request_cancel("run", "ws", "user")
+    journal.rollback("run")
+    with connect() as conn:
+        rows = conn.execute("SELECT parent_entry_id FROM wiki_page_entry_references").fetchall()
+        assert rows == [{"parent_entry_id": "a"}]
+
+
 def test_failed_run_keeps_reason_code_for_replay(journal_database):
     # failure_code는 app.* 예외의 code만 그대로 쓴다. 실제 Skill 거절 예외로 검증한다.
     from app.modules.skill.domain.exceptions import SkillRequestRejectedError

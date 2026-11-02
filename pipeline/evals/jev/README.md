@@ -37,7 +37,7 @@
 
 ## 실행
 
-`pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. 답변·편입 모델은 Claude Haiku(`claude-haiku-4-5-20251001`)이고, 각 사례를 3회 반복한다.
+`pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. Wiki RAG와 일반 RAG 답변 모델은 모두 OpenAI GPT Luna(`gpt-6-luna`)이며 `OPENAI_API_KEY`가 필요하다. `rag_prepare.py`의 기본 편입 모델과 다른 기능 평가의 모델은 Claude Haiku(`claude-haiku-4-5-20251001`)이다. 각 사례를 3회 반복하며, 이전 Haiku 답변 결과와 비교할 때는 모델 차이를 명시한다.
 
 ```bash
 cd pipeline/evals/jev/tools

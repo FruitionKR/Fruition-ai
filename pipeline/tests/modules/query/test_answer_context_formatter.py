@@ -53,6 +53,21 @@ class AnswerContextFormatterTest(unittest.TestCase):
         self.assertIn("answer that supported part first", context)
         self.assertIn("provided internal documents do not support", context)
 
+    def test_shows_entry_path_of_evidence_from_a_sub_entry(self) -> None:
+        context = AnswerContextFormatter().format(
+            question="question",
+            related_pages=[],
+            traversal_paths=[],
+            evidence_snippets=[
+                EvidenceSnippet(rank=1, source_document_id="doc-a", source_block_ids=["B0001"], text="이력 근거",
+                                entry_path="Deployment > Rollout > History"),
+                EvidenceSnippet(rank=2, source_document_id="doc-a", source_block_ids=["B0002"], text="페이지 근거"),
+            ],
+        )
+
+        self.assertIn("## Evidence 1\n- entry: Deployment > Rollout > History\n- text:\n  이력 근거", context)
+        self.assertIn("## Evidence 2\n- text:\n  페이지 근거", context)
+
     def test_adds_web_fallback_policy_for_web_answer_mode(self) -> None:
         context = AnswerContextFormatter().format(
             question="question",

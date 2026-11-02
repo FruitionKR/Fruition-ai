@@ -323,16 +323,18 @@ class WikiLintOut(BaseModel):
     orphan_refs: list[str]
     promotion_candidates: list[str]
     needs_review: list[str]
-    relation_candidates: list[dict[str, Any]]
-    invalid_relations: list[dict[str, Any]]
     invalid_promotions: list[dict[str, Any]]
     reconciliation_candidates: list[dict[str, Any]]
     applied_reconciliations: list[dict[str, Any]]
     applied_cluster_reconciliation: dict[str, list[dict[str, Any]]]
     materialized_promotions: list[dict[str, Any]]
     merged_promotions: list[dict[str, Any]]
-    materialized_relations: list[dict[str, Any]]
     orphan_link_candidates: list[dict[str, Any]] = Field(default_factory=list)
     removed_orphan_links: list[dict[str, Any]] = Field(default_factory=list)
     operation_artifacts: list[dict[str, Any]] = Field(default_factory=list)
     changed_pages: list[dict[str, Any]] = Field(default_factory=list)
+    # 하위 항목 재검사(ADR 0042). 판정·미룬 페이지·합쳐 지운 자식 페이지·원장에 더할 기여.
+    entry_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    deferred_entry_pages: list[str] = Field(default_factory=list)
+    deleted_pages: list[str] = Field(default_factory=list)
+    ledger_contributions: list[dict[str, Any]] = Field(default_factory=list)

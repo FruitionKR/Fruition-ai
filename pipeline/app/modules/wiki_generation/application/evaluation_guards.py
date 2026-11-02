@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from app.modules.wiki_generation.application.models import GenerationEvaluation
+from app.modules.wiki_generation.domain.text_utils import mention_source_text
 
 
 def apply_generation_evaluation_guards(
@@ -99,7 +100,7 @@ def _only_reference_list(item: dict[str, Any], reference_refs: set[str]) -> bool
 
 
 def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
-    """섹션 후보로 내려 해결된 근거 없음 문제를 마지막 평가에서 지운다."""
+    """언급으로 내려 해결된 근거 없음 문제를 마지막 평가에서 지운다."""
     demoted_slugs = set(demoted)
     clear_resolved_issues(
         evaluation,
@@ -250,29 +251,28 @@ def clear_resolved_number_issues(evaluation: GenerationEvaluation, normalized: d
     )
 
 
-def demote_unsupported_core_concepts(
-    normalized: dict[str, Any], reference_refs: set[str] = frozenset()
-) -> tuple[dict[str, Any], list[str]]:
-    """재시도 뒤에도 근거 주장이 없는(참고문헌에만 있는) 핵심 개념을 섹션 후보로 내린다. 개념 페이지 대신 클러스터 판정으로 간다."""
-    slugs = set(unsupported_core_concept_slugs(normalized, reference_refs))
+def demote_unsupported_core_concepts(normalized: dict[str, Any], blocks: list[Any] = ()) -> tuple[dict[str, Any], list[str]]:
+    """재시도 뒤에도 본문 근거 주장이 없는(참고문헌에만 있는) 핵심 개념을 언급으로 내린다. 개념 페이지 대신 클러스터 판정으로 간다.
+
+    섹션 후보로 내리지 않는다. 섹션 후보는 하위 항목으로 배정되므로 근거 없는 개념이 근거 검증을 건너 개념 구조에 들어간다(ADR 0042).
+    언급의 정의는 정규화처럼 첫 근거 블록 원문으로 만든다.
+    """
+    slugs = set(unsupported_core_concept_slugs(normalized, reference_list_refs(blocks)))
     if not slugs:
         return normalized, []
-    sections = {str(item.get("slug")): dict(item) for item in normalized.get("section_candidates", [])}
+    texts = {ref: block.text for block in blocks for ref in (block.block_id, block.source_reference_id)}
+    mentions = {str(item.get("slug")): dict(item) for item in normalized.get("mentions", [])}
     for concept in normalized["concept_ledger"]:
         if concept["slug"] not in slugs:
             continue
-        section = sections.setdefault(
-            concept["slug"],
-            {
-                "term": concept.get("title") or concept["slug"],
-                "title": concept.get("title") or concept["slug"],
-                "slug": concept["slug"],
-                # 클러스터 후보는 문맥이 없으면 버려지므로 정의가 없으면 제목을 둔다.
-                "context": concept.get("definition") or concept.get("title") or concept["slug"],
-                "anchor_reference_ids": [],
-            },
+        name = concept.get("title") or concept["slug"]
+        mention = mentions.setdefault(
+            concept["slug"], {"term": name, "name": name, "slug": concept["slug"], "anchor_reference_ids": []}
         )
-        section["anchor_reference_ids"] = _unique([*section.get("anchor_reference_ids", []), *concept.get("anchor_reference_ids", [])])
+        mention["anchor_reference_ids"] = _unique([*mention.get("anchor_reference_ids", []), *concept.get("anchor_reference_ids", [])])
+        if not mention.get("definition"):
+            text = next((texts[ref] for ref in mention["anchor_reference_ids"] if ref in texts), None)
+            mention["definition"] = mention_source_text(name, text) if text else ""
     demoted = sorted(slugs)
     return {
         **normalized,
@@ -283,7 +283,7 @@ def demote_unsupported_core_concepts(
             for link in normalized.get("alias_concept_links", [])
             if link["source"] not in slugs and link["target"] not in slugs
         ],
-        "section_candidates": sorted(sections.values(), key=lambda item: str(item.get("slug", ""))),
+        "mentions": sorted(mentions.values(), key=lambda item: str(item.get("slug", ""))),
     }, demoted
 
 

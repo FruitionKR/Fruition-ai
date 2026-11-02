@@ -20,7 +20,7 @@ def calculate_lint_link_changes(
         for link in contribution.get("removed_links", [])
         if isinstance(link, dict)
     )
-    return {
+    changes = {
         "removed_links": [
             link for link in added_links if _link_key(link) not in supported_keys
         ],
@@ -28,6 +28,7 @@ def calculate_lint_link_changes(
             link for link in removed_links if _link_key(link) in supported_keys
         ],
     }
+    return changes
 
 
 def _unique_links(values: Any) -> list[dict[str, Any]]:

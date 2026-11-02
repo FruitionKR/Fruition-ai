@@ -249,9 +249,10 @@ def test_restore_legacy_contribution_without_document_id_keeps_embedding_unbound
     assert result["changed_pages"][0]["source_document_ids"] == []
 
 
-def test_restore_lint_only_contribution_keeps_document_provenance_unbound() -> None:
+def test_restore_lint_record_links_only_documents_of_its_surviving_evidence() -> None:
+    # lint 기록의 개념 메타데이터 문서는 세지 않고, 남은 근거(승격 근거 단위)의 문서만 센다(ADR 0042 결정 5).
     lint = json.loads(_lint_payload("L", "C3", "lint 근거"))
-    lint["concept"]["source_document_ids"] = ["doc-A"]
+    lint["concept"]["source_document_ids"] = ["doc-meta"]
     lint["evidence_units"][0]["source_document_id"] = "doc-A"
     store = ArtifactStore(
         {"wiki/ws-1/pages/C3/ops/L.json": json.dumps(lint)}
@@ -273,7 +274,7 @@ def test_restore_lint_only_contribution_keeps_document_provenance_unbound() -> N
         )
     )
 
-    assert result["changed_pages"][0]["source_document_ids"] == []
+    assert result["changed_pages"][0]["source_document_ids"] == ["doc-A"]
 
 
 def test_restore_ingest_falls_back_to_document_id() -> None:
@@ -789,3 +790,47 @@ def test_ingest_restore_does_not_report_source_page_of_deleted_document() -> Non
     assert [item["page_id"] for item in result["changed_pages"]] == ["X"]
     assert embedding_job.calls == [("restore-1", ["X"])]
 
+
+
+def test_rebuild_whose_replay_ends_in_a_delete_record_is_reported_deleted() -> None:
+    # 다시 합치기가 자식에 남긴 삭제 기록(ADR 0042). 재생이 여기서 끝나면 복원 결과의 deleted_pages다.
+    delete_record = json.loads(_lint_payload("L1", "C", "합침"))
+    delete_record.update(content_action="delete", evidence_units=[])
+    store = ArtifactStore({
+        "wiki/ws-1/pages/C/ops/A1.json": _payload("A1", "C", "A1의 C"),
+        "wiki/ws-1/pages/C/ops/L1.json": json.dumps(delete_record),
+        "wiki/ws-1/pages/Y/ops/B1.json": _payload("B1", "Y", "Y"),
+    })
+
+    result = RestoreWikiPagesUseCase(_restore(store)).execute_ingest(
+        IngestOperationRestoreCommand(
+            operation_id="restore-1", restore_to_operation_id=None, cancel_operation_ids=("B0",),
+            workspace_id="ws-1", source_page=SourceSnapshotRestoreCommand("S_B", "doc-B0"),
+            rebuild_pages=(
+                RebuildPageCommand("C", (RestoreContributionCommand("A1", "doc-A1"), RestoreContributionCommand("L1", None))),
+                RebuildPageCommand("Y", (RestoreContributionCommand("B1", "doc-B1"),)),
+            ),
+        )
+    )
+
+    assert [page["page_id"] for page in result["changed_pages"]] == ["Y"]
+    assert result["deleted_pages"] == ["S_B", "C"]
+    assert store.cleaned_pages == [("ws-1", ["S_B", "C"])]
+    # 삭제 기록을 되돌리면(그 행을 빼면) 앞 기록이 다시 재생된다.
+    revived = _restore(store).rebuild_page("restore-2", "ws-1", RebuildPageCommand("C", (RestoreContributionCommand("A1", "doc-A1"),)))
+    assert not revived.get("deleted") and "A1의 C" in store.writes[-1][1]
+
+
+def test_page_left_with_only_lint_metadata_is_deleted_but_lint_evidence_keeps_it() -> None:
+    # 분리 기록(개념·split_from뿐)만 남은 자식은 근거가 없어 사라진다(ADR 0042 결정 3).
+    split = json.loads(_lint_payload("L1", "C", "x"))
+    split.update(content_action="create", evidence_units=[], split_from={"page_id": "P", "slug": "p", "entry_id": "e"})
+    store = ArtifactStore({
+        "wiki/ws-1/pages/C/ops/L1.json": json.dumps(split),
+        # 클러스터 승격 lint 기록은 자기 근거를 가진다.
+        "wiki/ws-1/pages/D/ops/L2.json": _lint_payload("L2", "D", "승격 근거"),
+    })
+    restore = _restore(store)
+
+    assert restore.rebuild_page("r", "ws-1", RebuildPageCommand("C", (RestoreContributionCommand("L1", None),)))["deleted"]
+    assert not restore.rebuild_page("r", "ws-1", RebuildPageCommand("D", (RestoreContributionCommand("L2", None),))).get("deleted")

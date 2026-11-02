@@ -12,6 +12,12 @@ class PageRebuildError(ValueError):
     pass
 
 
+class RestoreConflictError(ValueError):
+    """복원 재생이 뒤 작업과 충돌한다(같은 항목이 두 페이지에 재생되는 등). 현재 상태를 쓰기 전에 거절한다(ADR 0042)."""
+
+    code = "restore_conflict"
+
+
 @dataclass(frozen=True)
 class PageContribution:
     page_id: str

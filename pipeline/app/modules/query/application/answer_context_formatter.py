@@ -54,9 +54,11 @@ class AnswerContextFormatter:
             )
         lines.extend(["", "# Evidence Snippets By Relevance"])
         for snippet in evidence_snippets:
+            lines.append(f"## Evidence {snippet.rank}")
+            if snippet.entry_path:
+                lines.append(f"- entry: {snippet.entry_path}")
             lines.extend(
                 [
-                    f"## Evidence {snippet.rank}",
                     "- text:",
                     self._indent(self._excerpt(snippet.text, self._max_paragraph_chars), spaces=2),
                     "",

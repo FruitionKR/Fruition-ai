@@ -6,7 +6,7 @@ Evaluate whether the source document was converted into retrieval-useful source/
 This is not a gold concept-list matching task.
 Judge whether:
 - Source blocks preserve original evidence.
-- Core concepts are grounded, reusable, and not over-fragmented.
+- Core concepts are grounded and not over-fragmented. A core concept is information that any summary of the document must keep; a term a summary could drop is a section candidate.
 - Section candidates and mentions are not incorrectly promoted into core concepts.
 - Observations are useful retrieval units, not broken or duplicated chunk artifacts.
 - Evidence claims are atomic and linked to direct source blocks.

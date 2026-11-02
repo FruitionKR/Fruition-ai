@@ -19,6 +19,7 @@ import random
 import threading
 from array import array
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from contextvars import copy_context
 from functools import lru_cache
 from typing import Any
@@ -72,6 +73,8 @@ PART_OF_CRITERIA = {
 # part_of는 이 확률 이상일 때만 배정한다. 애매하면 배정하지 않고 따로 둔다(ADR-0042).
 PART_OF_MIN_PROBABILITY = 0.9
 CANDIDATE_LIMIT = 100
+# 같은 하위 항목 찾기(ADR-0042)에서 새 항목마다 쌍 판정할 기존 항목 수. 편입 잠금 안의 판정이라 개념보다 적게 묻는다.
+ENTRY_CANDIDATE_LIMIT = 10
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
 # ponytail: 프로세스 안 dict 캐시라 워커가 재시작하면 다시 임베딩한다. 한도를 넘으면 통째로 비운다.
@@ -230,11 +233,55 @@ class JevConceptResolver(ConceptResolver):
         if not tasks:
             return resolutions
         vectors = self._embed([_concept_text(concept) for concept in [*pool, *concepts]])
+        resolutions.update(
+            self._judge_candidates([(concept, self._candidates(concept, others, vectors)) for concept, others in tasks])
+        )
+        return resolutions
+
+    def judge_entries(
+        self,
+        entries: list[JsonDict],
+        pool: list[JsonDict],
+        load_vectors: Callable[[str], dict[str, array]],
+    ) -> dict[str, JsonDict]:
+        """같은 하위 항목 찾기(ADR-0042). 새 항목마다 기존 하위 항목 상위 `ENTRY_CANDIDATE_LIMIT`개만 골라 쌍 판정한다.
+
+        항목은 slug·title("바로 위 이름 > 이름")·definition을 가진다. 후보 점수는 BGE-M3 0.75 + BM25 0.25다. 기존 항목
+        벡터는 `load_vectors(모델 이름)`이 돌려주는 저장된 `sub_entry` 벡터(항목 id별)를 쓰고, 새 항목과 아직 벡터가 없는
+        기존 항목만 임베딩한다. 텍스트는 저장 단위와 같은 "바로 위 이름 > 이름: 정의"다. 정의가 없는 항목은 묻지 않는다.
+        """
+        entries = [entry for entry in entries if _has_definition(entry)]
+        pool = [entry for entry in pool if _has_definition(entry)]
+        if not entries or not pool:
+            return {}
+        texts = {entry["slug"]: f"{entry['title']}: {entry['definition']}" for entry in [*pool, *entries]}
+        stored = load_vectors(self._embedding_model.model_name)
+        embedded = self._embed([text for slug, text in texts.items() if slug not in stored])
+        vectors = {slug: stored[slug] if slug in stored else embedded[text] for slug, text in texts.items()}
+        pool_texts = [texts[entry["slug"]] for entry in pool]
+        tasks = []
+        for entry in entries:
+            scores = [
+                hybrid_score(vector_similarity(vectors[entry["slug"]], vectors[candidate["slug"]]), lexical, CANDIDATE_EMBEDDING_WEIGHT)
+                for candidate, lexical in zip(pool, self._text_search.score(texts[entry["slug"]], pool_texts), strict=True)
+            ]
+            # 같은 항목끼리 묻는 형제 찾기는 항목 자신도 pool에 있다. 자기 자신은 후보가 아니다.
+            ranked = sorted(
+                ((score, candidate) for score, candidate in zip(scores, pool, strict=True) if candidate["slug"] != entry["slug"]),
+                key=lambda row: (-row[0], row[1]["slug"]),
+            )
+            if ranked:
+                tasks.append((entry, [candidate for _, candidate in ranked[:ENTRY_CANDIDATE_LIMIT]]))
+        return self._judge_candidates(tasks)
+
+    def _judge_candidates(self, tasks: list[tuple[JsonDict, list[JsonDict]]]) -> dict[str, JsonDict]:
+        """(개념, 추린 후보) 쌍마다 Jev로 묻고 병합·연결할 개념의 판정을 incoming slug별로 돌려준다."""
+        resolutions: dict[str, JsonDict] = {}
         requests = [
             (concept, batch)
-            for concept, others in tasks
+            for concept, candidates in tasks
             for batch in token_batches(
-                _shuffled(concept, self._candidates(concept, others, vectors)),
+                _shuffled(concept, candidates),
                 lambda batch, concept=concept: _request(concept, batch),
                 max_items=CANDIDATE_LIMIT,
             )
@@ -262,6 +309,26 @@ class JevConceptResolver(ConceptResolver):
                 _top_probabilities(answers[slug]),
             )
         return resolutions
+
+    def judge_related(self, concept: JsonDict, candidates: list[JsonDict]) -> set[str] | None:
+        """개념과 후보마다 같음·관련 쌍 판정(`judge_concepts`와 같은 기준)으로 관련인 후보 slug를 돌려준다(ADR 0042 결정 6).
+
+        `same`이거나 P(related)가 `RELATED_MIN_PROBABILITY` 이상인 `related`가 관련이다. 개념이나 후보 중 정의가 없는 것이
+        있거나 Jev를 쓸 수 없으면 판정하지 않고 None을 돌려준다.
+        """
+        if not _has_definition(concept) or not candidates or not all(_has_definition(item) for item in candidates):
+            return None
+        try:
+            answers = self._client.choose(**_request(concept, _shuffled(concept, candidates)))
+        except JevUnavailable as exc:
+            logger.warning("[Jev 관계 재판정 생략] %s", exc)
+            return None
+        return {
+            slug
+            for slug, answer in answers.items()
+            if answer["choice"] == "same"
+            or (answer["choice"] == "related" and choice_probability(answer, "related") >= RELATED_MIN_PROBABILITY)
+        }
 
     def judge_part_of(self, pairs: list[tuple[JsonDict, JsonDict]]) -> dict[tuple[str, str], JsonDict]:
         """(상위 항목, 세부 항목) 쌍마다 세부 항목이 상위 항목에 딸리는지 판정한다.
@@ -320,6 +387,19 @@ class JevConceptResolver(ConceptResolver):
             return cached_embeddings(self._embedding_model, texts)
         except Exception as exc:  # 임베딩 없이 BM25만으로 후보를 고르지 않고 기존 판정기로 넘긴다.
             raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+
+
+def embedding_similarity(model: EmbeddingModelPort) -> Callable[[str, list[str]], list[float]]:
+    """(질의, 텍스트 목록) → 임베딩 유사도. 개념 판정과 같은 벡터·캐시다. 임베딩 실패는 JevUnavailable로 알린다."""
+
+    def similarity(query: str, texts: list[str]) -> list[float]:
+        try:
+            vectors = cached_embeddings(model, [query, *texts])
+        except Exception as exc:
+            raise JevUnavailable(f"개념 임베딩 실패: {type(exc).__name__}") from None
+        return [vector_similarity(vectors[query], vectors[text]) for text in texts]
+
+    return similarity
 
 
 def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, array]:
