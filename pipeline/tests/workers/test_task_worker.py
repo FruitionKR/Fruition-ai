@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -558,7 +559,7 @@ def test_post_ingest_command_does_not_retry_durable_failure() -> None:
     ("embedding_mode", "runs_embedding"),
     [("bge-m3", True), ("text-only", False)],
 )
-def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
+def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
     embedding_mode: str,
     runs_embedding: bool,
 ) -> None:
@@ -575,7 +576,21 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
         "page_ids": ["page-1"],
     }
     calls = []
+    embedding_started = threading.Event()
     artifact = {"maintenance_summary": {"promotion_candidate_count": 0}}
+
+    def judge_clusters(**_kwargs):
+        # 임베딩이 판정보다 먼저 떠 있어야 통과한다. 차례로 돌면 판정이 임베딩을 기다리다 시간 초과로 실패한다.
+        if runs_embedding:
+            assert embedding_started.wait(timeout=5)
+        calls.append("cluster")
+        return artifact
+
+    def embed(ids):
+        embedding_started.set()
+        calls.append(("embedding", tuple(ids)))
+        return {"target_count": 1, "embedded_count": 1, "skipped_count": 0, "failed_count": 0}
+
     parent = {
         "status": "succeeded",
         "manifest": {
@@ -611,25 +626,19 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
         patch.object(
             task_worker,
             "build_post_ingest_cluster_artifact",
-            side_effect=lambda **_kwargs: calls.append("cluster") or artifact,
+            side_effect=judge_clusters,
         ),
         patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
         patch.object(task_worker, "read_optional_text_object", return_value="") as read_active,
         patch.object(
             task_worker.database,
             "persist_post_ingest_clusters",
-            side_effect=lambda *_args: calls.append("persist") or [],
+            side_effect=lambda *_args: calls.append("persist"),
         ) as persist,
         patch.object(
             task_worker,
             "build_wiki_embeddings",
-            side_effect=lambda _ids: calls.append("embedding")
-            or {
-                "target_count": 1,
-                "embedded_count": 1,
-                "skipped_count": 0,
-                "failed_count": 0,
-            },
+            side_effect=embed,
         ),
         patch.object(
             task_worker,
@@ -650,10 +659,10 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
     assert calls.index("cluster") < calls.index("persist")
     assert calls.index("persist") < calls.index("quality")
     if runs_embedding:
-        assert calls.index("persist") < calls.index("embedding")
-        assert calls.index("embedding") < calls.index("quality")
+        # 편입이 저장한 페이지만 임베딩한다. 클러스터 반영은 위키 페이지를 바꾸지 않는다.
+        assert calls.index(("embedding", ("page-1",))) < calls.index("quality")
     else:
-        assert "embedding" not in calls
+        assert not any(isinstance(call, tuple) for call in calls)
         assert result["embedding"] == {
             "target_count": 1,
             "embedded_count": 0,
@@ -662,7 +671,7 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
         }
     finish.assert_called_once()
     timings = finish.call_args.args[1]["stage_timings"]
-    assert [row["stage"] for row in timings] == ["cluster_judgment", "cluster_persistence", "embedding"]
+    assert sorted(row["stage"] for row in timings) == ["cluster_judgment", "cluster_persistence", "embedding"]
     assert all(row["elapsed_seconds"] >= 0 and row["status"] == "succeeded" for row in timings)
 
 
@@ -2029,3 +2038,153 @@ def test_post_ingest_timing_records_failed_attempt_and_retry():
         {"stage": "embedding", "attempt": 1, "elapsed_seconds": 2.5, "status": "failed"},
         {"stage": "embedding", "attempt": 2, "elapsed_seconds": 1.25, "status": "succeeded"},
     ]
+
+
+def test_post_ingest_keeps_finished_embedding_when_cluster_judgment_fails() -> None:
+    command = {
+        "run_id": "post-run-1",
+        "ingest_run_id": "ingest-run-1",
+        "kind": "post_ingest",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "cluster_normalized": {"document": {"document_id": "document-1"}},
+        "page_ids": ["page-1"],
+    }
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {
+        "cluster_normalized": command["cluster_normalized"], "page_ids": command["page_ids"],
+    }}}
+    embedding = {"target_count": 1, "embedded_count": 1, "skipped_count": 0, "failed_count": 0}
+    checkpoints = []
+    with (
+        patch.dict(task_worker.os.environ, {"QUERY_EMBEDDING_MODE": "bge-m3"}),
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
+        ),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
+        patch.object(
+            task_worker.database,
+            "checkpoint_pipeline_run",
+            side_effect=lambda _run_id, state: checkpoints.append(dict(state)),
+        ),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
+        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(task_worker, "build_post_ingest_cluster_artifact", side_effect=RuntimeError("judge down")),
+        patch.object(task_worker, "build_wiki_embeddings", return_value=embedding),
+        patch.object(task_worker.database, "fail_pipeline_run"),
+    ):
+        with pytest.raises(RuntimeError, match="judge down"):
+            task_worker._handle_post_ingest(command)
+
+    # 재시도는 저장된 임베딩을 보고 다시 계산하지 않는다.
+    assert checkpoints[-1]["embedding"] == embedding
+    assert "cluster_artifact" not in checkpoints[-1]
+    assert {row["stage"]: row["status"] for row in checkpoints[-1]["stage_timings"]} == {
+        "cluster_judgment": "failed",
+        "embedding": "succeeded",
+    }
+
+
+def test_post_ingest_keeps_cluster_failure_when_embedding_also_fails() -> None:
+    # 두 단계가 함께 실패하면 판정 쪽 예외(취소 포함)를 기록해야 한다. 임베딩 오류로 덮어쓰지 않는다.
+    command = {
+        "run_id": "post-run-1",
+        "ingest_run_id": "ingest-run-1",
+        "kind": "post_ingest",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "cluster_normalized": {"document": {"document_id": "document-1"}},
+        "page_ids": ["page-1"],
+    }
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {
+        "cluster_normalized": command["cluster_normalized"], "page_ids": command["page_ids"],
+    }}}
+    checkpoints = []
+    with (
+        patch.dict(task_worker.os.environ, {"QUERY_EMBEDDING_MODE": "bge-m3"}),
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
+        ),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
+        patch.object(
+            task_worker.database,
+            "checkpoint_pipeline_run",
+            side_effect=lambda _run_id, state: checkpoints.append(dict(state)),
+        ),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
+        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(
+            task_worker,
+            "build_post_ingest_cluster_artifact",
+            side_effect=task_worker.PipelineRunCancelledError("source deleted"),
+        ),
+        patch.object(task_worker, "build_wiki_embeddings", side_effect=RuntimeError("bge down")),
+        patch.object(task_worker.database, "fail_pipeline_run"),
+    ):
+        with pytest.raises(task_worker.PipelineRunCancelledError, match="source deleted"):
+            task_worker._handle_post_ingest(command)
+
+    assert "embedding" not in checkpoints[-1]
+    assert {row["stage"]: row["status"] for row in checkpoints[-1]["stage_timings"]} == {
+        "cluster_judgment": "failed",
+        "embedding": "failed",
+    }
+
+def test_post_ingest_records_failed_embedding_attempt_timing() -> None:
+    command = {
+        "run_id": "post-run-1",
+        "ingest_run_id": "ingest-run-1",
+        "kind": "post_ingest",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "cluster_normalized": {"document": {"document_id": "document-1"}},
+        "page_ids": ["page-1"],
+    }
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {
+        "cluster_normalized": command["cluster_normalized"], "page_ids": command["page_ids"],
+    }}}
+    checkpoints = []
+    with (
+        patch.dict(task_worker.os.environ, {"QUERY_EMBEDDING_MODE": "bge-m3"}),
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
+        ),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
+        patch.object(
+            task_worker.database,
+            "checkpoint_pipeline_run",
+            side_effect=lambda _run_id, state: checkpoints.append(dict(state)),
+        ),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
+        patch.object(task_worker.database, "persist_post_ingest_clusters"),
+        patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
+        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(task_worker, "build_post_ingest_cluster_artifact", return_value={}),
+        patch.object(task_worker, "build_wiki_embeddings", side_effect=RuntimeError("bge down")),
+        patch.object(task_worker.database, "fail_pipeline_run"),
+    ):
+        with pytest.raises(RuntimeError, match="bge down"):
+            task_worker._handle_post_ingest(command)
+
+    assert "embedding" not in checkpoints[-1]
+    assert {row["stage"]: row["status"] for row in checkpoints[-1]["stage_timings"]}["embedding"] == "failed"

@@ -768,6 +768,65 @@ def _run_post_ingest_wiki_quality_evaluation(
     return evaluations
 
 
+def _post_ingest_embedding(page_ids: list[str], timing_state: dict[str, Any]) -> dict[str, int]:
+    """편입이 저장한 페이지를 임베딩한다. 동시에 도는 클러스터 판정과 state를 나눠 쓰지 않도록 단계 시간은 timing_state에 둔다."""
+    with _post_ingest_stage(timing_state, "embedding"):
+        page_ids = list(dict.fromkeys(page_ids))
+        if os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower() in {
+            "text-only",
+            "bm25",
+            "lexical",
+        }:
+            embedding = embedding_result(
+                target_count=len(page_ids),
+                skipped_count=len(page_ids),
+            )
+        else:
+            embedding = build_wiki_embeddings(page_ids)
+        if embedding["failed_count"]:
+            raise RuntimeError(
+                f"post_ingest embedding failed: {embedding['failed_count']}"
+            )
+    return embedding
+
+
+def _apply_post_ingest_clusters(command: dict[str, Any], state: dict[str, Any], run_id: str) -> None:
+    if "cluster_artifact" not in state:
+        with _post_ingest_stage(state, "cluster_judgment"):
+            object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
+            existing_active = read_optional_text_object(object_name)
+            state["cluster_artifact"] = build_post_ingest_cluster_artifact(
+                completion=_post_ingest_client(command),
+                normalized=dict(command["cluster_normalized"]),
+                existing_active_markdown=existing_active,
+                user_id=str(command["user_id"]),
+                workspace_id=str(command["workspace_id"]),
+                concept_update_decisions=list(
+                    command.get("concept_update_decisions") or []
+                ),
+                core_concepts=list(
+                    command["cluster_normalized"].get("core_concepts") or []
+                ),
+                concept_judge=jev_concept_judge(),
+            )
+        database.checkpoint_pipeline_run(run_id, state)
+
+    if not state.get("cluster_applied"):
+        with _post_ingest_stage(state, "cluster_persistence"):
+            database.persist_post_ingest_clusters(
+                str(command["document_id"]),
+                str(command["workspace_id"]),
+                dict(state["cluster_artifact"]),
+                str(command["ingest_run_id"]),
+            )
+            database.update_pipeline_run_cluster_contribution(
+                str(command["ingest_run_id"]),
+                dict(state["cluster_artifact"]),
+            )
+        state["cluster_applied"] = True
+        database.checkpoint_pipeline_run(run_id, state)
+
+
 def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     _required(command, "ingest_run_id")
     ingest_run = database.get_pipeline_run(str(command["ingest_run_id"]))
@@ -836,69 +895,33 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         },
     )
     try:
-        if "cluster_artifact" not in state:
-            with _post_ingest_stage(state, "cluster_judgment"):
-                object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
-                existing_active = read_optional_text_object(object_name)
-                state["cluster_artifact"] = build_post_ingest_cluster_artifact(
-                    completion=_post_ingest_client(command),
-                    normalized=dict(command["cluster_normalized"]),
-                    existing_active_markdown=existing_active,
-                    user_id=str(command["user_id"]),
-                    workspace_id=str(command["workspace_id"]),
-                    concept_update_decisions=list(
-                        command.get("concept_update_decisions") or []
-                    ),
-                    core_concepts=list(
-                        command["cluster_normalized"].get("core_concepts") or []
-                    ),
-                    concept_judge=jev_concept_judge(),
+        # 편입이 저장한 페이지는 클러스터 판정이 바꾸지 않는다. 임베딩을 먼저 띄워 판정 LLM과 겹치게 해 질의 가능 시점을 당긴다.
+        embedding_timing: dict[str, Any] = {"attempt": attempt}
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="post-ingest-embedding") as embedding_pool:
+            embedding_future = (
+                embedding_pool.submit(
+                    copy_context().run,
+                    _post_ingest_embedding,
+                    [str(page_id) for page_id in command.get("page_ids", [])],
+                    embedding_timing,
                 )
-            database.checkpoint_pipeline_run(run_id, state)
-
-        if not state.get("cluster_applied"):
-            with _post_ingest_stage(state, "cluster_persistence"):
-                changed_page_ids = database.persist_post_ingest_clusters(
-                    str(command["document_id"]),
-                    str(command["workspace_id"]),
-                    dict(state["cluster_artifact"]),
-                    str(command["ingest_run_id"]),
-                )
-                database.update_pipeline_run_cluster_contribution(
-                    str(command["ingest_run_id"]),
-                    dict(state["cluster_artifact"]),
-                )
-                state["page_ids"] = list(
-                    dict.fromkeys(
-                        [
-                            *(str(page_id) for page_id in command.get("page_ids", [])),
-                            *changed_page_ids,
-                        ]
-                    )
-                )
-            state["cluster_applied"] = True
-            database.checkpoint_pipeline_run(run_id, state)
-
-        if "embedding" not in state:
-            with _post_ingest_stage(state, "embedding"):
-                page_ids = list(dict.fromkeys(state["page_ids"]))
-                if os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower() in {
-                    "text-only",
-                    "bm25",
-                    "lexical",
-                }:
-                    embedding = embedding_result(
-                        target_count=len(page_ids),
-                        skipped_count=len(page_ids),
-                    )
-                else:
-                    embedding = build_wiki_embeddings(page_ids)
-                if embedding["failed_count"]:
-                    raise RuntimeError(
-                        f"post_ingest embedding failed: {embedding['failed_count']}"
-                    )
-            state["embedding"] = embedding
-            database.checkpoint_pipeline_run(run_id, state)
+                if "embedding" not in state
+                else None
+            )
+            try:
+                _apply_post_ingest_clusters(command, state, run_id)
+            finally:
+                # 판정이 실패해도 끝난 임베딩은 남겨 재시도가 다시 계산하지 않게 한다. state는 이 스레드에서만 고친다.
+                if embedding_future is not None:
+                    embedding_error = embedding_future.exception()
+                    # 실패한 시도의 시간도 남긴다. 스레드가 끝난 뒤라 timing을 읽어도 안전하다.
+                    state.setdefault("stage_timings", []).extend(embedding_timing.get("stage_timings", []))
+                    if embedding_error is None:
+                        state["embedding"] = embedding_future.result()
+                        database.checkpoint_pipeline_run(run_id, state)
+        # 판정이 실패했으면 그 예외(취소 포함)가 그대로 올라가도록, 임베딩 오류는 판정이 끝난 뒤에만 올린다.
+        if embedding_future is not None and embedding_error is not None:
+            raise embedding_error
 
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
         quality_required = bool(command.get("quality_required", True))

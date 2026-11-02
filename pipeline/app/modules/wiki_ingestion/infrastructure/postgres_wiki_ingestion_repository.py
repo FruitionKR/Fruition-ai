@@ -1596,24 +1596,18 @@ def persist_post_ingest_clusters(
     workspace_id: str,
     artifact: dict[str, Any],
     ingest_run_id: str,
-) -> list[str]:
+) -> None:
+    """의미 클러스터 파일만 쓴다. 위키 페이지는 바꾸지 않아 편입이 저장한 페이지 임베딩과 함께 돌 수 있다."""
     manifest = {
         "workspace_id": workspace_id,
         "meaning_clusters": artifact,
     }
     with concept_write_lock(workspace_id, f"post-ingest:{document_id}"):
         with connect() as conn:
-            # 문서 삭제 정리와 같은 잠금 아래서 확인해, 정리가 끝난 문서의 개념 페이지에 근거를 다시 쓰지 않는다.
+            # 문서 삭제 정리와 같은 잠금 아래서 확인해, 정리가 끝난 문서의 클러스터 근거를 다시 쓰지 않는다.
             if source_deleted_after_ingest(conn, ingest_run_id):
                 raise PipelineRunCancelledError("Source document was deleted after the ingest run.")
-            changed_pages = _persist_meaning_cluster_artifacts(
-                conn,
-                document_id,
-                manifest,
-            )
-    if changed_pages:
-        invalidate_concept_index(workspace_id)
-    return [str(page["page_id"]) for page in changed_pages]
+            _persist_meaning_cluster_artifacts(manifest)
 
 
 def touch_pipeline_run(run_id: str) -> bool:

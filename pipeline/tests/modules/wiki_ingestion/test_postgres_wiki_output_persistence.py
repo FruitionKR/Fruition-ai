@@ -30,7 +30,7 @@ def _stub_followup_writes(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         persistence,
-        "_persist_meaning_cluster_artifacts",
+        "_apply_concept_update_decisions",
         lambda *_args: [],
     )
     monkeypatch.setattr(persistence, "sync_source_concept_links", lambda *_args, **_kwargs: None)
@@ -208,7 +208,7 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
     )
     monkeypatch.setattr(
         persistence,
-        "_persist_meaning_cluster_artifacts",
+        "_apply_concept_update_decisions",
         lambda *_args: calls.append("meaning_clusters")
         or [{"page_id": "updated-concept-page"}],
     )
@@ -307,7 +307,7 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
     monkeypatch.setattr(persistence, "_persist_source_page", lambda *_args, **_kwargs: "source-page-1")
     monkeypatch.setattr(persistence, "_persist_page_links", lambda *_args: None)
     monkeypatch.setattr(persistence, "delete_source_related_links", lambda *_args: None)
-    monkeypatch.setattr(persistence, "_persist_meaning_cluster_artifacts", lambda *_args: [])
+    monkeypatch.setattr(persistence, "_apply_concept_update_decisions", lambda *_args: [])
     monkeypatch.setattr(
         persistence,
         "load_existing_concept_ids_by_slug",
@@ -632,7 +632,7 @@ def test_persist_wiki_outputs_skips_operation_artifacts_when_later_step_fails(
     def boom(*_args):
         raise RuntimeError("meaning cluster persistence failed")
 
-    monkeypatch.setattr(persistence, "_persist_meaning_cluster_artifacts", boom)
+    monkeypatch.setattr(persistence, "_apply_concept_update_decisions", boom)
     monkeypatch.setattr(
         persistence,
         "write_text_object",
@@ -716,7 +716,7 @@ def test_operation_artifacts_include_existing_concept_evidence_updates(
     )
     monkeypatch.setattr(
         persistence,
-        "_persist_meaning_cluster_artifacts",
+        "_apply_concept_update_decisions",
         lambda *_args: [],
     )
     monkeypatch.setattr(
@@ -835,11 +835,6 @@ def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> Non
     writes = []
     monkeypatch.setattr(
         persistence,
-        "_apply_concept_update_decisions",
-        lambda *_args: [],
-    )
-    monkeypatch.setattr(
-        persistence,
         "read_optional_text_object",
         lambda _path: log_markdown,
     )
@@ -850,8 +845,6 @@ def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> Non
     )
 
     persistence._persist_meaning_cluster_artifacts(
-        object(),  # type: ignore[arg-type]
-        "doc-1",
         {
             "meaning_clusters": {
                 "log_path": "wiki/ws/logs/2026-08-21.md",
@@ -971,7 +964,6 @@ def test_persist_source_page_titles_with_document_display_name(
 
 def test_meaning_cluster_artifacts_are_written_under_workspace_prefix(monkeypatch) -> None:
     writes = []
-    monkeypatch.setattr(persistence, "_apply_concept_update_decisions", lambda *_args: [])
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda _path: "")
     monkeypatch.setattr(
         persistence,
@@ -980,8 +972,6 @@ def test_meaning_cluster_artifacts_are_written_under_workspace_prefix(monkeypatc
     )
 
     persistence._persist_meaning_cluster_artifacts(
-        object(),  # type: ignore[arg-type]
-        "doc-1",
         {
             "meaning_clusters": {
                 # 다른 범위의 경로가 실려 와도 저장 위치는 워크스페이스로 정한다.
@@ -995,3 +985,29 @@ def test_meaning_cluster_artifacts_are_written_under_workspace_prefix(monkeypatc
     )
 
     assert writes == ["wiki/ws/clusters/active.md", "wiki/ws/logs/2026-10-11.md"]
+
+
+def test_post_ingest_cluster_files_do_not_reapply_concept_updates(monkeypatch) -> None:
+    """같은 개념 갱신은 편입 저장이 반영한다. 클러스터 파일 저장이 개념 페이지를 다시 고치면 근거 줄이 겹친다."""
+    writes = []
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda _path: "")
+    monkeypatch.setattr(persistence, "write_text_object", lambda path, text: writes.append(path) or path)
+    monkeypatch.setattr(
+        persistence,
+        "_apply_concept_update_decisions",
+        lambda *_args: pytest.fail("post_ingest must not touch concept pages"),
+    )
+
+    persistence._persist_meaning_cluster_artifacts(
+        {
+            "meaning_clusters": {
+                "concept_update_decisions": [
+                    {"decision": "same_concept", "concept_slug": "pod", "claim": "근거", "refs": ["doc-1:B0001"]}
+                ],
+                "active_markdown": "# Active Meaning Clusters\n",
+            },
+            "workspace_id": "ws",
+        },
+    )
+
+    assert writes == ["wiki/ws/clusters/active.md"]

@@ -145,11 +145,12 @@ def persist_wiki_outputs(
     )
     _persist_page_links(conn, links, source_page_id, concept_id_by_slug, workspace_id)
     delete_source_related_links(conn, workspace_id)
-    updated_concept_pages = _persist_meaning_cluster_artifacts(
+    updated_concept_pages = _apply_concept_update_decisions(
         conn,
         document_id,
-        manifest,
-    ) or []
+        workspace_id,
+        (manifest.get("meaning_clusters") or {}).get("concept_update_decisions", []),
+    )
     # 기존 개념 갱신(same_concept)도 이 문서의 직접 개념 기여로 기록된다. 재생과 같게 문서 연결을 둔다(ADR 0042 결정 5).
     for page in updated_concept_pages:
         upsert_document_wiki_link(conn, document_id, str(page["page_id"]), "extracted_concept", None, workspace_id)
@@ -740,21 +741,12 @@ def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _persist_meaning_cluster_artifacts(
-    conn: psycopg.Connection,
-    document_id: str,
-    manifest: dict[str, Any],
-) -> list[dict[str, Any]]:
+def _persist_meaning_cluster_artifacts(manifest: dict[str, Any]) -> None:
+    """의미 클러스터 파일(active.md·로그)만 쓴다. 기존 개념 갱신(same_concept)은 편입 저장이 이미 반영했다."""
     artifact = manifest.get("meaning_clusters")
     if not isinstance(artifact, dict):
-        return []
+        return
     workspace_id = str(manifest.get("workspace_id") or "local-workspace")
-    updated_concept_pages = _apply_concept_update_decisions(
-        conn,
-        document_id,
-        workspace_id,
-        artifact.get("concept_update_decisions", []),
-    )
     # 저장 위치는 artifact가 아니라 워크스페이스로 정한다. 로그 파일 이름(편입 날짜)만 artifact에서 가져온다.
     active_path = f"wiki/{workspace_id}/clusters/active.md"
     active_markdown = artifact.get("active_markdown")
@@ -779,7 +771,6 @@ def _persist_meaning_cluster_artifacts(
         )
         log_uri = write_text_object(log_path, merged_log)
         artifact["log_uri"] = log_uri
-    return updated_concept_pages
 
 
 def _apply_concept_update_decisions(
