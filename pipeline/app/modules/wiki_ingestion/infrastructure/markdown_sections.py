@@ -32,3 +32,19 @@ def markdown_section_lines(markdown: str, heading: str) -> list[str]:
         if in_section:
             lines.append(line)
     return lines
+
+
+def without_markdown_section(markdown: str, heading: str) -> str:
+    """`## heading` 섹션(다음 `## `까지)을 뺀 본문."""
+    heading_pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.IGNORECASE)
+    kept = []
+    skipping = False
+    for line in markdown.splitlines(keepends=True):
+        if heading_pattern.match(line.strip()):
+            skipping = True
+            continue
+        if skipping and line.startswith("## "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return "".join(kept)

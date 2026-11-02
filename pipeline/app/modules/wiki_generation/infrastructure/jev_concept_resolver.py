@@ -24,6 +24,7 @@ from contextvars import copy_context
 from functools import lru_cache
 from typing import Any
 
+from app.modules.wiki_embedding.infrastructure.concept_embedding_cache import embed_cached
 from app.core.jev_batches import token_batches
 from app.core.jev_client import (
     JEV_CONCEPT_MERGE_ENABLED_ENV,
@@ -77,7 +78,7 @@ CANDIDATE_LIMIT = 100
 ENTRY_CANDIDATE_LIMIT = 10
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
-# ponytail: 프로세스 안 dict 캐시라 워커가 재시작하면 다시 임베딩한다. 한도를 넘으면 통째로 비운다.
+# 메모리 캐시가 비면 작업 범위의 DB 캐시를 조회한다. 메모리 한도를 넘으면 통째로 비운다.
 EMBEDDING_CACHE_LIMIT = 20_000
 _embedding_cache: dict[tuple[str, str], array] = {}
 # 편입 작업은 워커 스레드에서 동시에 돌아 캐시 갱신을 한 번에 하나만 한다.
@@ -335,31 +336,27 @@ class JevConceptResolver(ConceptResolver):
 
         항목은 slug·title·aliases·definition을 가진다. 정의가 없는 쌍은 묻지 않는다. 결과는 물은 쌍마다
         `{"part_of": bool, "probability": P(part_of)}`이고, P(part_of)가 `PART_OF_MIN_PROBABILITY` 미만이면
-        part_of가 아니다. Jev를 쓸 수 없으면 판정 없이 빈 dict를 돌려준다.
+        part_of가 아니다. 요청 실패는 전파해 불완전한 배정을 저장하지 않는다.
         """
         details_by_head: dict[str, tuple[JsonDict, dict[str, JsonDict]]] = {}
         for head, detail in pairs:
             if head["slug"] != detail["slug"] and _has_definition(head) and _has_definition(detail):
                 details_by_head.setdefault(head["slug"], (head, {}))[1][detail["slug"]] = detail
-        try:
-            requests = [
-                (head, batch)
-                for head, details in details_by_head.values()
-                for batch in token_batches(
-                    list(details.values()),
-                    lambda batch, head=head: _part_of_request(head, batch),
-                    max_items=CANDIDATE_LIMIT,
-                )
+        requests = [
+            (head, batch)
+            for head, details in details_by_head.values()
+            for batch in token_batches(
+                list(details.values()),
+                lambda batch, head=head: _part_of_request(head, batch),
+                max_items=CANDIDATE_LIMIT,
+            )
+        ]
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [
+                executor.submit(copy_context().run, self._client.choose, **_part_of_request(head, batch))
+                for head, batch in requests
             ]
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [
-                    executor.submit(copy_context().run, self._client.choose, **_part_of_request(head, batch))
-                    for head, batch in requests
-                ]
-                answers = [(head["slug"], future.result()) for (head, _), future in zip(requests, futures, strict=True)]
-        except JevUnavailable as exc:
-            logger.warning("[Jev part_of 판정 생략] %s", exc)
-            return {}
+            answers = [(head["slug"], future.result()) for (head, _), future in zip(requests, futures, strict=True)]
         decisions = {}
         for head_slug, answer in answers:
             for detail_slug, item in answer.items():
@@ -411,7 +408,7 @@ def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, 
     missing = [text for text in keys if text not in found]
     if missing:
         # 임베딩 서버는 텍스트당 MAX_TEXT_CHARS까지만 받는다. 개념 텍스트는 보통 그보다 훨씬 짧다.
-        vectors = model.embed([text[:MAX_TEXT_CHARS] for text in missing])
+        vectors = embed_cached(model, [text[:MAX_TEXT_CHARS] for text in missing])
         for text, vector in zip(missing, vectors, strict=True):
             found[text] = array("f", vector)
         # 결과는 위에서 모은 found로 돌려준다. 캐시를 비워도 이번 결과에는 영향이 없다.

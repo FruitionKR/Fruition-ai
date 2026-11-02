@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from markdown_it import MarkdownIt
 
 
-def validate_markdown_syntax(markdown: str) -> list[str]:
+def validate_markdown_syntax(markdown: str, source: str = "") -> list[str]:
+    """`source`는 편집 원문이다. 원문에 이미 있던 HTML(편집기가 빈 줄로 저장한 `<br />` 등)은 허용하고, 새로 생긴 HTML만 막는다."""
     failures: list[str] = []
     try:
         tokens = _markdown_parser().parse(markdown)
     except Exception:  # pragma: no cover - markdown-it 내부 오류에 대한 안전 경계
         return ["Markdown parser rejected output"]
 
-    if _contains_raw_html_or_mdx(tokens):
+    added_html = _raw_html_fragments(tokens) - _raw_html_fragments(_markdown_parser().parse(source))
+    if added_html or _contains_mdx(tokens):
         failures.append("raw HTML and MDX are not supported")
     lines = markdown.splitlines()
     content_start, frontmatter_failures = _frontmatter_boundary(lines)
@@ -25,17 +28,19 @@ def _markdown_parser() -> MarkdownIt:
     return MarkdownIt("commonmark").enable("table")
 
 
-def _contains_raw_html_or_mdx(tokens: list[object]) -> bool:
+def _raw_html_fragments(tokens: list[object]) -> Counter[str]:
+    fragments: Counter[str] = Counter()
     for token in tokens:
-        token_type = getattr(token, "type", "")
-        if token_type in {"html_block", "html_inline"}:
-            if not _is_closed_html_comment(getattr(token, "content", "")):
-                return True
-            continue
-        children = getattr(token, "children", None) or []
-        for child in children:
-            if child.type == "html_inline" and not _is_closed_html_comment(child.content):
-                return True
+        for item in (token, *(getattr(token, "children", None) or [])):
+            content = getattr(item, "content", "")
+            if getattr(item, "type", "") in {"html_block", "html_inline"} and not _is_closed_html_comment(content):
+                fragments[content.strip()] += 1
+    return fragments
+
+
+def _contains_mdx(tokens: list[object]) -> bool:
+    for token in tokens:
+        for child in getattr(token, "children", None) or []:
             if child.type != "text":
                 continue
             text = child.content

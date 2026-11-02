@@ -260,14 +260,14 @@ def rank_part_of(
 
     후보군마다 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다. 편입은 핵심·기존 개념과 섹션·언급을 나누고,
     기존 개념만 검사하는 lint는 한 후보군이다.
-    서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 판정기·임베딩 서버를 쓸 수 없으면 빈 목록이다.
+    서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 임베딩 서버를 쓸 수 없으면 빈 목록이다. 판정 요청 실패는 전파한다.
     """
     try:
         pairs = [(heads[head], detail) for detail in details for head in _candidate_heads(detail, heads, similarity)]
-        decisions = judge_part_of(pairs) if pairs else {}
     except JevUnavailable as exc:
         logger.warning("[part_of 판정 생략] %s", exc)
         return []
+    decisions = judge_part_of(pairs) if pairs else {}
     part_of = {pair: item["probability"] for pair, item in decisions.items() if item.get("part_of")}
     return sorted(
         ((probability, head, detail) for (head, detail), probability in part_of.items() if (detail, head) not in part_of),

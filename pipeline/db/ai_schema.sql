@@ -621,6 +621,19 @@ CREATE TABLE IF NOT EXISTS ai_task_runs (
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS command jsonb;
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_ai_task_runs_parent ON ai_task_runs(parent_run_id);
+-- 후보 비교용 파생 벡터. 원문을 보관하지 않고 작업 삭제 시 함께 정리한다.
+CREATE TABLE IF NOT EXISTS concept_embedding_cache (
+    workspace_id text NOT NULL,
+    embedding_model text NOT NULL,
+    representation_hash text NOT NULL,
+    embedding_vector double precision[] NOT NULL,
+    owner_run_id text NOT NULL REFERENCES ai_task_runs(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, embedding_model, representation_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_embedding_cache_owner ON concept_embedding_cache(owner_run_id);
+CREATE INDEX IF NOT EXISTS idx_concept_embedding_cache_created ON concept_embedding_cache(workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS ai_task_changes (
     id bigserial PRIMARY KEY,
     run_id text NOT NULL REFERENCES ai_task_runs(id),

@@ -89,6 +89,9 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_output_persistence 
     _persist_meaning_cluster_artifacts,
     persist_wiki_outputs as _persist_wiki_outputs,
 )
+from app.modules.wiki_ingestion.infrastructure.retrieval_quality_review import (
+    list_quality_review_candidates as _list_quality_review_candidates,
+)
 from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliation import (
     active_relation_keys as _active_relation_keys,
     apply_structural_reconciliation as _apply_structural_reconciliation,
@@ -301,12 +304,14 @@ def _prune_dangling_references(
     operation_id: str,
     changed_pages: list[dict[str, Any]],
     deleted_page_ids: list[str],
+    pending_contributions: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """가리키던 항목이 최종 상태에 없는 참조(`entry_reference`)를 참조 사본·본문 목록·간선에서 함께 뺀다(ADR 0042 결정 3).
 
     대상: 이번에 재조립한 페이지 자신의 참조와, 재조립·삭제한 페이지의 항목을 가리키던 다른 살아 있는 페이지의 참조다.
-    다른 페이지는 활성 원장 기록으로 다시 재생해 그린다(그 페이지에는 이번 작업의 기록이 없다). 기록은 그대로라
-    다음 lint가 사라진 참조를 기록으로도 지운다.
+    다른 페이지는 활성 원장 기록으로 다시 재생해 그린다. 기록은 그대로라 다음 lint가 사라진 참조를 기록으로도 지운다.
+    pending_contributions(page_id → 기여)는 이번 작업이 그 페이지에 남겼지만 아직 원장에 없는 기여다(편입 경로).
+    빠뜨리면 이번 작업이 이미 쓴 페이지를 이전 상태로 되돌리므로 재생 마지막에 더한다.
     """
     live = {
         (str(row["slug"]), str(row["entry_id"]))
@@ -352,14 +357,20 @@ def _prune_dangling_references(
         )
         if not kept:
             continue
-        rebuilt = rebuild_concept_page(load_concept_contributions(
+        loaded = load_concept_contributions(
             workspace_id=workspace_id,
             page_id=page_id,
             keep_contributions=[
                 {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
             ],
             read_text=read_text_object,
-        ))
+        )
+        pending = (pending_contributions or {}).get(page_id)
+        if pending is not None:
+            loaded = [*loaded, PageContribution(
+                page_id, "concept", operation_id, max(item.sequence for item in loaded) + 1, "", pending,
+            )]
+        rebuilt = rebuild_concept_page(loaded)
         if rebuilt.deleted or not any(dangling(link) for link in rebuilt.supported_links):
             continue
         key = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
@@ -787,6 +798,7 @@ REQUIRED_TABLES = (
     "wiki_page_embeddings",
     "wiki_embedding_vectors",
     "wiki_embedding_units",
+    "concept_embedding_cache",
 )
 
 AGENT_REQUIRED_TABLES = (
@@ -1428,6 +1440,9 @@ def finish_pipeline_run(
                 )
                 embedded_page_ids = _persist_wiki_outputs(
                     conn, document_id, manifest, manual_source_markdown,
+                    apply_rebuilt_pages=_apply_restored_wiki_state,
+                    prune_references=_prune_dangling_references,
+                    cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
                 )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):
@@ -1581,24 +1596,18 @@ def persist_post_ingest_clusters(
     workspace_id: str,
     artifact: dict[str, Any],
     ingest_run_id: str,
-) -> list[str]:
+) -> None:
+    """의미 클러스터 파일만 쓴다. 위키 페이지는 바꾸지 않아 편입이 저장한 페이지 임베딩과 함께 돌 수 있다."""
     manifest = {
         "workspace_id": workspace_id,
         "meaning_clusters": artifact,
     }
     with concept_write_lock(workspace_id, f"post-ingest:{document_id}"):
         with connect() as conn:
-            # 문서 삭제 정리와 같은 잠금 아래서 확인해, 정리가 끝난 문서의 개념 페이지에 근거를 다시 쓰지 않는다.
+            # 문서 삭제 정리와 같은 잠금 아래서 확인해, 정리가 끝난 문서의 클러스터 근거를 다시 쓰지 않는다.
             if source_deleted_after_ingest(conn, ingest_run_id):
                 raise PipelineRunCancelledError("Source document was deleted after the ingest run.")
-            changed_pages = _persist_meaning_cluster_artifacts(
-                conn,
-                document_id,
-                manifest,
-            )
-    if changed_pages:
-        invalidate_concept_index(workspace_id)
-    return [str(page["page_id"]) for page in changed_pages]
+            _persist_meaning_cluster_artifacts(manifest)
 
 
 def touch_pipeline_run(run_id: str) -> bool:
@@ -1847,6 +1856,7 @@ def lint_wiki_workspace(
             conn,
             workspace_id,
         )
+        quality_review_candidates = _list_quality_review_candidates(conn, workspace_id)
     stale_source_refs = {
         ref
         for candidate in reconciliation_candidates
@@ -1940,6 +1950,7 @@ def lint_wiki_workspace(
             }
             for candidate in reconciliation_candidates
         ],
+        "quality_review_candidates": quality_review_candidates,
         "applied_reconciliations": [],
         "applied_cluster_reconciliation": applied_cluster_reconciliation,
         "materialized_promotions": [],

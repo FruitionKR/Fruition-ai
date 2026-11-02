@@ -44,6 +44,7 @@ def generate_post_ingest_quality_cases(
     source_document_id: str,
     source_blocks: list[dict[str, Any]],
     limit: int = 3,
+    changed_block_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if limit < 1:
         return []
@@ -54,11 +55,13 @@ def generate_post_ingest_quality_cases(
     }
     if not blocks_by_id:
         return []
+    changed = set(changed_block_ids or []) & blocks_by_id.keys()
     prompt_blocks = []
     used_chars = 0
     # ponytail: 초대형 문서는 앞 60k만 사용한다.
     # 후반부 편향이 관측되면 packet 표본 추출로 바꾼다.
-    for block_id, text in blocks_by_id.items():
+    for block_id in sorted(blocks_by_id, key=lambda key: key not in changed):
+        text = blocks_by_id[block_id]
         if used_chars >= MAX_QUESTION_SOURCE_CHARS:
             break
         clipped = text[: MAX_QUESTION_SOURCE_CHARS - used_chars]
@@ -67,7 +70,7 @@ def generate_post_ingest_quality_cases(
     value = completion.complete_json(
         QUESTION_PROMPT.read_text(encoding="utf-8"),
         json.dumps(
-            {"limit": limit, "source_blocks": prompt_blocks},
+            {"limit": limit, "source_blocks": prompt_blocks, "changed_block_ids": sorted(changed)},
             ensure_ascii=False,
             indent=2,
         ),
@@ -130,6 +133,14 @@ def generate_post_ingest_quality_cases(
             str(case["expected_claims"][0])
         )
     ]
+    covered = {block_id for case in accepted for block_id in case["source_block_ids"]}
+    if changed and (
+        not covered.intersection(changed)
+        or (limit > 1 and blocks_by_id.keys() - changed and not covered.difference(changed))
+    ):
+        logger.warning("[post_ingest 평가 범위 누락] document_id=%s changed=%s covered=%s",
+                       source_document_id, sorted(changed), sorted(covered))
+        return []
     if not accepted:
         logger.warning(
             "[post_ingest 평가 질문 없음] document_id=%s returned=%d rejected=%s",

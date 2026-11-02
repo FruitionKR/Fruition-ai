@@ -88,7 +88,7 @@ class NoticeContractTest(unittest.TestCase):
 
         for kind in ("chat_tab", "details", "web_disabled"):
             self.assertIn(("clarify", kind), kinds)
-        for kind in ("sensitive_data", "unsupported", "policy"):
+        for kind in ("sensitive_data", "unsupported", "display_unsupported", "policy"):
             self.assertIn(("reject", kind), kinds)
         self.assertNotIn(("clarify", "web_disabled"), {(o["action"], o["notice_kind"]) for o in route_options(replace(TASK, allow_web_search=True))})
         self.assertIn("skill_off", {o["notice_kind"] for o in route_options(replace(TASK, skill_mode="off"))})
@@ -119,6 +119,14 @@ class NoticeMessageTest(unittest.TestCase):
         route = AgentTurnRoute(action="reject", confidence=1, reason="secret", notice_kind="sensitive_data")
 
         self.assertEqual(use_case(route).execute(TASK).message, REJECT_MESSAGES["sensitive_data"])
+
+    def test_display_setting_reject_says_ai_cannot_change_it(self) -> None:
+        route = AgentTurnRoute(action="reject", confidence=1, reason="표 너비", notice_kind="display_unsupported")
+
+        message = use_case(route).execute(TASK).message
+
+        self.assertEqual(message, REJECT_MESSAGES["display_unsupported"])
+        self.assertIn("AI가 바꿀 수 없어요", message)
 
     def test_skill_off_notice_is_appended_to_document_results(self) -> None:
         route = AgentTurnRoute(action="markdown_edit", confidence=1, reason="x", notice_kind="skill_off",

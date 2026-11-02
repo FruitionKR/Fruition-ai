@@ -25,11 +25,12 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
 | | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
 | `reject` | `sensitive_data`·`unsupported`·`policy` | 민감한 값·워크스페이스 밖 작업·규칙 우회별 거절 이유 |
+| | `display_unsupported` | "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요."(작업 탭·채팅 탭 모두. 표 열 정렬처럼 Markdown으로 나타낼 수 있는 변경은 편집) |
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
 - 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
-- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 3종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
+- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
 
 ### 폴더 내용 조회(`folder_lookup`)
 
@@ -90,6 +91,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
   "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요." 뒤에 붙여 `message`로 돌려준다.
 - 편집(`markdown_edit`, `workspace_workflow` 편집)은 편집 범위(선택 영역·현재 섹션, 문서 전체 편집이면 문서 전체)가 상한을 넘으면
   편집안을 만들지 않고 `clarify`로 수정할 부분이나 현재 섹션을 고르라고 안내한다. 편집기는 편집 범위와 앞뒤 몇 줄만 LLM에 보낸다.
+- 편집기는 편집안을 만들기 전에 요청 문장을 한 번 더 분류해 결과 형식·추가 전용·구조 변경·번역 언어를 정하고, 출력 검사는 요청 문장의 단어 대신 이 값을 본다([ADR-0043](../adr/0043-edit-detail-classification.md)). 원문에 있던 HTML(편집기가 빈 줄로 저장한 `<br />` 등)은 편집 결과에 남을 수 있고, 새로 생긴 HTML만 막는다.
   이미 만든 미리보기를 저장하는 턴은 LLM을 다시 부르지 않으므로 이 상한을 보지 않는다.
 
 - API 수: 11

@@ -100,6 +100,7 @@ CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 
 REJECT_MESSAGES = {
     "sensitive_data": "비밀번호·개인정보 같은 민감한 값은 문서에 넣어 드릴 수 없어요. 꼭 필요하면 직접 입력해 주세요.",
     "unsupported": "메일 발송처럼 워크스페이스 밖에서 일어나는 작업은 아직 지원하지 않아요.",
+    "display_unsupported": "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요.",
     "policy": "규칙을 우회하거나 권한을 바꾸는 요청은 처리할 수 없어요.",
 }
 REJECT_DEFAULT_MESSAGE = "요청한 작업은 현재 지원 범위에서 처리할 수 없습니다."

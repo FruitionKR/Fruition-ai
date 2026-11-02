@@ -577,3 +577,29 @@ def test_quality_evaluation_loads_source_for_every_used_evidence_block() -> None
         ("doc-a", "B0001"),
         ("doc-b", "B0001"),
     ]
+
+
+@pytest.mark.parametrize("selected,expected_count", [(["B0001", "B0002", "B0003"], 0), (["B0105", "B0002", "B0003"], 3), (["B0105"], 0)])
+def test_reingest_questions_cover_changed_and_unchanged_blocks(selected, expected_count):
+    blocks = [{"block_id": key, "text": f"{key} 파드는 하나 이상의 컨테이너를 실행하는 단위이다."}
+              for key in ["B0001", "B0002", "B0003", "B0105"]]
+    texts = {b["block_id"]: b["text"] for b in blocks}
+    completion = FixedCompletion({"cases": [
+        {"question": f"{key} 무엇인가?", "evidence": [{"block_id": key, "quote": texts[key]}]}
+        for key in selected
+    ]})
+    cases = generate_post_ingest_quality_cases(completion=completion, source_document_id="doc", source_blocks=blocks,
+                                              changed_block_ids=["B0105"], limit=3)
+    assert len(cases) == expected_count
+    payload = json.loads(completion.user_prompt)
+    assert payload["source_blocks"][0]["block_id"] == "B0105"
+    assert payload["changed_block_ids"] == ["B0105"]
+    assert payload["limit"] == 3
+    assert len(completion.user_prompts) == 1
+
+
+def test_changed_only_document_can_supply_quality_questions():
+    text = "파드는 하나 이상의 컨테이너를 실행하는 단위이다."
+    completion = FixedCompletion({"cases": [{"question": "파드는 무엇인가?", "evidence": [{"block_id": "B0105", "quote": text}]}]})
+    assert len(generate_post_ingest_quality_cases(completion=completion, source_document_id="doc",
+               source_blocks=[{"block_id": "B0105", "text": text}], changed_block_ids=["B0105"], limit=1)) == 1

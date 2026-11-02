@@ -11,9 +11,11 @@ import json
 import logging
 import os
 import signal
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from contextlib import contextmanager
 from itertools import count
 from typing import Any
 
@@ -612,6 +614,22 @@ def _post_ingest_client(command: dict[str, Any]) -> RetryOnceJsonCompletion:
     ))
 
 
+@contextmanager
+def _post_ingest_stage(state: dict[str, Any], stage: str):
+    started = time.perf_counter()
+    status = "failed"
+    try:
+        yield
+        status = "succeeded"
+    finally:
+        elapsed = round(time.perf_counter() - started, 6)
+        state.setdefault("stage_timings", []).append({
+            "stage": stage, "attempt": state.get("attempt", 1),
+            "elapsed_seconds": elapsed, "status": status,
+        })
+        logger.info("[post_ingest 단계] stage=%s status=%s seconds=%.3f", stage, status, elapsed)
+
+
 def _run_post_ingest_wiki_quality_evaluation(
     command: dict[str, Any],
     state: dict[str, Any],
@@ -623,12 +641,17 @@ def _run_post_ingest_wiki_quality_evaluation(
         return evaluations
     completion = _post_ingest_client(command)
     if "quality_cases" not in state:
-        cases = generate_post_ingest_quality_cases(
-            completion=completion,
-            source_document_id=str(command["document_id"]),
-            source_blocks=database.list_source_blocks(str(command["document_id"])),
-            limit=POST_INGEST_AUDIT_LIMIT,
-        )
+        with _post_ingest_stage(state, "question_generation"):
+            cases = generate_post_ingest_quality_cases(
+                completion=completion,
+                source_document_id=str(command["document_id"]),
+                source_blocks=database.list_source_blocks(str(command["document_id"])),
+                limit=POST_INGEST_AUDIT_LIMIT,
+                changed_block_ids=[
+                    *(command.get("source_block_changes", {}).get("added_block_ids") or []),
+                    *(command.get("source_block_changes", {}).get("modified_block_ids") or []),
+                ],
+            )
         state["quality_cases"] = cases
         if not cases:
             # wiki ingest 자체는 이미 성공했으므로 품질 평가만 건너뛰고
@@ -649,26 +672,28 @@ def _run_post_ingest_wiki_quality_evaluation(
     if not cases:
         return []
     # 편입 후속 감사도 워크스페이스 공용 모델 설정을 쓴다.
-    provider, model = resolve_workspace_llm_selection(
-        str(command["provider"]).strip(),
-        str(command["model"]).strip(),
-    )
-    use_case = build_answer_query_use_case(
-        provider=provider,
-        model=model,
-        allow_web_search=False,
-        evaluator_mode="disabled",
-        wiki_repository=PostgresWikiRepository(),
-    )
+    with _post_ingest_stage(state, "retrieval_setup"):
+        provider, model = resolve_workspace_llm_selection(
+            str(command["provider"]).strip(),
+            str(command["model"]).strip(),
+        )
+        use_case = build_answer_query_use_case(
+            provider=provider,
+            model=model,
+            allow_web_search=False,
+            evaluator_mode="disabled",
+            wiki_repository=PostgresWikiRepository(),
+        )
     retrieved_cases = []
     source_refs = []
     for case in cases:
         question = str(case["question"])
-        result = use_case.retrieve_evidence(
-            question,
-            workspace_id=str(command["workspace_id"]),
-            user_id=str(command["user_id"]),
-        )
+        with _post_ingest_stage(state, "retrieval"):
+            result = use_case.retrieve_evidence(
+                question,
+                workspace_id=str(command["workspace_id"]),
+                user_id=str(command["user_id"]),
+            )
         evidence_snippets = [
             {
                 "rank": snippet.rank,
@@ -728,11 +753,12 @@ def _run_post_ingest_wiki_quality_evaluation(
         source_blocks = database.list_source_blocks_for_refs(
             list(dict.fromkeys(source_refs))
         )
-    judgments = evaluate_post_ingest_evidence(
-        completion=completion,
-        cases=retrieved_cases,
-        source_blocks=source_blocks,
-    )
+    with _post_ingest_stage(state, "evidence_evaluation"):
+        judgments = evaluate_post_ingest_evidence(
+            completion=completion,
+            cases=retrieved_cases,
+            source_blocks=source_blocks,
+        )
     evaluations = [
         {**retrieved, **judgment}
         for retrieved, judgment in zip(retrieved_cases, judgments, strict=True)
@@ -740,6 +766,65 @@ def _run_post_ingest_wiki_quality_evaluation(
     state["wiki_quality_evaluations"] = evaluations
     database.checkpoint_pipeline_run(str(command["run_id"]), state)
     return evaluations
+
+
+def _post_ingest_embedding(page_ids: list[str], timing_state: dict[str, Any]) -> dict[str, int]:
+    """편입이 저장한 페이지를 임베딩한다. 동시에 도는 클러스터 판정과 state를 나눠 쓰지 않도록 단계 시간은 timing_state에 둔다."""
+    with _post_ingest_stage(timing_state, "embedding"):
+        page_ids = list(dict.fromkeys(page_ids))
+        if os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower() in {
+            "text-only",
+            "bm25",
+            "lexical",
+        }:
+            embedding = embedding_result(
+                target_count=len(page_ids),
+                skipped_count=len(page_ids),
+            )
+        else:
+            embedding = build_wiki_embeddings(page_ids)
+        if embedding["failed_count"]:
+            raise RuntimeError(
+                f"post_ingest embedding failed: {embedding['failed_count']}"
+            )
+    return embedding
+
+
+def _apply_post_ingest_clusters(command: dict[str, Any], state: dict[str, Any], run_id: str) -> None:
+    if "cluster_artifact" not in state:
+        with _post_ingest_stage(state, "cluster_judgment"):
+            object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
+            existing_active = read_optional_text_object(object_name)
+            state["cluster_artifact"] = build_post_ingest_cluster_artifact(
+                completion=_post_ingest_client(command),
+                normalized=dict(command["cluster_normalized"]),
+                existing_active_markdown=existing_active,
+                user_id=str(command["user_id"]),
+                workspace_id=str(command["workspace_id"]),
+                concept_update_decisions=list(
+                    command.get("concept_update_decisions") or []
+                ),
+                core_concepts=list(
+                    command["cluster_normalized"].get("core_concepts") or []
+                ),
+                concept_judge=jev_concept_judge(),
+            )
+        database.checkpoint_pipeline_run(run_id, state)
+
+    if not state.get("cluster_applied"):
+        with _post_ingest_stage(state, "cluster_persistence"):
+            database.persist_post_ingest_clusters(
+                str(command["document_id"]),
+                str(command["workspace_id"]),
+                dict(state["cluster_artifact"]),
+                str(command["ingest_run_id"]),
+            )
+            database.update_pipeline_run_cluster_contribution(
+                str(command["ingest_run_id"]),
+                dict(state["cluster_artifact"]),
+            )
+        state["cluster_applied"] = True
+        database.checkpoint_pipeline_run(run_id, state)
 
 
 def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
@@ -754,6 +839,7 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(post_ingest_payload, dict):
         raise ValueError("post_ingest parent run payload is unavailable")
     command = {**post_ingest_payload, **command}
+    command["source_block_changes"] = ingest_manifest.get("source_block_changes") or {}
     _required(
         command,
         "run_id",
@@ -809,66 +895,33 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         },
     )
     try:
-        if "cluster_artifact" not in state:
-            object_name = f"wiki/{command['workspace_id']}/clusters/active.md"
-            existing_active = read_optional_text_object(object_name)
-            state["cluster_artifact"] = build_post_ingest_cluster_artifact(
-                completion=_post_ingest_client(command),
-                normalized=dict(command["cluster_normalized"]),
-                existing_active_markdown=existing_active,
-                user_id=str(command["user_id"]),
-                workspace_id=str(command["workspace_id"]),
-                concept_update_decisions=list(
-                    command.get("concept_update_decisions") or []
-                ),
-                core_concepts=list(
-                    command["cluster_normalized"].get("core_concepts") or []
-                ),
-                concept_judge=jev_concept_judge(),
-            )
-            database.checkpoint_pipeline_run(run_id, state)
-
-        if not state.get("cluster_applied"):
-            changed_page_ids = database.persist_post_ingest_clusters(
-                str(command["document_id"]),
-                str(command["workspace_id"]),
-                dict(state["cluster_artifact"]),
-                str(command["ingest_run_id"]),
-            )
-            database.update_pipeline_run_cluster_contribution(
-                str(command["ingest_run_id"]),
-                dict(state["cluster_artifact"]),
-            )
-            state["page_ids"] = list(
-                dict.fromkeys(
-                    [
-                        *(str(page_id) for page_id in command.get("page_ids", [])),
-                        *changed_page_ids,
-                    ]
+        # 편입이 저장한 페이지는 클러스터 판정이 바꾸지 않는다. 임베딩을 먼저 띄워 판정 LLM과 겹치게 해 질의 가능 시점을 당긴다.
+        embedding_timing: dict[str, Any] = {"attempt": attempt}
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="post-ingest-embedding") as embedding_pool:
+            embedding_future = (
+                embedding_pool.submit(
+                    copy_context().run,
+                    _post_ingest_embedding,
+                    [str(page_id) for page_id in command.get("page_ids", [])],
+                    embedding_timing,
                 )
+                if "embedding" not in state
+                else None
             )
-            state["cluster_applied"] = True
-            database.checkpoint_pipeline_run(run_id, state)
-
-        if "embedding" not in state:
-            page_ids = list(dict.fromkeys(state["page_ids"]))
-            if os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower() in {
-                "text-only",
-                "bm25",
-                "lexical",
-            }:
-                embedding = embedding_result(
-                    target_count=len(page_ids),
-                    skipped_count=len(page_ids),
-                )
-            else:
-                embedding = build_wiki_embeddings(page_ids)
-            if embedding["failed_count"]:
-                raise RuntimeError(
-                    f"post_ingest embedding failed: {embedding['failed_count']}"
-                )
-            state["embedding"] = embedding
-            database.checkpoint_pipeline_run(run_id, state)
+            try:
+                _apply_post_ingest_clusters(command, state, run_id)
+            finally:
+                # 판정이 실패해도 끝난 임베딩은 남겨 재시도가 다시 계산하지 않게 한다. state는 이 스레드에서만 고친다.
+                if embedding_future is not None:
+                    embedding_error = embedding_future.exception()
+                    # 실패한 시도의 시간도 남긴다. 스레드가 끝난 뒤라 timing을 읽어도 안전하다.
+                    state.setdefault("stage_timings", []).extend(embedding_timing.get("stage_timings", []))
+                    if embedding_error is None:
+                        state["embedding"] = embedding_future.result()
+                        database.checkpoint_pipeline_run(run_id, state)
+        # 판정이 실패했으면 그 예외(취소 포함)가 그대로 올라가도록, 임베딩 오류는 판정이 끝난 뒤에만 올린다.
+        if embedding_future is not None and embedding_error is not None:
+            raise embedding_error
 
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
         quality_required = bool(command.get("quality_required", True))
@@ -912,6 +965,10 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         return result
     except Exception as exc:
         final_attempt = attempt >= POST_INGEST_MAX_ATTEMPTS
+        try:
+            database.checkpoint_pipeline_run(run_id, state)
+        except Exception:
+            logger.exception("failed to checkpoint post_ingest timing run_id=%s", run_id)
         database.update_pipeline_run_post_ingest(
             str(command["ingest_run_id"]),
             {
