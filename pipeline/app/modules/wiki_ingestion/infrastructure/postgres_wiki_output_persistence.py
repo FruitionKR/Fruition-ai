@@ -31,7 +31,7 @@ from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
     append_concept_evidence,
     concept_evidence_updates,
 )
-from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object, write_text_object
+from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object, storage_uri, write_text_object
 from app.modules.wiki_ingestion.infrastructure.operation_artifacts import (
     persist_operation_artifacts,
 )
@@ -60,6 +60,8 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
 logger = logging.getLogger(__name__)
 # 재생 결과 페이지를 DB에 반영하는 함수(복구와 같은 `_apply_restored_wiki_state`). 저장소 모듈이 넘긴다.
 ApplyRebuiltPages = Callable[..., Any]
+# 빠진 하위 항목을 가리키던 참조를 정리한다(복구와 같은 `_prune_dangling_references`). 다시 그린 다른 페이지를 목록에 더한다.
+PruneReferences = Callable[[psycopg.Connection, str, str, list[dict[str, Any]]], None]
 
 
 def lock_concept_persistence(
@@ -78,6 +80,7 @@ def persist_wiki_outputs(
     manifest: dict[str, Any],
     manual_source_markdown: str | None = None,
     apply_rebuilt_pages: ApplyRebuiltPages | None = None,
+    prune_references: PruneReferences | None = None,
 ) -> list[str]:
     """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다.
 
@@ -161,6 +164,7 @@ def persist_wiki_outputs(
             concept_id_by_slug,
             updated_concept_pages,
             apply_rebuilt_pages,
+            prune_references,
         )
     # 모든 페이지를 쓴 뒤 문서 연결에서 자동 소스 → 개념 링크를 맞춘다. 다시 편입한 문서(휴지통에서 되살림 포함)의
     # 변경 없는 개념 연결도 소스 페이지 범위로 함께 맞춘다.
@@ -266,6 +270,7 @@ def _rebuild_invalidated_pages(
     concept_id_by_slug: dict[str, str],
     updated_concept_pages: list[dict[str, Any]],
     apply_rebuilt_pages: ApplyRebuiltPages,
+    prune_references: PruneReferences | None,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """재편입이 수정·삭제한 블록의 옛 근거를 가진 개념 페이지를 기여 재생으로 다시 그린다.
 
@@ -296,8 +301,14 @@ def _rebuild_invalidated_pages(
         return {}, []
     ledger = read_contributions(list(slugs), workspace_id)
     stale = set(invalidated)
-    rebuilt_markdown: dict[str, str] = {}
-    invalidation_pages: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
+    invalidation_contribution = {
+        "schema_version": 1,
+        "artifact_type": INVALIDATION,
+        "operation_id": operation_id,
+        "document_id": document_id,
+        "invalidated_reference_ids": invalidated,
+    }
     for page_id, slug in slugs.items():
         kept = sorted(
             (
@@ -319,18 +330,10 @@ def _rebuild_invalidated_pages(
         )
         if not any(_cites(item.contribution or {}, stale) for item in loaded):
             continue
-        contribution = (
-            {**contributions[slug], "page_id": page_id}
-            if page_id in touched
-            else {
-                "schema_version": 1,
-                "artifact_type": INVALIDATION,
-                "operation_id": operation_id,
-                "document_id": document_id,
-                "page_id": page_id,
-                "invalidated_reference_ids": invalidated,
-            }
-        )
+        contribution = {
+            **(contributions[slug] if page_id in touched else invalidation_contribution),
+            "page_id": page_id,
+        }
         rebuilt = rebuild_concept_page([
             *loaded,
             PageContribution(
@@ -349,27 +352,40 @@ def _rebuild_invalidated_pages(
         markdown_key = f"wiki/{workspace_id}/concepts/{slug}.md"
         write_text_object(markdown_key, rebuilt.markdown, "text/markdown; charset=utf-8")
         # 이름·요약은 편입이 기존 값을 유지하는 규칙과 같게 두고(None은 그대로 둠), 본문·항목·링크·문서 연결은 재생 결과로 맞춘다.
+        page = {
+            "page_id": page_id,
+            "page_type": "concept",
+            "markdown_key": markdown_key,
+            "title": None,
+            "summary": None,
+            "supported_links": list(rebuilt.supported_links),
+            "source_document_ids": list(rebuilt.source_document_ids),
+            "entries": list(rebuilt.entries),
+        }
         apply_rebuilt_pages(
-            workspace_id,
-            [{
-                "page_id": page_id,
-                "page_type": "concept",
-                "markdown_key": markdown_key,
-                "title": None,
-                "summary": None,
-                "supported_links": list(rebuilt.supported_links),
-                "source_document_ids": list(rebuilt.source_document_ids),
-                "entries": list(rebuilt.entries),
-            }],
-            {"removed_links": [], "restored_links": list(rebuilt.supported_links)},
-            True,
-            conn,
+            workspace_id, [page], {"removed_links": [], "restored_links": list(rebuilt.supported_links)}, True, conn,
         )
-        rebuilt_markdown[page_id] = rebuilt.markdown
+        applied.append(page)
+    if applied and prune_references is not None:
+        # 빠진 하위 항목을 가리키던 참조를 정리한다. 그 참조를 가진 다른 페이지는 다시 그려져 목록에 더해진다.
+        prune_references(conn, workspace_id, operation_id, applied)
+    rebuilt_markdown: dict[str, str] = {}
+    invalidation_pages: list[dict[str, Any]] = []
+    for page in applied:
+        page_id = str(page["page_id"])
+        # 참조 정리가 본문 목록을 다시 그렸을 수 있어 최종 본문을 다시 읽는다. 기록 본문 해시가 이것과 같아야 한다.
+        markdown = read_text_object(storage_uri(str(page["markdown_key"])))
+        rebuilt_markdown[page_id] = markdown
         if page_id not in touched:
-            invalidation_pages.append(
-                {"page_id": page_id, "slug": slug, "markdown": rebuilt.markdown, "contribution": contribution}
+            slug = slugs.get(page_id) or str(
+                conn.execute("SELECT slug FROM wiki_pages WHERE id = %s", (page_id,)).fetchone()["slug"]
             )
+            invalidation_pages.append({
+                "page_id": page_id,
+                "slug": slug,
+                "markdown": markdown,
+                "contribution": {**invalidation_contribution, "page_id": page_id},
+            })
     return rebuilt_markdown, invalidation_pages
 
 
