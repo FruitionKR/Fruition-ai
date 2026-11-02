@@ -1429,9 +1429,8 @@ def finish_pipeline_run(
                 embedded_page_ids = _persist_wiki_outputs(
                     conn, document_id, manifest, manual_source_markdown,
                     apply_rebuilt_pages=_apply_restored_wiki_state,
-                    prune_references=lambda conn, workspace, operation, pages: _prune_dangling_references(
-                        conn, workspace, operation, pages, [],
-                    ),
+                    prune_references=_prune_dangling_references,
+                    cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
                 )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):

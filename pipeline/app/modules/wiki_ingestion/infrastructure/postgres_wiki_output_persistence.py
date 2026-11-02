@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -57,11 +56,13 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
     source_summary,
 )
 
-logger = logging.getLogger(__name__)
 # 재생 결과 페이지를 DB에 반영하는 함수(복구와 같은 `_apply_restored_wiki_state`). 저장소 모듈이 넘긴다.
 ApplyRebuiltPages = Callable[..., Any]
 # 빠진 하위 항목을 가리키던 참조를 정리한다(복구와 같은 `_prune_dangling_references`). 다시 그린 다른 페이지를 목록에 더한다.
-PruneReferences = Callable[[psycopg.Connection, str, str, list[dict[str, Any]]], None]
+# 마지막 인자는 이번에 지운 페이지다.
+PruneReferences = Callable[[psycopg.Connection, str, str, list[dict[str, Any]], list[str]], None]
+# 재생 결과가 빈 페이지를 내린다(복구와 같은 `_cleanup_deleted_wiki_pages`).
+CleanupDeletedPages = Callable[[psycopg.Connection, str, list[str]], None]
 
 
 def lock_concept_persistence(
@@ -81,6 +82,7 @@ def persist_wiki_outputs(
     manual_source_markdown: str | None = None,
     apply_rebuilt_pages: ApplyRebuiltPages | None = None,
     prune_references: PruneReferences | None = None,
+    cleanup_deleted_pages: CleanupDeletedPages | None = None,
 ) -> list[str]:
     """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다.
 
@@ -152,9 +154,10 @@ def persist_wiki_outputs(
         upsert_document_wiki_link(conn, document_id, str(page["page_id"]), "extracted_concept", None, workspace_id)
     rebuilt_markdown: dict[str, str] = {}
     invalidation_pages: list[dict[str, Any]] = []
+    deleted_pages: list[dict[str, Any]] = []
     invalidated = _invalidated_refs(document_id, manifest)
     if operation_id and invalidated and apply_rebuilt_pages is not None:
-        rebuilt_markdown, invalidation_pages = _rebuild_invalidated_pages(
+        rebuilt_markdown, invalidation_pages, deleted_pages = _rebuild_invalidated_pages(
             conn,
             document_id,
             workspace_id,
@@ -165,6 +168,7 @@ def persist_wiki_outputs(
             updated_concept_pages,
             apply_rebuilt_pages,
             prune_references,
+            cleanup_deleted_pages,
         )
     # 모든 페이지를 쓴 뒤 문서 연결에서 자동 소스 → 개념 링크를 맞춘다. 다시 편입한 문서(휴지통에서 되살림 포함)의
     # 변경 없는 개념 연결도 소스 페이지 범위로 함께 맞춘다.
@@ -191,6 +195,7 @@ def persist_wiki_outputs(
             manual_source_markdown,
             rebuilt_markdown,
             invalidation_pages,
+            deleted_pages,
         )
     return list(
         dict.fromkeys(
@@ -214,6 +219,7 @@ def _persist_ingest_operation_artifacts(
     manual_source_markdown: str | None,
     rebuilt_markdown: dict[str, str],
     invalidation_pages: list[dict[str, Any]],
+    deleted_pages: list[dict[str, Any]],
 ) -> None:
     source_page = page_payload(manifest["source_page"])
     concept_contributions = {
@@ -253,6 +259,14 @@ def _persist_ingest_operation_artifacts(
         concept_contributions=concept_contributions,
         write_text=write_text_object,
     )
+    # 지운 페이지는 본문 없이 무효화 기여만 남긴다. document-svc가 이 key로 원장 행을 더해, 이 편입을 되돌리면 되살린다.
+    for page in deleted_pages:
+        write_text_object(
+            f"wiki/{workspace_id}/pages/{page['page_id']}/ops/{operation_id}.json",
+            json.dumps(page["contribution"], ensure_ascii=False, sort_keys=True),
+            "application/json; charset=utf-8",
+        )
+    manifest["deleted_pages"] = [str(page["page_id"]) for page in deleted_pages]
 
 
 def _invalidated_refs(document_id: str, manifest: dict[str, Any]) -> list[str]:
@@ -271,13 +285,14 @@ def _rebuild_invalidated_pages(
     updated_concept_pages: list[dict[str, Any]],
     apply_rebuilt_pages: ApplyRebuiltPages,
     prune_references: PruneReferences | None,
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    cleanup_deleted_pages: CleanupDeletedPages | None,
+) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]]]:
     """재편입이 수정·삭제한 블록의 옛 근거를 가진 개념 페이지를 기여 재생으로 다시 그린다.
 
     이 문서와 연결된 페이지 중 활성 기여가 무효화된 블록을 인용하는 페이지만 대상이다. 이번 편입이 기여한 페이지는
     이번 기여를, 기여하지 않은 페이지는 무효화 전용 기여를 마지막에 더해 재생한다. 페이지와 다른 근거는 그대로 둔다.
-    재생 결과 근거가 남지 않는 페이지는 아직 편입 결과로 삭제를 보고할 수 없어 그대로 두고 경고한다.
-    돌려주는 값: 다시 그린 페이지 본문(page_id → markdown), 무효화 전용 기여를 남길 페이지.
+    재생 결과 근거가 남지 않는 페이지는 복구와 같이 내리고 결과의 `deleted_pages`로 알린다.
+    돌려주는 값: 다시 그린 페이지 본문(page_id → markdown), 무효화 전용 기여를 남길 페이지, 지운 페이지.
     """
     contributions = manifest.get("concept_contributions") or {}
     touched = {
@@ -298,10 +313,11 @@ def _rebuild_invalidated_pages(
     ).fetchall()
     slugs = {**{str(row["id"]): str(row["slug"]) for row in linked}, **touched}
     if not slugs:
-        return {}, []
+        return {}, [], []
     ledger = read_contributions(list(slugs), workspace_id)
     stale = set(invalidated)
     applied: list[dict[str, Any]] = []
+    deleted: list[dict[str, Any]] = []
     invalidation_contribution = {
         "schema_version": 1,
         "artifact_type": INVALIDATION,
@@ -346,8 +362,7 @@ def _rebuild_invalidated_pages(
             ),
         ])
         if rebuilt.deleted:
-            # ponytail: 편입 결과(document-svc OperationApplier)가 deleted_pages를 받지 않아 지우지 않는다. 그 처리 후 삭제한다.
-            logger.warning("[재편입 무효화] 근거가 남지 않은 페이지를 지우지 않고 둡니다: page_id=%s", page_id)
+            deleted.append({"page_id": page_id, "contribution": contribution})
             continue
         markdown_key = f"wiki/{workspace_id}/concepts/{slug}.md"
         write_text_object(markdown_key, rebuilt.markdown, "text/markdown; charset=utf-8")
@@ -366,9 +381,14 @@ def _rebuild_invalidated_pages(
             workspace_id, [page], {"removed_links": [], "restored_links": list(rebuilt.supported_links)}, True, conn,
         )
         applied.append(page)
-    if applied and prune_references is not None:
+    deleted_ids = [str(page["page_id"]) for page in deleted]
+    if deleted_ids and cleanup_deleted_pages is not None:
+        cleanup_deleted_pages(conn, workspace_id, deleted_ids)
+    elif deleted_ids:
+        raise RuntimeError("deleting rebuilt pages requires cleanup_deleted_pages")
+    if (applied or deleted_ids) and prune_references is not None:
         # 빠진 하위 항목을 가리키던 참조를 정리한다. 그 참조를 가진 다른 페이지는 다시 그려져 목록에 더해진다.
-        prune_references(conn, workspace_id, operation_id, applied)
+        prune_references(conn, workspace_id, operation_id, applied, deleted_ids)
     rebuilt_markdown: dict[str, str] = {}
     invalidation_pages: list[dict[str, Any]] = []
     for page in applied:
@@ -386,7 +406,7 @@ def _rebuild_invalidated_pages(
                 "markdown": markdown,
                 "contribution": {**invalidation_contribution, "page_id": page_id},
             })
-    return rebuilt_markdown, invalidation_pages
+    return rebuilt_markdown, invalidation_pages, deleted
 
 
 def _cites(contribution: dict[str, Any], refs: set[str]) -> bool:

@@ -127,6 +127,8 @@ def _result_payload(command: dict, manifest: dict | None, status: str, error: st
         "target_document_id": command.get("document_id"),
         "summary": error or "Wiki ingest를 완료했습니다.",
         "changed_pages": (manifest or {}).get("operation_artifacts", []),
+        # 재편입이 수정·삭제한 블록의 근거만 남아 재생 결과가 빈 페이지(ADR 0042).
+        "deleted_pages": (manifest or {}).get("deleted_pages", []),
     }
 
 
