@@ -1,0 +1,25 @@
+{"id": "minutes-as-source-fill", "message": "지난주 팀 회의록 내용을 참고해서 일정표 각 단계에 담당자를 적어줘", "expected": {"requested_formats": [], "addition_only": true, "structure_change": false, "target_language": null}}
+{"id": "minutes-as-result", "message": "이 브레인스토밍 메모를 회의록 형식으로 다시 써줘", "expected": {"requested_formats": ["meeting_notes"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "minutes-source-table-result", "message": "결정 사항이 정리된 회의록을 바탕으로 담당자별 업무를 표로 나눠줘", "expected": {"requested_formats": ["table"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "minutes-mentioned-in-summary", "message": "회의록 링크는 두고 본문만 세 줄로 줄여줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "table-rows-from-topics", "message": "탐색 주제를 행으로 두고 연구질문과의 관계를 열로 넣은 표를 만들어줘", "expected": {"requested_formats": ["table"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "table-kept-wording-changed", "message": "표는 손대지 말고 위 설명 문단만 더 쉽게 바꿔줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "table-to-list", "message": "이 표를 글머리표 목록으로 풀어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "heading-kept", "message": "소제목은 그대로 두고 문장 끝을 존댓말로 통일해줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "heading-added", "message": "각 문단 앞에 알맞은 소제목을 달아줘", "expected": {"requested_formats": ["heading"], "addition_only": true, "structure_change": true, "target_language": null}, "acceptable": [{"requested_formats": ["heading"], "addition_only": false, "structure_change": true, "target_language": null}]}
+{"id": "numbered-steps", "message": "설치 과정을 순서가 보이게 번호를 매겨서 정리해줘", "expected": {"requested_formats": ["numbered_list"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "order-word-not-list", "message": "문단 순서는 그대로 두고 맞춤법만 고쳐줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "bold-keyword", "message": "핵심 용어인 회귀 테스트를 굵게 강조해줘", "expected": {"requested_formats": ["bold"], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "bold-mentioned-removed", "message": "굵은 글씨가 너무 많으니 강조를 전부 빼줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "quote-the-sentence", "message": "교수님 발언 부분을 인용 블록으로 바꿔줘", "expected": {"requested_formats": ["blockquote"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "equation-display", "message": "본문 속 손실 함수 식을 별도 줄의 수식 블록으로 빼줘", "expected": {"requested_formats": ["display_math"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "diagram-flow", "message": "배포 단계 흐름을 머메이드 순서도로 그려줘", "expected": {"requested_formats": ["mermaid"], "addition_only": false, "structure_change": true, "target_language": null}, "acceptable": [{"requested_formats": ["mermaid"], "addition_only": true, "structure_change": true, "target_language": null}]}
+{"id": "code-block-command", "message": "실행 명령어 줄은 코드 블록으로 감싸줘", "expected": {"requested_formats": ["code_block"], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "append-sentence", "message": "마지막 문단 끝에 향후 계획 한 문장을 덧붙여줘", "expected": {"requested_formats": [], "addition_only": true, "structure_change": false, "target_language": null}}
+{"id": "append-and-rewrite", "message": "결론을 추가하고 서론도 더 짧게 다듬어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "link-change", "message": "참고 링크 주소를 새 문서 주소로 바꿔줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "checkbox-done", "message": "끝난 할 일은 체크 표시로 바꿔줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": true, "target_language": null}}
+{"id": "translate-en", "message": "이 섹션을 영어로 옮겨줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": "en"}}
+{"id": "translate-ko", "message": "Please translate this paragraph into Korean.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": "ko"}}
+{"id": "english-word-not-translation", "message": "영어 약어는 그대로 두고 문장만 매끄럽게 다듬어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "merge-broken-bullets", "message": "문장이 줄마다 끊겨서 불릿이 쪼개져 있어. 원래 문장대로 합쳐서 정리해줘.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
