@@ -13,6 +13,7 @@ from app.modules.wiki_ingestion.domain.concept_entries import (
     replay_concept_entries,
 )
 from app.modules.wiki_ingestion.domain.contribution_identity import (
+    CONCEPT_REFERENCE_FIELDS,
     globalize_contribution_identity,
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import (
@@ -26,6 +27,10 @@ from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
     append_concept_evidence,
     concept_evidence_updates,
 )
+
+
+# 재편입이 무효화한 블록만 기록하는 기여(내용 없음). 이 페이지에 새 근거가 없어도 옛 근거를 재생에서 빼게 한다.
+INVALIDATION = "invalidation"
 
 
 class ConceptContributionError(PageRebuildError):
@@ -129,8 +134,13 @@ def rebuild_concept_page(
         for item in ordered
         if item.contribution is not None
     ]
+    artifacts, stale_by_operation = _without_invalidated(artifacts)
     contribution_json = [item for item in artifacts if item.get("artifact_type") != "manual"]
-    original_json = contribution_json
+    original_json = [
+        globalize_contribution_identity(item.contribution)
+        for item in generated
+        if item.contribution is not None and not _is_invalidation(item.contribution)
+    ]
     # 개념도 항목 변경도 없는 기록은 깨진 기록이다. 근거 없음으로 보고 페이지를 지우지 않는다.
     if any(not (item.get("concept") or {}).get("slug") and "entry_changes" not in item for item in contribution_json):
         raise ConceptContributionError("concept contribution has neither concept nor entry changes")
@@ -138,7 +148,9 @@ def rebuild_concept_page(
     supported_links = tuple(replay_supported_links(artifacts))
     entries = tuple(replay_concept_entries(artifacts))
     # 남은 유효 근거가 없으면 페이지도 없다. lint 메타데이터(분리·링크 기록)만으로 존속시키지 않는다(ADR 0042 결정 3).
-    if not (manual or entries or any(_supports_page(item) for item in contribution_json)):
+    if not (manual or entries or any(
+        _supports_page(before, after) for before, after in zip(original_json, contribution_json, strict=True)
+    )):
         return _deleted_page(page_id)
     # 다른 페이지로 옮겼거나 지운 하위 항목의 근거는 본문에 두지 않는다. 옮긴 근거는 새 집이 보인다(ADR 0042).
     entry_claims = {
@@ -186,7 +198,9 @@ def rebuild_concept_page(
             update
             for item in generated
             if item.sequence > base.sequence and item.contribution is not None
-            for update in concept_evidence_updates(item.contribution)
+            for update in concept_evidence_updates(
+                _without_stale_units(item.contribution, stale_by_operation.get(item.operation_id, set()))
+            )
         ]
         markdown = str(base.contribution["markdown"])
         if updates:
@@ -271,11 +285,108 @@ def _deleted_page(page_id: str) -> RebuiltConceptPage:
     )
 
 
-def _supports_page(contribution: dict[str, Any]) -> bool:
-    """페이지를 받치는 기록: 근거 단위가 있거나, lint가 아닌 기록의 직접 개념 기여다."""
-    if contribution.get("evidence_units"):
+def _supports_page(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """페이지를 받치는 기록: 근거 단위가 있거나, lint가 아닌 기록의 직접 개념 기여다.
+    인용이 있던 개념이 무효화로 인용을 모두 잃으면 받치지 않는다. 인용 없이 이름만 나온 개념은 받친다."""
+    if after.get("evidence_units"):
         return True
-    return contribution.get("artifact_type") != "lint" and bool((contribution.get("concept") or {}).get("slug"))
+    concept = after.get("concept") or {}
+    if after.get("artifact_type") == "lint" or not concept.get("slug"):
+        return False
+    return bool(_concept_citations(concept)) or not _concept_citations(before.get("concept") or {})
+
+
+def _concept_citations(concept: dict[str, Any]) -> list[str]:
+    return [*concept.get("anchor_reference_ids", []), *concept.get("evidence_claim_ids", [])]
+
+
+def _is_invalidation(contribution: dict[str, Any]) -> bool:
+    return contribution.get("artifact_type") == INVALIDATION
+
+
+def _without_invalidated(
+    artifacts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
+    """뒤 기록이 무효화한 블록(재편입의 수정·삭제 블록, `invalidated_reference_ids`)에 근거한 앞 기록 내용을 뺀다.
+
+    이전 기록은 끄지 않으므로 그대로인 블록의 근거는 남는다. 근거 단위·핵심 내용은 앵커 하나라도 무효화되면 뺀다
+    (옛 원문에서 나온 주장이다). 개념·하위 항목 인용은 무효화된 블록과 뺀 근거만 덜어 내고, 인용을 모두 잃은 하위 항목
+    추가는 뺀다. 무효화 전용 기록은 재생 내용이 없어 결과 목록에서 뺀다. 사람이 쓴 기록은 손대지 않는다.
+    """
+    stale_by_operation: dict[str, set[str]] = {}
+    later: set[str] = set()
+    for item in reversed(artifacts):
+        if later and item.get("artifact_type") != "manual":
+            stale_by_operation[str(item.get("operation_id") or "")] = set(later)
+        later |= set(item.get("invalidated_reference_ids", []))
+    if not stale_by_operation:
+        return [item for item in artifacts if not _is_invalidation(item)], {}
+    dropped_claims = {
+        str(unit.get("evidence_id"))
+        for item in artifacts
+        for unit in item.get("evidence_units", [])
+        if isinstance(unit, dict)
+        and stale_by_operation.get(str(item.get("operation_id") or ""), set()) & set(unit.get("anchor_reference_ids", []))
+    }
+    return [
+        _without_stale(item, stale_by_operation.get(str(item.get("operation_id") or ""), set()), dropped_claims)
+        for item in artifacts
+        if not _is_invalidation(item)
+    ], stale_by_operation
+
+
+def _without_stale(contribution: dict[str, Any], stale: set[str], dropped_claims: set[str]) -> dict[str, Any]:
+    if contribution.get("artifact_type") == "manual" or not (stale or dropped_claims):
+        return contribution
+    concept = dict(contribution.get("concept") or {})
+    for field in CONCEPT_REFERENCE_FIELDS:
+        concept[field] = [ref for ref in concept.get(field, []) if ref not in stale]
+    concept["evidence_claim_ids"] = [
+        claim_id for claim_id in concept.get("evidence_claim_ids", []) if claim_id not in dropped_claims
+    ]
+    result = {
+        **contribution,
+        "concept": concept,
+        "evidence_units": [
+            unit for unit in contribution.get("evidence_units", [])
+            if str(unit.get("evidence_id")) not in dropped_claims
+        ],
+        "source_key_points": [
+            item for item in contribution.get("source_key_points", [])
+            if not stale & set(item.get("anchor_reference_ids", []))
+        ],
+    }
+    if "entry_changes" in contribution:
+        changes = []
+        for change in contribution["entry_changes"]:
+            if change.get("op") != "add":
+                changes.append(change)
+                continue
+            refs = [ref for ref in change.get("anchor_reference_ids", []) if ref not in stale]
+            claims = [claim_id for claim_id in change.get("evidence_claim_ids", []) if claim_id not in dropped_claims]
+            cited = change.get("anchor_reference_ids") or change.get("evidence_claim_ids")
+            if cited and not refs and not claims:
+                continue
+            changes.append({**change, "anchor_reference_ids": refs, "evidence_claim_ids": claims})
+        result["entry_changes"] = changes
+    return result
+
+
+def _without_stale_units(contribution: dict[str, Any], stale: set[str]) -> dict[str, Any]:
+    """수동 본문 뒤 AI 기록의 근거 중 무효화된 블록에 근거한 것을 뺀다. 원래(로컬) 형식은 그대로 둔다."""
+    if not stale:
+        return contribution
+    document_id = str(contribution.get("document_id") or "")
+    return {
+        **contribution,
+        "evidence_units": [
+            unit for unit in contribution.get("evidence_units", [])
+            if not stale & {
+                ref if ":" in str(ref) else f"{unit.get('source_document_id') or document_id}:{ref}"
+                for ref in unit.get("anchor_reference_ids", [])
+            }
+        ],
+    }
 
 
 def _is_delete(item: PageContribution) -> bool:
@@ -316,12 +427,18 @@ def _merge_contributions(
         merged_concept["aliases"],
     )
 
-    evidence_units = _unique_dicts(
-        item
-        for contribution in contributions
-        for item in contribution.get("evidence_units", [])
-        if isinstance(item, dict)
-    )
+    # 기여의 근거는 그 개념의 주장(`evidence_claim_ids`)으로 고른 것이다. 조립기는 `related_concept_slugs`로 근거를 고르므로
+    # 이 페이지 개념을 더해, 편입이 덧붙여 보이던 근거가 재생에서 빠지지 않게 한다.
+    slug = merged_concept["slug"]
+    evidence_units = [
+        {**item, "related_concept_slugs": _unique([*item.get("related_concept_slugs", []), slug])}
+        for item in _unique_dicts(
+            item
+            for contribution in contributions
+            for item in contribution.get("evidence_units", [])
+            if isinstance(item, dict)
+        )
+    ]
     document_ids = merged_concept.get("source_document_ids", [])
     if not document_ids:
         document_ids = _unique(

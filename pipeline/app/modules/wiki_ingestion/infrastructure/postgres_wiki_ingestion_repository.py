@@ -1428,6 +1428,7 @@ def finish_pipeline_run(
                 )
                 embedded_page_ids = _persist_wiki_outputs(
                     conn, document_id, manifest, manual_source_markdown,
+                    apply_rebuilt_pages=_apply_restored_wiki_state,
                 )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):

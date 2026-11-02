@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import psycopg
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.modules.wiki_ingestion.domain.contribution_identity import (
+    CONCEPT_REFERENCE_FIELDS,
+    globalize_contribution_identity,
+)
+from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
+from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
 from app.modules.wiki_ingestion.domain.concept_entries import (
     ENTRY_REFERENCE,
     render_entry_index,
@@ -14,11 +22,16 @@ from app.modules.wiki_ingestion.domain.concept_entries import (
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
 )
+from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    INVALIDATION,
+    load_concept_contributions,
+    rebuild_concept_page,
+)
 from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
     append_concept_evidence,
     concept_evidence_updates,
 )
-from app.modules.wiki_ingestion.infrastructure.object_storage import write_text_object
+from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object, write_text_object
 from app.modules.wiki_ingestion.infrastructure.operation_artifacts import (
     persist_operation_artifacts,
 )
@@ -44,6 +57,10 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
     source_summary,
 )
 
+logger = logging.getLogger(__name__)
+# 재생 결과 페이지를 DB에 반영하는 함수(복구와 같은 `_apply_restored_wiki_state`). 저장소 모듈이 넘긴다.
+ApplyRebuiltPages = Callable[..., Any]
+
 
 def lock_concept_persistence(
     conn: psycopg.Connection,
@@ -60,8 +77,12 @@ def persist_wiki_outputs(
     document_id: str,
     manifest: dict[str, Any],
     manual_source_markdown: str | None = None,
+    apply_rebuilt_pages: ApplyRebuiltPages | None = None,
 ) -> list[str]:
-    """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다."""
+    """`manual_source_markdown`은 활성 수동 기여의 source 본문이다. 있으면 재편입이 덮어쓰지 않는다.
+
+    `apply_rebuilt_pages`를 주면 재편입이 수정·삭제한 블록의 옛 근거를 가진 개념 페이지를 기여 재생으로 다시 그린다.
+    """
     normalized = _load_normalized(manifest)
     links = _load_links(manifest)
     user_id = str(manifest.get("user_id") or "local-user")
@@ -126,12 +147,31 @@ def persist_wiki_outputs(
     # 기존 개념 갱신(same_concept)도 이 문서의 직접 개념 기여로 기록된다. 재생과 같게 문서 연결을 둔다(ADR 0042 결정 5).
     for page in updated_concept_pages:
         upsert_document_wiki_link(conn, document_id, str(page["page_id"]), "extracted_concept", None, workspace_id)
+    rebuilt_markdown: dict[str, str] = {}
+    invalidation_pages: list[dict[str, Any]] = []
+    invalidated = _invalidated_refs(document_id, manifest)
+    if operation_id and invalidated and apply_rebuilt_pages is not None:
+        rebuilt_markdown, invalidation_pages = _rebuild_invalidated_pages(
+            conn,
+            document_id,
+            workspace_id,
+            str(operation_id),
+            invalidated,
+            manifest,
+            concept_id_by_slug,
+            updated_concept_pages,
+            apply_rebuilt_pages,
+        )
     # 모든 페이지를 쓴 뒤 문서 연결에서 자동 소스 → 개념 링크를 맞춘다. 다시 편입한 문서(휴지통에서 되살림 포함)의
     # 변경 없는 개념 연결도 소스 페이지 범위로 함께 맞춘다.
     sync_source_concept_links(
         conn,
         workspace_id,
-        concept_page_ids=[*concept_page_ids, *(str(page["page_id"]) for page in updated_concept_pages)],
+        concept_page_ids=[
+            *concept_page_ids,
+            *(str(page["page_id"]) for page in updated_concept_pages),
+            *rebuilt_markdown,
+        ],
         source_page_ids=[source_page_id],
     )
     # operation artifact(운영 로그용 markdown/JSON)는 DB 반영이 모두 끝난 뒤 마지막에 써서,
@@ -145,6 +185,8 @@ def persist_wiki_outputs(
             concept_id_by_slug,
             prepared_concept_updates,
             manual_source_markdown,
+            rebuilt_markdown,
+            invalidation_pages,
         )
     return list(
         dict.fromkeys(
@@ -152,6 +194,7 @@ def persist_wiki_outputs(
                 source_page_id,
                 *concept_page_ids,
                 *(str(page["page_id"]) for page in updated_concept_pages),
+                *rebuilt_markdown,
             ]
         )
     )
@@ -165,9 +208,14 @@ def _persist_ingest_operation_artifacts(
     concept_id_by_slug: dict[str, str],
     prepared_concept_updates: list[dict[str, Any]],
     manual_source_markdown: str | None,
+    rebuilt_markdown: dict[str, str],
+    invalidation_pages: list[dict[str, Any]],
 ) -> None:
     source_page = page_payload(manifest["source_page"])
-    concept_contributions = manifest.get("concept_contributions") or {}
+    concept_contributions = {
+        **(manifest.get("concept_contributions") or {}),
+        **{str(page["slug"]): page["contribution"] for page in invalidation_pages},
+    }
     operation_concept_pages_by_slug = {}
     for page_value in manifest.get("concept_pages", []):
         page = page_payload(page_value)
@@ -181,6 +229,13 @@ def _persist_ingest_operation_artifacts(
             }
     for page in prepared_concept_updates:
         operation_concept_pages_by_slug[str(page["slug"])] = page
+    for page in invalidation_pages:
+        operation_concept_pages_by_slug[str(page["slug"])] = page
+    # 다시 그린 페이지는 기록 본문도 재생 결과와 같아야 한다(document-svc가 본문 해시를 대조한다).
+    operation_concept_pages_by_slug = {
+        slug: {**page, "markdown": rebuilt_markdown.get(str(page["page_id"]), page["markdown"])}
+        for slug, page in operation_concept_pages_by_slug.items()
+    }
     manifest["operation_artifacts"] = persist_operation_artifacts(
         operation_id=operation_id,
         workspace_id=workspace_id,
@@ -194,6 +249,147 @@ def _persist_ingest_operation_artifacts(
         concept_contributions=concept_contributions,
         write_text=write_text_object,
     )
+
+
+def _invalidated_refs(document_id: str, manifest: dict[str, Any]) -> list[str]:
+    changes = manifest.get("source_block_changes") or {}
+    return [f"{document_id}:{block_id}" for block_id in changes.get("invalidated_block_ids", [])]
+
+
+def _rebuild_invalidated_pages(
+    conn: psycopg.Connection,
+    document_id: str,
+    workspace_id: str,
+    operation_id: str,
+    invalidated: list[str],
+    manifest: dict[str, Any],
+    concept_id_by_slug: dict[str, str],
+    updated_concept_pages: list[dict[str, Any]],
+    apply_rebuilt_pages: ApplyRebuiltPages,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """재편입이 수정·삭제한 블록의 옛 근거를 가진 개념 페이지를 기여 재생으로 다시 그린다.
+
+    이 문서와 연결된 페이지 중 활성 기여가 무효화된 블록을 인용하는 페이지만 대상이다. 이번 편입이 기여한 페이지는
+    이번 기여를, 기여하지 않은 페이지는 무효화 전용 기여를 마지막에 더해 재생한다. 페이지와 다른 근거는 그대로 둔다.
+    재생 결과 근거가 남지 않는 페이지는 아직 편입 결과로 삭제를 보고할 수 없어 그대로 두고 경고한다.
+    돌려주는 값: 다시 그린 페이지 본문(page_id → markdown), 무효화 전용 기여를 남길 페이지.
+    """
+    contributions = manifest.get("concept_contributions") or {}
+    touched = {
+        concept_id_by_slug[slug]: slug
+        for slug in (str(page_payload(page)["slug"]) for page in manifest.get("concept_pages", []))
+        if slug in contributions and slug in concept_id_by_slug
+    }
+    touched.update({str(page["page_id"]): str(page["slug"]) for page in updated_concept_pages})
+    linked = conn.execute(
+        """
+        SELECT DISTINCT page.id, page.slug
+        FROM document_wiki_links link
+        JOIN wiki_pages page ON page.id = link.wiki_page_id
+        WHERE link.document_id = %s AND link.relation_type = 'extracted_concept'
+          AND page.page_type = 'concept' AND page.status = 'active' AND page.workspace_id = %s
+        """,
+        (document_id, workspace_id),
+    ).fetchall()
+    slugs = {**{str(row["id"]): str(row["slug"]) for row in linked}, **touched}
+    if not slugs:
+        return {}, []
+    ledger = read_contributions(list(slugs), workspace_id)
+    stale = set(invalidated)
+    rebuilt_markdown: dict[str, str] = {}
+    invalidation_pages: list[dict[str, Any]] = []
+    for page_id, slug in slugs.items():
+        kept = sorted(
+            (
+                item for item in ledger
+                if str(item.get("page_id")) == page_id and item.get("active")
+                and str(item.get("ingest_operation_id")) != operation_id
+            ),
+            key=lambda item: int(item.get("sequence_revision") or 0),
+        )
+        if not kept:
+            continue
+        loaded = load_concept_contributions(
+            workspace_id=workspace_id,
+            page_id=page_id,
+            keep_contributions=[
+                {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
+            ],
+            read_text=read_text_object,
+        )
+        if not any(_cites(item.contribution or {}, stale) for item in loaded):
+            continue
+        contribution = (
+            {**contributions[slug], "page_id": page_id}
+            if page_id in touched
+            else {
+                "schema_version": 1,
+                "artifact_type": INVALIDATION,
+                "operation_id": operation_id,
+                "document_id": document_id,
+                "page_id": page_id,
+                "invalidated_reference_ids": invalidated,
+            }
+        )
+        rebuilt = rebuild_concept_page([
+            *loaded,
+            PageContribution(
+                page_id=page_id,
+                page_type="concept",
+                operation_id=operation_id,
+                sequence=max(item.sequence for item in loaded) + 1,
+                markdown_key="",
+                contribution=contribution,
+            ),
+        ])
+        if rebuilt.deleted:
+            # ponytail: 편입 결과(document-svc OperationApplier)가 deleted_pages를 받지 않아 지우지 않는다. 그 처리 후 삭제한다.
+            logger.warning("[재편입 무효화] 근거가 남지 않은 페이지를 지우지 않고 둡니다: page_id=%s", page_id)
+            continue
+        markdown_key = f"wiki/{workspace_id}/concepts/{slug}.md"
+        write_text_object(markdown_key, rebuilt.markdown, "text/markdown; charset=utf-8")
+        # 이름·요약은 편입이 기존 값을 유지하는 규칙과 같게 두고(None은 그대로 둠), 본문·항목·링크·문서 연결은 재생 결과로 맞춘다.
+        apply_rebuilt_pages(
+            workspace_id,
+            [{
+                "page_id": page_id,
+                "page_type": "concept",
+                "markdown_key": markdown_key,
+                "title": None,
+                "summary": None,
+                "supported_links": list(rebuilt.supported_links),
+                "source_document_ids": list(rebuilt.source_document_ids),
+                "entries": list(rebuilt.entries),
+            }],
+            {"removed_links": [], "restored_links": list(rebuilt.supported_links)},
+            True,
+            conn,
+        )
+        rebuilt_markdown[page_id] = rebuilt.markdown
+        if page_id not in touched:
+            invalidation_pages.append(
+                {"page_id": page_id, "slug": slug, "markdown": rebuilt.markdown, "contribution": contribution}
+            )
+    return rebuilt_markdown, invalidation_pages
+
+
+def _cites(contribution: dict[str, Any], refs: set[str]) -> bool:
+    """기여가 refs 중 하나라도 인용하는지. 사람이 쓴 기여는 재생이 손대지 않으므로 보지 않는다."""
+    if contribution.get("artifact_type") in ("manual", INVALIDATION):
+        return False
+    item = globalize_contribution_identity(contribution)
+    cited = [
+        *(ref for field in CONCEPT_REFERENCE_FIELDS for ref in (item.get("concept") or {}).get(field, [])),
+        *(ref for unit in item.get("evidence_units", []) for ref in unit.get("anchor_reference_ids", [])),
+        *(ref for point in item.get("source_key_points", []) for ref in point.get("anchor_reference_ids", [])),
+        *(
+            ref
+            for change in item.get("entry_changes", [])
+            if change.get("op") == "add"
+            for ref in change.get("anchor_reference_ids", [])
+        ),
+    ]
+    return bool(refs.intersection(cited))
 
 
 def _prepare_concept_page_ids(
