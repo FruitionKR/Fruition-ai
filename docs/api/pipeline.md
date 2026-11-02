@@ -348,7 +348,7 @@ curl -X POST "$PIPELINE/pipeline/reingest-runs" \
 
 #### 2. 목적
 
-문서 ingest pipeline run을 실행합니다.
+문서 ingest pipeline run을 실행합니다. 기존 활성 source page와 마지막 성공 추출 산출물이 있으면 최신 저장 원문의 변경 블록만 재추출합니다. Kafka 일반 문서 편입도 같은 경로를 사용합니다.
 
 #### 3. Auth 필요 여부
 

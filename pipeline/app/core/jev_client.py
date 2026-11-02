@@ -122,6 +122,11 @@ class JevClient:
                     raise JevUnavailable("Jev 응답 시간 초과") from None
                 time.sleep(2 ** (attempt + 1))
                 continue
+            except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                if last or self._deadline_seconds is not None:
+                    raise JevUnavailable(f"Jev 전송 실패: {type(exc).__name__}") from None
+                time.sleep(2 ** (attempt + 1))
+                continue
             except httpx.HTTPError as exc:
                 raise JevUnavailable(f"Jev 전송 실패: {type(exc).__name__}") from None
             if response.status_code in _BLOCKING_STATUSES:

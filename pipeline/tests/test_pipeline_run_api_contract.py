@@ -899,3 +899,27 @@ def test_pipeline_log_survives_worker_directory_removal(tmp_path, monkeypatch, s
     assert "다른 Pod에서도 조회" in response.text
     assert state.json()["status"] == status
     assert not list(api_dir.iterdir())
+
+
+@pytest.mark.parametrize("previous", [False, True])
+def test_stored_document_uses_delta_only_with_previous_source(previous: bool) -> None:
+    context = {"artifact": {"document_id": "doc"}, "source_markdown": "old"} if previous else None
+    repository = _repository(document={
+        "id": "doc", "user_id": "user", "workspace_id": "ws",
+        "source_uri": "documents/doc.md", "mime_type": "text/markdown", "filename": "doc.md",
+    }, source_context=context)
+    blocks = [{"block_id": "B0001", "text": "old"}]
+    repository.list_source_blocks.return_value = blocks
+    use_case = _use_case()
+    background = BackgroundTasks()
+    pipeline_routes._run_pipeline_request(
+        _pipeline_run_in(document_id="doc", source_revision=3, source_content_hash="hash"),
+        background, use_case, repository, _source_reader("new"),
+    )
+    command = background.tasks[0].args[1]
+    assert command.reingest is previous
+    assert command.input_markdown == "new"
+    assert command.source_revision == 3
+    assert command.source_content_hash == "hash"
+    assert command.existing_source_blocks == (blocks if previous else [])
+    assert command.existing_source_artifact == (context["artifact"] if previous else None)
