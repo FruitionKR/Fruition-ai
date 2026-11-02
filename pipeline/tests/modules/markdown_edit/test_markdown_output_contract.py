@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
 from app.modules.markdown_edit.domain.markdown_output_contract import (
@@ -184,6 +185,22 @@ class MarkdownOutputContractTest(unittest.TestCase):
         self.assertIn("```bash\n./deploy.sh\n```", restored)
         self.assertIn("| prod | ready |", restored)
         self.assertIn("[^1]: 승인 후 실행한다.", restored)
+
+    def test_locks_current_section_heading_unless_structure_changes(self) -> None:
+        # 끊긴 불릿을 합칠 때 모델이 섹션 제목을 빼먹어 편집이 실패했다(Jev edit-11).
+        source = "### ② 사회의 `공공선` 원칙\n\n- 접근성을\n\n- 보장한다."
+        section = MarkdownEditTarget(type="current_section", start_line=1, end_line=5)
+        request = MarkdownEditRequest(instruction="끊긴 불릿을 합쳐줘.", markdown=source, target=section, edit_goal="cleanup")
+
+        protected = protect_markdown(request)
+
+        self.assertNotIn("사회의", protected.markdown)
+        restored, failures = protected.restore(protected.markdown.replace("- 접근성을\n\n- 보장한다.", "- 접근성을 보장한다."))
+        self.assertEqual(failures, [])
+        self.assertEqual(restored, "### ② 사회의 `공공선` 원칙\n\n- 접근성을 보장한다.")
+        self.assertIn("사회의", protect_markdown(replace(request, detail=MarkdownEditDetail(structure_change=True))).markdown)
+        self.assertIn("사회의", protect_markdown(replace(request, target=TARGET)).markdown)
+        self.assertIn("사회의", protect_markdown(replace(request, detail=MarkdownEditDetail(requested_formats=("heading",)))).markdown)
 
     def test_restores_footnote_definition_at_line_start(self) -> None:
         request = MarkdownEditRequest(

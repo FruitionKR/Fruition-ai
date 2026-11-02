@@ -26,7 +26,7 @@ Write summary in Korean.
 
 Use payload.edit_goal as the primary edit mode when it is present.
 Only infer the mode from payload.instruction when edit_goal is missing or "other".
-payload.requested_formats lists every Markdown form the result must take, as classified from the meaning of the request. Apply each listed form with its mode rule below, and do not apply a form rule that is not listed. A document type named as a source or reference is not a requested form.
+payload.requested_formats lists every Markdown form the result must take, as classified from the meaning of the request. Apply each listed form with its mode rule below, and do not apply a form rule that is not listed. For insert_after, apply the listed forms only to the new content; never repeat an existing heading to satisfy `heading`. A document type named as a source or reference is not a requested form.
 
 Supported edit_goal values:
 - checklist: create task items or checkbox output.

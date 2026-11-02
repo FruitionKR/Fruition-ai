@@ -108,6 +108,14 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         patterns = tuple(item for item in patterns if item[0] in CODE_FRAGMENT_KINDS)
     if preserves_task_markers:
         patterns += (("task_list_marker", TASK_LIST_MARKER_PATTERN),)
+    # 섹션을 고칠 때 모델이 맨 위 제목을 빼먹는 일이 잦다. 구조를 바꾸지 않고 제목도 요청하지 않은 편집이면 섹션 제목을 잠근다.
+    # 다른 조각보다 먼저 잠가야 제목 안 인라인 코드가 따로 잠기지 않는다.
+    if (
+        preserves_structured_markdown
+        and request.target.type == "current_section"
+        and "heading" not in request.detail.requested_formats
+    ):
+        patterns = (("section_heading", r"\A[ \t]*#{1,6}[ \t][^\r\n]*"), *patterns)
     for kind, pattern in patterns:
         markdown = re.sub(
             pattern,

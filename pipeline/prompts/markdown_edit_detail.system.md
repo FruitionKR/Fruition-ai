@@ -20,7 +20,7 @@ Do not include unordered bullet lists or checklists; the router already handles 
 
 addition_only: true when the request only adds new content and every existing line must stay unchanged, such as filling in content under existing items or appending a sentence. False when it also rewrites, reorders, restyles, shortens, translates, converts, or removes existing content.
 
-structure_change: true when the request changes Markdown block structure or structured elements: converting content into or out of a table, list, heading, blockquote, code block, display math, Mermaid diagram, or meeting-notes sections, or changing links, images, checkboxes, footnotes, or frontmatter. Inline bold, italic, or strikethrough alone is not a structure change. False for wording, tone, or content changes that keep the structure.
+structure_change: true when the request changes Markdown block structure or structured elements: converting content into or out of a table, list, heading, blockquote, code block, display math, Mermaid diagram, or meeting-notes sections, or changing links, images, checkboxes, footnotes, or frontmatter. Inline bold, italic, or strikethrough alone is not a structure change. False for wording, tone, or content changes that keep the structure. Repairing text broken across lines inside the same kind of block is not a structure change: "끊겨서 쪼개진 불릿을 원래 문장대로 합쳐줘" keeps the list and its heading, so `structure_change` is false.
 
 target_language: for a translation request, the ISO 639-1 code of the language the result must be written in (for example `ko` or `en`). Null when the request is not a translation or the target language is not stated.
 

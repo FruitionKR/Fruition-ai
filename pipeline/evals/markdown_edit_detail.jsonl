@@ -22,3 +22,4 @@
 {"id": "translate-en", "message": "이 섹션을 영어로 옮겨줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": "en"}}
 {"id": "translate-ko", "message": "Please translate this paragraph into Korean.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": "ko"}}
 {"id": "english-word-not-translation", "message": "영어 약어는 그대로 두고 문장만 매끄럽게 다듬어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "merge-broken-bullets", "message": "문장이 줄마다 끊겨서 불릿이 쪼개져 있어. 원래 문장대로 합쳐서 정리해줘.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
