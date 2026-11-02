@@ -526,7 +526,7 @@ def test_merging_two_children_at_once_combines_records_of_one_operation(world: W
     world.restore_ingest("op-x")
 
     merged = world.lint("lint-merge")
-    
+
     assert sorted(item["action"] for item in merged["entry_decisions"]) == ["merge_back", "merge_back"]
     linked = [row for row in merged["ledger_contributions"] if row["operation_id"] == "op-z"]
     assert linked == [{"page_id": world.page_id("deployment"), "operation_id": "op-z", "document_id": "doc-z",
