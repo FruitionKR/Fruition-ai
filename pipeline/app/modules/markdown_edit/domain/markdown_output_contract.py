@@ -235,10 +235,13 @@ def _protected_fragment_failures(
     request: MarkdownEditRequest,
     replacement: str,
 ) -> list[str]:
-    expected = Counter(
-        (fragment.kind, fragment.markdown)
-        for fragment in protect_markdown(request).fragments
-    )
+    fragments = protect_markdown(request).fragments
+    expected = Counter((fragment.kind, fragment.markdown) for fragment in fragments)
+    # 섹션 제목은 통째로 잠겨 그 안의 코드·링크는 따로 세지 않았다. 결과에서도 제목을 빼고 센다.
+    for fragment in fragments:
+        if fragment.kind == "section_heading" and fragment.markdown in replacement:
+            replacement = replacement.replace(fragment.markdown, "", 1)
+            expected[(fragment.kind, fragment.markdown)] -= 1
     failures: list[str] = []
     for (kind, markdown), expected_count in expected.items():
         actual_count = replacement.count(markdown)

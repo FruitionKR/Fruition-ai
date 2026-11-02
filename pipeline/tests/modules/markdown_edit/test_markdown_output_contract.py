@@ -202,6 +202,17 @@ class MarkdownOutputContractTest(unittest.TestCase):
         self.assertIn("사회의", protect_markdown(replace(request, target=TARGET)).markdown)
         self.assertIn("사회의", protect_markdown(replace(request, detail=MarkdownEditDetail(requested_formats=("heading",)))).markdown)
 
+    def test_section_heading_fragments_are_not_counted_twice(self) -> None:
+        source = "## `API` 안내\n\n`API`를 확인을 한다."
+        section = MarkdownEditTarget(type="current_section", start_line=1, end_line=3)
+        request = MarkdownEditRequest(instruction="문장을 다듬어줘.", markdown=source, target=section, edit_goal="cleanup")
+
+        self.assertNotIn("protected", " ".join(validate_markdown_output(request, "## `API` 안내\n\n`API`를 확인한다.")))
+        self.assertIn(
+            "protected section_heading count must be preserved: expected 1, got 0",
+            validate_markdown_output(request, "`API`를 확인한다."),
+        )
+
     def test_restores_footnote_definition_at_line_start(self) -> None:
         request = MarkdownEditRequest(
             instruction="문장을 다듬고 각주는 유지해줘.",
