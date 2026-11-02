@@ -321,7 +321,7 @@ def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
     monkeypatch.setattr(persistence, "lock_concept_persistence", lambda *_args: None)
     monkeypatch.setattr(persistence, "load_existing_concept_ids_by_slug", lambda *_args: {})
     monkeypatch.setattr(persistence, "delete_source_related_links", lambda *_args: None)
-    monkeypatch.setattr(persistence, "_persist_meaning_cluster_artifacts", lambda *_args: [])
+    monkeypatch.setattr(persistence, "_apply_concept_update_decisions", lambda *_args: [])
     monkeypatch.setattr(persistence, "write_text_object", lambda key, text, _type: written.setdefault(key, text))
 
     body = "사람 본문 [링크](https://example.com)\n"

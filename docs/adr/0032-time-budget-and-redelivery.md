@@ -30,5 +30,5 @@ Accepted
 - 마감 중인 LLM 호출은 내부 재시도 없이 한 번만 시도한다. 일시 오류는 사용자의 재시도로 넘어간다. 공급사 timeout은 연결·읽기 단위라 마감을 약간 넘길 수 있고, 호출 뒤 확인이 결과 저장을 막는다.
 - 리밸런스로 재전달된 실행 중 메시지는 원래 worker가 끝날 때까지 해당 파티션 소비를 5초 간격으로 확인하며 기다린다(poll을 계속하므로 max_poll_interval을 넘지 않는다). worker가 크래시 루프에 빠지지 않는다.
 - 문서 삭제 정리는 비동기이므로 Agent 복구가 `delete_document` 직후 정리 완료를 확인하지 않는다. document는 동기 사전 확인을 제거해야 하고, AI를 먼저 배포한다(AI는 더 이상 `cleanup_complete`를 요구하지 않는다).
-- 한계: 삭제 뒤 문서를 복구해 다시 ingest한 run이 끝나면 tombstone이 지워지므로, 그 뒤에야 도착하는 삭제 전 ingest의 post_ingest는 막지 못한다. 이 post_ingest는 복구된 문서의 이전 ingest 근거를 개념 페이지에 덧붙이는 정도이며, 문서가 다시 살아 있으므로 데이터 유실·잔존 문제는 아니다.
+- 한계: 삭제 뒤 문서를 복구해 다시 ingest한 run이 끝나면 tombstone이 지워지므로, 그 뒤에야 도착하는 삭제 전 ingest의 post_ingest는 막지 못한다. 이 post_ingest는 복구된 문서의 이전 ingest 근거를 의미 클러스터에 덧붙이는 정도이며(2026-11-02부터 post_ingest는 개념 페이지를 고치지 않는다), 문서가 다시 살아 있으므로 데이터 유실·잔존 문제는 아니다.
 - lint·restore_ingest·restore_lint는 문서 삭제 뒤에도 문서 데이터를 새로 만들지 않는다(lint는 정리 뒤 상태를 읽고 같은 워크스페이스 잠금으로 직렬화되며, restore는 `wiki_source_tombstones`로 삭제된 문서의 페이지·링크를 되살리지 않는다). ingest는 같은 파티션(문서 ID 키)에서 `document_deleted`와 순서가 보장된다.
