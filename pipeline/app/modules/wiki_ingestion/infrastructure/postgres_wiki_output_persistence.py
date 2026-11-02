@@ -59,8 +59,10 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
 # 재생 결과 페이지를 DB에 반영하는 함수(복구와 같은 `_apply_restored_wiki_state`). 저장소 모듈이 넘긴다.
 ApplyRebuiltPages = Callable[..., Any]
 # 빠진 하위 항목을 가리키던 참조를 정리한다(복구와 같은 `_prune_dangling_references`). 다시 그린 다른 페이지를 목록에 더한다.
-# 마지막 인자는 이번에 지운 페이지다.
-PruneReferences = Callable[[psycopg.Connection, str, str, list[dict[str, Any]], list[str]], None]
+# 이번에 지운 페이지와, 이번 작업이 남겼지만 아직 원장에 없는 페이지별 기여(page_id → 기여)를 함께 넘긴다.
+PruneReferences = Callable[
+    [psycopg.Connection, str, str, list[dict[str, Any]], list[str], dict[str, dict[str, Any]]], None
+]
 # 재생 결과가 빈 페이지를 내린다(복구와 같은 `_cleanup_deleted_wiki_pages`).
 CleanupDeletedPages = Callable[[psycopg.Connection, str, list[str]], None]
 
@@ -388,7 +390,14 @@ def _rebuild_invalidated_pages(
         raise RuntimeError("deleting rebuilt pages requires cleanup_deleted_pages")
     if (applied or deleted_ids) and prune_references is not None:
         # 빠진 하위 항목을 가리키던 참조를 정리한다. 그 참조를 가진 다른 페이지는 다시 그려져 목록에 더해진다.
-        prune_references(conn, workspace_id, operation_id, applied, deleted_ids)
+        # 이번 편입이 기여했지만 다시 그리지 않은 페이지도 참조 정리로 다시 그려질 수 있다. 원장에는 아직 이번 기여가
+        # 없으므로 함께 넘겨, 이미 쓴 이번 기여가 빠진 이전 상태로 되돌아가지 않게 한다.
+        pending = {
+            page_id: {**contributions[slug], "page_id": page_id}
+            for page_id, slug in touched.items()
+            if slug in contributions
+        }
+        prune_references(conn, workspace_id, operation_id, applied, deleted_ids, pending)
     rebuilt_markdown: dict[str, str] = {}
     invalidation_pages: list[dict[str, Any]] = []
     for page in applied:
