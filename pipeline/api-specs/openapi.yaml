@@ -2409,6 +2409,12 @@ components:
             type: string
           title: Promotion Candidates
           type: array
+        quality_review_candidates:
+          items:
+            additionalProperties: true
+            type: object
+          title: Quality Review Candidates
+          type: array
         reconciliation_candidates:
           items:
             additionalProperties: true

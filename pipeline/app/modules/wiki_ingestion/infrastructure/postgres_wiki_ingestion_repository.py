@@ -89,6 +89,9 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_output_persistence 
     _persist_meaning_cluster_artifacts,
     persist_wiki_outputs as _persist_wiki_outputs,
 )
+from app.modules.wiki_ingestion.infrastructure.retrieval_quality_review import (
+    list_quality_review_candidates as _list_quality_review_candidates,
+)
 from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliation import (
     active_relation_keys as _active_relation_keys,
     apply_structural_reconciliation as _apply_structural_reconciliation,
@@ -1848,6 +1851,7 @@ def lint_wiki_workspace(
             conn,
             workspace_id,
         )
+        quality_review_candidates = _list_quality_review_candidates(conn, workspace_id)
     stale_source_refs = {
         ref
         for candidate in reconciliation_candidates
@@ -1941,6 +1945,7 @@ def lint_wiki_workspace(
             }
             for candidate in reconciliation_candidates
         ],
+        "quality_review_candidates": quality_review_candidates,
         "applied_reconciliations": [],
         "applied_cluster_reconciliation": applied_cluster_reconciliation,
         "materialized_promotions": [],

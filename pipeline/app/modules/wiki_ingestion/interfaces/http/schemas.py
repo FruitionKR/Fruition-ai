@@ -325,6 +325,8 @@ class WikiLintOut(BaseModel):
     needs_review: list[str]
     invalid_promotions: list[dict[str, Any]]
     reconciliation_candidates: list[dict[str, Any]]
+    # post_ingest 검색 품질 평가에서 떨어진 문항과 실패 유형. 보고만 한다.
+    quality_review_candidates: list[dict[str, Any]] = Field(default_factory=list)
     applied_reconciliations: list[dict[str, Any]]
     applied_cluster_reconciliation: dict[str, list[dict[str, Any]]]
     materialized_promotions: list[dict[str, Any]]
