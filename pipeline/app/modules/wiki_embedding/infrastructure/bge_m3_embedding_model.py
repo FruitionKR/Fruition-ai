@@ -32,7 +32,8 @@ class BgeM3EmbeddingModel(EmbeddingModelPort):
 
     def input_key(self, text: str) -> str:
         """encode가 실제로 넣는 토큰(최대 길이에서 잘린 뒤). 잘린 뒤쪽만 바뀐 텍스트는 같은 값이다."""
-        return " ".join(map(str, self._load_model().tokenize([text])["input_ids"][0].tolist()))
+        # 원문 텍스트 키와 섞이지 않게 접두사를 둔다.
+        return "tokens:" + " ".join(map(str, self._load_model().tokenize([text])["input_ids"][0].tolist()))
 
     def _load_model(self) -> Any:
         if self._model is not None:

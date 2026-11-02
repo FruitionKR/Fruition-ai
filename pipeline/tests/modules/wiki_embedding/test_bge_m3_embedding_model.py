@@ -57,5 +57,5 @@ def test_input_key_is_the_truncated_tokens_encode_sees() -> None:
     model = BgeM3EmbeddingModel("test-model")
     model._model = FakeModel()
 
-    assert model.input_key("abc 뒤쪽") == model.input_key("abc 바뀐 뒤쪽") == "0 3 2"
+    assert model.input_key("abc 뒤쪽") == model.input_key("abc 바뀐 뒤쪽") == "tokens:0 3 2"
     assert model.input_key("ab 뒤쪽") != model.input_key("abc 뒤쪽")
