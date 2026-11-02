@@ -2498,7 +2498,11 @@ def _plan_page_moves(
         if detail in movers and head_pages[head][0] != movers[detail].page_id
     ]
     moves, deferred = choose_page_moves(ranked, head_pages, busy)
-    load([row for row in page_rows if str(row["id"]) in {target for _, target, _ in moves} - set(pages)])
+    parents: dict[str, list[tuple[str, str | None]]] = {}
+    for _, head, page_id in ranked:
+        parents.setdefault(page_id, []).append(head_pages[head])
+    load([row for row in page_rows
+          if str(row["id"]) in {target for page_id, _, _ in moves for target, _ in parents[page_id]} - set(pages)])
     # 옮길 페이지의 항목을 가리키는 참조를 낸 페이지도 읽는다. 그 참조는 대상 페이지를 가리키게 바꾼다.
     if moves:
         load([
@@ -2522,13 +2526,26 @@ def _plan_page_moves(
             if any(link.get("relation") == "entry_reference" and link.get("target") == ref for link in other.links)
         }
         # 이번에 함께 옮기는 페이지가 이 페이지 항목을 가리키면 참조를 두 번 옮기게 되므로 다음 lint로 미룬다.
-        if referrers & (moving - {page_id}):
+        if referrers & (moving - {page_id}) or any(parent in moving for parent, _ in parents[page_id]):
             reason = "chained"
             plan.deferred_page_ids.append(page_id)
-        elif target not in pages:
+        elif any(parent in busy for parent, _ in parents[page_id]):
+            reason = "page_busy"
+            plan.deferred_page_ids.append(page_id)
+        elif any(parent not in pages for parent, _ in parents[page_id]):
             reason = "target_missing"
         else:
             reason = move_page_under(plan, pages, pages[page_id], summaries[page_id], pages[target], parent_entry_id)
+            if reason is None:
+                for parent_page, parent_entry in parents[page_id]:
+                    if (parent_page, parent_entry) == (target, parent_entry_id):
+                        continue
+                    owner = pages[parent_page]
+                    plan.change(owner.page_id, owner.slug, owner.title)["added_links"].append({
+                        "source": owner.ref, "target": pages[target].ref, "relation": ENTRY_REFERENCE,
+                        "entry_id": new_entry_id(pages[target].slug, pages[page_id].slug),
+                        "name": pages[page_id].title, "parent_entry_id": parent_entry,
+                    })
         plan.decisions.append({"action": "move", "page_id": page_id, "entry_id": None, "target_page_id": target,
                                "parent_entry_id": parent_entry_id, **({"skipped_reason": reason} if reason else {})})
     for page_id, reason in deferred:
@@ -2998,7 +3015,7 @@ def _materialize_promotion_candidates(
             cluster,
             claims,
             page,
-            placements.get(cluster_id),
+            placements.get(cluster_id, []),
             operation_id=operation_id,
             pending=changes_by_page,
         )
@@ -3008,9 +3025,9 @@ def _materialize_promotion_candidates(
                 {"cluster_id": cluster_id, "concept_slug": merged_page["slug"], "page_id": merged_page["page_id"],
                  "entry_id": entry_id}
             )
-            if merged_page["page_id"] not in changes_by_page:
-                changes_by_page[merged_page["page_id"]] = merged_page
-                page_changes.append(merged_page)
+            for changed in changes_by_page.values():
+                if not any(item["page_id"] == changed["page_id"] for item in page_changes):
+                    page_changes.append(changed)
             section = active_sections.pop(cluster_id, "")
             if section:
                 _archive_cluster(
@@ -3114,8 +3131,8 @@ def _place_promoted_concepts(
     prepared_pages: dict[str, dict[str, Any]],
     judge_part_of: PartOfJudge,
     embedding_model: EmbeddingModelPort,
-) -> dict[str, tuple[str, str | None]]:
-    """승격 개념의 상위를 기존 개념 페이지·하위 항목에서 part_of로 찾는다. 클러스터 id → (page_id, 상위 항목 id 또는 None).
+) -> dict[str, list[tuple[str, str | None]]]:
+    """승격 개념의 상위를 기존 개념 페이지·하위 항목에서 part_of로 찾는다. 클러스터 id → 통과한 (page_id, 상위 항목 id 또는 None) 목록.
 
     후보와 판정은 lint 페이지 이동과 같다. 저장된 페이지·`sub_entry` 벡터로 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개를
     판정기에 묻고 0.9 이상만 따른다. 판정기·임베딩을 쓸 수 없으면 비어 새 페이지가 된다. 승격 개념이 기존 페이지들의
@@ -3144,9 +3161,9 @@ def _place_promoted_concepts(
     def similarity(query: str, texts: list[str]) -> list[float]:
         return [vector_similarity(by_text[query], by_text[text]) for text in texts]
 
-    placements: dict[str, tuple[str, str | None]] = {}
+    placements: dict[str, list[tuple[str, str | None]]] = {}
     for _probability, head, detail in rank_part_of(details, heads, judge_part_of, similarity):
-        placements.setdefault(detail, head_pages[head])
+        placements.setdefault(detail, []).append(head_pages[head])
     return placements
 
 
@@ -3157,19 +3174,19 @@ def _place_promotion_under_head(
     cluster: dict[str, Any],
     claims: list[dict[str, Any]],
     page: dict[str, Any],
-    placement: tuple[str, str | None] | None,
+    placements: list[tuple[str, str | None]],
     *,
     operation_id: str | None,
     pending: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], str] | None:
     """판정한 상위 페이지(또는 그 항목) 아래에 승격 개념을 하위 항목으로 둔다. 상위가 없거나 사라졌으면 None이다.
 
-    기록은 상위 페이지의 lint 기록 하나다. 승격 개념 항목의 `add`(이름·정의·별칭, 클러스터 근거 전체)와 그 아래 세부 항목
-    `add`를 남기고 근거를 더한다. lint 복원이 이 기록을 빼면 항목과 근거가 함께 빠진다.
+    원본 집에는 승격 개념 항목의 `add`(이름·정의·별칭, 클러스터 근거 전체)와 그 아래 세부 항목
+    `add`를 남기고 근거를 더하며, 다른 상위 위치에는 참조를 기록한다. lint 복원이 항목·근거·참조를 함께 뺀다.
     """
-    if placement is None:
+    if not placements:
         return None
-    page_id, parent_entry_id = placement
+    page_id, parent_entry_id = placements[0]
     row = conn.execute(
         "SELECT slug FROM wiki_pages WHERE id = %s AND page_type = 'concept' AND status = 'active'",
         (page_id,),
@@ -3209,7 +3226,33 @@ def _place_promotion_under_head(
         entry_root=entry_root,
         pending=pending,
     )
-    return None if merged is None else (merged, entry_root["entry_id"])
+    if merged is None:
+        return None
+    pending.setdefault(page_id, merged)
+    for reference_page_id, reference_parent in placements[1:]:
+        reference_page = conn.execute(
+            "SELECT slug FROM wiki_pages WHERE id = %s AND workspace_id = %s AND status = 'active'",
+            (reference_page_id, workspace_id),
+        ).fetchone()
+        if not reference_page:
+            continue
+        slug = str(reference_page["slug"])
+        changed = _merge_promotion_into_existing_concept(
+            conn, user_id, workspace_id, slug, [], aliases=[], detail_items=[],
+            operation_id=operation_id, pending=pending,
+        )
+        if changed is None:
+            continue
+        reference = {
+            "source": f"concept:{slug}", "target": f"concept:{target_slug}", "relation": ENTRY_REFERENCE,
+            "entry_id": entry_root["entry_id"], "name": title, "parent_entry_id": reference_parent,
+        }
+        changed.setdefault("added_links", []).append(reference)
+        upsert_entry_references(conn, workspace_id, reference_page_id, [reference])
+        entries, references = _stored_entry_index(conn, reference_page_id)
+        changed["markdown"] = render_entry_index(changed["markdown"], entries, references)
+        pending[reference_page_id] = changed
+    return merged, entry_root["entry_id"]
 
 
 def _judge_promoted_concepts(

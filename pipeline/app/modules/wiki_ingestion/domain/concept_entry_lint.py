@@ -81,7 +81,7 @@ class EntryLintPlan:
             self.linked.append(record)
             return
         same["entry_changes"].extend(record["entry_changes"])
-        for field in ("links", "added_links"):
+        for field in ("links", "added_links", "removed_links"):
             same.setdefault(field, []).extend(link for link in record.get(field, []) if link not in same[field])
         known = {unit.get("evidence_id") for unit in same["evidence_units"]}
         same["evidence_units"].extend(unit for unit in record["evidence_units"] if unit.get("evidence_id") not in known)
@@ -379,7 +379,7 @@ def choose_page_moves(
 ) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, str]]]:
     """part_of 판정(확률, 상위, 옮길 page_id, 확률 순)에서 이번 lint에 옮길 페이지를 고른다.
 
-    페이지마다 확률이 가장 높은 상위 하나만 본다. head_pages는 상위 → (그 상위가 있는 page_id, 상위 항목 id 또는 None),
+    페이지마다 확률이 가장 높은 상위를 원본 집으로 고른다. 나머지 통과 관계는 호출자가 참조로 남긴다. head_pages는 상위 → (그 상위가 있는 page_id, 상위 항목 id 또는 None),
     busy는 이번 lint의 다른 판정(분리·승격·합치기·참조 정리)이 바꾸는 페이지다. 옮길 페이지나 상위 페이지가 busy면
     `page_busy`, 이번에 옮긴 페이지를 상위로 두거나 이번에 상위가 된 페이지를 옮기면 `chained`로 다음 lint에 미룬다.
     결과는 ([(page_id, 대상 page_id, 상위 항목 id)], [(page_id, 미룬 이유)])다.
@@ -415,7 +415,7 @@ def move_page_under(
     정의로 페이지 자신의 항목을 `add`하고(근거는 그 기록에서 하위 항목에 딸리지 않은 개념 인용과 근거 단위), 그 기록의
     하위 항목 변경을 그대로 싣되 맨 위 항목은 페이지 항목 아래로 둔다. 근거 단위와 하위 항목이 낸 참조도 옮긴다. 그래서 그
     작업을 되돌리면 target에서도 그 근거·항목이 빠지고, 모두 되돌리면 페이지 항목도 사라진다. 다른 페이지가 이 페이지
-    항목을 가리키던 참조는 target을 가리키고, target이 가리키던 참조는 이제 자기 항목이라 지운다. 기록은 페이지·작업마다
+    항목을 가리키던 참조는 target을 가리킨다. target 안의 다른 상위 위치와 옮긴 페이지 내부의 참조도 보존한다. 기록은 페이지·작업마다
     하나라 같은 작업이 target에도 기여했으면 옮기지 않는다.
     """
     target_operations = {str(item.get("operation_id")) for item in target.contributions}
@@ -430,14 +430,19 @@ def move_page_under(
             for change in contribution.get("entry_changes", [])
             if isinstance(change, dict) and change.get("entry_id")
         ]
-        references = [
-            {**link, "source": target.ref, "parent_entry_id": link.get("parent_entry_id") or entry_id}
-            for link in contribution.get("added_links" if lint else "links", [])
-            if isinstance(link, dict) and link.get("relation") == ENTRY_REFERENCE and link.get("source") == page.ref
-        ]
+        references = {
+            field: [
+                {**link, "source": target.ref,
+                 "target": target.ref if link.get("target") == page.ref else link.get("target"),
+                 "parent_entry_id": link.get("parent_entry_id") or entry_id}
+                for link in contribution.get(field, [])
+                if isinstance(link, dict) and link.get("relation") == ENTRY_REFERENCE and link.get("source") == page.ref
+            ]
+            for field in (("added_links", "removed_links") if lint else ("links",))
+        }
         units = [unit for unit in contribution.get("evidence_units", []) if isinstance(unit, dict)]
         # 페이지 이동·병합 등 근거·항목·참조가 없는 lint 기록은 옮길 것이 없다.
-        if lint and not (changes or units or references):
+        if lint and not (changes or units or any(references.values())):
             continue
         if str(contribution.get("operation_id")) in target_operations:
             return "operation_on_both_pages"
@@ -461,16 +466,13 @@ def move_page_under(
             ],
         }
         copy = _linked_copy(contribution, target.page_id, target.slug, [root, *changes], all_evidence=True)
-        copy["added_links" if lint else "links"] = references
+        copy.update(references)
         copies.append(copy)
     for copy in copies:
         plan.link(copy)
     moved_ids = {item["entry_id"] for item in page.entries}
-    _retarget_references(plan, pages, page, moved_ids, target.ref, {page.page_id, target.page_id})
-    target_change = plan.change(target.page_id, target.slug, target.title)
-    target_change["removed_links"].extend(
-        link for link in target.links if _references(link, page.ref, moved_ids) and link not in target_change["removed_links"]
-    )
+    # 대상 페이지의 다른 상위 위치도 유효한 소속이다. 자기 페이지 참조로 바꿔 보존한다.
+    _retarget_references(plan, pages, page, moved_ids, target.ref, {page.page_id})
     # 대상 페이지에도 이 lint 기록을 둔다. 이은 기록만 있으면 document-svc가 그 페이지 행을 받지 않는다.
     # 기록에는 이은 작업을 남긴다(재생에는 쓰지 않는다).
     linked = plan.change(target.page_id, target.slug, target.title).setdefault("linked_operation_ids", [])

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from app.modules.wiki_ingestion.domain.concept_entries import replay_concept_entries
-from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryPage, plan_entry_lint
+from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryLintPlan, EntryPage, move_page_under, plan_entry_lint
+from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
 
 
 def _add(entry_id: str, parent: str | None = None, refs: list[str] | None = None) -> dict:
@@ -53,3 +54,19 @@ def test_split_moves_references_placed_under_the_moved_subtree() -> None:
 
     assert reference in plan.page_changes["home"]["removed_links"]
     assert {**reference, "source": "concept:root"} in plan.page_changes["root-page"]["added_links"]
+
+
+def test_moving_pages_keeps_reference_removals_when_shared_operations_are_combined() -> None:
+    target = _page("target", [], [])
+    plan = EntryLintPlan()
+    for slug in ("a", "b"):
+        reference = {"source": f"concept:{slug}", "target": f"concept:{slug}",
+                     "relation": "entry_reference", "entry_id": f"child-{slug}", "parent_entry_id": None}
+        source = _page(slug, [
+            {"operation_id": "ingest", "entry_changes": [_add(f"child-{slug}")], "links": [reference]},
+            {"operation_id": "remove", "artifact_type": "lint", "removed_links": [reference]},
+        ], [])
+        assert move_page_under(plan, {slug: source, "target": target}, source, slug, target, None) is None
+
+    assert len(next(item for item in plan.linked if item["operation_id"] == "remove")["removed_links"]) == 2
+    assert replay_supported_links(plan.linked) == []

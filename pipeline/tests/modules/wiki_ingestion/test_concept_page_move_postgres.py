@@ -101,6 +101,22 @@ MOVE_ANSWERS = {
 }
 
 
+def test_move_keeps_all_accepted_parents_and_restores_them(world: World, judged) -> None:
+    for slug in ("a", "b", "c", "detail"):
+        world.ingest(f"op-{slug}", f"doc-{slug}", {slug: {"evidence": ["B1"]}})
+    judged({(slug, "detail"): score for slug, score in (("a", .99), ("b", .95), ("c", .9))})
+    before = world.state()
+
+    world.lint("lint-multi")
+
+    root = new_entry_id("a", "detail")
+    assert {(row[0], row[1], row[2]) for row in world.state()["references"]} == {
+        ("b", root, "a"), ("c", root, "a"),
+    }
+    world.restore_lint("lint-multi")
+    assert world.state() == before
+
+
 def test_standalone_pages_ingested_first_move_under_the_later_head_and_lint_restore_brings_them_back(
     world: World, judged
 ) -> None:
@@ -444,3 +460,25 @@ def test_page_is_not_moved_under_its_own_sub_entry(world: World, judged) -> None
     result = world.lint("lint-move")
 
     assert not [item for item in result["entry_decisions"] if item["action"] == "move"]
+
+
+def test_whole_page_move_preserves_internal_and_target_page_reference_positions(world: World, judged) -> None:
+    world.ingest("op-detail", "doc-detail", {"detail": {"evidence": ["D0"], "entry_changes": [
+        _add("child", "Child", refs=["D1"]), _add("other", "Other", refs=["D2"]),
+    ], "links": [{**_reference("detail", "detail", "child", "Child"), "parent_entry_id": "other"}]}})
+    world.ingest("op-root", "doc-root", {"root": {"evidence": ["R0"], "entry_changes": [
+        _add("parent-a", "Parent A", refs=["R1"]), _add("parent-b", "Parent B", refs=["R2"]),
+    ], "links": [{**_reference("root", "detail", "child", "Child"), "parent_entry_id": parent}
+                 for parent in ("parent-a", "parent-b")]}})
+    before = world.state()
+    judged({("root", "detail"): .99})
+
+    world.lint("lint-move")
+
+    refs = world.state()["references"]
+    assert {(row[0], row[2], row[-1]) for row in refs} == {
+        ("root", "root", parent) for parent in ("other", "parent-a", "parent-b")
+    }
+    assert len(world.ledger_rebuild("root").supported_links) == 3
+    world.restore_lint("lint-move")
+    assert world.state() == before

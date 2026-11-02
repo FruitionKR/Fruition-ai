@@ -281,6 +281,25 @@ def test_promotion_without_a_confident_parent_stays_a_new_page(world: World, mon
     assert result["merged_promotions"] == []
 
 
+def test_promotion_keeps_all_accepted_parents_and_restore_removes_references(world: World, monkeypatch) -> None:
+    for slug in ("a", "b", "c"):
+        world.ingest(f"op-{slug}", f"doc-{slug}", {slug: {"evidence": ["B1"]}})
+    judge = PlacementJudge({(slug, "rollout"): score for slug, score in (("a", .99), ("b", .95), ("c", .9))})
+    _store_page_vectors(world, judge.model, {slug: [1., 0.] for slug in ("a", "b", "c")})
+    before = world.state()
+
+    _lint(world, monkeypatch, "lint-multi", _cluster("rollout", TERMS), judge)
+
+    root = new_entry_id("a", "rollout")
+    assert {(row[0], row[1], row[2]) for row in world.state()["references"]} == {
+        ("b", root, "a"), ("c", root, "a"),
+    }
+    for slug in ("b", "c"):
+        assert world.ledger_rebuild(slug).supported_links[0]["entry_id"] == root
+    world.restore_lint("lint-multi")
+    assert world.state() == before
+
+
 def test_two_clusters_into_one_page_in_one_lint_keep_both_records(world: World, monkeypatch) -> None:
     world.ingest("op-d", "doc-d", {"deployment": {"title": "Deployment", "evidence": ["D1"]}})
     before = world.state()
