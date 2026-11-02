@@ -299,6 +299,24 @@ def test_multiple_parent_graph_rejects_cycles_without_losing_other_parents() -> 
     ]
 
 
+def test_section_neighbors_do_not_push_core_parents_out_of_the_judge_candidates() -> None:
+    normalized = _normalized([_concept("core", "Core", "B0001")])
+    normalized["section_candidates"] = [
+        {"slug": slug, "title": slug, "definition": slug, "anchor_reference_ids": ["B0002"]}
+        for slug in ("detail", *(f"neighbor-{index}" for index in range(8)))
+    ]
+    judge = FakePartOf({("core", "section:detail"): .95})
+
+    def similarity(_query, texts):
+        return [.1 if text.startswith("Core:") else 1. for text in texts]
+
+    result = _apply(normalized, judge_part_of=judge, similarity=similarity)
+
+    assert ("core", "section:detail") in judge.pairs
+    assert len([head for head, detail in judge.pairs if detail == "section:detail"]) == 1 + PART_OF_CANDIDATE_LIMIT
+    assert "detail" in _entries(result, "core")
+
+
 def _with_kubectl_entry(definition: str = "Pod 수를 바꾼다") -> list[dict]:
     return [
         {"slug": "kubectl", "title": "kubectl", "aliases": [], "definition": "CLI",

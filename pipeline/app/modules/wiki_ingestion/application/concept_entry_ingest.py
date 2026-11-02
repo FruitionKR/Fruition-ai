@@ -1,8 +1,8 @@
 """편입 배정과 승격(ADR 0042 2단계). 이번 문서의 개념을 상위 항목과 세부 항목으로 나눠 하위 항목으로 둔다.
 
 1. 배정: 어느 개념이 다른 개념에 딸리는지는 판정기(Jev `part_of` 또는 편입 LLM)가 정한다. 코드는 후보만 고른다.
-   세부 항목마다 상위 후보는 임베딩("이름: 정의") 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개이고, 이번 문서 개념과
-   워크스페이스 기존 개념 페이지가 모두 후보다(기존 페이지는 상위 항목만 된다). 이름 규칙으로 배정하거나 후보를
+   상위 후보는 핵심·기존 개념과 섹션·언급을 나누어 각각 임베딩("이름: 정의") 유사도 상위
+   `PART_OF_CANDIDATE_LIMIT`개를 고른다. 이번 문서 개념과 워크스페이스 기존 개념 페이지가 모두 후보다(기존 페이지는 상위 항목만 된다). 이름 규칙으로 배정하거나 후보를
    고르지 않는다. 임베딩을 쓸 수 없거나, 애매하거나, 판정기를 쓸 수 없으면 배정하지 않는다.
 2. 놓기: 배정을 따라 올라간 맨 위가 기존 개념 페이지면 그 페이지, 기존 하위 항목이면 그 항목의 집 페이지 그 항목 아래,
    이번 문서 개념이면 그 개념의 새 페이지의 하위 항목이 된다. 배정은 버리지 않는다. 하위 항목이 많아지면 lint 분리 규칙이
@@ -25,7 +25,7 @@ from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_
 from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id
 
 logger = logging.getLogger(__name__)
-# 세부 항목마다 part_of로 물을 상위 후보 수. 편입 잠금 안의 판정이라 작게 둔다.
+# 후보군마다 part_of로 물을 상위 후보 수. 핵심·기존 개념과 섹션·언급을 따로 추린다.
 PART_OF_CANDIDATE_LIMIT = 5
 # (질의 텍스트, 후보 텍스트 목록) → 후보별 임베딩 유사도. 개념 판정과 같은 BGE-M3 벡터·캐시를 쓴다.
 # 임베딩 서버를 쓸 수 없으면 JevUnavailable을 낸다.
@@ -258,7 +258,8 @@ def rank_part_of(
 ) -> list[tuple[float, str, str]]:
     """판정기가 part_of라 한 (P(part_of), 상위 slug, 세부 slug)를 확률이 높은 순으로 돌려준다.
 
-    세부 항목마다 상위 후보는 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다(편입 배정과 lint 페이지 이동이 같이 쓴다).
+    후보군마다 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다. 편입은 핵심·기존 개념과 섹션·언급을 나누고,
+    기존 개념만 검사하는 lint는 한 후보군이다.
     서로가 서로에 딸린다는 판정은 애매하다고 보고 버린다. 판정기·임베딩 서버를 쓸 수 없으면 빈 목록이다.
     """
     try:
@@ -275,13 +276,18 @@ def rank_part_of(
 
 
 def _candidate_heads(detail: dict[str, Any], heads: dict[str, dict[str, Any]], similarity: Similarity) -> list[str]:
-    """part_of로 물을 상위 후보. 임베딩 유사도 상위 `PART_OF_CANDIDATE_LIMIT`개다."""
+    """개념 후보와 섹션·언급 후보에서 각각 임베딩 상위 5개를 고른다."""
     others = [slug for slug in sorted(heads) if slug != detail["slug"]]
     if not others:
         return []
     scores = similarity(concept_text(detail), [concept_text(heads[slug]) for slug in others])
     ranked = sorted(zip(others, scores, strict=True), key=lambda row: (-row[1], row[0]))
-    return [slug for slug, _ in ranked[:PART_OF_CANDIDATE_LIMIT]]
+    # 섹션·언급의 가까운 이웃이 핵심·기존 개념을 검사 대상에서 밀어내지 않게 한다.
+    candidates = []
+    for is_term in (False, True):
+        group = [slug for slug, _ in ranked if ("term_slug" in heads[slug]) == is_term]
+        candidates.extend(group[:PART_OF_CANDIDATE_LIMIT])
+    return candidates
 
 
 def concept_text(concept: dict[str, Any]) -> str:
