@@ -661,6 +661,9 @@ def test_post_ingest_runs_configured_embedding_before_quality_evaluation(
             "failed_count": 0,
         }
     finish.assert_called_once()
+    timings = finish.call_args.args[1]["stage_timings"]
+    assert [row["stage"] for row in timings] == ["cluster_judgment", "cluster_persistence", "embedding"]
+    assert all(row["elapsed_seconds"] >= 0 and row["status"] == "succeeded" for row in timings)
 
 
 def test_post_ingest_marks_needs_review_after_third_failure() -> None:
@@ -2011,3 +2014,18 @@ def test_agent_command_startup_requires_folder_tree_config_even_when_skills_disa
 
     monkeypatch.setenv("DOCUMENT_INTERNAL_BASE_URL", "http://document-svc:8080")
     task_worker._verify_agent_command_config()
+
+
+def test_post_ingest_timing_records_failed_attempt_and_retry():
+    state = {"attempt": 1}
+    with patch.object(task_worker.time, "perf_counter", side_effect=[10.0, 12.5, 20.0, 21.25]):
+        with pytest.raises(RuntimeError, match="unavailable"):
+            with task_worker._post_ingest_stage(state, "embedding"):
+                raise RuntimeError("unavailable")
+        state["attempt"] = 2
+        with task_worker._post_ingest_stage(state, "embedding"):
+            pass
+    assert state["stage_timings"] == [
+        {"stage": "embedding", "attempt": 1, "elapsed_seconds": 2.5, "status": "failed"},
+        {"stage": "embedding", "attempt": 2, "elapsed_seconds": 1.25, "status": "succeeded"},
+    ]
