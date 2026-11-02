@@ -207,7 +207,8 @@ def _requested_markdown_failures(
         if "flowchart" not in replacement or "-->" not in replacement:
             failures.append("Mermaid output must contain flowchart edges")
     if "table" in formats and not re.search(
-        r"(?m)^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$", replacement
+        # 열이 하나인 표(`| --- |`)도 받되, 파이프 없는 `---`(구분선)는 표로 보지 않는다.
+        r"(?m)^(?=[^\n]*\|)[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$", replacement
     ):
         failures.append("table must use a GFM table delimiter row")
     if "code_block" in formats and not re.search(r"(?m)^ {0,3}(?:`{3,}|~{3,})", replacement):
@@ -237,12 +238,17 @@ def _protected_fragment_failures(
 ) -> list[str]:
     fragments = protect_markdown(request).fragments
     expected = Counter((fragment.kind, fragment.markdown) for fragment in fragments)
-    # 섹션 제목은 통째로 잠겨 그 안의 코드·링크는 따로 세지 않았다. 결과에서도 제목을 빼고 센다.
-    for fragment in fragments:
-        if fragment.kind == "section_heading" and fragment.markdown in replacement:
-            replacement = replacement.replace(fragment.markdown, "", 1)
-            expected[(fragment.kind, fragment.markdown)] -= 1
     failures: list[str] = []
+    # 섹션 제목은 맨 첫 줄을 통째로 잠근다. 하위 제목(`### 설치 방법`)이 `## 설치`를 부분 문자열로 품으므로
+    # 개수가 아니라 첫 줄로 확인한다. 그 안의 코드·링크는 따로 세지 않았으니 결과에서도 첫 줄을 빼고 센다.
+    for fragment in fragments:
+        if fragment.kind == "section_heading":
+            del expected[(fragment.kind, fragment.markdown)]
+            first_line, _, rest = replacement.lstrip("\r\n").partition("\n")
+            if first_line.rstrip("\r") == fragment.markdown:
+                replacement = rest
+            else:
+                failures.append("protected section_heading must stay the first line")
     for (kind, markdown), expected_count in expected.items():
         actual_count = replacement.count(markdown)
         if actual_count != expected_count:

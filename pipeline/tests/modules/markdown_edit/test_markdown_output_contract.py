@@ -209,8 +209,22 @@ class MarkdownOutputContractTest(unittest.TestCase):
 
         self.assertNotIn("protected", " ".join(validate_markdown_output(request, "## `API` 안내\n\n`API`를 확인한다.")))
         self.assertIn(
-            "protected section_heading count must be preserved: expected 1, got 0",
+            "protected section_heading must stay the first line",
             validate_markdown_output(request, "`API`를 확인한다."),
+        )
+
+    def test_section_heading_lock_ignores_subheadings_containing_it(self) -> None:
+        # `### 설치 방법`이 `## 설치`를 부분 문자열로 품어도 원문 그대로의 결과를 실패로 보지 않는다.
+        source = "## 설치\n\n설치를 한다.\n\n### 설치 방법\n\n명령을 실행한다."
+        section = MarkdownEditTarget(type="current_section", start_line=1, end_line=7)
+        request = MarkdownEditRequest(instruction="문장을 다듬어줘.", markdown=source, target=section, edit_goal="cleanup")
+
+        for output in (source, source.replace("설치를 한다.", "설치한다.")):
+            with self.subTest(output=output):
+                self.assertNotIn("protected", " ".join(validate_markdown_output(request, output)))
+        self.assertIn(
+            "protected section_heading must stay the first line",
+            validate_markdown_output(request, "설치한다.\n\n### 설치 방법\n\n명령을 실행한다."),
         )
 
     def test_restores_footnote_definition_at_line_start(self) -> None:
@@ -508,6 +522,14 @@ class MarkdownOutputContractTest(unittest.TestCase):
         self.assertEqual(
             validate_markdown_output(request, "| 구분 | 내용 |\n| :--- | --- |\n| 방법 | 인터뷰 |\n\n```bash\nnpm test\n```"),
             [],
+        )
+        self.assertNotIn(
+            "table must use a GFM table delimiter row",
+            validate_markdown_output(request, "| 방법 |\n| --- |\n| 인터뷰 |\n\n```bash\nnpm test\n```"),
+        )
+        self.assertIn(
+            "table must use a GFM table delimiter row",
+            validate_markdown_output(request, "방법\n\n---\n\n```bash\nnpm test\n```"),
         )
         failures = validate_markdown_output(request, "구분: 방법, 내용: 인터뷰. npm test")
         self.assertIn("table must use a GFM table delimiter row", failures)

@@ -11,6 +11,7 @@ import logging
 import re
 from pathlib import Path
 
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.markdown_edit.domain.entities import EDIT_FORMATS, MarkdownEditDetail, MarkdownEditRequest
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import ChatCompletionsJsonClient
 from app.modules.wiki_generation.infrastructure.json_output_parser import JsonParseError
@@ -34,6 +35,9 @@ class ChatCompletionsMarkdownEditDetailClassifier:
         try:
             raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
             return parse_edit_detail(raw)
+        except PipelineRunCancelledError:
+            # 취소·시한 초과는 RuntimeError 하위 클래스라 아래에서 삼키지 않도록 먼저 올린다.
+            raise
         except (JsonParseError, ValueError, RuntimeError) as exc:
             # 세부 분류가 없으면(형식 오류·provider 통신 오류) 형식 검사를 건너뛰고 LLM 평가기가 요청 충족 여부를 판단한다.
             # 편집 자체는 막지 않는다.

@@ -1,6 +1,7 @@
 import json
 import unittest
 
+from app.core.pipeline_control import DeadlineExceededError, PipelineRunCancelledError
 from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_detail_classifier import (
     ChatCompletionsMarkdownEditDetailClassifier,
@@ -95,6 +96,12 @@ class MarkdownEditDetailClassifierTest(unittest.TestCase):
                     ).classify(request())
 
                 self.assertEqual(detail, MarkdownEditDetail())
+
+    def test_cancellation_is_not_swallowed(self) -> None:
+        # 취소·시한 초과는 RuntimeError 하위 클래스지만 편집을 이어가지 않도록 그대로 올린다.
+        for error in (PipelineRunCancelledError("cancelled"), DeadlineExceededError("deadline")):
+            with self.subTest(error=error), self.assertRaises(type(error)):
+                ChatCompletionsMarkdownEditDetailClassifier(FixedJsonClient(error), "system").classify(request())
 
 
 class RecordingClassifier:
