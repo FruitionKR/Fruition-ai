@@ -216,7 +216,8 @@ class AgentTurnRouteResponse(BaseModel):
         Literal["document-create", "document-edit", "folder-organize", "template"]
     ] = Field(default_factory=list)
     notice_kind: Literal[
-        "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "policy", "skill_off"
+        "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "display_unsupported", "policy",
+        "skill_off",
     ] | None = None
 
 
