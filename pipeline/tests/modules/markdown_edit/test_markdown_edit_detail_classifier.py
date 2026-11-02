@@ -61,7 +61,22 @@ class MarkdownEditDetailClassifierTest(unittest.TestCase):
         ChatCompletionsMarkdownEditDetailClassifier(client, "system").classify(request())
 
         payload = json.loads(client.calls[0][1])
-        self.assertEqual(payload, {"instruction": request().instruction, "conversation_summary": "이전 대화"})
+        self.assertEqual(
+            payload,
+            {"instruction": request().instruction, "conversation_summary": "이전 대화", "skill_instructions": ""},
+        )
+
+    def test_skill_run_sends_skill_instructions(self) -> None:
+        # Skill만 실행하는 요청은 결과 형식이 문장이 아니라 Skill 지침에 있다.
+        client = FixedJsonClient({
+            "requested_formats": ["table"], "addition_only": False, "structure_change": True, "target_language": None,
+        })
+
+        ChatCompletionsMarkdownEditDetailClassifier(client, "system").classify(
+            request(instruction="Skill 지침을 적용해 주세요", skill_instructions="결과를 표로 정리한다."),
+        )
+
+        self.assertEqual(json.loads(client.calls[0][1])["skill_instructions"], "결과를 표로 정리한다.")
 
     def test_invalid_or_failed_classification_means_no_detail(self) -> None:
         invalid_outputs: tuple[object, ...] = (
@@ -70,6 +85,7 @@ class MarkdownEditDetailClassifierTest(unittest.TestCase):
             {"requested_formats": [], "addition_only": False, "structure_change": False, "target_language": "English"},
             ["table"],
             JsonParseError("broken"),
+            RuntimeError("provider HTTP 503"),
         )
         for output in invalid_outputs:
             with self.subTest(output=output):

@@ -28,12 +28,15 @@ class ChatCompletionsMarkdownEditDetailClassifier:
         payload = {
             "instruction": request.instruction,
             "conversation_summary": request.conversation_summary,
+            # Skill만 실행하는 요청은 문장에 결과 형식이 없고 Skill 지침에 있다.
+            "skill_instructions": request.skill_instructions or "",
         }
         try:
             raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
             return parse_edit_detail(raw)
-        except (JsonParseError, ValueError) as exc:
-            # 세부 분류가 없으면 형식 검사를 건너뛰고 LLM 평가기가 요청 충족 여부를 판단한다. 편집 자체는 막지 않는다.
+        except (JsonParseError, ValueError, RuntimeError) as exc:
+            # 세부 분류가 없으면(형식 오류·provider 통신 오류) 형식 검사를 건너뛰고 LLM 평가기가 요청 충족 여부를 판단한다.
+            # 편집 자체는 막지 않는다.
             logger.warning("[편집 세부 분류 실패] %s", exc)
             return MarkdownEditDetail()
 

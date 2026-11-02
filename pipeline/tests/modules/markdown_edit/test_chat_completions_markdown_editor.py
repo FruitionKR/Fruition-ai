@@ -661,6 +661,23 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         self.assertIn("기존 절차입니다.", result.edit.replacement_markdown)
         self.assertEqual(len(client.calls), 2)
 
+    def test_html_allowance_is_limited_to_the_replaced_range(self) -> None:
+        # 앞뒤 문맥에 있는 `<br />`는 교체 범위의 허용량이 아니다. 선택 영역에 복제하면 새 HTML이다.
+        source = "<br />\n\n선택한 문장\n\n<br />"
+        target = MarkdownEditTarget(type="selection", start_line=3, end_line=3)
+        client = SequenceJsonClient([
+            response("선택한 문장\n<br />", actual_target={"type": "selection", "start_line": 3, "end_line": 3}),
+            response("다듬은 문장", actual_target={"type": "selection", "start_line": 3, "end_line": 3}),
+        ])
+
+        result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(
+            MarkdownEditRequest(instruction="문장을 다듬어줘.", markdown=source, target=target, edit_goal="other"),
+        )
+
+        retry_payload = json.loads(client.calls[1][1])
+        self.assertIn("raw HTML and MDX are not supported", retry_payload["contract_failures"])
+        self.assertEqual(result.edit.replacement_markdown, "다듬은 문장")
+
     def test_allows_explicit_task_marker_change(self) -> None:
         client = SequenceJsonClient(
             [
