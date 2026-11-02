@@ -916,10 +916,12 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
                     embedding_error = embedding_future.exception()
                     # 실패한 시도의 시간도 남긴다. 스레드가 끝난 뒤라 timing을 읽어도 안전하다.
                     state.setdefault("stage_timings", []).extend(embedding_timing.get("stage_timings", []))
-                    if embedding_error is not None:
-                        raise embedding_error
-                    state["embedding"] = embedding_future.result()
-                    database.checkpoint_pipeline_run(run_id, state)
+                    if embedding_error is None:
+                        state["embedding"] = embedding_future.result()
+                        database.checkpoint_pipeline_run(run_id, state)
+        # 판정이 실패했으면 그 예외(취소 포함)가 그대로 올라가도록, 임베딩 오류는 판정이 끝난 뒤에만 올린다.
+        if embedding_future is not None and embedding_error is not None:
+            raise embedding_error
 
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
         quality_required = bool(command.get("quality_required", True))

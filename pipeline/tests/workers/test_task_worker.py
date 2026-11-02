@@ -2091,6 +2091,58 @@ def test_post_ingest_keeps_finished_embedding_when_cluster_judgment_fails() -> N
     }
 
 
+def test_post_ingest_keeps_cluster_failure_when_embedding_also_fails() -> None:
+    # 두 단계가 함께 실패하면 판정 쪽 예외(취소 포함)를 기록해야 한다. 임베딩 오류로 덮어쓰지 않는다.
+    command = {
+        "run_id": "post-run-1",
+        "ingest_run_id": "ingest-run-1",
+        "kind": "post_ingest",
+        "document_id": "document-1",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "cluster_normalized": {"document": {"document_id": "document-1"}},
+        "page_ids": ["page-1"],
+    }
+    parent = {"status": "succeeded", "manifest": {"post_ingest": {
+        "cluster_normalized": command["cluster_normalized"], "page_ids": command["page_ids"],
+    }}}
+    checkpoints = []
+    with (
+        patch.dict(task_worker.os.environ, {"QUERY_EMBEDDING_MODE": "bge-m3"}),
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else None,
+        ),
+        patch.object(task_worker.database, "create_pipeline_run"),
+        patch.object(task_worker.database, "reject_deleted_source"),
+        patch.object(
+            task_worker.database,
+            "checkpoint_pipeline_run",
+            side_effect=lambda _run_id, state: checkpoints.append(dict(state)),
+        ),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker, "_post_ingest_client", return_value=MagicMock()),
+        patch.object(task_worker, "read_optional_text_object", return_value=""),
+        patch.object(
+            task_worker,
+            "build_post_ingest_cluster_artifact",
+            side_effect=task_worker.PipelineRunCancelledError("source deleted"),
+        ),
+        patch.object(task_worker, "build_wiki_embeddings", side_effect=RuntimeError("bge down")),
+        patch.object(task_worker.database, "fail_pipeline_run"),
+    ):
+        with pytest.raises(task_worker.PipelineRunCancelledError, match="source deleted"):
+            task_worker._handle_post_ingest(command)
+
+    assert "embedding" not in checkpoints[-1]
+    assert {row["stage"]: row["status"] for row in checkpoints[-1]["stage_timings"]} == {
+        "cluster_judgment": "failed",
+        "embedding": "failed",
+    }
+
 def test_post_ingest_records_failed_embedding_attempt_timing() -> None:
     command = {
         "run_id": "post-run-1",
