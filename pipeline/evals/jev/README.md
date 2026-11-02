@@ -12,6 +12,7 @@
 | `edit.json` | 문서 편집 30건. corpus 발췌·대상 범위·요청, 코드 검사(`checks`), 판정 기준(`criteria`) |
 | `organize.json` | 문서 관리 26건. 폴더 정리 20건(`hierarchy`·요청·최종 배치 정답, 되묻기 정답 포함)과 폴더 조회 6건 |
 | `skill.json` | Skill 24건. 의도 분류 12, Skill 작성 6, 시험 실행 6 |
+| `subentry.json` | **검수 전 초안.** 하위 항목 쌍 40건(`same` 13·`context_different` 14·`unrelated` 13)과 `part_of` 22건(참 11·거짓 11). 사례마다 corpus 줄 번호와 이유. `gold.lock.json`에 없다 |
 | `corpus/` | RAG 원문 11개(편집·Skill 발췌에도 사용) |
 | `gold.lock.json` | 위 파일의 sha256과 개정 이력(`revisions`) |
 
@@ -73,6 +74,24 @@ python run_lint.py ../results/<날짜>/rag/workspace.json --dry-run   # 운영 �
 
 - 편입이 끊기면 `python rag_prepare.py --resume ../results/<날짜>/rag/workspace.json`으로 같은 계정·워크스페이스에서 끝난 문서를 건너뛰고 이어서 편입한다. 결과도 그 폴더에 쓴다.
 - 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.
+
+## 개념 크기 측정(ADR-0042 0단계)
+
+같은 corpus 11개를 모델마다 새 워크스페이스에 편입해 개념 페이지가 얼마나 잘게 생기는지 잰다. 편입은 `rag_prepare.py --model`(기본 Haiku)과 같은 운영 경로이고, 로컬 스택이 필요하다.
+
+```bash
+python run_granularity.py --models claude:claude-haiku-4-5-20251001,claude:<비교 모델>   # 모델마다 편입 후 측정
+python run_granularity.py --workspaces ../results/<날짜>/rag/workspace.json,...        # 편입 없이 기존 워크스페이스만 측정
+python test_granularity.py                                                             # 순수 함수·subentry.json 형식 확인(모델 호출 없음)
+```
+
+- 결과는 `results/<날짜>/granularity/report.json`이다. 모델별로 활성 개념 페이지 수, 문서 연결이 없는 페이지 수, 문서별 페이지 수를 남긴다.
+- **머리말 묶음:** 제목의 첫 단어와 괄호 안 말을 머리말로 보고, 머리말이 같은 페이지가 2개 이상이면 묶는다(`Deployment Rollout`, `Label Selector (Deployment)` → `deployment`). 한글·영문 표기가 다르면 다른 머리말이다.
+- **편차:** 모델 간 페이지 수의 최대 − 최소. 전체와 문서별로 낸다.
+- **일치율(A→B):** A의 개념 중 제목·별칭(대소문자·기호·공백 무시, 괄호 한정어를 뗀 이름 포함)이 B의 어떤 개념 제목·별칭과 같은 비율. 방향이 있어 A→B와 B→A를 모두 낸다.
+- **비용:** 모델 하나가 `rag_prepare.py` 1회와 같다. 문서마다 편입 추출·평가·개념 판정·후속 편입을 부르며, Haiku 기준 11개 편입에 약 90분 걸렸다(2026-10-30). 측정 자체는 모델을 부르지 않는다.
+
+`subentry.json`은 하위 항목 배정·같은 것 찾기(ADR-0042 2단계)의 정답 초안이다. 아직 검수 전이므로 실행기가 대조하지 않는다. 검수에서 사례를 고친 뒤 `gold.lock.json`에 sha256을 넣어 고정한다.
 
 ## 채점
 
