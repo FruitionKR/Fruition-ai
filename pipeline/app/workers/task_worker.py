@@ -768,9 +768,8 @@ def _run_post_ingest_wiki_quality_evaluation(
     return evaluations
 
 
-def _post_ingest_embedding(page_ids: list[str], attempt: int) -> tuple[dict[str, int], list[dict[str, Any]]]:
-    """편입이 저장한 페이지를 임베딩한다. 동시에 도는 클러스터 판정과 state를 나눠 쓰지 않도록 단계 시간을 따로 돌려준다."""
-    timing_state: dict[str, Any] = {"attempt": attempt}
+def _post_ingest_embedding(page_ids: list[str], timing_state: dict[str, Any]) -> dict[str, int]:
+    """편입이 저장한 페이지를 임베딩한다. 동시에 도는 클러스터 판정과 state를 나눠 쓰지 않도록 단계 시간은 timing_state에 둔다."""
     with _post_ingest_stage(timing_state, "embedding"):
         page_ids = list(dict.fromkeys(page_ids))
         if os.environ.get("QUERY_EMBEDDING_MODE", "bge-m3").strip().lower() in {
@@ -788,7 +787,7 @@ def _post_ingest_embedding(page_ids: list[str], attempt: int) -> tuple[dict[str,
             raise RuntimeError(
                 f"post_ingest embedding failed: {embedding['failed_count']}"
             )
-    return embedding, timing_state["stage_timings"]
+    return embedding
 
 
 def _apply_post_ingest_clusters(command: dict[str, Any], state: dict[str, Any], run_id: str) -> None:
@@ -897,13 +896,14 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         # 편입이 저장한 페이지는 클러스터 판정이 바꾸지 않는다. 임베딩을 먼저 띄워 판정 LLM과 겹치게 해 질의 가능 시점을 당긴다.
+        embedding_timing: dict[str, Any] = {"attempt": attempt}
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="post-ingest-embedding") as embedding_pool:
             embedding_future = (
                 embedding_pool.submit(
                     copy_context().run,
                     _post_ingest_embedding,
                     [str(page_id) for page_id in command.get("page_ids", [])],
-                    attempt,
+                    embedding_timing,
                 )
                 if "embedding" not in state
                 else None
@@ -913,9 +913,12 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
             finally:
                 # 판정이 실패해도 끝난 임베딩은 남겨 재시도가 다시 계산하지 않게 한다. state는 이 스레드에서만 고친다.
                 if embedding_future is not None:
-                    embedding, timings = embedding_future.result()
-                    state.setdefault("stage_timings", []).extend(timings)
-                    state["embedding"] = embedding
+                    embedding_error = embedding_future.exception()
+                    # 실패한 시도의 시간도 남긴다. 스레드가 끝난 뒤라 timing을 읽어도 안전하다.
+                    state.setdefault("stage_timings", []).extend(embedding_timing.get("stage_timings", []))
+                    if embedding_error is not None:
+                        raise embedding_error
+                    state["embedding"] = embedding_future.result()
                     database.checkpoint_pipeline_run(run_id, state)
 
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
