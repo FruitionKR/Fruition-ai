@@ -97,7 +97,10 @@ class WikiGenerationPipelineTest(unittest.TestCase):
         self.assertEqual(client.mock_calls, [])
         self.assertEqual(outputs.source_page_mode, "skeleton")
         self.assertEqual(outputs.concept_page_mode, "skeleton")
-        self.assertIn("추출한 요약", outputs.source_page["markdown"])
+        # 소스 페이지 요약은 두지 않는다(본문 섹션·산출물 모두).
+        self.assertNotIn("## Summary", outputs.source_page["markdown"])
+        self.assertNotIn("추출한 요약", outputs.source_page["markdown"])
+        self.assertNotIn("summary", outputs.source_page["source_extraction_artifact"])
         self.assertEqual(outputs.source_page["source_extraction_artifact"]["key_points"],
                          [{"text": "추출한 핵심", "evidence_block_ids": ["B0001"]}])
         for text in ("추출한 정의", "추출한 핵심", "추출한 근거", "B0001"):
