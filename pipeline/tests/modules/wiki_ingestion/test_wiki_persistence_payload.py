@@ -5,7 +5,6 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
     markdown_title,
     page_payload,
     resolve_page_id,
-    source_summary,
     stored_manifest,
 )
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
@@ -98,18 +97,7 @@ class WikiPersistencePayloadTest(unittest.TestCase):
             manifest["source_contribution"],
         )
 
-    def test_resolves_summary_title_and_link_page_ids(self) -> None:
-        self.assertEqual(
-            source_summary({"semantic_notes": [{"semantic_summary": "첫 요약"}], "document": {"title": "문서 제목"}}),
-            "첫 요약",
-        )
-        self.assertEqual(
-            source_summary(
-                {"semantic_notes": [{"semantic_summary": "첫 요약"}], "document": {"title": "문서 제목"}},
-                {"source_extraction_artifact": {"summary": "평가 후 전체 요약"}},
-            ),
-            "평가 후 전체 요약",
-        )
+    def test_resolves_title_and_link_page_ids(self) -> None:
         self.assertEqual(markdown_title("본문\n# 제목\n내용"), "제목")
         self.assertEqual(resolve_page_id("source:doc", "source-id", {}), "source-id")
         self.assertEqual(resolve_page_id("concept:test", "source-id", {"test": "concept-id"}), "concept-id")

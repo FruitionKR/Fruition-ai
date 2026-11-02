@@ -205,5 +205,5 @@ def test_restoring_source_page_to_earlier_ingest_keeps_filename_title(scoped_dsn
     with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
         row = conn.execute("SELECT title, summary, markdown_uri FROM wiki_pages WHERE id = %s", (page_id,)).fetchone()
     assert row["title"] == "공유 문서"
-    assert row["summary"] == "op-1 요약"
+    assert row["summary"] == ""  # 소스 페이지 요약은 두지 않는다
     assert stored[row["markdown_uri"].removeprefix("s3://wiki-bucket/")].startswith("# 생성 제목 op-1")

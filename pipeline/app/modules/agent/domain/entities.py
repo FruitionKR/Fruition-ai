@@ -42,9 +42,11 @@ DocumentOperation = Literal["none", "create", "edit"]
 # 작업 탭 요청. None이면 기존(채팅 겸용) 동작이다.
 AgentTurnMode = Literal["task"]
 # 사용자에게 무엇을 알릴지. clarify는 되묻기 종류, reject는 거절 이유, 문서 작업은 Skill이 꺼져 있다는 안내다.
-NoticeKind = Literal["chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "policy", "skill_off"]
+NoticeKind = Literal[
+    "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "display_unsupported", "policy", "skill_off"
+]
 CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "details", "web_disabled"})
-REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "policy"})
+REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "display_unsupported", "policy"})
 @dataclass(frozen=True)
 class SkillCandidate:
     id: str

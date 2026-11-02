@@ -13,33 +13,6 @@ from app.modules.markdown_edit.domain.markdown_target_scope import MarkdownTarge
 
 
 SOURCE_RANGE_EDIT_GOALS = {"cleanup", "style_change", "translate"}
-STRUCTURE_ACTION_WORDS = ("추가", "변경", "바꿔", "변환", "표시", "만들", "change", "convert", "format")
-STRUCTURE_TARGET_WORDS = (
-    "목록",
-    "리스트",
-    "checklist",
-    "heading",
-    "제목",
-    "굵게",
-    "bold",
-    "기울임",
-    "italic",
-    "취소선",
-    "strikethrough",
-    "인용",
-    "blockquote",
-    "표",
-    "table",
-    "code block",
-    "코드 블록",
-    "수식",
-    "math",
-    "mermaid",
-    "회의록",
-    "checkbox",
-    "체크박스",
-    "task list",
-)
 LOCKED_BLOCK_TYPES = {"code_block", "fence", "html_block", "hr", "table_open"}
 BOUNDARY_BLOCK_TYPES = {"code_block", "fence", "html_block", "table_open"}
 
@@ -231,22 +204,19 @@ def _required_segment_ids(
 ) -> tuple[str, ...]:
     if request.edit_goal != "translate":
         return ()
-    instruction = request.instruction.lower()
-    if "한국어" in instruction or "korean" in instruction:
+    target_language = request.detail.target_language
+    if target_language == "ko":
         return tuple(segment.id for segment in segments if re.search(r"[A-Za-z]", segment.text))
-    if "영어" in instruction or "english" in instruction:
+    if target_language == "en":
         return tuple(segment.id for segment in segments if re.search(r"[가-힣]", segment.text))
     return tuple(segment.id for segment in segments)
 
 
 def _supports_source_range_edit(request: MarkdownEditRequest) -> bool:
+    # 원문 범위 편집은 구조를 그대로 두고 글자만 바꾼다. 세부 분류가 형식·구조 변경을 요구하면 일반 편집으로 처리한다.
     if request.edit_goal not in SOURCE_RANGE_EDIT_GOALS:
         return False
-    instruction = request.instruction.lower()
-    asks_for_structure = any(word in instruction for word in STRUCTURE_TARGET_WORDS) and any(
-        word in instruction for word in STRUCTURE_ACTION_WORDS
-    )
-    return not asks_for_structure
+    return not request.detail.requested_formats and not request.detail.structure_change
 
 
 def _markdown_parser() -> MarkdownIt:

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.modules.wiki_ingestion.application.models import WikiMaintenanceCommand
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
@@ -16,6 +18,12 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repositor
     _delete_source_related_links,
     _resolve_or_create_wiki_page_id,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_quality_review_rows(monkeypatch) -> None:
+    # 이 파일의 lint 테스트는 가짜 연결을 쓴다. 검색 품질 후보 조회는 실제 PostgreSQL 테스트가 따로 본다.
+    monkeypatch.setattr(repository, "_list_quality_review_candidates", lambda *_args: [])
 
 
 def test_list_source_blocks_for_refs_preserves_document_scope(monkeypatch) -> None:

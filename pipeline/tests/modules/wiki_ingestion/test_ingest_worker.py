@@ -578,3 +578,15 @@ def test_redelivered_running_ingest_seeks_back_and_waits_instead_of_crashing() -
     consumer.seek.assert_called_once_with(TopicPartition("t", 5), 7)
     assert events == ["succeeded"]
     assert consumer.commit.await_count == 1
+
+
+def test_result_payload_reports_pages_deleted_by_reingest() -> None:
+    # 재편입 재생 결과가 빈 페이지는 document-svc가 삭제와 무효화 기여 행으로 기록한다(ADR 0042).
+    payload = ingest_worker._result_payload(
+        {"operation_id": "op-1", "document_id": "doc-1"},
+        {"operation_artifacts": [{"page_id": "p1"}], "deleted_pages": ["p2"]},
+        "succeeded",
+    )
+    assert payload["changed_pages"] == [{"page_id": "p1"}]
+    assert payload["deleted_pages"] == ["p2"]
+    assert ingest_worker._result_payload({}, None, "failed", "x")["deleted_pages"] == []

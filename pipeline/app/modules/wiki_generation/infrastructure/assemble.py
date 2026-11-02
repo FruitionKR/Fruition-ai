@@ -28,9 +28,6 @@ class SourcePageAssembler:
         ledger = normalized["concept_ledger"]
         title = str(doc.get("title") or doc["document_id"]).strip()
 
-        summary_parts = [n.get("semantic_summary", "") for n in notes if n.get("semantic_summary")]
-        summary = "\n\n".join(summary_parts[:4]) or "요약 없음."
-
         key_points = []
         seen = set()
         for n in notes:
@@ -75,9 +72,6 @@ categories: {', '.join(item.get('name', '') for item in normalized.get('categori
 
 # {title}
 
-## Summary
-{summary}
-
 ## Key Points
 {chr(10).join(key_points) if key_points else '- 핵심 포인트 없음'}
 
@@ -100,7 +94,7 @@ categories: {', '.join(item.get('name', '') for item in normalized.get('categori
         if filename_slug == "untitled":
             filename_slug = doc["document_id"]
         markdown_path = f"wiki/sources/{filename_slug}.md"
-        artifact = _source_extraction_artifact(normalized, title, summary, markdown_path)
+        artifact = _source_extraction_artifact(normalized, title, markdown_path)
         normalized["source_extraction_artifact"] = artifact
         return {
             "slug": filename_slug,
@@ -142,7 +136,6 @@ def _term_record(item: dict[str, Any]) -> dict[str, Any]:
 def _source_extraction_artifact(
     normalized: dict[str, Any],
     title: str,
-    summary: str,
     markdown_path: str,
 ) -> dict[str, Any]:
     doc = normalized["document"]
@@ -160,7 +153,6 @@ def _source_extraction_artifact(
         "title": title,
         "source_file": doc.get("source_path"),
         "markdown_path": markdown_path,
-        "summary": summary,
         "key_points": _source_artifact_key_points(normalized),
         "categories": categories,
         "observations": normalized.get("observations", []),

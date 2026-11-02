@@ -4,23 +4,6 @@ from typing import Any
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 
 
-def source_summary(normalized: dict[str, Any], manifest: dict[str, Any] | None = None) -> str:
-    manifest = manifest or {}
-    artifact = manifest.get("source_extraction_artifact")
-    if isinstance(artifact, dict) and artifact.get("summary"):
-        return str(artifact["summary"])
-    source_page = manifest.get("source_page")
-    if isinstance(source_page, dict):
-        source_artifact = source_page.get("source_extraction_artifact")
-        if isinstance(source_artifact, dict) and source_artifact.get("summary"):
-            return str(source_artifact["summary"])
-    for note in normalized.get("semantic_notes", []):
-        summary = note.get("semantic_summary")
-        if summary:
-            return summary
-    return normalized.get("document", {}).get("title", "")
-
-
 def markdown_title(markdown: str) -> str:
     for line in markdown.splitlines():
         if line.startswith("# "):

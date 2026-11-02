@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 
@@ -70,6 +71,18 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
             )
     else:
         lines.append("- reconciliation candidate 없음")
+    lines.extend(["", "### Retrieval Quality"])
+    quality_candidates = result.get("quality_review_candidates", [])
+    if quality_candidates:
+        counts = Counter(str(item.get("failure_type")) for item in quality_candidates)
+        lines.append("- " + ", ".join(f"{name}: {count}" for name, count in sorted(counts.items())))
+        for item in quality_candidates:
+            lines.append(f"- {item.get('failure_type')}: document:{item.get('document_id')}")
+            lines.append(f"  question: {item.get('question')}")
+            lines.append(f"  gold_source_refs: [{', '.join(item.get('gold_source_refs', []))}]")
+            lines.append(f"  reason: {item.get('reason')}")
+    else:
+        lines.append("- retrieval quality failure 없음")
     lines.extend(["", "### Materialized Changes"])
     materialized_promotions = result.get("materialized_promotions", [])
     merged_promotions = result.get("merged_promotions", [])

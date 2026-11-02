@@ -193,7 +193,10 @@ def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> N
         "wiki/ws/pages/S1/ops/M.json": json.dumps(_manual("M")),
         "wiki/ws/pages/S1/ops/A.md": "# AI 제목\n\n## Summary\nAI 요약\n",
     }
-    restore = ObjectStorageWikiPageRestore(objects.__getitem__, lambda *_args: "", Mock(), Mock())
+    written = {}
+    restore = ObjectStorageWikiPageRestore(
+        objects.__getitem__, lambda key, text, _type: written.__setitem__(key, text), Mock(), Mock(),
+    )
     source = SourceSnapshotRestoreCommand("S1", "doc-1")
 
     manual = restore.restore_source_page("R1", "M", "ws", source)
@@ -201,7 +204,10 @@ def test_restoring_source_page_to_manual_snapshot_keeps_title_and_summary() -> N
 
     assert (manual["title"], manual["summary"]) == (None, None)
     # 소스 페이지 제목은 문서 파일명이라 스냅샷에서 되돌리지 않는다(ADR 0033).
-    assert (generated["title"], generated["summary"]) == (None, "AI 요약")
+    # 소스 페이지 요약은 두지 않으므로 요약이 있던 AI 스냅샷으로 되돌려도 섹션·요약을 되살리지 않는다.
+    assert (generated["title"], generated["summary"]) == (None, "")
+    assert written["wiki/ws/pages/S1/ops/R2.md"] == "# AI 제목\n\n"
+    assert written["wiki/ws/pages/S1/ops/R1.md"] == "사람이 고친 본문\n"
 
 
 def _source_page_connection(page: dict | None) -> MagicMock:
@@ -286,7 +292,7 @@ def test_finish_pipeline_run_reads_manual_body_before_lock(monkeypatch) -> None:
         events.append("lock")
         yield
 
-    def persist(_conn, _document_id, _manifest, manual_source_markdown):
+    def persist(_conn, _document_id, _manifest, manual_source_markdown, **_kwargs):
         events.append(f"persist:{manual_source_markdown}")
         raise RuntimeError("stop")
 

@@ -13,18 +13,6 @@ CODE_PROTECTED_EDIT_GOALS = {"translate"}
 CODE_FRAGMENT_KINDS = {"frontmatter", "code_fence", "indented_code", "display_math", "inline_code"}
 TASK_LIST_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PLAIN_TEXT_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
-PRESERVE_WORDS = ("유지", "보존", "그대로", "preserve", "keep", "unchanged")
-CHANGE_WORDS = ("수정", "변경", "바꿔", "교체", "표시", "change", "edit", "replace")
-STRUCTURE_WORDS = (
-    "frontmatter", "이미지", "image", "표", "table", "각주", "footnote", "링크", "link", "code",
-    "목록", "리스트", "list", "checklist", "체크리스트", "checkbox", "체크박스", "task list",
-)
-ADDITION_WORDS = ("추가", "덧붙", "보강", "보충", "add", "append", "supplement")
-ADDITIVE_EDIT_GOALS = {"other", "convert_format"}
-CONTENT_CHANGE_WORDS = (
-    "삭제", "제거", "지워", "수정", "변경", "바꿔", "교체", "대체", "요약", "축약", "줄여", "표시",
-    "delete", "remove", "edit", "change", "replace", "rewrite", "summarize", "shorten",
-)
 TASK_LIST_MARKER_PATTERN = r"(?m)^[ \t]*[-*+][ \t]+\[[ xX]\](?:[ \t]+|[ \t]*\r?$)"
 PROTECTED_TOKEN_PATTERN = r"\{\{FRUITION_PROTECTED_\d{4}\}\}"
 
@@ -93,9 +81,7 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
     preserves_structured_markdown = request.edit_goal in PROTECTED_EDIT_GOALS
     preserves_code = preserves_structured_markdown or request.edit_goal in CODE_PROTECTED_EDIT_GOALS
     preserves_task_markers = request.edit_goal in TASK_LIST_EDIT_GOALS
-    if (not preserves_code and not preserves_task_markers) or _explicit_structure_change(
-        request.instruction
-    ):
+    if (not preserves_code and not preserves_task_markers) or request.detail.structure_change:
         return ProtectedMarkdown(markdown=request.markdown, fragments=())
 
     markdown = request.markdown
@@ -122,6 +108,14 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
         patterns = tuple(item for item in patterns if item[0] in CODE_FRAGMENT_KINDS)
     if preserves_task_markers:
         patterns += (("task_list_marker", TASK_LIST_MARKER_PATTERN),)
+    # 섹션을 고칠 때 모델이 맨 위 제목을 빼먹는 일이 잦다. 구조를 바꾸지 않고 제목도 요청하지 않은 편집이면 섹션 제목을 잠근다.
+    # 다른 조각보다 먼저 잠가야 제목 안 인라인 코드가 따로 잠기지 않는다.
+    if (
+        preserves_structured_markdown
+        and request.target.type == "current_section"
+        and "heading" not in request.detail.requested_formats
+    ):
+        patterns = (("section_heading", r"\A[ \t]*#{1,6}[ \t][^\r\n]*"), *patterns)
     for kind, pattern in patterns:
         markdown = re.sub(
             pattern,
@@ -135,13 +129,13 @@ LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 
 
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
-    instruction = request.instruction.lower()
+    """요청 문장은 해석하지 않는다. 라우터의 edit_goal·edit_operation과 세부 분류(request.detail)만 보고 모양을 검사한다."""
     nonempty_lines = [line for line in replacement.splitlines() if line.strip()]
     # 문서 전체를 목록으로 바꿀 때 원문 제목은 그대로 둔다. 목록 형식은 제목을 뺀 줄에만 요구한다.
     source_headings = set(_atx_heading_lines(request.markdown))
     item_lines = [line for line in nonempty_lines if line.strip() not in source_headings]
     failures = _edit_goal_shape_failures(request, replacement, item_lines)
-    failures.extend(_requested_markdown_failures(instruction, replacement, nonempty_lines, item_lines))
+    failures.extend(_requested_markdown_failures(request.detail.requested_formats, replacement, nonempty_lines, item_lines))
 
     if request.edit_goal in PLAIN_TEXT_EDIT_GOALS and not _source_starts_with_list(request.markdown):
         if re.match(r"^\s*(?:[-*+]\s+|\d+\.\s+)", replacement):
@@ -154,10 +148,10 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
 
     # 줄이기 규칙은 기존 내용을 줄여 바꿀 때만 쓴다. 요약을 덧붙이는 insert_after는 원문 길이·고정어와 비교하지 않는다.
     if request.edit_goal == "shorten" and request.edit_operation == "replace":
-        failures.extend(_shortening_failures(request.markdown, instruction, replacement))
+        failures.extend(_shortening_failures(request.markdown, replacement))
     if request.edit_operation == "insert_after":
         failures.extend(_insert_after_repeat_failures(request.markdown, replacement))
-    if request.edit_operation == "replace" and _asks_for_addition_only(request):
+    if request.edit_operation == "replace" and request.detail.addition_only:
         failures.extend(_additive_preservation_failures(request.markdown, replacement))
 
     return failures
@@ -183,38 +177,43 @@ def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, it
 
 
 def _requested_markdown_failures(
-    instruction: str,
+    formats: tuple[str, ...],
     replacement: str,
     nonempty_lines: list[str],
     item_lines: list[str],
 ) -> list[str]:
     failures: list[str] = []
-    if _asks_for_numbered_list(instruction):
+    if "numbered_list" in formats:
         if not item_lines or not all(re.match(r"^\d+\.\s+", line) for line in item_lines):
             failures.append("numbered list items must start directly with `1.`, `2.`, and so on")
-    if _asks_for_blockquote(instruction) and not any(line.startswith("> ") for line in nonempty_lines):
+    if "blockquote" in formats and not any(line.startswith("> ") for line in nonempty_lines):
         failures.append("blockquote marker `> ` must start its line")
-    if _asks_for_heading(instruction) and not any(re.match(r"^#{1,6}\s+", line) for line in nonempty_lines):
+    if "heading" in formats and not any(re.match(r"^#{1,6}\s+", line) for line in nonempty_lines):
         failures.append("heading must start with `# ` through `###### `")
-    if _asks_for_bold(instruction) and not re.search(r"\*\*[^*\n]+\*\*", replacement):
+    if "bold" in formats and not re.search(r"\*\*[^*\n]+\*\*", replacement):
         failures.append("bold text must use `**` delimiters")
-    if _asks_for_italic(instruction) and not re.search(r"(?<!\*)\*[^*\n]+\*(?!\*)", replacement):
+    if "italic" in formats and not re.search(r"(?<!\*)\*[^*\n]+\*(?!\*)", replacement):
         failures.append("italic text must use `*` delimiters")
-    if _asks_for_strikethrough(instruction) and not re.search(r"~~[^~\n]+~~", replacement):
+    if "strikethrough" in formats and not re.search(r"~~[^~\n]+~~", replacement):
         failures.append("strikethrough text must use `~~` delimiters")
-    if _asks_for_display_math(instruction):
+    if "display_math" in formats:
         if not re.search(r"\$\$[\s\S]+\$\$", replacement):
             failures.append("display math must use `$$` delimiters")
         if "```" in replacement or "~~~" in replacement:
             failures.append("display math must not be wrapped in a code fence")
-    if "mermaid" in instruction:
+    if "mermaid" in formats:
         if not re.search(r"```mermaid\s+[\s\S]+```", replacement):
             failures.append("Mermaid output must use a `mermaid` code fence")
         if "flowchart" not in replacement or "-->" not in replacement:
             failures.append("Mermaid output must contain flowchart edges")
-        if _asks_for_linear_sequence(instruction) and ("{" in replacement or "}" in replacement):
-            failures.append("linear Mermaid sequence must not invent a decision branch")
-    if _asks_for_meeting_notes(instruction):
+    if "table" in formats and not re.search(
+        # 열이 하나인 표(`| --- |`)도 받되, 파이프 없는 `---`(구분선)는 표로 보지 않는다.
+        r"(?m)^(?=[^\n]*\|)[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$", replacement
+    ):
+        failures.append("table must use a GFM table delimiter row")
+    if "code_block" in formats and not re.search(r"(?m)^ {0,3}(?:`{3,}|~{3,})", replacement):
+        failures.append("code block must use a fenced code block")
+    if "meeting_notes" in formats:
         for heading in ("## 논의 사항", "## 결정 사항", "## 다음 작업"):
             if heading not in replacement:
                 failures.append(f"meeting notes must contain `{heading}`")
@@ -237,11 +236,19 @@ def _protected_fragment_failures(
     request: MarkdownEditRequest,
     replacement: str,
 ) -> list[str]:
-    expected = Counter(
-        (fragment.kind, fragment.markdown)
-        for fragment in protect_markdown(request).fragments
-    )
+    fragments = protect_markdown(request).fragments
+    expected = Counter((fragment.kind, fragment.markdown) for fragment in fragments)
     failures: list[str] = []
+    # 섹션 제목은 맨 첫 줄을 통째로 잠근다. 하위 제목(`### 설치 방법`)이 `## 설치`를 부분 문자열로 품으므로
+    # 개수가 아니라 첫 줄로 확인한다. 그 안의 코드·링크는 따로 세지 않았으니 결과에서도 첫 줄을 빼고 센다.
+    for fragment in fragments:
+        if fragment.kind == "section_heading":
+            del expected[(fragment.kind, fragment.markdown)]
+            first_line, _, rest = replacement.lstrip("\r\n").partition("\n")
+            if first_line.rstrip("\r") == fragment.markdown:
+                replacement = rest
+            else:
+                failures.append("protected section_heading must stay the first line")
     for (kind, markdown), expected_count in expected.items():
         actual_count = replacement.count(markdown)
         if actual_count != expected_count:
@@ -251,11 +258,9 @@ def _protected_fragment_failures(
     return failures
 
 
-def _shortening_failures(source: str, instruction: str, replacement: str) -> list[str]:
+def _shortening_failures(source: str, replacement: str) -> list[str]:
     failures: list[str] = []
-    if _asks_for_one_sentence(instruction) and "\n" not in source and "\n" in replacement.strip():
-        failures.append("one-sentence shortening must stay on one line")
-    if _asks_to_shorten(instruction) and len(replacement.strip()) >= len(source.strip()):
+    if len(replacement.strip()) >= len(source.strip()):
         failures.append("shortening result must be shorter than the source")
     # 줄이면 고정어(숫자·약어·URL)도 일부 빠지는 게 정상이다. 원문에 없는 고정어가 생기면 숫자·이름을 바꾼 것이다.
     source_anchors = _literal_anchors(source)
@@ -283,7 +288,7 @@ def _insert_after_repeat_failures(source: str, replacement: str) -> list[str]:
 
 
 def repair_markdown_output(request: MarkdownEditRequest, replacement: str) -> str:
-    if _asks_for_display_math(request.instruction.lower()):
+    if "display_math" in request.detail.requested_formats:
         fenced = re.fullmatch(r"```(?:markdown)?\s*\n([\s\S]*?)\n```", replacement.strip())
         if fenced and "$$" in fenced.group(1):
             replacement = fenced.group(1).strip()
@@ -321,87 +326,6 @@ def _protect_match(
     used_tokens.add(token)
     fragments.append(ProtectedFragment(kind=kind, token=token, markdown=markdown))
     return token
-
-
-def _explicit_structure_change(instruction: str) -> bool:
-    lowered = instruction.lower()
-    if any(word in lowered for word in PRESERVE_WORDS):
-        return False
-    return any(word in lowered for word in STRUCTURE_WORDS) and any(word in lowered for word in CHANGE_WORDS)
-
-
-def _asks_for_numbered_list(instruction: str) -> bool:
-    return any(marker in instruction for marker in ("번호 목록", "번호 리스트", "numbered list", "ordered list"))
-
-
-def _asks_for_blockquote(instruction: str) -> bool:
-    return "인용문" in instruction or "blockquote" in instruction
-
-
-def _asks_for_heading(instruction: str) -> bool:
-    if not ("제목" in instruction or "heading" in instruction):
-        return False
-    clauses = re.split(r"(?:[.!?;\n]+|,?\s+\b(?:but|and)\b|(?:하고|하지만|그렇지만|다만))", instruction, flags=re.IGNORECASE)
-    for clause in clauses:
-        preserve = re.search(r"(?:제목|heading)[^.!?\n]*(?:유지|보존|그대로|preserve|keep|unchanged)", clause, re.IGNORECASE)
-        request = re.search(
-            r"(?:"
-            r"(?:제목|heading)[^.!?\n]*(?:추가|생성|작성|수정|변경|바꿔|교체|\b(?:add|create|edit|change|replace)\b)"
-            r"|(?:추가|생성|작성|수정|변경|바꿔|교체|\b(?:add|create|edit|change|replace)\b)[^.!?\n]*(?:제목|heading)"
-            r")",
-            clause,
-            re.IGNORECASE,
-        )
-        negation = re.search(r"(?:\b(?:do\s+not|don't|not)\b|하지\s*말고|말고)", clause, re.IGNORECASE)
-        if request is not None and negation is None and (preserve is None or request.end() <= preserve.end()):
-            return True
-    return False
-
-
-def _asks_for_bold(instruction: str) -> bool:
-    return "굵게" in instruction or "bold" in instruction
-
-
-def _asks_for_italic(instruction: str) -> bool:
-    return "기울임" in instruction or "italic" in instruction
-
-
-def _asks_for_strikethrough(instruction: str) -> bool:
-    return "취소선" in instruction or "strikethrough" in instruction
-
-
-def _asks_for_display_math(instruction: str) -> bool:
-    return "display math" in instruction or "블록 수식" in instruction
-
-
-def _asks_for_linear_sequence(instruction: str) -> bool:
-    return any(marker in instruction for marker in ("순서", "sequence", "linear"))
-
-
-def _asks_for_meeting_notes(instruction: str) -> bool:
-    return any(marker in instruction for marker in ("회의록", "meeting notes", "minutes"))
-
-
-def _asks_for_one_sentence(instruction: str) -> bool:
-    return "한 문장" in instruction or "one sentence" in instruction
-
-
-def _asks_to_shorten(instruction: str) -> bool:
-    return any(marker in instruction for marker in ("짧게", "줄여", "축약", "shorten", "concise"))
-
-
-def _asks_for_addition_only(request: MarkdownEditRequest) -> bool:
-    if request.edit_goal not in ADDITIVE_EDIT_GOALS:
-        return False
-    instruction = request.instruction.lower()
-    asks_to_add = any(word in instruction for word in ADDITION_WORDS)
-    asks_to_preserve = any(word in instruction for word in PRESERVE_WORDS) or bool(
-        re.search(r"(?:변경|수정|삭제|제거).{0,6}(?:않|말)", instruction)
-    )
-    asks_to_change = any(word in instruction for word in CONTENT_CHANGE_WORDS) or bool(
-        re.search(r"\bformat\b", instruction)
-    )
-    return asks_to_add and (asks_to_preserve or not asks_to_change)
 
 
 def _literal_anchors(markdown: str) -> set[str]:
