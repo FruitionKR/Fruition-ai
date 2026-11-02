@@ -39,6 +39,12 @@ python review_markdown_edit_results.py --results /tmp/markdown-edit-paired.json 
 
 초안을 새로 수집하려면 `--replay`를 빼고 `--repeat 3`으로 실행한다. [측정 결과와 한계](adr/0011-user-approved-markdown-edits.md#검증)를 함께 확인한다.
 
+편집 세부 분류기([ADR-0043](adr/0043-edit-detail-classification.md))는 실제 모델로 평가셋을 돌려 정답과 비교한다. 선택한 provider의 API 키가 필요하고 비용이 든다.
+
+```bash
+python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna
+```
+
 ## Jev 켬/끔 평가
 
 라우팅·개념 병합·RAG 근거 선택에서 Jev를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다. 정답 세트, 실행기, 채점 방식과 평가 전용 설정은 [`pipeline/evals/jev/README.md`](../pipeline/evals/jev/README.md)에 있다. 실제 모델 호출 비용이 들고, RAG 평가는 로컬 전체 스택과 `codex` CLI가 필요하다.

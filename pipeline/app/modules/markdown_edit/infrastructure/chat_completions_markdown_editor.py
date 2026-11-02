@@ -46,6 +46,9 @@ from app.modules.markdown_edit.domain.markdown_target_scope import (
     build_markdown_target_scope,
     markdown_line_range,
 )
+from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_detail_classifier import (
+    ChatCompletionsMarkdownEditDetailClassifier,
+)
 from app.modules.markdown_edit.infrastructure.markdown_source_range import (
     MarkdownSourceRangePlan,
     apply_source_range_response,
@@ -84,8 +87,11 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         context_lines: int = 20,
         event_publisher: QueryEventPublisherPort | None = None,
         schema_prompt_provider: Callable[[str, str | None, str | None], str] | None = None,
+        detail_classifier: ChatCompletionsMarkdownEditDetailClassifier | None = None,
     ) -> None:
         self._event_publisher = event_publisher
+        # 없으면 request.detail을 그대로 쓴다(테스트·평가 스크립트가 세부 분류를 직접 넣는 경우).
+        self._detail_classifier = detail_classifier
         self._client = client
         self._system_prompt = system_prompt
         self._evaluation_system_prompt = DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8")
@@ -100,6 +106,8 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
 
     def generate_edit(self, request: MarkdownEditRequest) -> MarkdownEditResult:
         validate_markdown_target_boundary(request.markdown, request.target)
+        if self._detail_classifier is not None:
+            request = replace(request, detail=self._detail_classifier.classify(request))
         scope = build_markdown_target_scope(request.markdown, request.target, self._context_lines)
         scoped_request = replace(request, markdown=scope.markdown)
         requested_operation = request.edit_operation
@@ -113,6 +121,8 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         payload = {
             "instruction": scoped_request.instruction,
             "edit_goal": scoped_request.edit_goal,
+            "requested_formats": list(scoped_request.detail.requested_formats),
+            "addition_only": scoped_request.detail.addition_only,
             "conversation_summary": scoped_request.conversation_summary,
             "reference_context": scoped_request.reference_context or {},
             "requested_target": {
@@ -445,24 +455,26 @@ def build_markdown_editor(
     source_edit_prompt_path = Path(
         os.environ.get("MARKDOWN_SOURCE_EDIT_SYSTEM_PROMPT", str(DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT))
     )
+    client = ChatCompletionsJsonClient(
+        ChatClientConfig(
+            api_key=api_key,
+            model=resolved_model,
+            temperature=None,
+            timeout_seconds=_int_env("MARKDOWN_EDIT_LLM_TIMEOUT_SECONDS", 180),
+            max_tokens=_optional_int_env("MARKDOWN_EDIT_LLM_MAX_TOKENS"),
+            json_mode=True,
+            provider=resolved_provider,
+        )
+    )
     return ChatCompletionsMarkdownEditor(
-        ChatCompletionsJsonClient(
-            ChatClientConfig(
-                api_key=api_key,
-                model=resolved_model,
-                temperature=None,
-                timeout_seconds=_int_env("MARKDOWN_EDIT_LLM_TIMEOUT_SECONDS", 180),
-                max_tokens=_optional_int_env("MARKDOWN_EDIT_LLM_MAX_TOKENS"),
-                json_mode=True,
-                provider=resolved_provider,
-            )
-        ),
+        client,
         system_prompt=prompt_path.read_text(encoding="utf-8"),
         create_system_prompt=create_prompt_path.read_text(encoding="utf-8"),
         source_edit_system_prompt=source_edit_prompt_path.read_text(encoding="utf-8"),
         context_lines=_int_env("MARKDOWN_EDIT_CONTEXT_LINES", 20),
         schema_prompt_provider=get_active_schema_prompt,
         event_publisher=event_publisher,
+        detail_classifier=ChatCompletionsMarkdownEditDetailClassifier(client),
     )
 
 

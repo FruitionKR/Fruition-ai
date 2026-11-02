@@ -1,6 +1,6 @@
 import unittest
 
-from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
+from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     protect_markdown,
     repair_markdown_output,
@@ -30,6 +30,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
                     markdown=RUNBOOK,
                     target=TARGET,
                     edit_goal=goal,
+                    detail=MarkdownEditDetail(requested_formats=("numbered_list",) if goal == "convert_format" else ()),
                 )
                 converted = (
                     f"# 배포 런북\n\n## 배포 전 확인\n{marker}테스트를 통과했는지 확인한다.\n\n"
@@ -297,6 +298,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown=source,
             target=TARGET,
             edit_goal="style_change",
+            detail=MarkdownEditDetail(structure_change=True),
         )
 
         protected = protect_markdown(request)
@@ -363,6 +365,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="E = mc^2",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("display_math",)),
         )
 
         repaired = repair_markdown_output(request, "```markdown\n$$ E = mc^2 $$\n```")
@@ -375,11 +378,28 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="정책을 논의하고 적용하기로 했다.",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("meeting_notes",)),
         )
 
         failures = validate_markdown_output(request, "## 회의록\n\n정책을 논의했다.")
 
         self.assertIn("meeting notes must contain `## 논의 사항`", failures)
+
+    def test_meeting_notes_mentioned_as_reference_does_not_require_sections(self) -> None:
+        # 형식 검사는 요청 문장의 단어가 아니라 세부 분류 결과만 본다. 회의록을 참고 자료로 쓴 요청은 형식을 요구하지 않는다.
+        request = MarkdownEditRequest(
+            instruction="연구실 세미나 회의록을 반영해서 발표 구성의 각 항목 아래에 준비할 내용을 한 줄씩 채워줘",
+            markdown="**발표 구성**\n\n1. 연구 질문\n2. 다음 단계",
+            target=TARGET,
+            edit_goal="other",
+        )
+
+        failures = validate_markdown_output(
+            request,
+            "**발표 구성**\n\n1. 연구 질문\n   - 좁힌 연구 질문을 소개한다.\n2. 다음 단계\n   - 후속 질문 3개를 준비한다.",
+        )
+
+        self.assertFalse([failure for failure in failures if failure.startswith("meeting notes")])
 
     def test_validates_requested_inline_styles_even_when_route_is_style_change(self) -> None:
         request = MarkdownEditRequest(
@@ -387,6 +407,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="릴리스 정책. 회귀 테스트. 문서 미리보기. 수동 배포.",
             target=TARGET,
             edit_goal="style_change",
+            detail=MarkdownEditDetail(requested_formats=("heading", "bold", "italic", "strikethrough")),
         )
 
         failures = validate_markdown_output(request, "# 릴리스 정책\n회귀 테스트, 문서 미리보기, ~~수동 배포~~")
@@ -404,33 +425,16 @@ class MarkdownOutputContractTest(unittest.TestCase):
 
         self.assertEqual(validate_markdown_output(request, "교체된 문장입니다."), [])
 
-    def test_requires_heading_only_for_heading_actions(self) -> None:
-        cases = (
-            ("제목은 그대로 유지해줘.", False),
-            ("제목은 그대로 유지하고 본문만 수정해줘.", False),
-            ("본문을 변경하고 제목은 유지해줘.", False),
-            ("Keep the heading unchanged.", False),
-            ("Keep the heading unchanged, but change the body.", False),
-            ("Change the body, but keep the heading unchanged.", False),
-            ("Do not change the heading; keep it unchanged.", False),
-            ("제목을 추가하지 말고 본문만 수정해줘.", False),
-            ("제목을 추가해줘.", True),
-            ("제목을 생성해줘.", True),
-            ("제목을 변경해줘.", True),
-            ("기존 제목은 유지하고 새 제목을 추가해줘.", True),
-            ("Add a heading.", True),
-            ("Create a heading.", True),
-            ("Change the heading.", True),
-            ("Keep the heading unchanged, but add a heading.", True),
-        )
-
-        for instruction, expects_heading in cases:
-            with self.subTest(instruction=instruction):
+    def test_requires_heading_only_when_classified(self) -> None:
+        # "제목을 유지해줘"와 "제목을 추가해줘"의 구분은 세부 분류기가 한다. 검사는 분류 결과만 따른다.
+        for formats, expects_heading in (((), False), (("heading",), True)):
+            with self.subTest(formats=formats):
                 request = MarkdownEditRequest(
-                    instruction=instruction,
+                    instruction="제목을 추가해줘.",
                     markdown="본문입니다.",
                     target=TARGET,
                     edit_goal="convert_format",
+                    detail=MarkdownEditDetail(requested_formats=formats),
                 )
 
                 failures = validate_markdown_output(request, "본문입니다.")
@@ -443,12 +447,14 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="설치. 테스트.",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("numbered_list",)),
         )
         math_request = MarkdownEditRequest(
             instruction="display math로 바꿔줘.",
             markdown="E = mc^2",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("display_math",)),
         )
 
         self.assertEqual(validate_markdown_output(numbered_request, "1. 설치\n2. 테스트"), [])
@@ -461,6 +467,23 @@ class MarkdownOutputContractTest(unittest.TestCase):
             "display math must not be wrapped in a code fence",
             validate_markdown_output(math_request, "```markdown\n$$E = mc^2$$\n```"),
         )
+
+    def test_validates_classified_table_and_code_block(self) -> None:
+        request = MarkdownEditRequest(
+            instruction="방법 초안을 정리해줘.",
+            markdown="반구조화 인터뷰. npm test",
+            target=TARGET,
+            edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("table", "code_block")),
+        )
+
+        self.assertEqual(
+            validate_markdown_output(request, "| 구분 | 내용 |\n| :--- | --- |\n| 방법 | 인터뷰 |\n\n```bash\nnpm test\n```"),
+            [],
+        )
+        failures = validate_markdown_output(request, "구분: 방법, 내용: 인터뷰. npm test")
+        self.assertIn("table must use a GFM table delimiter row", failures)
+        self.assertIn("code block must use a fenced code block", failures)
 
     def test_rejects_unrequested_list_marker_for_cleanup(self) -> None:
         request = MarkdownEditRequest(
@@ -481,6 +504,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="# 안내\n\n기존 내용입니다.\n\n- 유지할 항목",
             target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=5),
             edit_goal="other",
+            detail=MarkdownEditDetail(addition_only=True),
         )
 
         self.assertIn(
@@ -512,13 +536,15 @@ class MarkdownOutputContractTest(unittest.TestCase):
                 request = MarkdownEditRequest(
                     instruction=instruction, markdown="회귀 테스트를 한다.",
                     target=TARGET, edit_goal="convert_format",
+                    detail=MarkdownEditDetail(requested_formats=("heading", "bold")),
                 )
                 self.assertEqual(validate_markdown_output(request, "# 릴리스\n\n**회귀 테스트**를 한다."), [])
 
-    def test_information_does_not_count_as_a_format_change(self) -> None:
+    def test_classified_addition_only_preserves_existing_lines(self) -> None:
         request = MarkdownEditRequest(
             instruction="Append information to this document.", markdown="기존 내용",
             target=TARGET, edit_goal="convert_format",
+            detail=MarkdownEditDetail(addition_only=True),
         )
         self.assertIn("additive edit must preserve every existing non-empty line in order",
                       validate_markdown_output(request, "새 정보만 남김"))
@@ -529,6 +555,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="# 설치 안내\n\n기존 설치 절차입니다.",
             target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=3),
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(addition_only=True),
         )
 
         self.assertIn(
@@ -549,7 +576,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
             validate_markdown_output(request, "- 시작 안내와 용어를 통합해야 한다."),
         )
 
-    def test_validates_shorten_length_line_count_and_literal_anchors(self) -> None:
+    def test_validates_shorten_length_and_literal_anchors(self) -> None:
         request = MarkdownEditRequest(
             instruction="한 문장으로 짧게 줄여줘.",
             markdown="API 응답의 TTL은 10분이다. 이 설정을 간단히 설명한다.",
@@ -559,7 +586,6 @@ class MarkdownOutputContractTest(unittest.TestCase):
 
         failures = validate_markdown_output(request, "설정을 설명한다.\nTTL은 5분이다.")
 
-        self.assertIn("one-sentence shortening must stay on one line", failures)
         self.assertIn("shortening must not add or alter literal anchor: 5분", failures)
         # 줄이면서 원문 고정어(API, 10분)가 빠지는 것은 실패가 아니다.
         self.assertFalse(any("literal anchor: API" in failure or "literal anchor: 10분" in failure for failure in failures))

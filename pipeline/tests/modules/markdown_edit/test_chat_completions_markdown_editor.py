@@ -7,6 +7,7 @@ from app.modules.markdown_edit.application.generate_markdown_edit import (
 )
 from app.modules.markdown_edit.domain.entities import (
     MarkdownCreateRequest,
+    MarkdownEditDetail,
     MarkdownEditRequest,
     MarkdownEditTarget,
 )
@@ -615,6 +616,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="# 안내\n\n기존 내용입니다.",
                 target=target,
                 edit_goal="other",
+                detail=MarkdownEditDetail(addition_only=True),
             )
         )
 
@@ -652,6 +654,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="# 설치 안내\n\n기존 절차입니다.",
                 target=target,
                 edit_goal="convert_format",
+                detail=MarkdownEditDetail(addition_only=True),
             )
         )
 
@@ -679,6 +682,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="- [ ] Open item\n- [x] Done item",
                 target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=2),
                 edit_goal="style_change",
+                detail=MarkdownEditDetail(structure_change=True),
             )
         )
 
@@ -1226,6 +1230,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             markdown="설치한 다음 테스트한다.",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("numbered_list",)),
         )
 
         result = editor.generate_edit(request)
@@ -1273,6 +1278,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             markdown="E = mc^2",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("display_math",)),
         )
 
         with self.assertRaises(MarkdownOutputContractError) as raised:
