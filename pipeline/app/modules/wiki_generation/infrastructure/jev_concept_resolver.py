@@ -335,31 +335,27 @@ class JevConceptResolver(ConceptResolver):
 
         항목은 slug·title·aliases·definition을 가진다. 정의가 없는 쌍은 묻지 않는다. 결과는 물은 쌍마다
         `{"part_of": bool, "probability": P(part_of)}`이고, P(part_of)가 `PART_OF_MIN_PROBABILITY` 미만이면
-        part_of가 아니다. Jev를 쓸 수 없으면 판정 없이 빈 dict를 돌려준다.
+        part_of가 아니다. 요청 실패는 전파해 불완전한 배정을 저장하지 않는다.
         """
         details_by_head: dict[str, tuple[JsonDict, dict[str, JsonDict]]] = {}
         for head, detail in pairs:
             if head["slug"] != detail["slug"] and _has_definition(head) and _has_definition(detail):
                 details_by_head.setdefault(head["slug"], (head, {}))[1][detail["slug"]] = detail
-        try:
-            requests = [
-                (head, batch)
-                for head, details in details_by_head.values()
-                for batch in token_batches(
-                    list(details.values()),
-                    lambda batch, head=head: _part_of_request(head, batch),
-                    max_items=CANDIDATE_LIMIT,
-                )
+        requests = [
+            (head, batch)
+            for head, details in details_by_head.values()
+            for batch in token_batches(
+                list(details.values()),
+                lambda batch, head=head: _part_of_request(head, batch),
+                max_items=CANDIDATE_LIMIT,
+            )
+        ]
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [
+                executor.submit(copy_context().run, self._client.choose, **_part_of_request(head, batch))
+                for head, batch in requests
             ]
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [
-                    executor.submit(copy_context().run, self._client.choose, **_part_of_request(head, batch))
-                    for head, batch in requests
-                ]
-                answers = [(head["slug"], future.result()) for (head, _), future in zip(requests, futures, strict=True)]
-        except JevUnavailable as exc:
-            logger.warning("[Jev part_of 판정 생략] %s", exc)
-            return {}
+            answers = [(head["slug"], future.result()) for (head, _), future in zip(requests, futures, strict=True)]
         decisions = {}
         for head_slug, answer in answers:
             for detail_slug, item in answer.items():

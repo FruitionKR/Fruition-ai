@@ -191,13 +191,14 @@ def test_part_of_judge_assigns_only_confident_one_way_answers() -> None:
     assert all(entry["parent_entry_id"] is None for entry in entries.values())
 
 
-def test_unavailable_part_of_judge_keeps_concepts_separate() -> None:
+def test_unavailable_part_of_judge_stops_incomplete_placement() -> None:
     def unavailable(_pairs):
         raise JevUnavailable("down")
 
     normalized = _normalized(POD)
 
-    assert _apply(normalized, judge_part_of=unavailable) is normalized
+    with pytest.raises(JevUnavailable):
+        _apply(normalized, judge_part_of=unavailable)
 
 
 def test_every_accepted_parent_gets_the_entry_or_a_reference() -> None:

@@ -1,12 +1,14 @@
 import json
 import math
 import unittest
+
+import httpx
 from array import array
 from threading import Lock
 from unittest.mock import patch
 
 from app.core.jev_batches import MAX_BATCH_TOKENS, request_tokens
-from app.core.jev_client import JevUnavailable
+from app.core.jev_client import JevClient, JevUnavailable
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     CANDIDATE_LIMIT,
@@ -441,8 +443,33 @@ class JudgePartOfTest(unittest.TestCase):
         for request in jev.requests:
             self.assertLessEqual(request_tokens({**request, "state": json.dumps(request["state"], ensure_ascii=False)}), MAX_BATCH_TOKENS)
 
-    def test_unavailable_jev_returns_no_decisions(self) -> None:
-        self.assertEqual(_resolver(FailingJev()).judge_part_of([(HEAD, STABLE)]), {})
+    def test_only_failed_batch_retries_and_all_decisions_survive(self) -> None:
+        counts = {}
+        lock = Lock()
+
+        def handler(request):
+            body = json.loads(request.content)
+            head = json.loads(body["state"])["head"]["id"]
+            with lock:
+                counts[head] = counts.get(head, 0) + 1
+                attempt = counts[head]
+            if head == "other" and attempt == 1:
+                raise httpx.RemoteProtocolError("closed")
+            return httpx.Response(200, json={"answers": {
+                key: {"type": "choice", "choice": "part_of", "probabilities": {"part_of": 0.95}}
+                for key in body["questions"]
+            }})
+
+        client = JevClient("key", http=httpx.Client(transport=httpx.MockTransport(handler)))
+        with patch("app.core.jev_client.time.sleep"), patch("app.core.jev_client._blocked_until", 0):
+            decisions = _resolver(client).judge_part_of([(HEAD, STABLE), ({**HEAD, "slug": "other"}, PIVOT)])
+        self.assertEqual(counts, {"sorting": 1, "other": 2})
+        self.assertEqual(set(decisions), {("sorting", "stable-sort"), ("other", "pivot")})
+        self.assertTrue(all(item["part_of"] for item in decisions.values()))
+
+    def test_unavailable_jev_propagates_incomplete_judgment(self) -> None:
+        with self.assertRaises(JevUnavailable):
+            _resolver(FailingJev()).judge_part_of([(HEAD, STABLE)])
 
 
 class WithJevConceptMergeTest(unittest.TestCase):

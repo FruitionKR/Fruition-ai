@@ -324,6 +324,11 @@ def _run_pipeline_request(
             document,
             source_reader,
         )
+        reingest_source_context = repository.latest_source_page_context(
+            payload.document_id, workspace_id,
+        )
+        if reingest_source_context is not None:
+            reingest_source_blocks = _load_existing_source_blocks(payload.document_id, repository)
 
     command = _build_pipeline_command(
         payload,
@@ -429,7 +434,7 @@ def _build_pipeline_command(
         source_revision=payload.source_revision,
         source_content_hash=payload.source_content_hash,
         selection_mode=getattr(payload, "selection_mode", None),
-        reingest=isinstance(payload, ReingestRunIn),
+        reingest=isinstance(payload, ReingestRunIn) or reingest_source_context is not None,
         input=input_name,
         input_markdown=input_markdown,
         input_blocks=[
