@@ -56,6 +56,21 @@ PAIR_CRITERIA = {
 }
 # related는 이 확률 이상일 때만 연결한다. 같은 분야 개념을 넓게 related로 고르는 경향이 있어서다.
 RELATED_MIN_PROBABILITY = 0.9
+# 세부 항목을 상위 항목 아래에 둘지 묻는 쌍 판정(ADR-0042). 같음·관련 판정과 따로 묻는다.
+PART_OF_RULE = (
+    "Judge each question's detail against the head item using only the supplied titles, aliases, and definitions. "
+    "part_of: the detail belongs under the head as one of its details, facets, operations, settings, or sub-steps, "
+    "so it is best described as part of the head rather than on its own. not_part_of: anything else, including the "
+    "same item under another name, a broader item that contains the head, an item that only shares a field, a "
+    "document, a workflow, or a topic with the head, an item that belongs under a different item, or an item that "
+    "connects to the head only through a third item. When unsure, choose not_part_of. Return no explanation."
+)
+PART_OF_CRITERIA = {
+    "part_of": "Detail, facet, operation, setting, or sub-step that belongs under the head",
+    "not_part_of": "Anything else, including the same item, a broader item, or only the same field, document, or topic",
+}
+# part_of는 이 확률 이상일 때만 배정한다. 애매하면 배정하지 않고 따로 둔다(ADR-0042).
+PART_OF_MIN_PROBABILITY = 0.9
 CANDIDATE_LIMIT = 100
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
 MAX_WORKERS = 4
@@ -248,6 +263,48 @@ class JevConceptResolver(ConceptResolver):
             )
         return resolutions
 
+    def judge_part_of(self, pairs: list[tuple[JsonDict, JsonDict]]) -> dict[tuple[str, str], JsonDict]:
+        """(상위 항목, 세부 항목) 쌍마다 세부 항목이 상위 항목에 딸리는지 판정한다.
+
+        항목은 slug·title·aliases·definition을 가진다. 정의가 없는 쌍은 묻지 않는다. 결과는 물은 쌍마다
+        `{"part_of": bool, "probability": P(part_of)}`이고, P(part_of)가 `PART_OF_MIN_PROBABILITY` 미만이면
+        part_of가 아니다. Jev를 쓸 수 없으면 판정 없이 빈 dict를 돌려준다.
+        """
+        details_by_head: dict[str, tuple[JsonDict, dict[str, JsonDict]]] = {}
+        for head, detail in pairs:
+            if head["slug"] != detail["slug"] and _has_definition(head) and _has_definition(detail):
+                details_by_head.setdefault(head["slug"], (head, {}))[1][detail["slug"]] = detail
+        try:
+            requests = [
+                (head, batch)
+                for head, details in details_by_head.values()
+                for batch in token_batches(
+                    list(details.values()),
+                    lambda batch, head=head: _part_of_request(head, batch),
+                    max_items=CANDIDATE_LIMIT,
+                )
+            ]
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [
+                    executor.submit(copy_context().run, self._client.choose, **_part_of_request(head, batch))
+                    for head, batch in requests
+                ]
+                answers = [(head["slug"], future.result()) for (head, _), future in zip(requests, futures, strict=True)]
+        except JevUnavailable as exc:
+            logger.warning("[Jev part_of 판정 생략] %s", exc)
+            return {}
+        decisions = {}
+        for head_slug, answer in answers:
+            for detail_slug, item in answer.items():
+                probability = choice_probability(item, "part_of")
+                decisions[(head_slug, detail_slug)] = {
+                    "part_of": item["choice"] == "part_of" and probability >= PART_OF_MIN_PROBABILITY,
+                    "probability": probability,
+                }
+        logger.info("[Jev part_of] 쌍=%d 요청=%d 배정=%d", len(decisions), len(requests),
+                    sum(1 for item in decisions.values() if item["part_of"]))
+        return decisions
+
     def _candidates(self, concept: JsonDict, others: list[JsonDict], vectors: dict[str, array]) -> list[JsonDict]:
         query = _concept_text(concept)
         texts = [_concept_text(candidate) for candidate in others]
@@ -348,6 +405,30 @@ def _request(concept: JsonDict, candidates: list[JsonDict]) -> dict[str, Any]:
                 "criteria": PAIR_CRITERIA,
             }
             for candidate in candidates
+        },
+    }
+
+
+def _part_of_request(head: JsonDict, details: list[JsonDict]) -> dict[str, Any]:
+    # _request와 같이 규칙은 state에 한 번만 두고 질문에는 id만 담는다.
+    def item(concept: JsonDict) -> JsonDict:
+        return {
+            "id": concept["slug"],
+            "title": concept.get("title"),
+            "aliases": concept.get("aliases") or [],
+            "definition": concept["definition"],
+        }
+
+    state = {"rule": PART_OF_RULE, "head": item(head), "details": [item(detail) for detail in details]}
+    return {
+        "state": json.dumps(state, ensure_ascii=False),
+        "questions": {
+            detail["slug"]: {
+                "type": "choice",
+                "instructions": f"Judge whether detail {detail['slug']} is part of head.",
+                "criteria": PART_OF_CRITERIA,
+            }
+            for detail in details
         },
     }
 
