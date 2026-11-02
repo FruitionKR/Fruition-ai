@@ -16,9 +16,11 @@ lint·복구는 Kafka `ai.maintenance.command` worker가 실행한다. ingest �
 24,000자까지 섹션 단위로 보낸다. 승격 후보
 (`Promotion.status: candidate`)는 근거를 덧붙인 뒤 두 경로로만 정한다. 이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터,
 이름이 달라도 Jev 쌍 판정이 같은 개념으로 고른 클러스터는 그 개념(`target: concept:{slug}`)으로, 근거가 덧붙은 클러스터는
-클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
-기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고 관련 개념이면 새 페이지를 만들고 `concept_related_to`로 잇는다.
-판정 링크는 `materialized_relations`에 담겨 lint 복원 시 함께 지운다. Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
+클러스터마다 쌓인 근거를 본 LLM 판정으로 정한다. LLM 판정과 lint 승격은 세부 항목(근거 줄 용어를 이름 정규화로 묶은 것, 클러스터 자신의 이름 제외)이 `P`개(초기값 5) 이상인
+클러스터만 받고, 모자란 후보는 `invalid_promotions`에 남긴다. 핵심 개념과 맞춘 후보는 개수를 보지 않는다([ADR 0042](../adr/0042-hierarchical-concept-pages.md)).
+lint는 승격 후보를 `target`·같은 slug(클러스터 id나 생성한 페이지 slug)의 개념에 병합하거나, 생성한 개념 페이지를
+기존 개념과 Jev로 쌍 판정해 같은 개념이면 그 개념에 병합(클러스터 대표명·id를 별칭으로 덧붙임)하고, 아니면 새 페이지를 만든다. 관련 개념 링크는 잇지 않는다.
+세부 항목은 승격 페이지(병합 대상 개념)의 하위 항목으로 lint 기록 `entry_changes`에 남아 lint 복원 시 함께 빠지고, 그 근거 문서는 페이지의 문서 연결이 된다. 클러스터의 관계 후보(`### Core Relation Candidates`)와 그 링크 생성, 결과의 `relation_candidates`·`invalid_relations`·`materialized_relations`는 지웠다(ADR 0042). Jev를 쓸 수 없으면 이름·slug 일치만 본다. 승격한 클러스터는
 `archived.md`로 옮기고, lint 복원은 이를 `active.md`로 되돌린다([ADR 0037](../adr/0037-meaning-cluster-promotion.md), [ADR 0038](../adr/0038-concept-to-concept-links.md)).
 
 - API 수: 11
@@ -307,6 +309,24 @@ curl -X GET "$PIPELINE/wiki/graph?workspace_id=<value>" \
 
 ingest 작업의 Wiki 변경을 복원합니다.
 
+- 소스 → 개념 자동 링크(`source_mentions_concept`)는 복원 결과의 문서 연결(`source_document_ids`, 재생 결과 남은 유효 근거의 문서)에서
+  다시 만든다(ADR 0042 결정 5). source 페이지를 스냅샷으로 되돌려도 이 링크는 지우지 않고, 그 스냅샷까지의 수동 기여로 수동
+  `[[slug]]` 의도를 다시 재생한다. 응답 `changed_pages`의 source 페이지에는 `snapshot_operation_id`(= `restore_to_operation_id`)가 실린다.
+- 복원 command 계약(ADR 0042 최종 설계): document-svc는 대상 작업의 행(`operation_id`)과 그 작업이 이은 행(`linked_by_operation_id`)만 끄고,
+  어떤 행도 다시 켜지 않는다. 그 행이 있던 페이지 중 남은 활성 행이 있으면 `rebuild_pages`(남은 행을 적용 순서대로 `keep_contributions`),
+  없으면 `deleted_pages`다. 남은 행이 lint 기록뿐이라는 이유로 `deleted_pages`에 넣지 않는다. 클러스터 승격 페이지는 lint 기록이 근거라,
+  넣으면 그 항목의 분리를 되돌릴 때 승격 페이지까지 사라진다.
+- 재조립·삭제로 가리키던 하위 항목이 없어진 참조(`entry_reference`)는 같은 복원에서 참조 사본·본문 목록·간선을 함께 정리한다.
+  그 참조를 가진 다른 살아 있는 페이지(`rebuild_pages`에 없음)는 활성 원장 기록으로 다시 그려 응답 `changed_pages`에 더한다
+  (`markdown_key`는 `ops/{복원 작업}.md`). document-svc는 그 페이지의 새 버전만 남기고 원장 행은 바꾸지 않는다. 기록은 다음 lint가 지운다.
+- 재조립한 페이지의 나가는 링크는 재생 결과(`supported_links`)로 바꾼다. lint 복원도 같다.
+- 되돌리기는 그 작업의 효과만 뺀다(ADR 0042). `rebuild_pages`의 재생이 삭제 기록(다시 합치기의 lint `content_action: "delete"`)에서
+  끝나거나, 남은 유효 근거가 없으면(남은 하위 항목·근거 단위·lint가 아닌 기록의 직접 개념 기여·수동 기여가 모두 없다. 분리·링크
+  lint 기록만으로는 남기지 않는다) 그 페이지는 지우고 응답의 `deleted_pages`에 더한다(`changed_pages`에는 없다). document-svc는
+  이를 삭제로 기록한다. lint 복원도 같다.
+- 재생 결과가 뒤 작업과 충돌하면(같은 하위 항목이 두 페이지에 재생되거나, 다시 쓰지 않는 다른 페이지가 이미 그 항목의 집이면)
+  ai DB 현재 상태를 쓰기 전에 실패 코드 `restore_conflict`로 실패한다(재조립 본문 객체 `ops/{복원 작업}.md`만 남을 수 있다).
+  document-svc는 원장을 바꾸지 않고 복원을 실패로 표시한다. 뒤 작업부터 되돌려야 한다. lint 복원도 같다.
 - `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0031](../adr/0031-manual-wiki-contributions.md)).
 - source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
 
@@ -460,6 +480,11 @@ lint가 승격·병합하며 `clusters/archived.md`로 옮긴 클러스터도 �
 같은 id의 클러스터가 `active.md`에 새로 생겼으면 덮어쓰지 않고 건너뛴다. 응답의 `cluster_changes`는 쓴 객체 키
 (`written_object_keys`), 되돌린 클러스터(`restored_cluster_ids`), 건너뛴 클러스터(`skipped_cluster_ids`)다.
 
+하위 항목 분리·다시 합치기의 복원은 방향 전환 없이 기록 재생으로 한다(ADR 0042). 분리를 되돌리면 자식에 남은 기여로 자식을
+다시 재생하고, 남은 근거가 없으면 지운다. 지운 자식을 가리키던 뒤 링크는 부모로 옮기지 않고 사라진다. 다시 합치기를 되돌리면
+합친 lint 행(자식의 삭제 기록, 부모의 `revive`, 다른 페이지가 자식으로 오던 링크를 지운 기록)과 그 lint가 이은 행이 빠져 자식이
+재생되고, 그 lint 기록이 지웠던 링크(`removed_links`) 중 남은 기록이 아직 잇는 것만 `link_changes.restored_links`로 되살린다.
+
 #### 3. Auth 필요 여부
 
 - 필요
@@ -596,6 +621,26 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 
 워크스페이스 Wiki의 정합성을 검사합니다.
 
+하위 항목 재검사([ADR 0042](../adr/0042-hierarchical-concept-pages.md) 3단계)도 함께 한다. 지난 lint 뒤 바뀐 개념 페이지의
+하위 항목으로 분리·여러 부모 승격·다시 합치기를 정하고 사라진 항목을 가리키는 참조를 지운다(형식은
+[data-model](../data-model.md)). 분리한 부모의 개념 관계(`concept_related_to`)는 Jev 같음·관련 판정으로
+자식·부모 중 관련인 쪽으로 옮기고, Jev를 쓸 수 없으면 옮기지 않는다(ADR 0042 결정 6). 바뀐 페이지와 그 가까이의 페이지는
+`part_of` 판정(Jev, 꺼져 있으면 이 lint의 `provider`·`model`)으로 다른 페이지나 그 하위 항목 아래 하위 항목으로 통째로 옮긴다(ADR 0042
+페이지 이동, dry run은 판정하지 않는다). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`.
+페이지 이동은 `action: "move"`와 `target_page_id`·`parent_entry_id`),
+`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지와 다른 페이지로 옮겨 지운 페이지다. 그 페이지에는 이 lint의
+재생 가능한 삭제 기록(`content_action: "delete"`)이 남고, 그 기록은 `changed_pages`와 `ledger_contributions`에 함께 실린다
+(document-svc는 `changed_pages`에 없는 페이지의 원장 행을 받지 않는다). 삭제 기록은 그때까지의 기록을 모두 지운 것과 같아,
+재생이 삭제 기록에서 끝나면 페이지가 없다. `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·
+`linked_by_operation_id`)는 document-svc가 기여 원장에 페이지별 행으로 더할 순서대로의 목록이다. 이 lint가 저장한 기록(`operation_artifacts`)은 하위 항목·승격·병합·링크만 바꾼 기록 모두 행이 되며,
+`operation_id`가 이 lint, `document_id`·`linked_by_operation_id`가 null이다. 원래 작업 id로 다른 페이지에 이은 편입 기록은
+`operation_id`·`document_id`가 원래 편입이고 `linked_by_operation_id`가 이 lint다. 같은 작업을 같은 페이지에 여러 번 이으면 한
+기록·한 행으로 합친다. document-svc는 어떤 행도 일괄 비활성화하지 않고 다시 켜지도 않는다. 합친 자식의 기존 기여도 그대로
+활성이다. 이 lint를 복원할 때는 `operation_id`나 `linked_by_operation_id`가 이 lint인 행만 끄고, 그 행이 있던 페이지를 남은 활성
+기여로 `rebuild_pages`에 넣는다. 남은 활성 행이 하나도 없는 페이지만 `deleted_pages`다. 남은 행이 lint 기록뿐이어도 `rebuild_pages`로
+넘기고, 페이지를 지울지는 ai 재생이 정한다(클러스터 승격 페이지는 lint 기록의 근거로 남는다. 분리·링크 lint 기록만 남은 페이지는 재생이
+지우고 응답 `deleted_pages`로 돌려준다).
+
 #### 3. Auth 필요 여부
 
 - 필요
@@ -635,15 +680,12 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
   "changed_pages": [],
   "cluster_count": 1,
   "invalid_promotions": [],
-  "invalid_relations": [],
   "materialized_promotions": [],
-  "materialized_relations": [],
   "merged_promotions": [],
   "needs_review": [],
   "orphan_refs": [],
   "promotion_candidates": [],
   "reconciliation_candidates": [],
-  "relation_candidates": [],
   "source_ref_count": 0,
   "user_id": "local-user",
   "workspace_id": "local-workspace"
@@ -705,15 +747,12 @@ curl -X POST "$PIPELINE/wiki/maintenance/lint" \
   "changed_pages": [],
   "cluster_count": 1,
   "invalid_promotions": [],
-  "invalid_relations": [],
   "materialized_promotions": [],
-  "materialized_relations": [],
   "merged_promotions": [],
   "needs_review": [],
   "orphan_refs": [],
   "promotion_candidates": [],
   "reconciliation_candidates": [],
-  "relation_candidates": [],
   "source_ref_count": 0,
   "user_id": "local-user",
   "workspace_id": "local-workspace"
@@ -1128,7 +1167,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 
 - `wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md`(본문)와 `.json`(수동 기여)을 쓴다.
 - `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
-- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`).
+- 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`). source 페이지의 개념 링크는 수동 의도(`wiki_source_manual_links`)로 남겨 자동 파생 링크와 합친다. 자동 링크가 있어도 새 slug는 수동 지원으로 남고, 수동 삭제가 자동보다 우선한다(ADR 0042 결정 5).
 - 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
 - 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다. 이때 `content_hash`는 요청 본문이 아니라 저장된 본문의 해시다.
 

@@ -59,21 +59,6 @@ def render_meaning_cluster_log(
     else:
         lines.append("- cluster decision 없음")
 
-    lines.extend(["", "### Relation Candidates"])
-    relation_rows = [
-        (cluster, relation)
-        for cluster in clusters
-        for relation in cluster.get("core_relation_candidates", [])
-    ]
-    if relation_rows:
-        for cluster, relation in relation_rows:
-            lines.append(f"- cluster:{cluster['id']} -> {relation.get('target')}")
-            lines.append(f"  relation: {relation.get('relation')}")
-            lines.append(f"  evidence: [{', '.join(relation.get('evidence', []))}]")
-            lines.append(f"  reason: {relation.get('reason') or '-'}")
-    else:
-        lines.append("- relation candidate 없음")
-
     lines.extend(["", "### Promotion Decisions"])
     promotions = [cluster for cluster in clusters if cluster.get("promotion")]
     if promotions:

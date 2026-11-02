@@ -20,7 +20,6 @@ from app.modules.wiki_generation.application.evaluation_guards import (
     clear_resolved_number_issues,
     demote_unsupported_core_concepts,
     drop_unsupported_number_items,
-    reference_list_refs,
 )
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
@@ -28,6 +27,8 @@ from app.modules.wiki_generation.application.run_generation_loop import (
 )
 from app.modules.wiki_generation.application.judge_candidates import (
     judge_concept_update_candidates,
+    llm_part_of_judge,
+    llm_same_entry_judge,
     normalize_concept_update_decisions,
 )
 from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
@@ -54,7 +55,12 @@ from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
     RetryOnceJsonCompletion,
 )
-from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver, with_jev_concept_merge
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+    JevConceptResolver,
+    embedding_server_model,
+    embedding_similarity,
+    with_jev_concept_merge,
+)
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
     apply_concept_resolutions,
     load_existing_concept_index,
@@ -64,6 +70,7 @@ from app.modules.wiki_generation.infrastructure.concept_resolution import (
 from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
 from app.modules.wiki_generation.infrastructure.packet import SemanticPacketBuilder
 from app.modules.wiki_generation.infrastructure.pipeline_log import PipelineLog
+from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 from app.modules.wiki_ingestion.infrastructure.object_storage import pipeline_log_uri
 from app.modules.wiki_generation.infrastructure.prompt_io import collect_concept_source_blocks
 from app.modules.wiki_generation.infrastructure.source_context_merge import (
@@ -74,6 +81,7 @@ from app.modules.wiki_generation.infrastructure.source_context_merge import (
 from app.modules.wiki_ingestion.application.concept_contribution import (
     build_concept_contributions,
 )
+from app.modules.wiki_ingestion.application.concept_entry_ingest import apply_concept_entries
 from app.modules.wiki_ingestion.application.models import PipelineRunCommand
 from app.modules.wiki_ingestion.domain.source_block_changes import (
     SourceBlockChanges,
@@ -555,6 +563,38 @@ def _resolve_pipeline_concepts(
         candidates=resolved_candidates,
         concept_slug_map=resolved.get("concept_slug_map", {}),
     )
+    # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). 배정과 같은 하위 항목 판정은 Jev가 있으면 Jev,
+    # 없으면 편입 LLM이 한다. 상위 후보는 임베딩 서버로만 고르고, 서버가 없으면 배정하지 않는다.
+    # 같은 하위 항목 후보는 Jev면 DB에 저장된 sub_entry 벡터로 고른다. 기존 하위 항목은 DB 개념 목록에만 있다.
+    jev = resolver.inner if isinstance(resolver.inner, JevConceptResolver) else None
+    embedding_model = embedding_server_model()
+    similarity = embedding_similarity(embedding_model) if embedding_model else None
+    llm = RetryOnceJsonCompletion(api_client)
+    if jev:
+        judge_part_of = jev.judge_part_of
+        judge_same = lambda entries, pool: jev.judge_entries(  # noqa: E731
+            entries, pool, lambda model: database.list_sub_entry_vectors(args.workspace_id, model)
+        )
+    else:
+        judge_part_of = llm_part_of_judge(llm, read_prompt("prompts/concept_part_of.system.md"))
+        judge_same = (
+            llm_same_entry_judge(llm, read_prompt("prompts/concept_same_entry.system.md"), similarity) if similarity else None
+        )
+    # 기존 개념과 같다고 판정받은 섹션·언급은 이미 그 개념의 근거라 하위 항목으로 배정하지 않는다.
+    same_candidate_ids = {
+        item["candidate_id"] for item in resolved["concept_update_decisions"] if item.get("decision") == "same_concept"
+    }
+    resolved = apply_concept_entries(
+        resolved,
+        judge_part_of=judge_part_of,
+        judge_same=judge_same,
+        similarity=similarity,
+        consumed_terms={
+            (candidate["candidate_type"], candidate["slug"])
+            for candidate in resolved_candidates
+            if candidate["candidate_id"] in same_candidate_ids
+        },
+    )
     log.emit(
         "4-보조. Concept Resolution",
         "Concept resolution과 근거 갱신 후보 판단을 병렬 실행하고 canonical slug를 반영했습니다.",
@@ -572,15 +612,12 @@ def _resolve_pipeline_concepts(
                 1 for item in resolutions if item.get("decision") == "merge_into"
             ),
             "링크 판단 수": sum(1 for item in resolutions if item.get("link_targets")),
+            "하위 항목 수": sum(len(items) for items in resolved.get("entry_changes", {}).values()),
+            "하위 항목 참조 수": len(resolved.get("entry_references", [])),
             "same_concept 수": sum(
                 1
                 for item in resolved["concept_update_decisions"]
                 if item.get("decision") == "same_concept"
-            ),
-            "relation_candidate 수": sum(
-                1
-                for item in resolved["concept_update_decisions"]
-                if item.get("decision") == "relation_candidate"
             ),
             "resolution 소요 시간(초)": f"{resolution_seconds:.2f}",
             "update judge 소요 시간(초)": f"{update_seconds:.2f}",
@@ -810,9 +847,6 @@ def _prepare_post_ingest_clusters(
         for item in decisions
         if item.get("decision") == "same_concept"
     ]
-    core_relations = [
-        item for item in decisions if item.get("decision") == "relation_candidate"
-    ]
     log.emit(
         "8. 후속 Meaning Cluster 준비",
         "Concept 근거 갱신은 현재 ingest에 유지하고 Meaning Cluster 판단 입력을 준비했습니다.",
@@ -848,7 +882,6 @@ def _prepare_post_ingest_clusters(
         {
             "cluster_normalized": cluster_normalized,
             "concept_update_decisions": concept_updates,
-            "core_relation_decisions": core_relations,
         },
     )
 
@@ -999,13 +1032,12 @@ def run_pipeline(
             clear_resolved_number_issues(generation_evaluations[-1], normalized, block_texts)
         normalized.setdefault("warnings", []).append(f"원문에 없는 숫자를 쓴 항목을 뺌: {', '.join(number_dropped)}")
 
-    # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 섹션 후보로 둔다.
-    reference_refs = reference_list_refs(blocks)
-    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, reference_refs)
+    # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 언급으로 둔다.
+    normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, blocks)
     if demoted_concepts:
         if generation_evaluations:
             clear_resolved_core_concept_issues(generation_evaluations[-1], demoted_concepts)
-        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림: {', '.join(demoted_concepts)}")
+        normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 언급으로 내림: {', '.join(demoted_concepts)}")
 
     # 4. Backend normalize/merge/mention expansion.
     log.emit(
@@ -1045,10 +1077,10 @@ def run_pipeline(
                 existing_source_artifact,
             )
             # 기존 원본 산출물의 핵심 개념도 합친 근거로 다시 검증한다. 합치면서 강등이 되돌려지지 않게 한다.
-            resolved, reingest_demoted = demote_unsupported_core_concepts(resolved, reference_refs)
+            resolved, reingest_demoted = demote_unsupported_core_concepts(resolved, blocks)
             if reingest_demoted:
                 resolved.setdefault("warnings", []).append(
-                    f"근거 주장이 없는 핵심 개념을 섹션 후보로 내림(재편입): {', '.join(reingest_demoted)}"
+                    f"근거 주장이 없는 핵심 개념을 언급으로 내림(재편입): {', '.join(reingest_demoted)}"
                 )
         if args.save_debug_json:
             write_json(out / "normalized.json", resolved)

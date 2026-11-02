@@ -21,25 +21,6 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
     lines.extend(["", "### Needs Review"])
     needs_review = result.get("needs_review", [])
     lines.extend(f"- cluster:{cluster_id}" for cluster_id in needs_review) if needs_review else lines.append("- needs_review 없음")
-    lines.extend(["", "### Relation Candidate Queue"])
-    relation_candidates = result.get("relation_candidates", [])
-    if relation_candidates:
-        for item in relation_candidates:
-            lines.append(f"- cluster:{item.get('cluster_id')} -> {item.get('target')}")
-            lines.append(f"  relation: {item.get('relation')}")
-            lines.append(f"  evidence: [{', '.join(item.get('evidence', []))}]")
-    else:
-        lines.append("- relation candidate 없음")
-    lines.extend(["", "### Invalid Relation Candidates"])
-    invalid_relations = result.get("invalid_relations", [])
-    if invalid_relations:
-        for item in invalid_relations:
-            lines.append(f"- cluster:{item.get('cluster_id')} -> {item.get('target') or '-'}")
-            lines.append(f"  relation: {item.get('relation') or '-'}")
-            lines.append(f"  evidence: [{', '.join(item.get('evidence', []))}]")
-            lines.append(f"  missing: [{', '.join(item.get('missing', []))}]")
-    else:
-        lines.append("- invalid relation candidate 없음")
     lines.extend(["", "### Orphan Wiki Links"])
     orphan_link_candidates = result.get("orphan_link_candidates", [])
     removed_orphan_links = result.get("removed_orphan_links", [])
@@ -92,7 +73,6 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
     lines.extend(["", "### Materialized Changes"])
     materialized_promotions = result.get("materialized_promotions", [])
     merged_promotions = result.get("merged_promotions", [])
-    materialized_relations = result.get("materialized_relations", [])
     applied_reconciliations = result.get("applied_reconciliations", [])
     applied_cluster_reconciliation = result.get(
         "applied_cluster_reconciliation",
@@ -104,9 +84,6 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
     if merged_promotions:
         for item in merged_promotions:
             lines.append(f"- merged: cluster:{item.get('cluster_id')} -> concept:{item.get('concept_slug')}")
-    if materialized_relations:
-        for item in materialized_relations:
-            lines.append(f"- linked: concept:{item.get('from')} -[{item.get('relation')}]-> concept:{item.get('to')}")
     if applied_reconciliations:
         for item in applied_reconciliations:
             lines.append(
@@ -116,11 +93,6 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
         lines.append(
             f"- removed stale claim: cluster:{item.get('cluster_id')} "
             f"claim:{item.get('claim_id')}"
-        )
-    for item in applied_cluster_reconciliation.get("removed_relations", []):
-        lines.append(
-            f"- removed stale relation: cluster:{item.get('cluster_id')} "
-            f"-> {item.get('target')}"
         )
     lines.append("- updated: logs/{yyyy-mm-dd}.md")
     return "\n".join(lines) + "\n"

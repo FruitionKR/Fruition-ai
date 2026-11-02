@@ -257,9 +257,10 @@ def _shortening_failures(source: str, instruction: str, replacement: str) -> lis
         failures.append("one-sentence shortening must stay on one line")
     if _asks_to_shorten(instruction) and len(replacement.strip()) >= len(source.strip()):
         failures.append("shortening result must be shorter than the source")
-    for anchor in _literal_anchors(source):
-        if anchor not in replacement:
-            failures.append(f"shortening must preserve literal anchor: {anchor}")
+    # 줄이면 고정어(숫자·약어·URL)도 일부 빠지는 게 정상이다. 원문에 없는 고정어가 생기면 숫자·이름을 바꾼 것이다.
+    source_anchors = _literal_anchors(source)
+    for anchor in sorted(_literal_anchors(replacement) - source_anchors):
+        failures.append(f"shortening must not add or alter literal anchor: {anchor}")
     return failures
 
 

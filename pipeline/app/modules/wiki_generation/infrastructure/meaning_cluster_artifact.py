@@ -22,12 +22,10 @@ class MeaningClusterArtifactAssembler:
         workspace_id: str,
         cluster_decisions: list[dict[str, Any]] | None = None,
         concept_update_decisions: list[dict[str, Any]] | None = None,
-        core_relation_decisions: list[dict[str, Any]] | None = None,
         promotions: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         concept_update_decisions = concept_update_decisions or []
-        core_relation_decisions = core_relation_decisions or []
-        clusters = self._clusters(normalized, cluster_decisions or [], concept_update_decisions, core_relation_decisions)
+        clusters = self._clusters(normalized, cluster_decisions or [], concept_update_decisions)
         self._apply_promotions(clusters, promotions or {})
         invalid_candidates = self.invalid_candidate_claims(normalized)
         active_markdown = self._active_markdown(clusters)
@@ -49,7 +47,6 @@ class MeaningClusterArtifactAssembler:
             "log_markdown": log_markdown,
             "clusters": clusters,
             "concept_update_decisions": concept_update_decisions,
-            "core_relation_decisions": core_relation_decisions,
             "invalid_candidates": invalid_candidates,
             "maintenance_summary": maintenance_summary,
         }
@@ -62,7 +59,6 @@ class MeaningClusterArtifactAssembler:
         workspace_id: str,
         cluster_decisions: list[dict[str, Any]] | None = None,
         concept_update_decisions: list[dict[str, Any]] | None = None,
-        core_relation_decisions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         artifact = self.build(
             normalized,
@@ -70,7 +66,6 @@ class MeaningClusterArtifactAssembler:
             workspace_id=workspace_id,
             cluster_decisions=cluster_decisions,
             concept_update_decisions=concept_update_decisions,
-            core_relation_decisions=core_relation_decisions,
         )
         write_text(Path(out_dir) / artifact["active_path"], artifact["active_markdown"])
         write_text(Path(out_dir) / artifact["log_path"], artifact["log_markdown"])
@@ -100,26 +95,28 @@ class MeaningClusterArtifactAssembler:
     def _candidate_claims(self, normalized: dict[str, Any]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         evidence_by_id = {item.get("evidence_id"): item for item in normalized.get("evidence_units", [])}
-        for item in normalized.get("section_candidates", []):
-            candidate = self._source_candidate(normalized, item, "section", len(candidates) + 1)
-            if candidate:
-                candidates.append(candidate)
-        for item in normalized.get("mentions", []):
-            candidate = self._source_candidate(normalized, item, "mention", len(candidates) + 1)
-            if candidate:
-                candidates.append(candidate)
+        # 후보 번호는 하위 항목 배정 전에 매긴 개념 갱신 판정과 맞아야 한다. 배정받아 빼는 섹션·언급도 번호는 쓴다.
+        count = 0
+        for kind, field in (("section", "section_candidates"), ("mention", "mentions")):
+            for item in normalized.get(field, []):
+                candidate = self._source_candidate(normalized, item, kind, count + 1)
+                if candidate:
+                    count += 1
+                    # 하위 항목으로 배정받은 섹션·언급은 이미 개념이 됐다. 다시 모아 승격하지 않는다(ADR 0042).
+                    if not item.get("assigned_entry"):
+                        candidates.append(candidate)
         for hint in normalized.get("unresolved_related_concept_hints", []):
             for evidence_id in hint.get("evidence_ids", []):
                 evidence = evidence_by_id.get(evidence_id)
-                candidate = self._evidence_candidate(hint, evidence, len(candidates) + 1)
+                candidate = self._evidence_candidate(hint, evidence, count + 1)
                 if candidate:
+                    count += 1
                     candidates.append(candidate)
         return candidates
 
     def _maintenance_summary(self, clusters: list[dict[str, Any]], invalid_candidates: list[dict[str, Any]]) -> dict[str, Any]:
         promotion_candidates = []
         invalid_promotions = []
-        relation_candidates = []
         for cluster in clusters:
             promotion = cluster.get("promotion")
             if promotion and promotion.get("status") == "candidate" and promotion.get("source_refs"):
@@ -139,15 +136,6 @@ class MeaningClusterArtifactAssembler:
                         "reason": "promotion candidate has no source_refs",
                     }
                 )
-            for relation in cluster.get("core_relation_candidates", []):
-                relation_candidates.append(
-                    {
-                        "cluster_id": cluster["id"],
-                        "target": relation.get("target"),
-                        "relation": relation.get("relation"),
-                        "evidence": relation.get("evidence", []),
-                    }
-                )
         return {
             "promotion_candidate_count": len(promotion_candidates),
             "promotion_candidates": promotion_candidates,
@@ -155,9 +143,7 @@ class MeaningClusterArtifactAssembler:
             "invalid_candidates": invalid_candidates,
             "invalid_promotion_count": len(invalid_promotions),
             "invalid_promotions": invalid_promotions,
-            "relation_candidate_count": len(relation_candidates),
-            "relation_candidates": relation_candidates,
-            "lint_action_available": bool(promotion_candidates or relation_candidates or invalid_candidates or invalid_promotions),
+            "lint_action_available": bool(promotion_candidates or invalid_candidates or invalid_promotions),
         }
 
     def _clusters(
@@ -165,7 +151,6 @@ class MeaningClusterArtifactAssembler:
         normalized: dict[str, Any],
         cluster_decisions: list[dict[str, Any]],
         concept_update_decisions: list[dict[str, Any]],
-        core_relation_decisions: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         clusters: dict[str, dict[str, Any]] = {}
         decisions_by_candidate = {
@@ -178,17 +163,12 @@ class MeaningClusterArtifactAssembler:
             for item in concept_update_decisions
             if item.get("decision") == "same_concept" and item.get("candidate_id")
         }
-        relation_by_candidate = {
-            str(item.get("candidate_id")): item
-            for item in core_relation_decisions
-            if item.get("candidate_id")
-        }
 
         for candidate in self.candidate_claims(normalized):
             if candidate["candidate_id"] in concept_update_candidate_ids:
                 continue
             decision = decisions_by_candidate.get(candidate["candidate_id"], {})
-            self._add_candidate_claim(clusters, candidate, decision, relation_by_candidate.get(candidate["candidate_id"]))
+            self._add_candidate_claim(clusters, candidate, decision)
 
         return sorted(clusters.values(), key=lambda item: item["id"])
 
@@ -220,7 +200,7 @@ class MeaningClusterArtifactAssembler:
         if not term or slug == "untitled":
             return None
         # 언급은 설명 없이 이름만 받으므로 언급이 나온 원문으로 판정한다.
-        context = str(item.get("context") or item.get("source_text") or "").strip()
+        context = str(item.get("context") or item.get("definition") or "").strip()
         if not context:
             return None
         source_document_id = normalized.get("document", {}).get("document_id")
@@ -256,7 +236,6 @@ class MeaningClusterArtifactAssembler:
         clusters: dict[str, dict[str, Any]],
         candidate: dict[str, Any],
         decision: dict[str, Any],
-        relation_decision: dict[str, Any] | None = None,
     ) -> None:
         decision_type = str(decision.get("decision") or "new_cluster")
         target_cluster_id = slugify(str(decision.get("target_cluster_id") or candidate["slug"]))
@@ -276,18 +255,6 @@ class MeaningClusterArtifactAssembler:
                 "decision_reason": decision.get("reason") or "",
             }
         )
-        if relation_decision:
-            relation = str(relation_decision.get("relation") or "")
-            concept_slug = str(relation_decision.get("concept_slug") or "")
-            if relation and concept_slug:
-                cluster["core_relation_candidates"].append(
-                    {
-                        "target": f"concept:{concept_slug}",
-                        "relation": relation,
-                        "evidence": [candidate["claim_id"]],
-                        "reason": relation_decision.get("reason") or "",
-                    }
-                )
 
     def _cluster(self, clusters: dict[str, dict[str, Any]], slug: str, representative: str) -> dict[str, Any]:
         cluster = clusters.get(slug)
@@ -297,7 +264,6 @@ class MeaningClusterArtifactAssembler:
                 "type": "term_cluster",
                 "representative": representative,
                 "evidence_claims": [],
-                "core_relation_candidates": [],
                 "promotion": None,
             }
             clusters[slug] = cluster
@@ -335,18 +301,6 @@ class MeaningClusterArtifactAssembler:
         )
         if not cluster.get("evidence_claims"):
             lines.append("- evidence claim 없음")
-
-        if cluster.get("core_relation_candidates"):
-            lines.extend(["", "### Core Relation Candidates"])
-            for relation in cluster["core_relation_candidates"]:
-                lines.extend(
-                    [
-                        f"- target: {relation.get('target')}",
-                        f"  relation: {relation.get('relation')}",
-                        f"  evidence: [{', '.join(relation.get('evidence', []))}]",
-                        f"  reason: {relation.get('reason') or '-'}",
-                    ]
-                )
 
         promotion = cluster.get("promotion")
         if promotion:

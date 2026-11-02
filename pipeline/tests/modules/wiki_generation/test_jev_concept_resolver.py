@@ -1,6 +1,7 @@
 import json
 import math
 import unittest
+from array import array
 from threading import Lock
 from unittest.mock import patch
 
@@ -9,6 +10,9 @@ from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     CANDIDATE_LIMIT,
+    CONCEPT_PAIR_RULE,
+    ENTRY_CANDIDATE_LIMIT,
+    PART_OF_RULE,
     JevConceptResolver,
     with_jev_concept_merge,
 )
@@ -315,6 +319,132 @@ class JevConceptResolverTest(unittest.TestCase):
         self.assertEqual([item["incoming_slug"] for item in result["resolutions"]], ["b"])
 
 
+def _entry(slug: str, title: str, definition: str = "정의") -> dict:
+    return {"slug": slug, "title": title, "aliases": [], "definition": definition}
+
+
+class JudgeEntriesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        jev_concept_resolver._embedding_cache.clear()
+
+    def test_candidates_come_from_stored_vectors_capped_and_only_new_texts_are_embedded(self) -> None:
+        # 저장된 벡터가 가까운 순(각도가 작은 순)으로 상위 ENTRY_CANDIDATE_LIMIT개만 묻는다.
+        pool = [_entry(f"entry:{index:02d}", f"Deployment > 항목{index:02d}") for index in range(ENTRY_CANDIDATE_LIMIT + 5)]
+        stored = {
+            entry["slug"]: array("f", [math.cos(index * 0.05), math.sin(index * 0.05)])
+            for index, entry in enumerate(pool)
+        }
+        jev = PairJev({("incoming:history", "entry:03"): ("same", {"same": 0.95, "unrelated": 0.05})})
+        embedder = AngleEmbedder({"Deployment": 0.0})
+        models = []
+
+        result = _resolver(jev, embedder).judge_entries(
+            [_entry("incoming:history", "Deployment > History")], pool, lambda model: models.append(model) or stored
+        )
+
+        self.assertEqual(result["incoming:history"]["canonical_slug"], "entry:03")
+        self.assertEqual(models, ["fake-embedding"])
+        self.assertEqual(sorted(jev.sent("incoming:history")), [f"entry:{index:02d}" for index in range(ENTRY_CANDIDATE_LIMIT)])
+        # 기존 항목은 저장된 벡터를 쓰고 새 항목만 임베딩한다. 텍스트는 저장 단위와 같은 "이름 경로: 정의"다.
+        self.assertEqual(embedder.calls, [["Deployment > History: 정의"]])
+
+    def test_embeds_existing_entries_without_stored_vector(self) -> None:
+        embedder = AngleEmbedder()
+
+        _resolver(PairJev(), embedder).judge_entries(
+            [_entry("incoming:a", "A > B")], [_entry("entry:x", "A > X"), _entry("entry:y", "A > Y", "")], lambda _model: {}
+        )
+
+        # 정의가 없는 기존 항목은 묻지 않아 임베딩하지 않는다.
+        self.assertEqual(embedder.calls, [["A > X: 정의", "A > B: 정의"]])
+
+    def test_embedding_unavailable_raises_jev_unavailable(self) -> None:
+        with self.assertRaises(JevUnavailable):
+            _resolver(PairJev(), FailingEmbedder()).judge_entries(
+                [_entry("incoming:a", "A > B")], [_entry("entry:x", "A > X")], lambda _model: {}
+            )
+
+
+class PartOfJev:
+    """(상위, 세부)별로 정해 둔 선택·확률을 돌려주고 받은 요청을 기록한다. 정하지 않은 쌍은 not_part_of다."""
+
+    def __init__(self, answers: dict[tuple[str, str], tuple[str, dict[str, float]]] | None = None) -> None:
+        self._answers = answers or {}
+        self._lock = Lock()
+        self.requests: list[dict] = []
+
+    def choose(self, state: str, questions: dict) -> dict:
+        task = json.loads(state)
+        with self._lock:
+            self.requests.append({"state": task, "questions": questions})
+        head = task["head"]["id"]
+        assert [detail["id"] for detail in task["details"]] == list(questions)
+        result = {}
+        for key, question in questions.items():
+            choice, probabilities = self._answers.get((head, key), ("not_part_of", {"not_part_of": 0.9}))
+            assert choice in question["criteria"]
+            result[key] = {"choice": choice, "probabilities": probabilities}
+        return result
+
+
+HEAD = {"slug": "sorting", "title": "정렬", "aliases": [], "definition": "원소를 순서대로 늘어놓는다."}
+STABLE = {"slug": "stable-sort", "title": "안정 정렬", "aliases": [], "definition": "같은 키의 원래 순서를 지킨다."}
+PIVOT = {"slug": "pivot", "title": "피벗", "aliases": [], "definition": "분할 기준이 되는 원소다."}
+
+
+class JudgePartOfTest(unittest.TestCase):
+    def test_rule_is_in_state_once_and_questions_carry_only_ids(self) -> None:
+        jev = PartOfJev()
+
+        _resolver(jev).judge_part_of([(HEAD, STABLE), (HEAD, PIVOT)])
+
+        [request] = jev.requests
+        self.assertEqual(request["state"]["rule"], PART_OF_RULE)
+        self.assertEqual(request["state"]["head"]["id"], "sorting")
+        self.assertEqual(list(request["questions"]), ["stable-sort", "pivot"])
+        for question in request["questions"].values():
+            self.assertEqual(set(question["criteria"]), {"part_of", "not_part_of"})
+            self.assertNotIn(PART_OF_RULE, question["instructions"])
+
+    def test_part_of_only_at_or_above_probability_threshold(self) -> None:
+        jev = PartOfJev({
+            ("sorting", "stable-sort"): ("part_of", {"part_of": 0.95, "not_part_of": 0.05}),
+            ("sorting", "pivot"): ("part_of", {"part_of": 0.85, "not_part_of": 0.15}),
+        })
+
+        result = _resolver(jev).judge_part_of([(HEAD, STABLE), (HEAD, PIVOT)])
+
+        self.assertEqual(result, {
+            ("sorting", "stable-sort"): {"part_of": True, "probability": 0.95},
+            ("sorting", "pivot"): {"part_of": False, "probability": 0.85},
+        })
+
+    def test_skips_pairs_without_definition_or_with_itself(self) -> None:
+        jev = PartOfJev()
+
+        result = _resolver(jev).judge_part_of([(HEAD, {**PIVOT, "definition": ""}), (HEAD, HEAD)])
+
+        self.assertEqual(result, {})
+        self.assertEqual(jev.requests, [])
+
+    def test_splits_details_into_requests_by_token_budget(self) -> None:
+        details = [
+            {"slug": f"d{index:03d}", "title": f"d{index:03d}", "aliases": [], "definition": "긴 정의 " * 40}
+            for index in range(CANDIDATE_LIMIT)
+        ]
+        jev = PartOfJev()
+
+        result = _resolver(jev).judge_part_of([(HEAD, detail) for detail in details])
+
+        self.assertGreater(len(jev.requests), 1)
+        self.assertEqual(sorted(detail for _, detail in result), [detail["slug"] for detail in details])
+        for request in jev.requests:
+            self.assertLessEqual(request_tokens({**request, "state": json.dumps(request["state"], ensure_ascii=False)}), MAX_BATCH_TOKENS)
+
+    def test_unavailable_jev_returns_no_decisions(self) -> None:
+        self.assertEqual(_resolver(FailingJev()).judge_part_of([(HEAD, STABLE)]), {})
+
+
 class WithJevConceptMergeTest(unittest.TestCase):
     def test_keeps_existing_resolver_when_disabled(self) -> None:
         resolver = RecordingResolver()
@@ -407,3 +537,38 @@ class NameMatchConceptResolverTest(unittest.TestCase):
 
         self.assertEqual(cyclic["resolutions"][0], {"incoming_slug": "x", "decision": "merge_into", "canonical_slug": "a", "alias_to_add": None})
         self.assertEqual(missing["resolutions"][0]["canonical_slug"], "a")
+
+
+class JudgeRelatedTest(unittest.TestCase):
+    """분리 관계 재판정(ADR 0042 결정 6)은 같음·관련 판정 기준과 0.9 문턱을 그대로 쓴다."""
+
+    def test_same_and_confident_related_count_low_related_and_unrelated_do_not(self) -> None:
+        jev = PairJev({
+            ("sorting", "stable-sort"): ("related", {"related": 0.95}),
+            ("sorting", "pivot"): ("related", {"related": 0.6}),
+            ("sorting", "sorting-copy"): ("same", {"same": 0.7}),
+        })
+        copy = {**HEAD, "slug": "sorting-copy"}
+        other = {**PIVOT, "slug": "other"}
+
+        found = _resolver(jev).judge_related(HEAD, [STABLE, PIVOT, copy, other])
+
+        self.assertEqual(found, {"stable-sort", "sorting-copy"})
+        self.assertIn(CONCEPT_PAIR_RULE, jev.requests[0]["state"])
+
+    def test_missing_definition_or_unavailable_jev_is_no_judgment(self) -> None:
+        self.assertIsNone(_resolver(PairJev()).judge_related(HEAD, [STABLE, {**PIVOT, "definition": ""}]))
+        self.assertIsNone(_resolver(FailingJev()).judge_related(HEAD, [STABLE]))
+
+
+class EmbeddingSimilarityTest(unittest.TestCase):
+    """배정 후보(ADR 0042)는 개념 판정과 같은 임베딩으로 고른다. 서버가 없으면 판정 불가로 알린다."""
+
+    def test_scores_by_vectors_and_reports_unavailable_server(self) -> None:
+        from app.modules.wiki_generation.infrastructure.jev_concept_resolver import embedding_similarity
+
+        scores = embedding_similarity(AngleEmbedder({"a": 0.0, "b": 0.0, "c": math.pi / 2}))("a 질의", ["b 후보", "c 후보"])
+        self.assertAlmostEqual(scores[0], 1.0)
+        self.assertAlmostEqual(scores[1], 0.0)
+        with self.assertRaises(JevUnavailable):
+            embedding_similarity(FailingEmbedder())("a", ["b"])

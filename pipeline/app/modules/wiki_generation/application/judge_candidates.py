@@ -6,11 +6,115 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.jev_client import JevUnavailable
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
 
 logger = logging.getLogger(__name__)
 # (판정할 개념, 후보 pool) → incoming slug별 판정. JevConceptResolver.judge_concepts와 같은 계약이다.
 PairJudge = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, dict[str, Any]]]
+# [(상위 항목, 세부 항목)] → (상위 slug, 세부 slug)별 part_of 판정. JevConceptResolver.judge_part_of와 같은 계약이다.
+PartOfJudge = Callable[[list[tuple[dict[str, Any], dict[str, Any]]]], dict[tuple[str, str], dict[str, Any]]]
+
+
+# 편입 LLM 판정의 확신도 문턱. Jev part_of(`PART_OF_MIN_PROBABILITY`)와 같은 값이다. 애매하면 배정·병합하지 않는다.
+LLM_JUDGE_MIN_CONFIDENCE = 0.9
+# LLM 판정 한 번에 묻는 질문 수. 편입 하나의 LLM 호출 수는 질문 수 / 이 값(올림)이다.
+LLM_JUDGE_QUESTIONS_PER_CALL = 40
+# LLM 같은 하위 항목 판정에서 항목마다 보여 줄 후보 수(Jev `ENTRY_CANDIDATE_LIMIT`와 같다).
+LLM_ENTRY_CANDIDATE_LIMIT = 10
+
+
+def llm_part_of_judge(completion: JsonCompletionPort, system_prompt: str) -> PartOfJudge:
+    """Jev를 쓸 수 없을 때 편입 LLM이 같은 part_of 질문에 답한다(ADR 0042). 결과 계약은 `judge_part_of`와 같다."""
+
+    def judge(pairs: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[tuple[str, str], dict[str, Any]]:
+        decisions: dict[tuple[str, str], dict[str, Any]] = {}
+        for start in range(0, len(pairs), LLM_JUDGE_QUESTIONS_PER_CALL):
+            batch = {f"q{start + index}": pair for index, pair in enumerate(pairs[start:start + LLM_JUDGE_QUESTIONS_PER_CALL])}
+            payload = {"questions": [
+                {"id": key, "head": _concept_identity(head), "detail": _concept_identity(detail)}
+                for key, (head, detail) in batch.items()
+            ]}
+            raw = _judge_call(completion, system_prompt, payload)
+            for item in raw.get("judgments") or []:
+                if not isinstance(item, dict) or item.get("id") not in batch:
+                    continue
+                head, detail = batch[item["id"]]
+                confidence = _confidence(item.get("confidence"))
+                decisions[(head["slug"], detail["slug"])] = {
+                    "part_of": item.get("decision") == "part_of" and confidence >= LLM_JUDGE_MIN_CONFIDENCE,
+                    "probability": confidence,
+                }
+        return decisions
+
+    return judge
+
+
+def llm_same_entry_judge(
+    completion: JsonCompletionPort,
+    system_prompt: str,
+    similarity: Callable[[str, list[str]], list[float]],
+) -> PairJudge:
+    """Jev를 쓸 수 없을 때 편입 LLM이 같은 하위 항목 질문에 답한다. 결과 계약은 `judge_entries`와 같다.
+
+    후보는 임베딩 유사도 상위 `LLM_ENTRY_CANDIDATE_LIMIT`개다(자기 자신 제외). 정의가 없는 항목은 묻지 않는다.
+    """
+
+    def judge(entries: list[dict[str, Any]], pool: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        def text(item: dict[str, Any]) -> str:
+            return f"{item['title']}: {item.get('definition') or ''}"
+
+        pool = [item for item in pool if str(item.get("definition") or "").strip()]
+        questions = []
+        for entry in entries:
+            others = [item for item in pool if item["slug"] != entry["slug"]]
+            if not str(entry.get("definition") or "").strip() or not others:
+                continue
+            scores = similarity(text(entry), [text(item) for item in others])
+            ranked = sorted(zip(scores, others, strict=True), key=lambda row: (-row[0], row[1]["slug"]))
+            questions.append((entry, [item for _, item in ranked[:LLM_ENTRY_CANDIDATE_LIMIT]]))
+        decisions: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(questions), LLM_JUDGE_QUESTIONS_PER_CALL):
+            batch = {entry["slug"]: candidates for entry, candidates in questions[start:start + LLM_JUDGE_QUESTIONS_PER_CALL]}
+            payload = {"questions": [
+                {"id": entry["slug"], "incoming": _concept_identity(entry), "candidates": [_concept_identity(item) for item in candidates]}
+                for entry, candidates in questions[start:start + LLM_JUDGE_QUESTIONS_PER_CALL]
+            ]}
+            raw = _judge_call(completion, system_prompt, payload)
+            for item in raw.get("judgments") or []:
+                if not isinstance(item, dict) or item.get("id") not in batch:
+                    continue
+                target = str(item.get("same_as") or "")
+                if target in {candidate["slug"] for candidate in batch[item["id"]]} and (
+                    _confidence(item.get("confidence")) >= LLM_JUDGE_MIN_CONFIDENCE
+                ):
+                    decisions[item["id"]] = {"incoming_slug": item["id"], "decision": "merge_into",
+                                             "canonical_slug": target, "alias_to_add": None}
+        return decisions
+
+    return judge
+
+
+def _judge_call(completion: JsonCompletionPort, system_prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """판정 LLM 호출. 전송 오류·시간 초과·JSON 재시도 소진은 판정 없음(빈 결과)으로 보고 편입을 실패시키지 않는다.
+
+    작업 취소와 전체 기한 초과(PipelineRunCancelledError)는 그대로 올린다.
+    """
+    try:
+        raw = completion.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    except PipelineRunCancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[LLM 하위 항목 판정 생략] %s", type(exc).__name__)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _confidence(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def judge_meaning_cluster_candidates(
@@ -186,31 +290,14 @@ def normalize_concept_update_decisions(
         decision = str(item.get("decision") or "not_same_concept")
         raw_concept_slug = str(item.get("concept_slug") or "")
         concept_slug = slug_map.get(raw_concept_slug, raw_concept_slug)
-        relation = str(item.get("relation") or "")
-        if relation not in {
-            "part_of",
-            "child_of",
-            "uses_or_depends_on",
-            "contrasts_with",
-            "supports_or_enables",
-            "related_evidence",
-            "insufficient_evidence",
-        }:
-            relation = ""
-        if decision == "same_concept" and concept_slug in valid_concept_slugs:
-            relation = "same_concept"
-        elif decision == "relation_candidate" and concept_slug in valid_concept_slugs and relation:
-            pass
-        else:
+        if decision != "same_concept" or concept_slug not in valid_concept_slugs:
             decision = "not_same_concept"
             concept_slug = ""
-            relation = ""
         normalized_decisions.append(
             {
                 "candidate_id": candidate_id,
                 "decision": decision,
                 "concept_slug": concept_slug,
-                "relation": relation,
                 "reason": item.get("reason"),
             }
         )
@@ -238,25 +325,22 @@ def judge_concept_update_candidates(
         except JevUnavailable as exc:
             logger.warning("[개념 갱신 후보 Jev 대체] %s", exc)
     system_prompt = """Stage=ConceptUpdateCandidateJudge.
-You decide whether section/mention evidence claims already belong to or have an evidence-backed relation with an existing/current core concept.
+You decide whether section/mention evidence claims already belong to an existing/current core concept.
 
 Rules:
 - Return JSON only.
 - Use same_concept only when the candidate has the same identity as an existing/current concept, such as a synonym, translation, abbreviation, or spelling variant.
-- A procedure, record, metric, property, evidence, or subtopic that merely belongs to or supports an existing concept is not same_concept. Use relation_candidate when its relation is grounded; otherwise use not_same_concept.
-- Use relation_candidate when the candidate is not the same concept but has an evidence-backed relation to an existing/current concept.
-- Use not_same_concept when it should remain available for active cluster judging.
+- A procedure, record, metric, property, evidence, or subtopic that merely belongs to or supports an existing concept is not same_concept.
+- Use not_same_concept otherwise so it remains available for active cluster judging.
 - Do not create new concepts or clusters.
-- Allowed relation values: part_of, child_of, uses_or_depends_on, contrasts_with, supports_or_enables, related_evidence, insufficient_evidence.
 
 Schema:
 {
   "decisions": [
     {
       "candidate_id": "cand_001",
-      "decision": "same_concept | relation_candidate | not_same_concept",
+      "decision": "same_concept | not_same_concept",
       "concept_slug": "existing-concept-slug-or-empty",
-      "relation": "part_of | child_of | uses_or_depends_on | contrasts_with | supports_or_enables | related_evidence | insufficient_evidence | empty",
       "reason": "brief Korean reason"
     }
   ]
@@ -304,7 +388,7 @@ def _pair_judged_updates(
     concepts: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    # 후보는 근거 문장을 정의 자리에 둔 개념처럼 판정한다. same이면 같은 개념, related면 관계 후보다.
+    # 후보는 근거 문장을 정의 자리에 둔 개념처럼 판정한다. same이면 같은 개념이고, 나머지는 클러스터 판정으로 간다.
     incoming = [
         {"slug": item["candidate_id"], "title": item["term"], "aliases": [item["slug"]], "definition": item["claim"]}
         for item in candidates
@@ -313,18 +397,12 @@ def _pair_judged_updates(
     decisions = []
     for item in candidates:
         resolution = resolutions.get(item["candidate_id"]) or {}
-        if resolution.get("decision") == "merge_into":
-            decision, relation = "same_concept", ""
-        elif resolution.get("decision") == "link_to":
-            decision, relation = "relation_candidate", "related_evidence"
-        else:
-            decision, relation = "not_same_concept", ""
+        same = resolution.get("decision") == "merge_into"
         decisions.append(
             {
                 "candidate_id": item["candidate_id"],
-                "decision": decision,
-                "concept_slug": resolution.get("canonical_slug") or "",
-                "relation": relation,
+                "decision": "same_concept" if same else "not_same_concept",
+                "concept_slug": (resolution.get("canonical_slug") or "") if same else "",
             }
         )
     return normalize_concept_update_decisions(

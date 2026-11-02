@@ -34,12 +34,6 @@ def test_contribution_payload_keeps_reingest_reconciliation_inputs() -> None:
 
 ### Evidence Claims
 - claim_1: 최신 주장이다. [doc-1:B0001]
-
-### Core Relation Candidates
-- target: concept:target
-  relation: supports_or_enables
-  evidence: [claim_1]
-  reason: 최신 관계
 """,
             },
         }
@@ -59,14 +53,6 @@ def test_contribution_payload_keeps_reingest_reconciliation_inputs() -> None:
         },
         "claim_signatures": [
             ["motor", "claim_1", "최신 주장이다. [doc-1:B0001]"],
-        ],
-        "relation_signatures": [
-            [
-                "motor",
-                "concept:target",
-                "supports_or_enables",
-                ["claim_1"],
-            ]
         ],
     }
 
@@ -115,7 +101,6 @@ def test_reconciliation_candidate_compares_previous_and_current_contribution() -
                         "invalidated_block_ids": ["B0002", "B0003"],
                     },
                     "claim_signatures": [],
-                    "relation_signatures": [],
                 },
             },
             "previous_manifests": [
@@ -155,7 +140,6 @@ def test_reconciliation_candidate_compares_previous_and_current_contribution() -
         }
     ]
     assert candidate["_current_claim_signatures"] == []
-    assert candidate["_current_relation_signatures"] == []
     assert candidate["_cluster_reconciliation_ready"] is True
 
 

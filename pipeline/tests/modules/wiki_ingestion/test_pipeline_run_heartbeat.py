@@ -331,6 +331,7 @@ def test_restore_reactivates_deleted_page_without_linking_unrelated_deleted_page
         patch.object(database, "concept_write_lock", return_value=nullcontext()),
         patch.object(database, "read_text_object", return_value="# Restored\n"),
         patch.object(database, "invalidate_concept_index"),
+        patch.object(database, "_prune_dangling_references"),
     ):
         database.apply_restored_wiki_state_and_cleanup(
             "restore-1",
@@ -389,6 +390,7 @@ def test_restore_after_delete_and_rename_skips_stale_slug_link(monkeypatch) -> N
         patch.object(database, "concept_write_lock", return_value=nullcontext()),
         patch.object(database, "read_text_object", return_value="# Renamed\n"),
         patch.object(database, "invalidate_concept_index"),
+        patch.object(database, "_prune_dangling_references"),
     ):
         database.apply_restored_wiki_state_and_cleanup(
             "restore-1",
@@ -597,6 +599,7 @@ def test_delete_only_restore_invalidates_workspace_concept_index(monkeypatch) ->
         patch.object(database, "connect", return_value=connection),
         patch.object(database, "concept_write_lock", return_value=nullcontext()),
         patch.object(database, "invalidate_concept_index") as invalidate,
+        patch.object(database, "_prune_dangling_references"),
     ):
         database.apply_restored_wiki_state_and_cleanup(
             "restore-1",

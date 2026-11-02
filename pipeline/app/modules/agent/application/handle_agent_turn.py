@@ -741,8 +741,12 @@ class HandleAgentTurnUseCase:
             if mode == "auto":
                 return _clarify_result_mode(route)
             publish_query_event(self._event_publisher, "agent.routed", "문서 편집 요청으로 확인했어요.")
+            # 선택 범위면 지시도 선택 부분을 가리켜야 모델이 대상을 문서 전체로 넓히지 않는다.
+            context = request.active_markdown_context
+            target = _skill_edit_target(skill, context) if context is not None else None
+            scope = "선택한 부분" if target is not None and target.type == "selection" else "이 문서"
             return self._execute_markdown_edit(
-                replace(request, message=f"'{version.name}' Skill의 지침을 이 문서에 적용해 주세요."),
+                replace(request, message=f"'{version.name}' Skill의 지침을 {scope}에 적용해 주세요."),
                 route,
                 skill,
             )

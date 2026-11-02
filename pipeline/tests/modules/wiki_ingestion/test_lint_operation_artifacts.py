@@ -92,7 +92,7 @@ def test_persists_link_only_lint_change_for_its_source_page(monkeypatch) -> None
     link = {
         "source": "concept:shared",
         "target": "concept:target",
-        "relation": "part_of",
+        "relation": "related_to",
     }
     writes: list[tuple[str, str, str]] = []
 
@@ -134,22 +134,21 @@ def test_persists_link_only_lint_change_for_its_source_page(monkeypatch) -> None
         ),
     )
 
-    artifacts = repository.persist_lint_operation_result(
-        "ws-1",
-        "lint-op-1",
-        {
-            "materialized_relations": [
-                {"from": "shared", "to": "target", "relation": "part_of"}
-            ],
-            "applied_reconciliations": [],
-            "removed_orphan_links": [],
-        },
-    )
+    result = {
+        "applied_reconciliations": [],
+        "removed_orphan_links": [link],
+    }
+    artifacts = repository.persist_lint_operation_result("ws-1", "lint-op-1", result)
 
     payload = json.loads(writes[1][1])
     assert payload["content_action"] == "none"
-    assert payload["added_links"] == [link]
+    assert payload["removed_links"] == [link]
     assert artifacts[0]["page_id"] == "page-shared"
+    # 링크만 바뀐 페이지의 lint 기록도 원장 행이다(ADR 0042).
+    assert result["ledger_contributions"] == [{
+        "page_id": "page-shared", "operation_id": "lint-op-1", "document_id": None,
+        "contribution_key": artifacts[0]["contribution_key"], "linked_by_operation_id": None,
+    }]
 
 
 def test_missing_slug_markdown_read_failure_propagates_instead_of_empty_markdown(
@@ -163,7 +162,7 @@ def test_missing_slug_markdown_read_failure_propagates_instead_of_empty_markdown
     link = {
         "source": "concept:shared",
         "target": "concept:target",
-        "relation": "part_of",
+        "relation": "related_to",
     }
 
     class Result:
@@ -200,11 +199,8 @@ def test_missing_slug_markdown_read_failure_propagates_instead_of_empty_markdown
             "ws-1",
             "lint-op-1",
             {
-                "materialized_relations": [
-                    {"from": "shared", "to": "target", "relation": "part_of"}
-                ],
                 "applied_reconciliations": [],
-                "removed_orphan_links": [],
+                "removed_orphan_links": [link],
             },
         )
     except OSError:

@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.modules.query.application.evidence_text import (
     clean_sentence,
@@ -29,6 +29,7 @@ class _EvidenceCandidate:
     text: str
     score: float
     unit_type: str = "evidence"
+    entry_path: str | None = None
 
 
 def has_selectable_evidence(
@@ -134,6 +135,7 @@ class EvidenceSelector:
                 source_block_ids=snippet.source_block_ids,
                 source_refs=snippet.source_refs,
                 text=snippet.text,
+                entry_path=snippet.entry_path,
             )
             for index, snippet in enumerate(candidates, start=1)
         ]
@@ -238,6 +240,7 @@ class EvidenceSelector:
                     text=unit.text,
                     score=item.score * unit.weight,
                     unit_type=unit.unit_type,
+                    entry_path=unit.entry_path,
                 )
             )
         return self._score_structured_candidates(question, raw_candidates, item)
@@ -357,14 +360,9 @@ class EvidenceSelector:
                     lexical_bonus += 0.25
                 candidate_specificity_bonus = specificity_bonus(candidate.text)
                 scored.append(
-                    _EvidenceCandidate(
-                        page_id=candidate.page_id,
-                        source_document_id=candidate.source_document_id,
-                        source_block_ids=candidate.source_block_ids,
-                        source_refs=candidate.source_refs,
-                        text=candidate.text,
+                    replace(
+                        candidate,
                         score=item.score + candidate.score + evidence_score + lexical_bonus + candidate_specificity_bonus,
-                        unit_type=candidate.unit_type,
                     )
                 )
             return scored
@@ -381,17 +379,7 @@ class EvidenceSelector:
             if overlap == 0:
                 score -= 0.75
             score += specificity_bonus(candidate.text)
-            scored.append(
-                _EvidenceCandidate(
-                    page_id=candidate.page_id,
-                    source_document_id=candidate.source_document_id,
-                    source_block_ids=candidate.source_block_ids,
-                    source_refs=candidate.source_refs,
-                    text=candidate.text,
-                    score=score,
-                    unit_type=candidate.unit_type,
-                )
-            )
+            scored.append(replace(candidate, score=score))
         return scored
 
     def _dedupe_evidence(self, candidates: list[_EvidenceCandidate]) -> list[_EvidenceCandidate]:

@@ -39,7 +39,9 @@ class RestoreWikiPagesUseCase:
                     command.source_page,
                 )
             )
-        changed_pages.extend(self._rebuild_pages(command))
+        rebuilt_pages, replay_deleted = self._rebuild_pages(command)
+        changed_pages.extend(rebuilt_pages)
+        deleted_pages.extend(page_id for page_id in replay_deleted if page_id not in deleted_pages)
         skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
             command.operation_id,
             command.workspace_id,
@@ -73,7 +75,8 @@ class RestoreWikiPagesUseCase:
         self,
         command: LintOperationRestoreCommand,
     ) -> dict[str, Any]:
-        changed_pages = self._rebuild_pages(command)
+        changed_pages, replay_deleted = self._rebuild_pages(command)
+        deleted_pages = list(dict.fromkeys([*command.deleted_pages, *replay_deleted]))
         affected_page_ids = [
             *[page.page_id for page in command.rebuild_pages],
             *command.deleted_pages,
@@ -89,13 +92,19 @@ class RestoreWikiPagesUseCase:
             affected_page_ids,
             supported_links,
         )
+        # 재조립한 페이지의 나가는 링크는 재생 결과(supported_links)로 바꾼다. lint가 원래 작업 id로 이은 기록이 낸
+        # 링크(분리 때 옮긴 관계)는 lint 기록 차이에 없어, 차이만 반영하면 자식이 남을 때 그 링크가 남는다.
+        # 사람이 낸 링크도 수동 기록 재생에 들어 있고, 소스 → 개념 링크는 동기화가 따로 맞춘다.
         skipped_page_ids = self._page_restore.apply_current_state_and_cleanup(
             command.operation_id,
             command.workspace_id,
             changed_pages,
-            link_changes,
-            False,
-            list(command.deleted_pages),
+            {
+                "removed_links": link_changes["removed_links"],
+                "restored_links": [*link_changes["restored_links"], *supported_links],
+            },
+            True,
+            deleted_pages,
         )
         # lint가 승격·병합하며 archived.md로 옮긴 클러스터를 active.md로 되돌린다.
         # 되돌리지 않으면 지운 페이지의 클러스터가 보관된 채로 남아 다시 승격되지 않는다.
@@ -111,7 +120,7 @@ class RestoreWikiPagesUseCase:
             operation_type="lint_restore",
             target_operation_id=command.target_operation_id,
             changed_pages=changed_pages,
-            deleted_pages=list(command.deleted_pages),
+            deleted_pages=deleted_pages,
             link_changes=link_changes,
             cluster_changes=cluster_changes,
             failed_actions=[],
@@ -133,10 +142,11 @@ class RestoreWikiPagesUseCase:
     def _rebuild_pages(
         self,
         command: IngestOperationRestoreCommand | LintOperationRestoreCommand,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """재조립한 페이지와, 재생 결과 삭제로 끝난 페이지 id(ADR 0042)."""
         # 모든 페이지와 링크를 준비한 뒤 현재 상태를 한 번에 반영한다.
         # 준비 실패를 부분 성공으로 바꾸면 취소 대상의 일부만 남게 된다.
-        return [
+        pages = [
             self._page_restore.rebuild_page(
                 command.operation_id,
                 command.workspace_id,
@@ -144,6 +154,10 @@ class RestoreWikiPagesUseCase:
             )
             for page in command.rebuild_pages
         ]
+        return (
+            [page for page in pages if not page.get("deleted")],
+            [str(page["page_id"]) for page in pages if page.get("deleted")],
+        )
 
     @staticmethod
     def _result(

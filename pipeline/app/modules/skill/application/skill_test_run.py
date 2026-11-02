@@ -102,7 +102,9 @@ class SkillTestRunUseCase:
         )
         if target is None or target.type == "whole_document":
             target = MarkdownEditTarget(type="whole_document", start_line=1, end_line=line_count)
-        instruction = f"'{name}' Skill의 지침을 이 문서에 적용해 주세요."
+        # 선택 범위면 지시도 선택 부분을 가리켜야 모델이 대상을 문서 전체로 넓히지 않는다.
+        scope = "선택한 부분" if selection is not None else "이 문서"
+        instruction = f"'{name}' Skill의 지침을 {scope}에 적용해 주세요."
         # 문서 본문은 편집 payload에 이미 있으므로 `{문서}`는 그 위치를 가리키게 한다.
         instructions = render_skill_instructions(
             instructions,

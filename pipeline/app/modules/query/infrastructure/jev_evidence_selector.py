@@ -220,4 +220,5 @@ def _snippet(rank: int, unit: WikiEmbeddingUnit) -> EvidenceSnippet:
         source_block_ids=source_block_ids,
         source_refs=source_refs,
         text=unit.text,
+        entry_path=unit.entry_path,
     )

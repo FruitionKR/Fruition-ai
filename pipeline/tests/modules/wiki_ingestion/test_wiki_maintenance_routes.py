@@ -25,18 +25,14 @@ class FakeWikiMaintenance:
             "orphan_refs": ["doc-1:B9999"],
             "promotion_candidates": ["candidate-1"],
             "needs_review": [],
-            "relation_candidates": [],
-            "invalid_relations": [],
-            "invalid_promotions": [],
+                    "invalid_promotions": [],
             "reconciliation_candidates": [],
             "applied_reconciliations": [],
             "applied_cluster_reconciliation": {
                 "removed_claims": [],
-                "removed_relations": [],
             },
             "materialized_promotions": [],
             "merged_promotions": [],
-            "materialized_relations": [],
         }
 
 

@@ -33,6 +33,7 @@ def _stub_followup_writes(monkeypatch) -> None:
         "_persist_meaning_cluster_artifacts",
         lambda *_args: [],
     )
+    monkeypatch.setattr(persistence, "sync_source_concept_links", lambda *_args, **_kwargs: None)
 
 
 def test_long_generated_concept_title_keeps_value_and_bounds_identity_slug() -> None:
@@ -211,6 +212,11 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
         lambda *_args: calls.append("meaning_clusters")
         or [{"page_id": "updated-concept-page"}],
     )
+    monkeypatch.setattr(
+        persistence,
+        "sync_source_concept_links",
+        lambda *_args, **kwargs: calls.append(("sync_source_links", kwargs)),
+    )
     page_ids = persistence.persist_wiki_outputs(conn, "doc-1", manifest)  # type: ignore[arg-type]
 
     assert page_ids == ["source-page-1", "updated-concept-page"]
@@ -225,6 +231,9 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
         "load_concept_ids",
         "delete_source_links",
         "meaning_clusters",
+        # 기존 개념 갱신도 이 문서의 문서 연결이 되고, 모든 페이지를 쓴 뒤 소스 → 개념 링크를 맞춘다(ADR 0042 결정 5).
+        "document_link",
+        ("sync_source_links", {"concept_page_ids": ["updated-concept-page"], "source_page_ids": ["source-page-1"]}),
     ]
 
 

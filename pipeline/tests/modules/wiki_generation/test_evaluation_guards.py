@@ -406,8 +406,9 @@ class EvaluationGuardsTest(unittest.TestCase):
         issues = [issue for issue in evaluation["issues"] if issue["type"] == "section_or_mention_should_not_be_core"]
         self.assertEqual([issue["target"] for issue in issues], [["unsupported"]])
 
-    def test_demotes_unsupported_core_concept_to_section_candidate(self) -> None:
+    def test_demotes_unsupported_core_concept_to_mention(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts
+        from app.modules.wiki_generation.domain.entities import SourceBlock
 
         normalized = {
             "concept_ledger": [
@@ -415,18 +416,23 @@ class EvaluationGuardsTest(unittest.TestCase):
                 {"slug": "unsupported", "title": "Unsupported", "definition": "약한 정의", "anchor_reference_ids": ["B0002"]},
             ],
             "section_candidates": [{"term": "Other", "title": "Other", "slug": "other", "context": "", "anchor_reference_ids": ["B0003"]}],
+            "mentions": [],
             "evidence_units": [{"evidence_id": "ev_0001", "claim": "근거", "related_concept_slugs": ["supported"]}],
         }
+        blocks = [SourceBlock("d", "B0002", "ref_d_b0002", "Unsupported가 나온 원문이다.", 2, 2)]
 
-        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized)
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized, blocks)
 
         self.assertEqual(demoted, ["unsupported"])
         self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["supported"])
-        self.assertIn(
-            {"term": "Unsupported", "title": "Unsupported", "slug": "unsupported", "context": "약한 정의", "anchor_reference_ids": ["B0002"]},
-            demoted_normalized["section_candidates"],
+        # 하위 항목으로 배정되는 섹션 후보가 아니라 언급으로 내린다. 정의는 모델 정의가 아니라 원문이다.
+        self.assertEqual([item["slug"] for item in demoted_normalized["section_candidates"]], ["other"])
+        self.assertEqual(
+            demoted_normalized["mentions"],
+            [{"term": "Unsupported", "name": "Unsupported", "slug": "unsupported", "anchor_reference_ids": ["B0002"],
+              "definition": "Unsupported가 나온 원문이다."}],
         )
-        self.assertEqual(demote_unsupported_core_concepts(demoted_normalized)[1], [])
+        self.assertEqual(demote_unsupported_core_concepts(demoted_normalized, blocks)[1], [])
 
     def test_demotes_core_concept_supported_only_by_reference_list(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import demote_unsupported_core_concepts, reference_list_refs
@@ -452,10 +458,9 @@ class EvaluationGuardsTest(unittest.TestCase):
             ],
         }
 
-        refs = reference_list_refs(blocks)
-        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized, refs)
+        demoted_normalized, demoted = demote_unsupported_core_concepts(normalized, blocks)
 
-        self.assertEqual(refs, {"B0002", "ref_d_b0002"})
+        self.assertEqual(reference_list_refs(blocks), {"B0002", "ref_d_b0002"})
         self.assertEqual(demoted, ["bert"])
         self.assertEqual([c["slug"] for c in demoted_normalized["concept_ledger"]], ["rag"])
 
@@ -474,6 +479,34 @@ class EvaluationGuardsTest(unittest.TestCase):
         self.assertEqual(normalized["evidence_units"][0]["related_concept_slugs"], ["retrieval-augmented-generation"])
         self.assertEqual(normalized["concept_ledger"][0]["evidence_claim_ids"], ["ev_0001"])
         self.assertEqual(unsupported_core_concept_slugs(normalized), [])
+
+    def test_section_candidate_links_its_own_evidence_claims(self) -> None:
+        from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+        from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
+
+        # 같은 블록의 두 섹션도 근거 주인은 evidence_refs로 갈린다. 다른 노트의 같은 섹션 근거는 합친다.
+        notes = [
+            {"chunk_id": "c1",
+             "evidence_claims": [{"id": "e1", "claim": "A 근거", "anchor_block_ids": ["B0001"]},
+                                 {"id": "e2", "claim": "B 근거", "anchor_block_ids": ["B0001"]}],
+             "section_candidates": [
+                 {"title": "A", "slug_hint": "a", "context": "A 정의", "evidence_refs": ["e1", "missing"], "evidence_block_ids": ["B0001"]},
+                 {"title": "B", "slug_hint": "b", "context": "B 정의", "evidence_refs": ["e2"], "evidence_block_ids": ["B0001"]}]},
+            {"chunk_id": "c2",
+             "evidence_claims": [{"id": "e1", "claim": "A 근거 2", "anchor_block_ids": ["B0002"]}],
+             "section_candidates": [{"title": "A", "slug_hint": "a", "context": "A", "evidence_refs": ["e1"], "evidence_block_ids": ["B0002"]}]},
+        ]
+        blocks = [SourceBlock("d", "B0001", "B0001", "A와 B", 1, 1), SourceBlock("d", "B0002", "B0002", "A", 2, 2)]
+
+        normalized = SemanticNormalizer(SourceDocument("d", "t", "p", "s"), blocks).normalize_notes(notes)
+
+        sections = {item["slug"]: item for item in normalized["section_candidates"]}
+        self.assertEqual(sections["a"]["evidence_claim_ids"], ["ev_0001", "ev_0003"])
+        self.assertEqual(sections["a"]["anchor_reference_ids"], ["B0001", "B0002"])
+        self.assertEqual(sections["a"]["definition"], "A 정의")
+        self.assertEqual(sections["b"]["evidence_claim_ids"], ["ev_0002"])
+        self.assertNotIn("evidence_refs", sections["a"])
+        self.assertIn("unknown section evidence_ref: missing", normalized["warnings"])
 
     def test_demotion_restores_pass_when_evaluator_raised_only_that_issue(self) -> None:
         from app.modules.wiki_generation.application.evaluation_guards import clear_resolved_core_concept_issues

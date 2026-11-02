@@ -90,6 +90,9 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 read_text=self._read_text,
             )
             rebuilt = rebuild_concept_page(contributions)
+            if rebuilt.deleted:
+                # 재생 결과 페이지가 없다. 복원 결과의 deleted_pages로 보고한다(ADR 0042).
+                return {"page_id": page.page_id, "page_type": "concept", "deleted": True}
             markdown_key = (
                 f"wiki/{workspace_id}/pages/{page.page_id}/ops/"
                 f"{operation_id}.md"
@@ -115,6 +118,7 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "title": rebuilt.title,
             "summary": rebuilt.summary,
             "source_document_ids": list(rebuilt.source_document_ids),
+            "entries": list(rebuilt.entries),
         }
 
     def restore_source_page(
@@ -156,6 +160,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "title": None,
             "summary": None if manual else markdown_section(markdown, "Summary"),
             "source_document_id": source_page.document_id,
+            # 수동 `[[slug]]` 의도를 이 스냅샷까지의 수동 기여로 다시 재생한다(ADR 0042 결정 5).
+            "snapshot_operation_id": restore_to_operation_id,
         }
 
     def _is_manual_snapshot(self, contribution_key: str) -> bool:

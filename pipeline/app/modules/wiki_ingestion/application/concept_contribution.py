@@ -32,6 +32,8 @@ def build_concept_contributions(
         if source_key_points is not None
         else _normalized_source_key_points(normalized)
     )
+    # 집 페이지별 하위 항목 추가(ADR 0042). 세부 항목의 근거는 이미 집 페이지 개념의 근거로 옮겨 두었다.
+    entry_changes = normalized.get("entry_changes") or {}
     contributions: dict[str, dict[str, Any]] = {}
     for concept in normalized.get("concept_ledger", []):
         if not isinstance(concept, dict):
@@ -66,8 +68,9 @@ def build_concept_contributions(
                 "links": [
                     link
                     for link in links
-                    if _link_supports_concept(link, slug, document_id)
+                    if _link_supports_concept(link, slug)
                 ],
+                **({"entry_changes": entry_changes[slug]} if slug in entry_changes else {}),
             }
         )
     update_contributions = _concept_update_contributions(
@@ -133,6 +136,17 @@ def _concept_update_contributions(
         )
         source_block_ids = {ref.rsplit(":", 1)[-1] for ref in refs}
         existing_concept = concepts_by_slug.get(slug, {})
+        # 하위 항목이 된 개념을 가리킨 판정은 그 항목에 근거를 더한다(ADR 0042). 이름·위치는 처음 추가한 기여를 따른다.
+        entry_changes = [
+            {
+                "op": "add",
+                **value["entry"],
+                "anchor_reference_ids": list(value.get("refs", [])),
+                "evidence_claim_ids": [unit["evidence_id"]],
+            }
+            for value, unit in zip(values, evidence_units, strict=True)
+            if value.get("entry")
+        ]
         contributions[slug] = globalize_contribution_identity(
             {
                 "schema_version": 1,
@@ -158,8 +172,9 @@ def _concept_update_contributions(
                 "links": [
                     link
                     for link in links
-                    if _link_supports_concept(link, slug, document_id)
+                    if _link_supports_concept(link, slug)
                 ],
+                **({"entry_changes": entry_changes} if entry_changes else {}),
             }
         )
     return contributions
@@ -195,6 +210,12 @@ def _merge_contribution(
             [*base.get("links", []), *update.get("links", [])],
             "relation",
         ),
+        # 갱신 판정이 하위 항목에 더한 근거는 그 페이지 기여의 항목 변경 뒤에 붙인다.
+        **(
+            {"entry_changes": [*base.get("entry_changes", []), *update.get("entry_changes", [])]}
+            if base.get("entry_changes") or update.get("entry_changes")
+            else {}
+        ),
     }
 
 
@@ -205,10 +226,13 @@ def _unique_dicts(
     result: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for value in values:
+        # 하위 항목 참조는 같은 두 페이지 사이에도 항목마다 따로 둔다.
         key = (
             value.get(identity_field),
             value.get("source"),
             value.get("target"),
+            value.get("entry_id"),
+            value.get("parent_entry_id"),
         )
         if key not in seen:
             seen.add(key)
@@ -244,14 +268,5 @@ def _concept_block_ids(
     return list(dict.fromkeys(str(value) for value in values if value))
 
 
-def _link_supports_concept(
-    link: dict[str, Any],
-    concept_slug: str,
-    document_id: str,
-) -> bool:
-    source = str(link.get("source") or "")
-    target = str(link.get("target") or "")
-    concept_ref = f"concept:{concept_slug}"
-    return source == concept_ref or (
-        source == f"source:{document_id}" and target == concept_ref
-    )
+def _link_supports_concept(link: dict[str, Any], concept_slug: str) -> bool:
+    return str(link.get("source") or "") == f"concept:{concept_slug}"

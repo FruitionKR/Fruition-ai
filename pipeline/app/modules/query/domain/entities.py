@@ -45,6 +45,8 @@ class WikiEmbeddingUnit:
     source_block_ids: list[str]
     text: str
     weight: float = 1.0
+    # 하위 항목 단위·그 항목의 근거 단위(ADR 0042)면 "페이지 제목 > 상위 항목 > 항목". 페이지 단위면 None이다.
+    entry_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,8 @@ class EvidenceSnippet:
     source_block_ids: list[str]
     text: str
     source_refs: list[SourceReference] = field(default_factory=list)
+    # 근거가 하위 항목에서 왔으면 답변 모델이 어느 항목의 근거인지 보도록 "페이지 제목 > 상위 항목 > 항목"을 둔다.
+    entry_path: str | None = None
 
 
 @dataclass(frozen=True)

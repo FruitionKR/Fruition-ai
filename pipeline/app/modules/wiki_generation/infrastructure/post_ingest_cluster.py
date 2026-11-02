@@ -22,10 +22,10 @@ from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     embedding_server_model,
     vector_similarity,
 )
+from app.modules.wiki_ingestion.domain.concept_split_rules import cluster_reaches_promotion
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
-    MIN_PROMOTION_SOURCE_DOCUMENTS,
     cluster_claims,
-    cluster_source_document_ids,
+    cluster_detail_items,
     cluster_promotion_status,
     cluster_representative,
     cluster_sections_by_id,
@@ -49,7 +49,6 @@ def build_post_ingest_cluster_artifact(
     user_id: str,
     workspace_id: str,
     concept_update_decisions: list[dict[str, Any]],
-    core_relation_decisions: list[dict[str, Any]],
     core_concepts: list[dict[str, Any]] | None = None,
     concept_judge: JevConceptResolver | None = None,
 ) -> dict[str, Any]:
@@ -75,7 +74,6 @@ def build_post_ingest_cluster_artifact(
         "workspace_id": workspace_id,
         "cluster_decisions": cluster_decisions,
         "concept_update_decisions": concept_update_decisions,
-        "core_relation_decisions": core_relation_decisions,
     }
     artifact = assembler.build(normalized, **build_args)
     # 근거를 덧붙인 뒤의 클러스터를 보고 승격을 정한다.
@@ -85,27 +83,26 @@ def build_post_ingest_cluster_artifact(
     promotions = _core_concept_promotions(sections, core_concepts or [])
     if concept_judge is not None:
         promotions.update(_judged_core_concept_promotions(concept_judge, sections, core_concepts or [], promotions))
-    # 핵심 개념과 맞춘 클러스터는 그 개념이 나온 이번 문서까지 세어, 다른 문서 근거가 있을 때만 승격 후보로 둔다.
-    document_id = str((normalized.get("document") or {}).get("document_id") or "")
-    promotions = {
-        cluster_id: promotion
-        for cluster_id, promotion in promotions.items()
-        if len(cluster_source_document_ids(sections[cluster_id]) | {document_id}) >= MIN_PROMOTION_SOURCE_DOCUMENTS
-    }
-    # 승격 판정은 여러 문서에 근거가 쌓인 클러스터만 받는다. 한 문서에만 나온 용어는 판정하지 않는다.
+    # 승격 판정은 세부 항목이 P개 이상 모인 클러스터만 받는다(ADR 0042). 핵심 개념과 맞춘 클러스터는 새 페이지를
+    # 만들지 않고 그 개념에 병합하므로 개수를 보지 않는다.
     touched = [
         {"cluster_id": cluster["id"], "section": sections[cluster["id"]]}
         for cluster in artifact["clusters"]
         if cluster["id"] in sections
         and cluster["id"] not in promotions
         and cluster_promotion_status(sections[cluster["id"]]) != "candidate"
-        and len(cluster_source_document_ids(sections[cluster["id"]])) >= MIN_PROMOTION_SOURCE_DOCUMENTS
+        and _reaches_promotion(cluster["id"], sections[cluster["id"]])
     ]
     for cluster_id, reason in judge_cluster_promotions(completion=completion, clusters=touched).items():
         promotions[cluster_id] = _promotion(sections[cluster_id], reason)
     if not promotions:
         return artifact
     return assembler.build(normalized, **build_args, promotions=promotions)
+
+
+def _reaches_promotion(cluster_id: str, section: str) -> bool:
+    items = cluster_detail_items(cluster_id, cluster_representative(section), cluster_claims(section))
+    return cluster_reaches_promotion(len(items))
 
 
 def _core_concept_promotions(

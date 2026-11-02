@@ -322,60 +322,6 @@ def test_meaning_cluster_artifact_excludes_existing_concept_updates(tmp_path: Pa
     assert "claim_doc_001 -> concept:back-emf" in log_markdown
 
 
-def test_meaning_cluster_artifact_records_core_relation_candidates(tmp_path: Path) -> None:
-    normalized = {
-        "document": {
-            "document_id": "doc_a",
-            "source_path": "examples/motor.md",
-        },
-        "section_candidates": [
-            {
-                "term": "Rotor Magnet",
-                "slug": "rotor-magnet",
-                "context": "SPMSM의 회전자 자석 구성 요소다.",
-                "anchor_reference_ids": ["B0001"],
-            },
-        ],
-        "mentions": [],
-        "evidence_units": [],
-        "unresolved_related_concept_hints": [],
-    }
-
-    artifact = MeaningClusterArtifactAssembler().assemble(
-        normalized,
-        tmp_path,
-        user_id="user_1",
-        workspace_id="workspace_1",
-        cluster_decisions=[
-            {
-                "candidate_id": "cand_001",
-                "decision": "new_cluster",
-                "target_cluster_id": "rotor-magnet",
-                "representative": "Rotor Magnet",
-                "reason": "새 개념 후보",
-            }
-        ],
-        core_relation_decisions=[
-            {
-                "candidate_id": "cand_001",
-                "decision": "relation_candidate",
-                "concept_slug": "spmsm",
-                "relation": "part_of",
-                "reason": "회전자 자석은 SPMSM 구성 요소로 설명됨",
-            }
-        ],
-    )
-
-    active_markdown = (tmp_path / artifact["active_path"]).read_text(encoding="utf-8")
-    log_markdown = (tmp_path / artifact["log_path"]).read_text(encoding="utf-8")
-
-    assert "### Core Relation Candidates" in active_markdown
-    assert "target: concept:spmsm" in active_markdown
-    assert "relation: part_of" in active_markdown
-    assert "### Relation Candidates" in log_markdown
-    assert "cluster:rotor-magnet -> concept:spmsm" in log_markdown
-
-
 def test_meaning_cluster_artifact_excludes_refless_candidates_from_active(tmp_path: Path) -> None:
     normalized = {
         "document": {
@@ -443,7 +389,8 @@ def test_link_builder_does_not_materialize_weak_concept_edges() -> None:
 
     links = LinkBuilder().build(normalized)
 
-    assert {link["relation"] for link in links} == {"source_mentions_concept"}
+    # 약한 관계 링크도, 소스 → 개념 링크(문서 연결에서 파생, ADR 0042 결정 5)도 만들지 않는다.
+    assert links == []
 
 
 def test_link_builder_links_concepts_judged_link_to_including_existing_ones() -> None:

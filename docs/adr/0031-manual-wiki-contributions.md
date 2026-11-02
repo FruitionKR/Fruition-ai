@@ -22,6 +22,7 @@ Accepted
 - **링크**: 저장할 때 이전 본문과 새 본문의 `[[slug]]` 차이만 edge에 반영한다.
   - 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지운다.
   - 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다. 종류는 source 페이지면 `source_mentions_concept`, concept 페이지면 `related_to`다.
+  - source 페이지의 개념 링크(`source_mentions_concept`)는 자동 링크가 문서 연결에서 파생되므로(ADR 0042 결정 5) 사람이 쓴 추가·삭제를 `wiki_source_manual_links`에 수동 의도로 따로 남긴다. 자동 링크가 이미 있어도 새 slug는 수동 지원으로 남고, 수동 삭제는 자동 링크보다 우선한다. source 스냅샷 복원은 그 스냅샷까지의 수동 기여로 이 의도를 다시 재생한다.
   - 손대지 않은 링크와, 본문에 없던 기존 edge는 그대로 둔다.
   - 없는 slug는 본문에만 남긴다. slug는 정확히 일치해야 한다(제목으로 찾지 않는다).
 - **인용·임베딩**: 저장된 본문의 블록 참조로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다. 근거 문서 연결(`document_wiki_links`)은 바꾸지 않는다.

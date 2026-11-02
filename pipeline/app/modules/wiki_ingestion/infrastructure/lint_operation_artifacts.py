@@ -7,6 +7,11 @@ from typing import Any
 
 
 ArtifactWriter = Callable[[str, str, str], str]
+ENTRY_LINT_FIELDS = (
+    "entry_changes",
+    "split_from",
+    "linked_operation_ids",
+)
 
 
 def persist_lint_operation_artifacts(
@@ -18,16 +23,9 @@ def persist_lint_operation_artifacts(
 ) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     for change in page_changes:
-        action = str(change.get("content_action") or "none")
-        claims = [
-            claim
-            for claim in change.get("claims", [])
-            if isinstance(claim, dict)
-        ]
-        added_links = _dict_items(change.get("added_links", []))
-        removed_links = _dict_items(change.get("removed_links", []))
-        if action not in {"create", "append_evidence"} and not (
-            added_links or removed_links
+        payload = lint_contribution(operation_id, change)
+        if payload["content_action"] not in {"create", "append_evidence", "delete"} and not (
+            payload["added_links"] or payload["removed_links"] or any(payload.get(key) for key in ENTRY_LINT_FIELDS)
         ):
             raise ValueError("lint artifact must contain a replayable action")
 
@@ -44,15 +42,6 @@ def persist_lint_operation_artifacts(
             page_id,
             operation_id,
             "json",
-        )
-        payload = _lint_payload(
-            operation_id=operation_id,
-            page_id=page_id,
-            change=change,
-            action=action,
-            claims=claims,
-            added_links=added_links,
-            removed_links=removed_links,
         )
         write_text(
             markdown_key,
@@ -74,6 +63,19 @@ def persist_lint_operation_artifacts(
             }
         )
     return artifacts
+
+
+def lint_contribution(operation_id: str, change: dict[str, Any]) -> dict[str, Any]:
+    """페이지 변경 하나의 lint 기여 JSON. 저장하는 내용과 재생해 볼 내용이 같아야 해서 한 곳에서 만든다."""
+    return _lint_payload(
+        operation_id=operation_id,
+        page_id=str(change["page_id"]),
+        change=change,
+        action=str(change.get("content_action") or "none"),
+        claims=[claim for claim in change.get("claims", []) if isinstance(claim, dict)],
+        added_links=_dict_items(change.get("added_links", [])),
+        removed_links=_dict_items(change.get("removed_links", [])),
+    )
 
 
 def _lint_payload(
@@ -147,6 +149,8 @@ def _lint_payload(
         "removed_links": removed_links,
         # 이 페이지로 승격·병합하며 archived.md로 옮긴 클러스터. lint 복원이 active.md로 되돌린다.
         "archived_clusters": _dict_items(change.get("archived_clusters", [])),
+        # 하위 항목 재검사(ADR 0042)가 남긴 항목 변경·분리 기록. 있을 때만 싣는다.
+        **{key: change[key] for key in ENTRY_LINT_FIELDS if change.get(key)},
     }
 
 

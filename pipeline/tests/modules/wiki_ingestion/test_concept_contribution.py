@@ -39,16 +39,17 @@ def test_builds_only_current_ingest_concept_inputs_and_links() -> None:
         {"document_id": "doc-A", "block_id": "B0001", "text": "과거 블록"},
         {"document_id": "doc-A", "block_id": "B0002", "text": "A2 블록"},
     ]
+    # 개념 기여는 그 개념에서 나가는 링크만 가진다. 소스 → 개념 링크는 기록하지 않는다(ADR 0042 결정 5).
     links = [
         {
-            "source": "source:doc-A",
-            "target": "concept:shared",
-            "relation": "source_mentions_concept",
+            "source": "concept:shared",
+            "target": "concept:other",
+            "relation": "concept_related_to",
         },
         {
-            "source": "source:doc-A",
-            "target": "concept:unrelated",
-            "relation": "source_mentions_concept",
+            "source": "concept:unrelated",
+            "target": "concept:other",
+            "relation": "concept_related_to",
         },
     ]
 
@@ -206,9 +207,9 @@ def test_default_key_points_come_from_current_contribution_normalized() -> None:
 
 def test_saved_generation_input_rebuilds_evidence_and_source_key_points() -> None:
     link = {
-        "source": "source:doc-A",
-        "target": "concept:shared",
-        "relation": "source_mentions_concept",
+        "source": "concept:shared",
+        "target": "concept:other",
+        "relation": "concept_related_to",
     }
     contribution = build_concept_contributions(
         operation_id="op-A",

@@ -3,31 +3,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.modules.wiki_generation.domain.text_utils import name_key
 from app.modules.wiki_ingestion.domain.unit_text import clean_unit_text
-
-
-ALLOWED_CORE_RELATIONS = {
-    "part_of",
-    "child_of",
-    "uses_or_depends_on",
-    "contrasts_with",
-    "supports_or_enables",
-    "related_evidence",
-}
-MATERIALIZED_CORE_RELATIONS = ALLOWED_CORE_RELATIONS - {"related_evidence"}
 
 
 def parse_active_cluster_lint(markdown: str) -> list[dict[str, Any]]:
     clusters = []
     for cluster_id, section in cluster_sections_by_id(markdown).items():
-        relations, invalid_relations = cluster_relation_items(section)
         cluster = {
             "id": cluster_id,
             "representative": cluster_representative(section),
             "refs": refs_in_text(section),
             "claims": cluster_claims(section),
-            "relations": relations,
-            "invalid_relations": invalid_relations,
             "promotion_status": cluster_promotion_status(section),
             "promotion_source_refs": cluster_promotion_source_refs(section),
             "promotion_target": cluster_promotion_target(section),
@@ -64,11 +51,9 @@ def reconcile_active_cluster_invalidations(
     markdown: str,
     invalidated_refs: set[str],
     current_claim_signatures: set[tuple[str, str, str]],
-    current_relation_signatures: set[tuple[str, str, str, tuple[str, ...]]],
-) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]]]:
     sections = cluster_sections_by_id(markdown)
     removed_claims: list[dict[str, Any]] = []
-    removed_relations: list[dict[str, Any]] = []
     changed = False
     for cluster_id, section in sections.items():
         original_section = section
@@ -86,25 +71,13 @@ def reconcile_active_cluster_invalidations(
                 stale_claim_ids,
             )
             removed_claims.extend(claims)
-        section, relations = _remove_stale_cluster_relations(
-            section,
-            cluster_id,
-            stale_claim_ids,
-            invalidated_refs,
-            current_relation_signatures,
-        )
-        removed_relations.extend(relations)
         changed = changed or section != original_section
         sections[cluster_id] = section
     if not changed:
-        return markdown, [], []
+        return markdown, []
     lines = ["# Active Meaning Clusters"]
     lines.extend(sections[cluster_id].strip() for cluster_id in sorted(sections))
-    return (
-        "\n\n".join(lines).rstrip() + "\n",
-        removed_claims,
-        removed_relations,
-    )
+    return "\n\n".join(lines).rstrip() + "\n", removed_claims
 
 
 def restore_archived_cluster_sections(
@@ -158,17 +131,22 @@ def refs_in_text(text: str) -> list[str]:
     return _unique_keep_order(re.findall(ref_pattern, text))
 
 
-# 승격은 여러 문서에 반복해 나오는 용어를 개념으로 올린다. 근거 문서가 이보다 적은 클러스터는 승격 후보가 될 수 없다.
-MIN_PROMOTION_SOURCE_DOCUMENTS = 2
+def cluster_detail_items(cluster_id: str, representative: str, claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """클러스터에 모인 세부 항목(ADR 0042의 하위 분류). 승격하면 개념 페이지의 하위 항목이 된다.
 
-
-def source_document_ids(refs: list[str]) -> set[str]:
-    """`문서ID:블록ID` 근거에서 문서 ID만 모은다."""
-    return {ref.split(":", 1)[0] for ref in refs if ":" in ref}
-
-
-def cluster_source_document_ids(section: str) -> set[str]:
-    return source_document_ids([ref for claim in cluster_claims(section) for ref in claim["refs"]])
+    세부 항목은 편입 후보 근거 줄(`claim_*: {용어} - {원문}`)의 용어를 이름 정규화(`name_key`)로 묶은 것이다.
+    클러스터 자신의 이름(id·대표명)과 같은 용어는 대분류 자신이라 빼고, 용어가 없는 근거 줄(`ev_*`, 근거 주장)은
+    클러스터 자신의 근거로 본다. 결과는 처음 나온 순서이고, 이름·정의는 처음 나온 줄의 용어·원문이다.
+    """
+    own = {name_key(cluster_id), name_key(representative)}
+    items: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        term, separator, context = str(claim.get("claim") or "").partition(" - ")
+        key = name_key(term)
+        if not str(claim.get("id") or "").startswith("claim_") or not separator or not key or key in own:
+            continue
+        items.setdefault(key, {"name": term.strip(), "definition": context.strip(), "claims": []})["claims"].append(claim)
+    return list(items.values())
 
 
 def cluster_claims(section: str) -> list[dict[str, str]]:
@@ -191,64 +169,6 @@ def cluster_claims(section: str) -> list[dict[str, str]]:
         if current_claim and stripped.startswith("cluster_decision:"):
             current_claim["decision"] = stripped.split(":", 1)[1].strip()
     return claims
-
-
-def cluster_relations(section: str) -> list[dict[str, Any]]:
-    relations, _invalid = cluster_relation_items(section)
-    return relations
-
-
-def cluster_relation_items(section: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    relations: list[dict[str, Any]] = []
-    invalid: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    in_relations = False
-
-    def finish_current() -> None:
-        nonlocal current
-        if not current:
-            return
-        target = str(current.get("target") or "").strip()
-        relation = str(current.get("relation") or "").strip()
-        evidence = [str(item).strip() for item in current.get("evidence", []) if str(item).strip()]
-        reason = str(current.get("reason") or "").strip()
-        item = {"target": target, "relation": relation, "evidence": evidence, "reason": reason}
-        if target and relation in ALLOWED_CORE_RELATIONS and evidence:
-            relations.append(item)
-        else:
-            missing = []
-            if not target:
-                missing.append("target")
-            if relation not in ALLOWED_CORE_RELATIONS:
-                missing.append("relation")
-            if not evidence:
-                missing.append("evidence")
-            item["missing"] = missing
-            invalid.append(item)
-        current = None
-
-    for line in section.splitlines():
-        stripped = line.strip()
-        if stripped == "### Core Relation Candidates":
-            in_relations = True
-            continue
-        if in_relations and stripped.startswith("### "):
-            finish_current()
-            break
-        if not in_relations:
-            continue
-        if stripped.startswith("- target:"):
-            finish_current()
-            current = {"target": stripped.split(":", 1)[1].strip(), "relation": "", "evidence": []}
-        elif current and stripped.startswith("relation:"):
-            current["relation"] = stripped.split(":", 1)[1].strip()
-        elif current and stripped.startswith("evidence:"):
-            current["evidence"] = [part.strip() for part in stripped.split("[", 1)[-1].rstrip("]").split(",") if part.strip()]
-        elif current and stripped.startswith("reason:"):
-            current["reason"] = stripped.split(":", 1)[1].strip()
-    if in_relations:
-        finish_current()
-    return relations, invalid
 
 
 def cluster_promotion_status(section: str) -> str:
@@ -331,7 +251,6 @@ def merge_cluster_section(existing: str, incoming: str) -> str:
         insert_at += 1
         existing_claims.add(claim.strip())
 
-    merge_relation_candidate_section(merged_lines, incoming_lines)
     promotion = section_from_heading(incoming_lines, "### Promotion")
     # 이미 승격 후보인 클러스터는 그대로 두고, 그 밖의 승격 상태는 새 판정으로 바꾼다.
     if promotion and cluster_promotion_status(existing) != "candidate":
@@ -382,30 +301,6 @@ def merge_heading_section(merged_lines: list[str], existing: str, incoming_lines
             existing_entries.add(line.strip())
 
 
-def merge_relation_candidate_section(merged_lines: list[str], incoming_lines: list[str]) -> None:
-    incoming_section = section_from_heading(incoming_lines, "### Core Relation Candidates")
-    if not incoming_section:
-        return
-    existing_relations, _existing_invalid = cluster_relation_items("\n".join(merged_lines))
-    incoming_relations, _incoming_invalid = cluster_relation_items("\n".join(incoming_section))
-    relations_by_key = {
-        relation_item_key(item): item
-        for item in existing_relations
-    }
-    for item in incoming_relations:
-        relations_by_key.setdefault(relation_item_key(item), item)
-    replacement = relation_items_to_lines(list(relations_by_key.values()))
-    replace_heading_section(merged_lines, "### Core Relation Candidates", replacement)
-
-
-def relation_item_key(item: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
-    return (
-        str(item.get("target") or ""),
-        str(item.get("relation") or ""),
-        tuple(sorted(str(evidence) for evidence in item.get("evidence", []))),
-    )
-
-
 def _claim_signature(
     cluster_id: str,
     claim: dict[str, Any],
@@ -414,18 +309,6 @@ def _claim_signature(
         cluster_id,
         str(claim.get("id") or ""),
         str(claim.get("text") or ""),
-    )
-
-
-def _relation_signature(
-    cluster_id: str,
-    relation: dict[str, Any],
-) -> tuple[str, str, str, tuple[str, ...]]:
-    return (
-        cluster_id,
-        str(relation.get("target") or ""),
-        str(relation.get("relation") or ""),
-        tuple(str(item) for item in relation.get("evidence", [])),
     )
 
 
@@ -460,88 +343,6 @@ def _remove_cluster_claims(
         for claim_id, claim in claims.items()
     ]
     return "\n".join(kept).strip(), removed
-
-
-def _remove_stale_cluster_relations(
-    section: str,
-    cluster_id: str,
-    stale_claim_ids: set[str],
-    invalidated_refs: set[str],
-    current_relation_signatures: set[tuple[str, str, str, tuple[str, ...]]],
-) -> tuple[str, list[dict[str, Any]]]:
-    relations, invalid_relations = cluster_relation_items(section)
-    kept: list[dict[str, Any]] = []
-    removed: list[dict[str, Any]] = []
-    changed = False
-    for relation in relations:
-        signature = _relation_signature(cluster_id, relation)
-        stale_evidence = [
-            evidence
-            for evidence in relation.get("evidence", [])
-            if evidence in stale_claim_ids
-            or (
-                evidence in invalidated_refs
-                and signature not in current_relation_signatures
-            )
-        ]
-        if stale_evidence and len(stale_evidence) == len(relation.get("evidence", [])):
-            removed.append({"cluster_id": cluster_id, **relation})
-            changed = True
-        elif stale_evidence:
-            kept.append(
-                {
-                    **relation,
-                    "evidence": [
-                        evidence
-                        for evidence in relation.get("evidence", [])
-                        if evidence not in stale_evidence
-                    ],
-                }
-            )
-            changed = True
-        else:
-            kept.append(relation)
-    if not changed:
-        return section, []
-    lines = section.splitlines()
-    replace_heading_section(
-        lines,
-        "### Core Relation Candidates",
-        relation_items_to_lines([*kept, *invalid_relations]),
-    )
-    return "\n".join(lines).strip(), removed
-
-
-def relation_items_to_lines(items: list[dict[str, Any]]) -> list[str]:
-    if not items:
-        return []
-    lines = ["### Core Relation Candidates"]
-    for item in items:
-        lines.extend(
-            [
-                f"- target: {item.get('target')}",
-                f"  relation: {item.get('relation')}",
-                f"  evidence: [{', '.join(item.get('evidence', []))}]",
-                f"  reason: {item.get('reason') or '-'}",
-            ]
-        )
-    return lines
-
-
-def replace_heading_section(lines: list[str], heading: str, replacement: list[str]) -> None:
-    start = next((index for index, line in enumerate(lines) if line.strip() == heading), -1)
-    if start >= 0:
-        end = start + 1
-        while end < len(lines) and not lines[end].startswith("### "):
-            end += 1
-        lines[start:end] = replacement
-        return
-    if not replacement:
-        return
-    insert_at = next((index for index, line in enumerate(lines) if line.strip() == "### Promotion"), len(lines))
-    if insert_at > 0 and lines[insert_at - 1].strip():
-        replacement = ["", *replacement]
-    lines[insert_at:insert_at] = replacement
 
 
 def claim_insert_index(lines: list[str]) -> int:

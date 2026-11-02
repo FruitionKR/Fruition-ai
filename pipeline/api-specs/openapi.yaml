@@ -2337,29 +2337,39 @@ components:
         cluster_count:
           title: Cluster Count
           type: integer
+        deferred_entry_pages:
+          items:
+            type: string
+          title: Deferred Entry Pages
+          type: array
+        deleted_pages:
+          items:
+            type: string
+          title: Deleted Pages
+          type: array
+        entry_decisions:
+          items:
+            additionalProperties: true
+            type: object
+          title: Entry Decisions
+          type: array
         invalid_promotions:
           items:
             additionalProperties: true
             type: object
           title: Invalid Promotions
           type: array
-        invalid_relations:
+        ledger_contributions:
           items:
             additionalProperties: true
             type: object
-          title: Invalid Relations
+          title: Ledger Contributions
           type: array
         materialized_promotions:
           items:
             additionalProperties: true
             type: object
           title: Materialized Promotions
-          type: array
-        materialized_relations:
-          items:
-            additionalProperties: true
-            type: object
-          title: Materialized Relations
           type: array
         merged_promotions:
           items:
@@ -2405,12 +2415,6 @@ components:
             type: object
           title: Reconciliation Candidates
           type: array
-        relation_candidates:
-          items:
-            additionalProperties: true
-            type: object
-          title: Relation Candidates
-          type: array
         removed_orphan_links:
           items:
             additionalProperties: true
@@ -2435,15 +2439,12 @@ components:
       - orphan_refs
       - promotion_candidates
       - needs_review
-      - relation_candidates
-      - invalid_relations
       - invalid_promotions
       - reconciliation_candidates
       - applied_reconciliations
       - applied_cluster_reconciliation
       - materialized_promotions
       - merged_promotions
-      - materialized_relations
       title: WikiLintOut
       type: object
     WikiPageLookupIn:

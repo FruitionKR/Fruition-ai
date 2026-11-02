@@ -75,6 +75,33 @@ def test_two_members_ingesting_same_document_and_concept_share_one_page(scoped_d
     ]
 
 
+def test_ingest_links_each_document_to_its_ledger_concepts_including_existing_ones(scoped_dsn, monkeypatch):
+    # 편입 개념 목록의 페이지(새 개념, 기존 개념에 병합한 개념, 집으로 넣은 기존 페이지 모두 같은 목록이다)마다
+    # 소스 → 개념 링크가 문서 연결에서 파생된다(ADR 0042 결정 5). LinkBuilder는 이 링크를 만들지 않는다.
+    stored: dict[str, str] = {}
+    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda markdown, key: stored.setdefault(key, markdown) and key)
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
+
+    for document_id in ("doc-1", "doc-2", "doc-2"):
+        manifest = _manifest("member-a", f"{document_id} 근거")
+        manifest["normalized"]["document"]["document_id"] = document_id
+        with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+            persistence.persist_wiki_outputs(conn, document_id, manifest)
+
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        rows = conn.execute(
+            """
+            SELECT source.slug AS source, concept.slug AS concept
+            FROM wiki_page_links link
+            JOIN wiki_pages source ON source.id = link.from_page_id
+            JOIN wiki_pages concept ON concept.id = link.to_page_id
+            WHERE link.link_type = 'source_mentions_concept'
+            ORDER BY source.slug
+            """
+        ).fetchall()
+    assert [(row["source"], row["concept"]) for row in rows] == [("doc-1", "shared"), ("doc-2", "shared")]
+
+
 def _legacy_wiki_pages(conn: psycopg.Connection) -> None:
     conn.execute("ALTER TABLE wiki_pages DROP CONSTRAINT uq_wiki_pages_workspace_page_type_slug")
     conn.execute(
@@ -166,6 +193,8 @@ def test_restoring_source_page_to_earlier_ingest_keeps_filename_title(scoped_dsn
     monkeypatch.setattr(database, "connect", lambda: psycopg.connect(scoped_dsn, row_factory=dict_row))
     monkeypatch.setattr(database, "read_text_object", lambda uri: stored[uri.removeprefix("s3://wiki-bucket/")])
     monkeypatch.setattr(database, "invalidate_concept_index", lambda _workspace_id: None)
+    # 소스 스냅샷 복원은 수동 링크 의도를 원장의 수동 기여로 다시 재생한다. 이 문서에는 수동 기여가 없다.
+    monkeypatch.setattr(database, "read_contributions", lambda *_args: [])
     database.apply_restored_wiki_state(
         "workspace-1",
         [restored],
