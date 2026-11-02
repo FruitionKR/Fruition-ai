@@ -7,6 +7,7 @@ from app.modules.markdown_edit.application.generate_markdown_edit import (
 )
 from app.modules.markdown_edit.domain.entities import (
     MarkdownCreateRequest,
+    MarkdownEditDetail,
     MarkdownEditRequest,
     MarkdownEditTarget,
 )
@@ -615,6 +616,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="# 안내\n\n기존 내용입니다.",
                 target=target,
                 edit_goal="other",
+                detail=MarkdownEditDetail(addition_only=True),
             )
         )
 
@@ -652,11 +654,29 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="# 설치 안내\n\n기존 절차입니다.",
                 target=target,
                 edit_goal="convert_format",
+                detail=MarkdownEditDetail(addition_only=True),
             )
         )
 
         self.assertIn("기존 절차입니다.", result.edit.replacement_markdown)
         self.assertEqual(len(client.calls), 2)
+
+    def test_html_allowance_is_limited_to_the_replaced_range(self) -> None:
+        # 앞뒤 문맥에 있는 `<br />`는 교체 범위의 허용량이 아니다. 선택 영역에 복제하면 새 HTML이다.
+        source = "<br />\n\n선택한 문장\n\n<br />"
+        target = MarkdownEditTarget(type="selection", start_line=3, end_line=3)
+        client = SequenceJsonClient([
+            response("선택한 문장\n<br />", actual_target={"type": "selection", "start_line": 3, "end_line": 3}),
+            response("다듬은 문장", actual_target={"type": "selection", "start_line": 3, "end_line": 3}),
+        ])
+
+        result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(
+            MarkdownEditRequest(instruction="문장을 다듬어줘.", markdown=source, target=target, edit_goal="other"),
+        )
+
+        retry_payload = json.loads(client.calls[1][1])
+        self.assertIn("raw HTML and MDX are not supported", retry_payload["contract_failures"])
+        self.assertEqual(result.edit.replacement_markdown, "다듬은 문장")
 
     def test_allows_explicit_task_marker_change(self) -> None:
         client = SequenceJsonClient(
@@ -679,6 +699,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                 markdown="- [ ] Open item\n- [x] Done item",
                 target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=2),
                 edit_goal="style_change",
+                detail=MarkdownEditDetail(structure_change=True),
             )
         )
 
@@ -1226,6 +1247,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             markdown="설치한 다음 테스트한다.",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("numbered_list",)),
         )
 
         result = editor.generate_edit(request)
@@ -1273,6 +1295,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             markdown="E = mc^2",
             target=TARGET,
             edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("display_math",)),
         )
 
         with self.assertRaises(MarkdownOutputContractError) as raised:

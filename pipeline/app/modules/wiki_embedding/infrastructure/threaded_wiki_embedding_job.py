@@ -13,6 +13,7 @@ from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import (
     BgeM3EmbeddingModel,
 )
+from app.modules.wiki_embedding.infrastructure.concept_embedding_cache import embed_cached
 from app.modules.wiki_embedding.infrastructure.minio_markdown_reader import (
     MinioMarkdownReader,
 )
@@ -120,10 +121,25 @@ class SynchronousWikiEmbeddingJob:
         )
 
 
+class _TruncatedInputReuse:
+    """페이지 전체 텍스트를 임베딩하되, 모델이 보는 잘린 입력이 같으면 작업 범위 DB 캐시의 벡터를 쓴다.
+    긴 페이지는 최대 토큰 뒤쪽만 바뀌어도 해시가 달라져 CPU에서 페이지당 십수 초를 다시 계산했다."""
+
+    def __init__(self, model: BgeM3EmbeddingModel) -> None:
+        self._model = model
+
+    @property
+    def model_name(self) -> str:
+        return self._model.model_name
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return embed_cached(self._model, texts, [self._model.input_key(text) for text in texts])
+
+
 def build_wiki_page_embeddings(page_ids: list[str]) -> dict[str, int]:
     return BuildWikiPageEmbeddingsUseCase(
         repository=PostgresWikiPageEmbeddingRepository(),
-        embedding_model=_embedding_model(),
+        embedding_model=_TruncatedInputReuse(_embedding_model()),
         markdown_reader=MinioMarkdownReader(),
     ).execute(page_ids)
 

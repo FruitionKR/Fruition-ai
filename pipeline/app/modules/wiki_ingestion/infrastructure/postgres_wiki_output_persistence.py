@@ -53,7 +53,6 @@ from app.modules.wiki_ingestion.infrastructure.wiki_persistence_payload import (
     markdown_title,
     page_payload,
     resolve_page_id,
-    source_summary,
 )
 
 # 재생 결과 페이지를 DB에 반영하는 함수(복구와 같은 `_apply_restored_wiki_state`). 저장소 모듈이 넘긴다.
@@ -518,7 +517,8 @@ def _persist_source_page(
         "source",
         source_title,
         document_id,
-        source_summary(normalized, manifest),
+        # 소스 페이지 요약은 두지 않는다. 검색(Jev 평가셋 근거·정답 블록 적중)에서 효용이 확인되지 않았다.
+        "",
         source_markdown_uri,
         user_id,
         workspace_id,

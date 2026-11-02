@@ -157,6 +157,23 @@ class JevClientTest(unittest.TestCase):
         self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "include")
         self.assertEqual(len(requests), 2)
 
+    def test_batch_retries_transient_transport_errors(self) -> None:
+        for error in (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError):
+            with self.subTest(error=error):
+                requests = []
+                client = _client(error("closed"), httpx.Response(200, json=_answer()), requests=requests)
+                self.assertEqual(client.choose(STATE, QUESTIONS)["q0"]["choice"], "include")
+                self.assertEqual(len(requests), 2)
+
+    def test_transport_retries_are_bounded_and_interactive_stays_fast(self) -> None:
+        for deadline, attempts in ((None, 4), (15.0, 1)):
+            requests = []
+            client = _client(*(httpx.RemoteProtocolError("closed") for _ in range(attempts)),
+                             requests=requests, deadline_seconds=deadline)
+            with self.assertRaises(JevUnavailable):
+                client.choose(STATE, QUESTIONS)
+            self.assertEqual(len(requests), attempts)
+
     def test_interactive_client_does_not_retry_timeouts(self) -> None:
         requests: list[httpx.Request] = []
         client = _client(httpx.ReadTimeout("slow"), requests=requests, deadline_seconds=15.0)

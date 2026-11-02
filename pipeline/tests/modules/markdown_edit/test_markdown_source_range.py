@@ -1,6 +1,6 @@
 import unittest
 
-from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
+from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
 from app.modules.markdown_edit.infrastructure.markdown_source_range import (
     apply_source_range_response,
     build_source_range_plan,
@@ -138,9 +138,25 @@ class MarkdownSourceRangeTest(unittest.TestCase):
             markdown="회귀 테스트가 중요하다.",
             target=TARGET,
             edit_goal="style_change",
+            detail=MarkdownEditDetail(requested_formats=("bold",)),
         )
 
         self.assertIsNone(build_source_range_plan(request))
+
+    def test_translation_requires_only_segments_not_in_classified_target_language(self) -> None:
+        request = MarkdownEditRequest(
+            instruction="이 문서를 번역해줘.",
+            markdown="배포 안내\n\nDeploy guide",
+            target=TARGET,
+            edit_goal="translate",
+            detail=MarkdownEditDetail(target_language="en"),
+        )
+
+        plan = build_source_range_plan(request)
+
+        assert plan is not None
+        required = {segment.text for segment in plan.segments if segment.id in plan.required_segment_ids}
+        self.assertEqual(required, {"배포 안내"})
 
     def test_falls_back_when_parser_text_cannot_map_to_original_source(self) -> None:
         request = MarkdownEditRequest(
