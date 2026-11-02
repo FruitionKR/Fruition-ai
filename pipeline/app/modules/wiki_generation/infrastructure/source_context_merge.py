@@ -18,8 +18,9 @@ def active_source_artifact(
         return None
     active_refs = set(active_block_ids)
     result = copy.deepcopy(source_artifact)
+    # 이전 산출물에 남은 요약은 넘기지 않는다(소스 페이지 요약은 두지 않는다).
+    result.pop("summary", None)
     if not current_has_blocks:
-        result["summary"] = ""
         for field in (
             "key_points",
             "categories",
@@ -93,7 +94,6 @@ def source_page_context_normalized(normalized: dict[str, Any], source_artifact: 
     ]
     result["mentions"] = _merge_term_items(existing_mentions, new_mentions, "name")
     result["existing_source_context"] = {
-        "summary": source_artifact.get("summary") or "",
         "source_markdown": source_artifact.get("source_markdown") or "",
     }
     return result
@@ -125,12 +125,12 @@ def _existing_source_context_note(source_artifact: dict[str, Any]) -> dict[str, 
         for item in source_artifact.get("key_points", [])
         if item.get("text")
     ]
-    summary = str(source_artifact.get("summary") or "")
-    if not key_points and not summary:
+    # 소스 페이지 요약은 두지 않는다(검색 효용이 없고 재편입마다 문단이 쌓였다). 이전 산출물의 summary도 읽지 않는다.
+    if not key_points:
         return None
     return {
         "chunk_id": "existing_source_page",
-        "semantic_summary": summary,
+        "semantic_summary": "",
         "key_points": key_points,
     }
 

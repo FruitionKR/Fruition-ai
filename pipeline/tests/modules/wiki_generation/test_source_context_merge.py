@@ -40,7 +40,7 @@ def test_active_source_artifact_removes_invalidated_block_contributions() -> Non
     assert [item["term"] for item in result["categories"]] == ["유지 분류"]
     assert result["core_concepts"][0]["evidence_block_ids"] == ["B0001"]
     assert result["evidence_claims"] == []
-    assert result["summary"] == "기존 요약"
+    assert "summary" not in result
 
 
 def test_active_source_artifact_preserves_unreferenced_contributions() -> None:
@@ -61,7 +61,7 @@ def test_active_source_artifact_preserves_unreferenced_contributions() -> None:
     )
 
     assert result is not None
-    assert result["summary"] == "기존 전체 요약"
+    assert "summary" not in result
     assert result["categories"] == ["legacy-category"]
     assert result["observations"] == [{"summary": "참조 없는 기존 관찰"}]
 
@@ -80,7 +80,7 @@ def test_active_source_artifact_clears_all_contributions_without_active_blocks()
     )
 
     assert result is not None
-    assert result["summary"] == ""
+    assert "summary" not in result
     assert result["key_points"] == []
     assert result["categories"] == []
 
@@ -99,7 +99,7 @@ def test_active_source_artifact_preserves_unreferenced_context_when_all_blocks_c
     )
 
     assert result is not None
-    assert result["summary"] == "기존 전체 요약"
+    assert "summary" not in result
     assert result["key_points"] == []
     assert result["categories"] == ["legacy-category"]
 
