@@ -15,7 +15,9 @@ def build_concept_contributions(
     links: list[dict[str, Any]],
     source_key_points: list[dict[str, Any]] | None = None,
     concept_update_decisions: list[dict[str, Any]] | None = None,
+    invalidated_block_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    """`invalidated_block_ids`는 재편입의 수정·삭제 블록이다. 기여마다 남겨 재생이 그 블록의 옛 근거를 빼게 한다."""
     document_id = str(normalized.get("document", {}).get("document_id") or "")
     evidence_by_id = {
         str(item.get("evidence_id")): item
@@ -86,6 +88,10 @@ def build_concept_contributions(
         contributions[slug] = (
             _merge_contribution(existing, update) if existing else update
         )
+    if invalidated_block_ids:
+        invalidated = [f"{document_id}:{block_id}" for block_id in invalidated_block_ids]
+        for contribution in contributions.values():
+            contribution["invalidated_reference_ids"] = invalidated
     return contributions
 
 

@@ -1154,6 +1154,9 @@ def run_pipeline(
                     "concept_update_decisions",
                     [],
                 ),
+                invalidated_block_ids=(
+                    source_changes.invalidated_block_ids if source_changes is not None else None
+                ),
             )
             if args.operation_id
             else {},

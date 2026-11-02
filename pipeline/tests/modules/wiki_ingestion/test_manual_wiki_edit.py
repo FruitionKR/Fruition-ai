@@ -292,7 +292,7 @@ def test_finish_pipeline_run_reads_manual_body_before_lock(monkeypatch) -> None:
         events.append("lock")
         yield
 
-    def persist(_conn, _document_id, _manifest, manual_source_markdown):
+    def persist(_conn, _document_id, _manifest, manual_source_markdown, **_kwargs):
         events.append(f"persist:{manual_source_markdown}")
         raise RuntimeError("stop")
 
