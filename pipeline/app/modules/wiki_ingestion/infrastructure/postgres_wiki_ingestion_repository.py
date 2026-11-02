@@ -787,6 +787,7 @@ REQUIRED_TABLES = (
     "wiki_page_embeddings",
     "wiki_embedding_vectors",
     "wiki_embedding_units",
+    "concept_embedding_cache",
 )
 
 AGENT_REQUIRED_TABLES = (

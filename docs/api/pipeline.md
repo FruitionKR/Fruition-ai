@@ -882,3 +882,5 @@ curl -X GET "$PIPELINE/health"
 [↑ 요약으로 돌아가기](#summary-get-health)
 
 </details>
+
+후처리 run의 manifest에는 `stage_timings`를 기록한다. 각 행은 `stage`, `attempt`, `elapsed_seconds`, `status`이며 실제 수행한 단계만 기록하고 재시도·실패 시간도 보존한다. 클러스터 판정·저장, 임베딩, 평가 질문 생성, 검색 준비·질문별 검색, 근거 평가를 구분하며 큐 대기나 전체 처리 시간과는 다르다. 차등 편입의 평가 질문은 기존 3문항 안에서 추가·수정 블록과 유지 블록을 함께 포함한다. 인용 검증 후 이 범위를 충족하지 못하면 `needs_review`로 남기며 질문 생성을 추가 호출하지 않는다.
