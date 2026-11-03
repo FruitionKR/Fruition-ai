@@ -832,6 +832,7 @@ AI_DB_REQUIRED_TABLES = (
     *REQUIRED_TABLES,
     "wiki_schemas",
     "document_derived_state",
+    "document_quality_reviews",
     "wiki_pending_contributions",
     "wiki_source_tombstones",
     *AGENT_REQUIRED_TABLES,
@@ -1443,6 +1444,7 @@ def finish_pipeline_run(
                     "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
                     (workspace_id, document_id),
                 )
+                _reset_document_quality_review(conn, str(document_id), str(workspace_id), run_id)
                 embedded_page_ids = _persist_wiki_outputs(
                     conn, document_id, manifest, manual_source_markdown,
                     apply_rebuilt_pages=_apply_restored_wiki_state,
@@ -1534,10 +1536,29 @@ def checkpoint_pipeline_run(run_id: str, manifest: dict[str, Any]) -> None:
         )
 
 
+def _reset_document_quality_review(conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str) -> None:
+    """문서의 품질 상태를 이번 편입 기준으로 비운다. 옛 편입의 평가 결과는 더 이상 이 문서의 상태가 아니다."""
+    conn.execute(
+        """
+        INSERT INTO document_quality_reviews (document_id, workspace_id, ingest_run_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (document_id) DO UPDATE
+        SET workspace_id = EXCLUDED.workspace_id,
+            ingest_run_id = EXCLUDED.ingest_run_id,
+            post_ingest_run_id = NULL,
+            status = NULL,
+            evaluations = '[]'::jsonb,
+            updated_at = now()
+        """,
+        (document_id, workspace_id, run_id),
+    )
+
+
 def update_pipeline_run_post_ingest(
     run_id: str,
     values: dict[str, Any],
 ) -> None:
+    evaluations = (values.get("result") or {}).get("wiki_quality_evaluations")
     with connect() as conn:
         conn.execute(
             """
@@ -1551,6 +1572,18 @@ def update_pipeline_run_post_ingest(
             WHERE id = %s
             """,
             (Json(values), run_id),
+        )
+        # 이 편입이 아직 문서의 최신 편입일 때만 바꾼다. 다시 편입한 뒤 늦게 끝난 옛 post_ingest는 새 상태를 덮지 않는다.
+        conn.execute(
+            """
+            UPDATE document_quality_reviews
+            SET post_ingest_run_id = %s,
+                status = %s,
+                evaluations = COALESCE(%s::jsonb, '[]'::jsonb),
+                updated_at = now()
+            WHERE ingest_run_id = %s
+            """,
+            (values.get("run_id"), values.get("status"), Json(evaluations) if evaluations is not None else None, run_id),
         )
 
 

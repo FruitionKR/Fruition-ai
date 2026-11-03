@@ -641,7 +641,7 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 넘기고, 페이지를 지울지는 ai 재생이 정한다(클러스터 승격 페이지는 lint 기록의 근거로 남는다. 분리·링크 lint 기록만 남은 페이지는 재생이
 지우고 응답 `deleted_pages`로 돌려준다).
 
-post_ingest 검색 품질 평가에서 떨어진 문항도 보고만 한다(고치지 않는다). 문서마다 최신 성공 run의 `post_ingest.status`가
+post_ingest 검색 품질 평가에서 떨어진 문항도 보고만 한다(고치지 않는다). 문서마다 최신 성공 편입의 품질 상태(`document_quality_reviews.status`)가
 `needs_review`인 문서만 보며, 다시 편입해 통과했거나 휴지통으로 옮긴 문서는 뺀다. 응답 `quality_review_candidates`의 각 행은
 `document_id`·`post_ingest_run_id`·`question`·`failure_type`·`gold_source_refs`·`missing_claims`·`reason`이다. `failure_type`은
 `question`(평가 질문이 나쁨), `contradictory`(어긋나는 근거가 검색됨), `not_in_wiki`(정답 원문 블록을 근거로 가진 활성 페이지 검색
