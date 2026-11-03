@@ -61,6 +61,22 @@ def test_native_journal_rolls_back_all_completed_steps(journal_database):
     journal.rollback("run")
 
 
+def test_cancelled_ingest_rolls_back_its_pending_contribution(journal_database):
+    # 원장에 오르기 전에 취소한 편입의 대기 기여가 남으면 다른 작업이 취소된 근거를 다시 그린다.
+    connect = journal_database
+    with connect() as conn:
+        insert_page(conn)
+    journal.register(command())
+    with connect() as conn:
+        conn.execute("SELECT set_config('app.ai_task_run_id', 'run', true)")
+        conn.execute("INSERT INTO wiki_pending_contributions(page_id, operation_id, workspace_id, document_id, object_key) "
+                     "VALUES ('page', 'op', 'ws', 'doc', 'wiki/ws/pages/page/ops/op.json')")
+    journal.request_cancel("run", "ws", "user")
+    journal.rollback("run")
+    with connect() as conn:
+        assert conn.execute("SELECT * FROM wiki_pending_contributions").fetchall() == []
+
+
 def test_native_journal_preserves_later_change(journal_database):
     connect = journal_database
     with connect() as conn:

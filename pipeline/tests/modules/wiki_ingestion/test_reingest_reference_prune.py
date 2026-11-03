@@ -1,6 +1,8 @@
 """재편입의 참조 정리가 이번 편입이 이미 쓴 다른 페이지를 이번 기여 없는 이전 상태로 되돌리지 않는다."""
 from types import SimpleNamespace
 
+import pytest
+
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
@@ -25,6 +27,13 @@ class _Conn:
 
     def execute(self, sql, params=None):
         return _Rows(self._results.pop(0))
+
+
+@pytest.fixture(autouse=True)
+def _no_pending_rows(monkeypatch):
+    # 다른 작업의 원장 반영 대기 기여는 test_reingest_ledger_lag가 실제 PostgreSQL로 본다. 가짜 연결은 그 조회를 받지 않는다.
+    monkeypatch.setattr(repository, "with_pending_contributions", lambda _conn, ledger, _page_ids: ledger)
+    monkeypatch.setattr(persistence, "with_pending_contributions", lambda _conn, ledger, _page_ids: ledger)
 
 
 def _ledger(page_id):

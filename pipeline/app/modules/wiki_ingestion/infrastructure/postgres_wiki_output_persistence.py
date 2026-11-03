@@ -14,6 +14,7 @@ from app.modules.wiki_ingestion.domain.contribution_identity import (
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
+from app.modules.wiki_ingestion.infrastructure.pending_contributions import with_pending_contributions
 from app.modules.wiki_ingestion.domain.concept_entries import (
     ENTRY_REFERENCE,
     render_entry_index,
@@ -316,7 +317,7 @@ def _rebuild_invalidated_pages(
     slugs = {**{str(row["id"]): str(row["slug"]) for row in linked}, **touched}
     if not slugs:
         return {}, [], []
-    ledger = read_contributions(list(slugs), workspace_id)
+    ledger = with_pending_contributions(conn, read_contributions(list(slugs), workspace_id), list(slugs))
     stale = set(invalidated)
     applied: list[dict[str, Any]] = []
     deleted: list[dict[str, Any]] = []

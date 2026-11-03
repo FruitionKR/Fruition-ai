@@ -25,6 +25,10 @@ from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
     read_contributions,
     read_document,
 )
+from app.modules.wiki_ingestion.infrastructure.pending_contributions import (
+    record_pending_contributions,
+    with_pending_contributions,
+)
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     cluster_detail_items as _cluster_detail_items,
     cluster_sections_by_id as _cluster_sections_by_id,
@@ -351,7 +355,7 @@ def _prune_dangling_references(
     for row in others:
         page_id = str(row["page_id"])
         kept = sorted(
-            (item for item in read_contributions([page_id], workspace_id)
+            (item for item in with_pending_contributions(conn, read_contributions([page_id], workspace_id), [page_id])
              if str(item.get("page_id")) == page_id and item.get("active")),
             key=lambda item: int(item.get("sequence_revision") or 0),
         )
@@ -828,6 +832,8 @@ AI_DB_REQUIRED_TABLES = (
     *REQUIRED_TABLES,
     "wiki_schemas",
     "document_derived_state",
+    "document_quality_reviews",
+    "wiki_pending_contributions",
     "wiki_source_tombstones",
     *AGENT_REQUIRED_TABLES,
 )
@@ -1438,12 +1444,19 @@ def finish_pipeline_run(
                     "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
                     (workspace_id, document_id),
                 )
+                _reset_document_quality_review(conn, str(document_id), str(workspace_id), run_id)
                 embedded_page_ids = _persist_wiki_outputs(
                     conn, document_id, manifest, manual_source_markdown,
                     apply_rebuilt_pages=_apply_restored_wiki_state,
                     prune_references=_prune_dangling_references,
                     cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
                 )
+                if manifest.get("operation_id"):
+                    # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
+                    record_pending_contributions(
+                        conn, str(workspace_id), str(manifest["operation_id"]), str(document_id),
+                        list(manifest.get("operation_artifacts") or []),
+                    )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):
                     post_ingest["page_ids"] = embedded_page_ids
@@ -1523,10 +1536,29 @@ def checkpoint_pipeline_run(run_id: str, manifest: dict[str, Any]) -> None:
         )
 
 
+def _reset_document_quality_review(conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str) -> None:
+    """문서의 품질 상태를 이번 편입 기준으로 비운다. 옛 편입의 평가 결과는 더 이상 이 문서의 상태가 아니다."""
+    conn.execute(
+        """
+        INSERT INTO document_quality_reviews (document_id, workspace_id, ingest_run_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (document_id) DO UPDATE
+        SET workspace_id = EXCLUDED.workspace_id,
+            ingest_run_id = EXCLUDED.ingest_run_id,
+            post_ingest_run_id = NULL,
+            status = NULL,
+            evaluations = '[]'::jsonb,
+            updated_at = now()
+        """,
+        (document_id, workspace_id, run_id),
+    )
+
+
 def update_pipeline_run_post_ingest(
     run_id: str,
     values: dict[str, Any],
 ) -> None:
+    evaluations = (values.get("result") or {}).get("wiki_quality_evaluations")
     with connect() as conn:
         conn.execute(
             """
@@ -1540,6 +1572,18 @@ def update_pipeline_run_post_ingest(
             WHERE id = %s
             """,
             (Json(values), run_id),
+        )
+        # 이 편입이 아직 문서의 최신 편입일 때만 바꾼다. 다시 편입한 뒤 늦게 끝난 옛 post_ingest는 새 상태를 덮지 않는다.
+        conn.execute(
+            """
+            UPDATE document_quality_reviews
+            SET post_ingest_run_id = %s,
+                status = %s,
+                evaluations = COALESCE(%s::jsonb, '[]'::jsonb),
+                updated_at = now()
+            WHERE ingest_run_id = %s
+            """,
+            (values.get("run_id"), values.get("status"), Json(evaluations) if evaluations is not None else None, run_id),
         )
 
 
@@ -2034,9 +2078,9 @@ def lint_orphan_wiki_links(
             """,
             (workspace_id,),
         ).fetchall()
-        contribution_rows = read_contributions(
-            [str(row["id"]) for row in contribution_page_rows],
-            workspace_id,
+        contribution_page_ids = [str(row["id"]) for row in contribution_page_rows]
+        contribution_rows = with_pending_contributions(
+            conn, read_contributions(contribution_page_ids, workspace_id), contribution_page_ids,
         )
         link_rows = conn.execute(
             """
@@ -2173,7 +2217,8 @@ def lint_concept_entries(
         reference_targets: set[str] = set()
 
         def load(rows: list[dict[str, Any]], *, history: bool = False) -> None:
-            ledger = read_contributions([str(row["id"]) for row in rows], workspace_id)
+            page_ids = [str(row["id"]) for row in rows]
+            ledger = with_pending_contributions(conn, read_contributions(page_ids, workspace_id), page_ids)
             for row in rows:
                 page_id = str(row["id"])
                 if history:

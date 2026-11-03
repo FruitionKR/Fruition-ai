@@ -16,6 +16,12 @@ from app.modules.agent_run.domain.plan import (
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import _row_to_run, _rows_to_plan
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
+# claim_next가 job을 다시 고르는 시도 한도. 마지막 시도에서 worker가 죽으면 fail_exhausted_leases가 닫는다.
+MAX_JOB_ATTEMPTS = 3
+# document-svc가 이미 "다시 시도해 주세요" 문구로 보여 주는 기존 코드(AiErrorMessages)를 그대로 쓴다.
+INTERRUPTED_ATTEMPTS_EXHAUSTED = "interrupted_attempts_exhausted"
+
+
 class PostgresAgentJobRepository:
     def list_expired_run_ids(self) -> tuple[str, ...]:
         with database.connect_ai() as conn:
@@ -135,56 +141,50 @@ class PostgresAgentJobRepository:
                 raise ValueError("Agent job lease was lost.")
 
     def fail(self, job: AgentJob, error_code: str) -> None:
-        terminal = job.attempt_count >= 3 or error_code in NON_RETRYABLE_PLAN_FAILURE_CODES
         with database.connect_ai() as conn:
-            updated = conn.execute(
+            _fail_leased_job(conn, job, error_code)
+
+    def release_for_shutdown(self, job: AgentJob) -> bool:
+        """종료 예산 안에 끝내지 못한 job을 다른 worker가 바로 이어 받게 놓는다.
+
+        Pod 종료는 job 실패가 아니므로 claim 때 늘린 attempt_count를 되돌린다. 그러지 않으면 rollout이
+        여러 번 겹친 job이 재시도 한도를 다 쓰고 실패로 닫힌다. lease가 이미 바뀌었으면 아무것도 하지 않는다.
+        """
+        with database.connect_ai() as conn:
+            row = conn.execute(
                 """
                 UPDATE agent_jobs
-                SET status = %s, available_at = now() + interval '5 seconds', updated_at = now()
+                SET status = 'queued', lease_owner = NULL, lease_token = NULL, leased_until = NULL,
+                    heartbeat_at = NULL, attempt_count = GREATEST(attempt_count - 1, 0),
+                    available_at = now(), updated_at = now()
                 WHERE id = %s AND status = 'leased' AND lease_token = %s
                 RETURNING id
                 """,
-                ("failed" if terminal else "queued", job.id, job.lease_token),
+                (job.id, job.lease_token),
             ).fetchone()
-            if updated is None:
-                return
-            if terminal and job.job_type == "rollback":
-                conn.execute(
-                    "UPDATE agent_runs SET status = 'rollback_failed', error_code = %s, updated_at = now() "
-                    "WHERE id = %s AND status IN ('cancel_requested', 'rolling_back')",
-                    (error_code, job.run_id),
-                )
-            if terminal:
-                conn.execute(
-                    """
-                    WITH active_run AS (
-                        SELECT current_plan_id
-                        FROM agent_runs
-                        WHERE id = %s
-                          AND status NOT IN (
-                              'completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled',
-                              'cancel_requested', 'rolling_back', 'rollback_failed'
-                          )
-                    )
-                    UPDATE agent_plan_operations
-                    SET status = 'failed', error_code = %s, updated_at = now()
-                    WHERE plan_id = (SELECT current_plan_id FROM active_run)
-                      AND status = 'running'
-                    """,
-                    (job.run_id, error_code),
-                )
-                conn.execute(
-                    """
-                    UPDATE agent_runs
-                    SET status = 'failed', error_code = %s, updated_at = now(), finished_at = now()
-                    WHERE id = %s
-                      AND status NOT IN (
-                          'completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled',
-                              'cancel_requested', 'rolling_back', 'rollback_failed'
-                      )
-                    """,
-                    (error_code, job.run_id),
-                )
+        return row is not None
+
+    def fail_exhausted_leases(self, error_code: str = INTERRUPTED_ATTEMPTS_EXHAUSTED, limit: int = 50) -> int:
+        """마지막 시도 중 worker가 죽어 lease만 남은 job을 정상 실패와 같은 경로로 닫는다.
+
+        claim_next는 시도 한도에 닿은 job을 다시 고르지 않으므로(rollback 제외) 이 job과 run은 스스로
+        끝나지 않는다. SKIP LOCKED와 lease_token 조건부 UPDATE로 여러 worker가 동시에 돌아도 한 번만 닫는다.
+        """
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM agent_jobs
+                WHERE status = 'leased' AND leased_until < now()
+                  AND attempt_count >= %s
+                  AND job_type IN ('planning', 'execution')
+                ORDER BY leased_until, id
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
+                """,
+                (MAX_JOB_ATTEMPTS, limit),
+            ).fetchall()
+            return sum(_fail_leased_job(conn, _row_to_job(row), error_code) for row in rows)
 
     @contextmanager
     def execution_lock(self, run_id: str):
@@ -521,3 +521,68 @@ class PostgresAgentJobRepository:
                 """,
                 (status, run_id),
             )
+
+
+def _row_to_job(row: dict[str, Any]) -> AgentJob:
+    return AgentJob(
+        id=row["id"],
+        run_id=row["run_id"],
+        job_type=row["job_type"],
+        attempt_count=row["attempt_count"],
+        lease_token=row["lease_token"],
+        leased_until=row["leased_until"],
+    )
+
+
+def _fail_leased_job(conn: Any, job: AgentJob, error_code: str) -> bool:
+    """lease를 쥔 job의 실패를 기록한다. 재시도 한도에 닿았으면 run까지 실패로 닫는다. 기록했으면 True."""
+    terminal = job.attempt_count >= MAX_JOB_ATTEMPTS or error_code in NON_RETRYABLE_PLAN_FAILURE_CODES
+    updated = conn.execute(
+        """
+        UPDATE agent_jobs
+        SET status = %s, available_at = now() + interval '5 seconds', updated_at = now()
+        WHERE id = %s AND status = 'leased' AND lease_token = %s
+        RETURNING id
+        """,
+        ("failed" if terminal else "queued", job.id, job.lease_token),
+    ).fetchone()
+    if updated is None:
+        return False
+    if terminal and job.job_type == "rollback":
+        conn.execute(
+            "UPDATE agent_runs SET status = 'rollback_failed', error_code = %s, updated_at = now() "
+            "WHERE id = %s AND status IN ('cancel_requested', 'rolling_back')",
+            (error_code, job.run_id),
+        )
+    if terminal:
+        conn.execute(
+            """
+            WITH active_run AS (
+                SELECT current_plan_id
+                FROM agent_runs
+                WHERE id = %s
+                  AND status NOT IN (
+                      'completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled',
+                      'cancel_requested', 'rolling_back', 'rollback_failed'
+                  )
+            )
+            UPDATE agent_plan_operations
+            SET status = 'failed', error_code = %s, updated_at = now()
+            WHERE plan_id = (SELECT current_plan_id FROM active_run)
+              AND status = 'running'
+            """,
+            (job.run_id, error_code),
+        )
+        conn.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'failed', error_code = %s, updated_at = now(), finished_at = now()
+            WHERE id = %s
+              AND status NOT IN (
+                  'completed', 'partial_failed', 'failed', 'conflicted', 'rejected', 'cancelled',
+                      'cancel_requested', 'rolling_back', 'rollback_failed'
+              )
+            """,
+            (error_code, job.run_id),
+        )
+    return True

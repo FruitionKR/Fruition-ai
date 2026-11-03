@@ -92,6 +92,52 @@ CREATE TABLE IF NOT EXISTS wiki_source_tombstones (
     PRIMARY KEY (workspace_id, document_id)
 );
 
+-- document_quality_reviews: 문서마다 최신 성공 편입의 post_ingest 품질 상태 한 행. lint가 실행 이력 대신 이것만 읽는다.
+-- 편입 성공이 행을 그 run으로 갈아끼우고(상태 비움), post_ingest는 같은 run일 때만 상태를 채운다.
+CREATE TABLE IF NOT EXISTS document_quality_reviews (
+    document_id varchar(255) PRIMARY KEY,
+    workspace_id varchar(255) NOT NULL,
+    ingest_run_id uuid NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+    post_ingest_run_id varchar(255),
+    status text,
+    evaluations jsonb NOT NULL DEFAULT '[]'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_quality_reviews_workspace_status
+    ON document_quality_reviews (workspace_id, status);
+
+-- 이 테이블 도입 전 편입은 run manifest에만 상태가 있다. 비어 있을 때 한 번만 채운다.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM document_quality_reviews) THEN
+        INSERT INTO document_quality_reviews
+            (document_id, workspace_id, ingest_run_id, post_ingest_run_id, status, evaluations)
+        SELECT DISTINCT ON (run.document_id)
+               run.document_id, run.workspace_id, run.id,
+               run.manifest->'post_ingest'->>'run_id',
+               run.manifest->'post_ingest'->>'status',
+               COALESCE(run.manifest->'post_ingest'->'result'->'wiki_quality_evaluations', '[]'::jsonb)
+        FROM pipeline_runs run
+        WHERE run.status = 'succeeded'
+          AND run.document_id IS NOT NULL
+          AND run.workspace_id IS NOT NULL
+        ORDER BY run.document_id, run.finished_at DESC NULLS LAST, run.created_at DESC, run.id DESC;
+    END IF;
+END $$;
+
+-- wiki_pending_contributions: AI가 커밋했지만 document-svc 원장에 아직 오르지 않은 편입 기여.
+-- 원장으로 페이지를 다시 그리는 작업이 이 행을 원장 뒤에 붙이고, 원장에 오른 행은 지운다.
+CREATE TABLE IF NOT EXISTS wiki_pending_contributions (
+    page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    operation_id varchar(255) NOT NULL,
+    workspace_id varchar(255) NOT NULL,
+    document_id varchar(255) NOT NULL,
+    object_key text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (page_id, operation_id)
+);
+
 CREATE TABLE IF NOT EXISTS wiki_page_links (
     from_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
     to_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
@@ -688,7 +734,9 @@ BEGIN
         ['wiki_page_entry_references','position'],
         ['source_blocks','block_id,document_id'], ['source_block_snapshots','document_id'],
         ['wiki_page_embeddings','page_id,embedding_model'], ['wiki_embedding_vectors','id'],
-        ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id']
+        ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id'],
+        ['document_quality_reviews','document_id'],
+        ['wiki_pending_contributions','page_id,operation_id']
     ] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS ai_task_change ON %I', item[1]);
         EXECUTE format('CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON %I '
