@@ -65,7 +65,7 @@ def with_jev_routing(router: AgentTurnRouterPort) -> AgentTurnRouterPort:
     client = build_jev_client(JEV_ROUTING_ENABLED_ENV, interactive=True)
     if client is None:
         return router
-    return JevTurnRouter(client, router, load_agent_turn_router_prompt())
+    return JevTurnRouter(client, router, jev_route_instructions(load_agent_turn_router_prompt()))
 
 
 class JevTurnRouter(AgentTurnRouterPort):
@@ -126,10 +126,7 @@ class JevTurnRouter(AgentTurnRouterPort):
                         else "\n\n허용된 작업 조합 중 사용자 요청과 맞는 하나를 고르세요. "
                         "편집 목표와 위치는 선택한 작업 안에서 다음 단계가 결정합니다."
                     ),
-                    "criteria": {
-                        key: {field: option[field] for field in fields}
-                        for key, option in choices.items()
-                    },
+                    "criteria": {key: _option_text(option, fields) for key, option in choices.items()},
                 }
             },
         )
@@ -138,6 +135,21 @@ class JevTurnRouter(AgentTurnRouterPort):
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0.0 <= confidence <= 1.0:
             confidence = 0.0
         return {**choices[answer["choice"]], "confidence": float(confidence)}
+
+
+def jev_route_instructions(router_prompt: str) -> str:
+    """LLM 라우터 프롬프트에서 JSON 출력 형식 절을 뺀 판단 규칙. Jev는 선택지를 고를 뿐 JSON을 쓰지 않는다."""
+    head, _, _ = router_prompt.partition("\nRequired JSON schema:")
+    return head.replace("Return only one JSON object matching the required schema. ", "").rstrip()
+
+
+def _option_text(option: dict[str, Any], fields: tuple[str, ...]) -> str:
+    """선택지를 `필드=값; …` 한 줄로 쓴다. 선택지마다 JSON 객체로 보내면 따옴표·괄호가 입력의 상당 부분을 차지했다."""
+
+    def value(item: Any) -> str:
+        return item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+
+    return "; ".join(f"{field}={value(option[field])}" for field in fields)
 
 
 def route_options(request: AgentTurnRequest) -> list[dict[str, Any]]:

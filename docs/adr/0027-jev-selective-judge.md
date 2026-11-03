@@ -22,6 +22,7 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
   - 사용량 원장에 provider `typesafe`로 기록한다.
 - **라우팅:** 기존 route 계약을 통과하는 조합에서 고르고, 편집이면 편집 목표·방식·위치를 한 번 더 고른다. 평가(`PairedChoiceClient`)와 같이 선택지를 요청 상태로 정한 고정 무작위 순서로 섞고, 기존 라우터와 같은 상태 JSON을 보낸다.
   - clarify는 선택지에서 뺀다.
+  - 질문 instructions에는 기존 라우터 프롬프트에서 JSON 출력 형식 절을 뺀 판단 규칙을 넣고, 선택지는 `필드=값; …` 한 줄로 쓴다. Jev는 선택지를 고를 뿐 JSON을 쓰지 않는다. 호출당 입력이 9,285 → 7,741 토큰(작업 요청 분류 34건 × 3회)으로 줄고 정확도는 280 → 281/306으로 같았다(2026-11-04).
   - Skill 후보의 capability가 겹쳐 clarify가 필요할 수 있는 요청은 기존 라우터가 처리한다.
 - **근거 선택:** 평가한 300후보 구성(local-pilot `run_jev_300_parallel.py`)을 따르고, 병렬 수는 병렬 수 비교(local-pilot `output/jev-generalization/concurrency-2026-10-09/summary.md`) 결과에 따라 8로 둔다.
   - workspace embedding unit을 (본문, block ref, 문서)로 묶고, 기존 하이브리드 점수(BGE-M3 0.75 + BM25 0.25)로 상위 300개를 추린다. 순위 단서가 없도록 섞어서 보낸다.

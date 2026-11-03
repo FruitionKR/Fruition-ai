@@ -103,7 +103,7 @@ def main() -> None:
     from app.modules.agent.infrastructure.chat_completions_turn_router import build_agent_turn_router
     from app.core.jev_client import JEV_ROUTING_ENABLED_ENV, build_jev_client
     from app.modules.agent.infrastructure.chat_completions_turn_router import load_agent_turn_router_prompt
-    from app.modules.agent.infrastructure.jev_turn_router import JevTurnRouter
+    from app.modules.agent.infrastructure.jev_turn_router import JevTurnRouter, jev_route_instructions
 
     llm = build_agent_turn_router(provider=HAIKU[0], model=HAIKU[1])
     os.environ[JEV_ROUTING_ENABLED_ENV] = "true"
@@ -116,7 +116,7 @@ def main() -> None:
         case, variant, run_index = job
         request = requests[case["id"]]
         fallback = CountingRouter(llm)
-        router = JevTurnRouter(client, fallback, prompt) if variant == "on" else llm
+        router = JevTurnRouter(client, fallback, jev_route_instructions(prompt)) if variant == "on" else llm
         started = time.monotonic()
         try:
             route = dataclasses.asdict(task_mode_route(router.route(request), request))
