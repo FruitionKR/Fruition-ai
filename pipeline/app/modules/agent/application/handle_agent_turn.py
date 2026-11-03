@@ -82,6 +82,7 @@ from app.modules.skill.domain.entities import (
 )
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    edit_target_selection_reference,
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
     REFERENCE_CONTEXT_FOLDER_REFERENCE,
     render_skill_instructions,
@@ -451,7 +452,9 @@ class HandleAgentTurnUseCase:
                             edit_goal=route.edit_goal,
                             edit_operation=route.edit_operation or "replace",
                             edit_destination=route.edit_destination or "target",
-                            skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True),
+                            skill_instructions=_skill_instructions(
+                                selected_skill, request, document_in_payload=True, edit_target=_payload_target(route, target)
+                            ),
                             output_language=request.output_language,
                         )
                     ).edit
@@ -698,7 +701,9 @@ class HandleAgentTurnUseCase:
                 edit_goal=route.edit_goal,
                 edit_operation=route.edit_operation or "replace",
                 edit_destination=route.edit_destination or "target",
-                skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True),
+                skill_instructions=_skill_instructions(
+                    selected_skill, request, document_in_payload=True, edit_target=_payload_target(route, target)
+                ),
                 output_language=request.output_language,
             )
         )
@@ -1252,11 +1257,12 @@ def _skill_instructions(
     document_in_reference_context: bool = False,
     folder_in_reference_context: bool = False,
     inline_active_document: bool = True,
+    edit_target: MarkdownEditTarget | None = None,
 ) -> str | None:
     """Skill 지침의 자리표시자를 이번 요청 값으로 채운다.
 
     편집처럼 문서 본문이 이미 모델 payload(markdown 또는 reference_context.source_document)에 있으면
-    `{문서}`는 본문을 다시 싣지 않고 그 위치를 가리킨다.
+    `{문서}`는 본문을 다시 싣지 않고 그 위치를 가리킨다. 편집 대상이 선택 범위면 `{선택한 부분}`도 그 범위를 가리킨다.
     """
     if skill is None or skill.enabled_version is None:
         return None
@@ -1280,6 +1286,11 @@ def _skill_instructions(
         selection=_selection_text(context),
         document=inline_document,
         document_reference=document_reference,
+        selection_reference=(
+            edit_target_selection_reference(edit_target.start_line, edit_target.end_line)
+            if edit_target is not None and edit_target.type == "selection"
+            else None
+        ),
     )
 
 
@@ -1322,6 +1333,11 @@ def _bare_command_mode(
     if can_create and can_edit:
         return "auto"
     return "create" if can_create else "edit"
+
+
+def _payload_target(route: AgentTurnRoute, target: MarkdownEditTarget | None) -> MarkdownEditTarget | None:
+    """편집기가 실제로 받는 대상. 문서 끝 추가는 편집기가 대상을 문서 전체로 바꾸므로 선택 범위를 가리키지 않는다."""
+    return target if (route.edit_destination or "target") == "target" else None
 
 
 def _selection_text(context: ActiveMarkdownContext | None) -> str | None:

@@ -1,7 +1,9 @@
 """Skill 지침의 실행 시점 자리표시자(`{문서}`, `{선택한 부분}`, `{요청}`)를 채운다.
 
 - `{요청}`: 사용자의 요청 문장.
-- `{선택한 부분}`: 선택한 본문. 선택이 없으면 `(선택 없음)`.
+- `{선택한 부분}`: 선택 범위가 편집 payload의 대상(target)이면 본문을 다시 싣지 않고 그 줄 범위를 가리키는 짧은 표시로
+  바꾼다. 지침 문장 한가운데에 본문이 끼면 "선택한 부분의 제목 줄" 같은 문장이 깨지기 때문이다. payload에 없을 때만
+  본문을 잘라 넣고, 선택이 없으면 `(선택 없음)`.
 - `{문서}`: 편집 모델이 이미 받는 본문(편집 payload의 markdown, 테스트 실행의 reference_context)이 있으면
   본문을 다시 싣지 않고 그 위치를 가리키는 짧은 표시로 바꾼다. 본문이 payload에 없을 때만 길이를 잘라 넣는다.
 
@@ -19,6 +21,13 @@ NO_DOCUMENT = "(현재 문서 없음)"
 EDIT_PAYLOAD_DOCUMENT_REFERENCE = "[현재 문서: 요청 payload의 markdown 본문]"
 REFERENCE_CONTEXT_DOCUMENT_REFERENCE = "[현재 문서: 요청 payload의 reference_context.source_document 본문]"
 REFERENCE_CONTEXT_FOLDER_REFERENCE = "[고른 폴더의 문서들: 요청 payload의 reference_context.source_documents 본문]"
+
+
+def edit_target_selection_reference(start_line: int, end_line: int) -> str:
+    """편집 payload의 대상이 선택 범위일 때 `{선택한 부분}` 자리에 넣는 표시."""
+    return f"[선택한 부분: 요청 payload의 편집 대상 {start_line}~{end_line}줄]"
+
+
 MAX_INLINE_DOCUMENT_CHARS = 8_000
 MAX_INLINE_SELECTION_CHARS = 4_000
 MAX_INLINE_REQUEST_CHARS = 2_000
@@ -36,15 +45,21 @@ def render_skill_instructions(
     selection: str | None = None,
     document: str | None = None,
     document_reference: str | None = None,
+    selection_reference: str | None = None,
 ) -> str:
-    """지침의 자리표시자를 채운다. document_reference가 있으면 `{문서}`는 본문 대신 그 표시가 된다."""
+    """지침의 자리표시자를 채운다. document_reference·selection_reference가 있으면 본문 대신 그 표시가 된다."""
     if document_reference is not None:
         document_value = document_reference
     elif document is not None and document.strip():
         document_value = _clip(document, MAX_INLINE_DOCUMENT_CHARS)
     else:
         document_value = NO_DOCUMENT
-    selection_value = _clip(selection, MAX_INLINE_SELECTION_CHARS) if selection and selection.strip() else NO_SELECTION
+    if selection_reference is not None:
+        selection_value = selection_reference
+    elif selection and selection.strip():
+        selection_value = _clip(selection, MAX_INLINE_SELECTION_CHARS)
+    else:
+        selection_value = NO_SELECTION
     values = {
         DOCUMENT_PLACEHOLDER: document_value,
         SELECTION_PLACEHOLDER: selection_value,
