@@ -45,10 +45,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      # document_restoration은 PyMuPDF 등 무거운 의존성이 필요해 별도 requirements를 쓴다.
-      # 기본 실행에서는 제외하고, 필요해지면 requirements-document-restoration.txt를 설치해 붙인다.
       - name: Run tests
-        run: pytest -q --ignore=tests/modules/document_restoration
+        run: pytest -q
 
       # converter 이미지의 Range 기반 PDF 배치 API는 pypdf만 추가로 필요하다. 무거운 OCR 의존성은 mock이다.
       - name: Run converter tests

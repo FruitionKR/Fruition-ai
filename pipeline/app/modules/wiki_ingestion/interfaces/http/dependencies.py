@@ -51,15 +51,6 @@ def get_pipeline_run_repository() -> PipelineRunRepositoryPort:
 
 
 @lru_cache(maxsize=1)
-def get_pipeline_run_use_case() -> RunPipelineUseCase:
-    return RunPipelineUseCase(
-        runner=RunLabPipelineRunner(),
-        repository=get_pipeline_run_repository(),
-        embedding_job=get_wiki_embedding_job(),
-    )
-
-
-@lru_cache(maxsize=1)
 def get_deferred_pipeline_run_use_case() -> RunPipelineUseCase:
     return RunPipelineUseCase(
         runner=RunLabPipelineRunner(),

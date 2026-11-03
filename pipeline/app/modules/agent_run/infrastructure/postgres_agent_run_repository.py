@@ -609,7 +609,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 UPDATE agent_runs
                 SET status = 'queued', current_plan_id = NULL, request_summary = %s,
                     error_code = NULL, clarification_question = NULL, updated_at = now(),
-                    finished_at = NULL
+                    finished_at = NULL, tool_call_count = 0
                 WHERE id = %s RETURNING *
                 """,
                 (instruction.strip(), run_id),

@@ -52,18 +52,33 @@ def _lock_active_page(conn: psycopg.Connection, page_id: str, updated_at: dateti
 
 class PostgresWikiPageEmbeddingRepository(WikiPageEmbeddingRepositoryPort):
     def list_retryable_page_ids(self, embedding_model: str) -> list[str]:
+        """임베딩이 덜 된 활성 페이지. 페이지 벡터 행이 아예 없는 페이지(되돌려진 post_ingest 등)와
+        완료되지 않은 단위 벡터를 가진 페이지도 고른다."""
         with database.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT embedding.page_id
-                FROM wiki_page_embeddings embedding
-                JOIN wiki_pages page ON page.id = embedding.page_id
-                WHERE embedding.embedding_model = %s
-                  AND embedding.status IN ('pending', 'failed')
-                  AND page.status = 'active'
-                ORDER BY embedding.updated_at, embedding.page_id
+                SELECT page.id AS page_id
+                FROM wiki_pages page
+                WHERE page.status = 'active'
+                  AND (
+                      NOT EXISTS (
+                          SELECT 1 FROM wiki_page_embeddings embedding
+                          WHERE embedding.page_id = page.id
+                            AND embedding.embedding_model = %s
+                            AND embedding.status = 'completed'
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM wiki_embedding_units unit
+                          JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
+                          WHERE unit.page_id = page.id
+                            AND vector.embedding_model = %s
+                            AND vector.status <> 'completed'
+                      )
+                  )
+                ORDER BY page.updated_at, page.id
                 """,
-                (embedding_model,),
+                (embedding_model, embedding_model),
             ).fetchall()
         return [str(row["page_id"]) for row in rows]
 

@@ -604,6 +604,27 @@ class AgentWorkerTest(unittest.TestCase):
             arguments={"folder_id": "folder-1"},
         )
 
+    def test_verification_completes_without_spending_tool_budget(self) -> None:
+        repository = MagicMock()
+        # 실행에서 예산을 다 썼어도 검증 읽기는 예산을 쓰지 않고 끝까지 간다.
+        repository.reserve_tool_call.return_value = False
+        repository.mark_run_status.return_value = True
+        gateway = MagicMock()
+        gateway.read.return_value = {"edit_revision": 2, "content_hash": "sha256:abc"}
+        worker = AgentWorker(repository, MagicMock(), gateway, MagicMock())
+        operation = replace(_approved_plan().operations[0], tool_name="apply_document_edit", status="succeeded")
+        repository.load_context.return_value = _executing_context()
+        repository.load_current_plan.return_value = replace(_approved_plan(), operations=(operation,))
+        repository.load_operation_results.return_value = {
+            operation.id: {"id": "document-1", "current_version": 2, "content_hash": "sha256:abc"},
+        }
+
+        worker._verify_run("run-1")
+
+        repository.reserve_tool_call.assert_not_called()
+        repository.mark_operation.assert_not_called()
+        repository.finish_run_from_operations.assert_called_once_with("run-1")
+
     def test_dynamic_nested_create_document_verification_uses_contract_response(self) -> None:
         repository = MagicMock()
         repository.reserve_tool_call.return_value = True

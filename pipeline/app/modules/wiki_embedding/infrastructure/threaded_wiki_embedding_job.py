@@ -49,10 +49,17 @@ class ThreadedWikiEmbeddingJob:
             repository = PostgresWikiPageEmbeddingRepository()
             model_name = _embedding_model().model_name
             with database.connect() as lock_connection:
-                lock_connection.execute(
-                    "SELECT pg_advisory_lock(hashtext(%s))",
+                if page_ids:
+                    lock_connection.execute(
+                        "SELECT pg_advisory_lock(hashtext(%s))",
+                        (_EMBEDDING_LOCK_NAME,),
+                    )
+                elif not lock_connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(%s)) AS locked",
                     (_EMBEDDING_LOCK_NAME,),
-                )
+                ).fetchone()["locked"]:
+                    # 주기 복구는 앞선 임베딩 작업이 아직 돌면 건너뛴다. 다음 주기나 그 작업이 대상을 처리한다.
+                    return
                 try:
                     retryable_page_ids = repository.list_retryable_page_ids(model_name)
                     targets = list(dict.fromkeys([*page_ids, *retryable_page_ids]))

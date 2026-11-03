@@ -137,10 +137,15 @@ def generation_retry_block_ids(
     return _unique(resolved)
 
 
+def stored_generation_evaluation(evaluations: list[GenerationEvaluation]) -> GenerationEvaluation:
+    """저장한 결과의 평가. 마지막 시도가 불합격이면 점수가 가장 높았던 시도(`selected_for_output`)를 저장한다."""
+    return next((item for item in evaluations if item.get("selected_for_output")), evaluations[-1])
+
+
 def generation_evaluation_status(evaluations: list[GenerationEvaluation]) -> str:
     if not evaluations:
         return "disabled"
-    final = evaluations[-1]
+    final = stored_generation_evaluation(evaluations)
     return "passed" if final.get("passed") and not final.get("issues") else "unresolved"
 
 

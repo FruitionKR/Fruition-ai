@@ -33,7 +33,9 @@ def test_question_prompts_require_standalone_scope_matched_cases() -> None:
     assert "Every factual part of the quote must be requested" in generator
     assert "administrative metadata" in generator
     assert "answerability" in evaluator
-    assert "evidence_precision" in evaluator
+    # 정밀도는 Jev가 근거마다 판정한다. LLM 평가의 통과 조건이 아니다.
+    assert "evidence_precision" not in evaluator
+    assert "translated or summarized evidence covers an expected claim" in evaluator
     assert "contradictory_evidence_ranks" in evaluator
 
 
@@ -342,10 +344,9 @@ def test_evidence_evaluation_batches_cases_and_rejects_contradiction() -> None:
                     "durable": True,
                     "answerability": True,
                     "evidence_recall": 1.0,
-                    "evidence_precision": 0.8,
+                    "evidence_precision": 0.2,
                     "source_alignment": 1.0,
                     "missing_claims": [],
-                    "irrelevant_evidence_ranks": [2],
                     "contradictory_evidence_ranks": [],
                     "reason": "답변 가능한 근거가 있음",
                     "warnings": [],
@@ -419,8 +420,9 @@ def test_evidence_evaluation_batches_cases_and_rejects_contradiction() -> None:
     )
 
     assert len(completion.user_prompts) == 1
+    # LLM이 정밀도를 내도 통과 판정에 쓰지 않고 결과에도 남기지 않는다.
     assert evaluations[0]["passed"] is True
-    assert evaluations[0]["irrelevant_evidence_ranks"] == [2]
+    assert "evidence_precision" not in evaluations[0]
     assert evaluations[1]["passed"] is False
     assert evaluations[1]["contradictory_evidence_ranks"] == [1]
 

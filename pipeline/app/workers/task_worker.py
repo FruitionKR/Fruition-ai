@@ -110,6 +110,8 @@ MAX_POLL_INTERVAL_MS = int(os.environ.get("AI_TASK_MAX_POLL_INTERVAL_MS", "18000
 CONCURRENCY = max(1, int(os.environ.get("AI_TASK_CONCURRENCY", "1")))
 POST_INGEST_MAX_ATTEMPTS = 3
 POST_INGEST_AUDIT_LIMIT = 3
+# maintenance worker가 임베딩이 덜 된 활성 페이지를 다시 처리하는 주기(초). 기동 직후 한 번 돌고 이 간격으로 반복한다.
+EMBEDDING_RECOVERY_INTERVAL_SECONDS = 600
 
 
 def _required(command: dict[str, Any], *fields: str) -> None:
@@ -939,36 +941,24 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         quality_status = (
             "ready" if generation_ready and wiki_ready else "needs_review"
         )
-        result = {
-            "quality_status": quality_status,
-            "maintenance_summary": state["cluster_artifact"].get(
-                "maintenance_summary",
-                {},
-            ),
-            "embedding": state["embedding"],
-            "generation_evaluation_status": command.get(
-                "generation_evaluation_status"
-            ),
-            "wiki_quality_evaluations": evaluations,
-            "quality_skipped": state.get("quality_skipped"),
-        }
-        database.update_pipeline_run_post_ingest(
-            str(command["ingest_run_id"]),
-            {
-                "run_id": run_id,
-                "status": quality_status,
-                "result": result,
-                "error": None,
-            },
-        )
-        database.finish_pipeline_run(run_id, {**state, "task_result": result})
-        return result
+        return _finish_post_ingest(command, state, quality_status, evaluations)
     except Exception as exc:
         final_attempt = attempt >= POST_INGEST_MAX_ATTEMPTS
         try:
             database.checkpoint_pipeline_run(run_id, state)
         except Exception:
             logger.exception("failed to checkpoint post_ingest timing run_id=%s", run_id)
+        if final_attempt and not isinstance(exc, PipelineRunCancelledError):
+            # 단계 하나의 실패로 run 전체를 되돌리면 성공한 임베딩·클러스터 결과와 실패 기록까지 사라진다(ADR 0044).
+            # 취소가 아니면 성공한 단계는 남기고 needs_review로 끝낸다. 실패한 임베딩은 복구 작업이 다시 처리한다.
+            logger.warning("[post_ingest 부분 성공] run_id=%s failed_stage=%s", run_id, _failed_post_ingest_stage(state))
+            return _finish_post_ingest(
+                command,
+                state,
+                "needs_review",
+                list(state.get("wiki_quality_evaluations") or []),
+                error=failure_code(exc),
+            )
         database.update_pipeline_run_post_ingest(
             str(command["ingest_run_id"]),
             {
@@ -981,6 +971,50 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if final_attempt:
             database.fail_pipeline_run(run_id, failure_code(exc))
         raise
+
+
+def _finish_post_ingest(
+    command: dict[str, Any],
+    state: dict[str, Any],
+    quality_status: str,
+    evaluations: list[dict[str, Any]],
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    run_id = str(command["run_id"])
+    result = {
+        "quality_status": quality_status,
+        "maintenance_summary": (state.get("cluster_artifact") or {}).get(
+            "maintenance_summary",
+            {},
+        ),
+        "embedding": state.get("embedding"),
+        "generation_evaluation_status": command.get(
+            "generation_evaluation_status"
+        ),
+        "wiki_quality_evaluations": evaluations,
+        "quality_skipped": state.get("quality_skipped"),
+    }
+    if error is not None:
+        result["error"] = error
+        result["failed_stage"] = _failed_post_ingest_stage(state)
+    database.update_pipeline_run_post_ingest(
+        str(command["ingest_run_id"]),
+        {
+            "run_id": run_id,
+            "status": quality_status,
+            "result": result,
+            "error": error,
+        },
+    )
+    database.finish_pipeline_run(run_id, {**state, "task_result": result})
+    return result
+
+
+def _failed_post_ingest_stage(state: dict[str, Any]) -> str | None:
+    """마지막으로 실패한 단계 이름. 단계 밖에서 실패했으면 None이다."""
+    failed = [item["stage"] for item in state.get("stage_timings", []) if item.get("status") == "failed"]
+    return failed[-1] if failed else None
 
 
 def _handle(
@@ -1313,8 +1347,6 @@ async def consume() -> None:
     database.ensure_ai_schema()
     if COMMAND_TOPIC.endswith("agent.command"):
         _verify_agent_command_config()
-    if COMMAND_TOPIC.endswith("maintenance.command"):
-        get_wiki_embedding_job().start("pending-recovery", [])
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     consumer = AIOKafkaConsumer(
         bootstrap_servers=BOOTSTRAP_SERVERS,
@@ -1444,8 +1476,13 @@ async def consume() -> None:
             stop.set()
 
     logger.info("[worker 기동] topic=%s group=%s concurrency=%s", COMMAND_TOPIC, GROUP_ID, CONCURRENCY)
+    recovers_embeddings = COMMAND_TOPIC.endswith("maintenance.command")
+    next_embedding_recovery = time.monotonic()
     try:
         while not stop.is_set():
+            if recovers_embeddings and time.monotonic() >= next_embedding_recovery:
+                get_wiki_embedding_job().start("pending-recovery", [])
+                next_embedding_recovery = time.monotonic() + EMBEDDING_RECOVERY_INTERVAL_SECONDS
             await asyncio.to_thread(journal.rollback_pending)
             free = CONCURRENCY - dispatcher.outstanding
             # 용량이 차면 partition을 멈춘 채 getmany만 계속 불러 max_poll_interval을 넘기지 않는다.

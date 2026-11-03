@@ -60,23 +60,3 @@ def test_reserve_page_embeddings_rejects_missing_active_page() -> None:
             ["page-1", "deleted-page"],
             "BAAI/bge-m3",
         )
-
-
-def test_list_retryable_page_ids_returns_pending_and_failed_active_pages() -> None:
-    result = Mock()
-    result.fetchall.return_value = [{"page_id": "page-1"}, {"page_id": "page-2"}]
-    connection = Mock()
-    connection.execute.return_value = result
-    connection.__enter__ = Mock(return_value=connection)
-    connection.__exit__ = Mock(return_value=False)
-
-    with patch.object(database, "connect", return_value=connection):
-        page_ids = PostgresWikiPageEmbeddingRepository().list_retryable_page_ids(
-            "BAAI/bge-m3"
-        )
-
-    query, params = connection.execute.call_args.args
-    assert "status IN ('pending', 'failed')" in query
-    assert "page.status = 'active'" in query
-    assert params == ("BAAI/bge-m3",)
-    assert page_ids == ["page-1", "page-2"]

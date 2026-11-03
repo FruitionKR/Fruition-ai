@@ -20,6 +20,21 @@ SPECIAL_TYPES = {
     "picture": "figure_candidate",
 }
 LIGATURES = "ﬀﬁﬂﬃﬄﬅﬆ"
+# 본문이 깨진 까닭(body_reasons)을 결과 계약의 이유 코드로 바꾼다.
+BODY_REASON_CODES = {
+    "anydoc_failed": "extract_failed",
+    "crop_token_mismatch": "token_mismatch",
+    "replacement_character": "replacement_character",
+    "unresolved_font_mapping": "font_mapping",
+}
+REASON_LABELS = {
+    "font_mapping": "글꼴을 읽지 못함",
+    "replacement_character": "깨진 글자가 있음",
+    "token_mismatch": "표·수식 위치가 맞지 않음",
+    "extract_failed": "글자를 뽑지 못함",
+    "repair_rejected": "AI 복원 결과가 원문과 달라 사용하지 않음",
+    "provider_error": "AI 복원 요청 실패",
+}
 
 
 def normalized_words(text: str) -> list[str]:
@@ -303,7 +318,10 @@ def region_markdown(
 ) -> str:
     asset = relative_asset(output_file, output_dir, str(region["asset"]))
     if region["type"] == "figure_candidate":
-        return f"![figure]({asset})"
+        description = figure_description(output_dir, region)
+        if description is None:
+            return f"![figure]({asset})"
+        return f"![{description['alt']}]({asset})\n\n> 그림 설명: {description['description']}"
     if merged_into_previous(output_dir, region):
         # 앞 페이지 조각이 이어진 표 전체를 담았다.
         return ""
@@ -314,6 +332,36 @@ def region_markdown(
     return f"> {label} 자동 복원 실패\n\n[source crop]({asset})"
 
 
+def figure_description(output_dir: Path, region: dict[str, Any]) -> dict[str, str] | None:
+    path = output_dir / "layout" / "crop_first" / "figure_descriptions" / f"{region['id']}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def repair_failures(output_dir: Path) -> dict[str, str]:
+    """selective repair가 재시도까지 복원하지 못한 블록 id와 까닭(repair_rejected·provider_error)이다."""
+    path = output_dir / "final" / "selective_repair_summary.json"
+    if not path.exists():
+        return {}
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        block_id: reason
+        for page in summary.get("pages", [])
+        for block_id, reason in (page.get("failures") or {}).items()
+    }
+
+
+def fallback_reasons(body: dict[str, Any], failure: str | None) -> list[str]:
+    causes = [BODY_REASON_CODES[reason] for reason in body.get("body_reasons", []) if reason in BODY_REASON_CODES]
+    return [*causes, *([failure] if failure else [])]
+
+
+def fallback_note(reasons: list[str]) -> str:
+    labels = ", ".join(REASON_LABELS[reason] for reason in reasons)
+    return "> ⚠️ 이 페이지는 원문 텍스트로 대신했어요." + (f" (이유: {labels})" if labels else "")
+
+
 def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:
     blocks = json.loads(manifest_file.read_text(encoding="utf-8"))
     bodies = {int(block["page"]): block for block in blocks if block["type"] == "paragraph"}
@@ -322,14 +370,21 @@ def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:
         if block["type"] != "paragraph":
             regions_by_page.setdefault(int(block["page"]), []).append(block)
 
+    failures = repair_failures(output_dir)
+    broken_pages = 0
+    fallback_pages = []
     chunks = []
     for page_number, body in sorted(bodies.items()):
         regions = sorted(regions_by_page.get(page_number, []), key=lambda item: item["order"])
         content = recovered_text(output_dir, body)
+        broken_pages += bool(body["body_broken"])
         if content is None and body["body_broken"]:
-            content = (
-                f"> 본문 자동 복원 실패\n\n{body['fallback_text']}"
-            ).strip()
+            reasons = fallback_reasons(body, failures.get(str(body["id"])))
+            # 화면에는 모든 까닭을, 요약에는 원문을 쓴 직접 까닭(AI 복원 실패가 있으면 그것) 하나를 남긴다.
+            fallback_pages.append(
+                {"page": page_number, "reason": reasons[-1] if reasons else "extract_failed", "causes": reasons}
+            )
+            content = f"{fallback_note(reasons)}\n\n{body['fallback_text']}".strip()
         elif content is None:
             content = str(body["source_text"])
         for region in regions:
@@ -347,6 +402,22 @@ def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text("\n\n".join(chunks).strip() + "\n", encoding="utf-8")
+    # 쪽 번호와 이유 코드만 담는다. 문서 내용은 싣지 않는다.
+    summary_file = output_dir / "final" / "restoration_summary.json"
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    summary_file.write_text(
+        json.dumps(
+            {
+                "broken_pages": broken_pages,
+                "repaired_pages": broken_pages - len(fallback_pages),
+                "fallback_pages": fallback_pages,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:

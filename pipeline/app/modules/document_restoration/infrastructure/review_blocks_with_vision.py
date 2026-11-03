@@ -3,9 +3,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import http.client
 import re
-import socket
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -158,7 +157,7 @@ def call_vision(endpoint: str, model: str, prompt: str, image_file: Path) -> str
     try:
         with urllib.request.urlopen(request, timeout=180) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise RuntimeError(f"Vision endpoint request failed: {exc}") from exc
     return data["choices"][0]["message"]["content"].strip()
 

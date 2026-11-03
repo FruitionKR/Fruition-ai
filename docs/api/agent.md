@@ -174,6 +174,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
     "summary": "승인된 편집안을 현재 문서에 반영합니다.",
     "operation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "status": "awaiting_approval",
+    "approved_by": null,
     "operations": [
       {
         "id": "operation_123",
@@ -202,10 +203,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 무엇이 불명확한지, 어떤 정보를 주면 되는지 사용자에게 설명하는 한국어 문장이며, 그대로 화면에 보여 줄 수 있습니다.
 실행 중 Tool 예산 소진처럼 다른 이유의 `clarification_required`와 그 밖의 모든 상태에서는 `null`입니다.
 `revise`로 다시 계획을 요청하면 비워집니다.
+Tool 호출 예산은 계획 버전마다 40회이며 `revise`로 새 계획을 요청하면 다시 40회가 됩니다. 실행 후 검증 읽기는 예산을 쓰지 않습니다.
 
 `target_folder_id`는 턴에서 지정한 작업 대상 폴더(`ai.agent.command`의 `folder_id`)이며, 지정하지 않았으면 `null`입니다.
 `rule_summary`는 선택한 Skill의 규칙 요약으로, run을 만들 때의 Skill 설명(`skill_versions.description`)을 보존한 값입니다.
 Skill 없이 실행했으면 `null`입니다.
+
+`plan.approved_by`는 승인 주체입니다. 승인 화면에서 사용자가 직접 승인했으면 `user`, 사용자의 자동 승인 설정에 따라
+document-svc가 대신 승인했으면 `auto:user-setting`이며, 승인 전이면 `null`입니다(`agent_approvals.approved_by`).
 
 `plan.operations[]`의 `warning`·`suggested_selected`는 승인 화면 안내용 검토 결과이며 실행 내용이 아니라
 `operation_hash`에 포함하지 않습니다. 계획 생성 직후 계층 스냅샷에 계획을 적용한 결과로 판정합니다.
@@ -311,7 +316,7 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 | 항목 | 내용 |
 |---|---|
 | 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. 고른 작업만 실행하는 부분 승인도 받습니다. |
-| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids` |
+| 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids`·선택 `approved_by` |
 | 출력 | `200` — `status=executing`인 `AgentRunResponse` |
 | 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. |
 | 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
@@ -336,6 +341,9 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 생략한 것과 같습니다(전체 실행). 고른 작업만 성공하면 run은 `completed`이며, 고르지 않은 작업은
 `partial_failed` 판정에 포함하지 않습니다. 고른 목록은 `agent_approvals.operation_ids`에 남습니다.
 
+`approved_by`는 승인 주체이며 `agent_approvals.approved_by`에 남습니다. 사용자가 승인 화면에서 직접 승인하면 `user`(기본값),
+사용자의 자동 승인 설정에 따라 document-svc가 대신 승인하면 `auto:user-setting`입니다. 버전·hash 검사는 둘이 같습니다.
+
 #### 3. Auth 필요 여부
 
 - 필요: `X-Agent-Service-Token`
@@ -357,6 +365,7 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 | `plan_version` | `integer` | 예 | 승인할 plan 버전 |
 | `operation_hash` | `string` | 예 | 계획 전체의 operation hash(64자) |
 | `operation_ids` | `string[]` \| `null` | 아니오 | 실행할 작업 ID(1~20개). 생략·`null`이면 계획 전체 |
+| `approved_by` | `string` | 아니오 | 승인 주체. `user`(기본값) 또는 `auto:user-setting`. 그 밖의 값은 `422` |
 
 #### 5. Response body
 
@@ -405,8 +414,9 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 #### 연동
 
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:69 → 84-90 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
-- 아웃바운드 호출: 승인 실행은 Tool gateway를 거쳐 document-svc `POST /internal/agent/tools/execute/{tool_name}`를 호출한다(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:51`).
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:73-76(사용자 승인)·83-86(자동 승인, `approved_by=auto:user-setting`) → 101-107 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
+- 아웃바운드 호출: 승인 실행은 Tool gateway를 거쳐 document-svc `POST /internal/agent/tools/execute/{tool_name}`를 호출한다(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:52`).
+- 아웃바운드 호출(승인 대기 알림): agent worker는 planning job을 끝낸 뒤 run이 `awaiting_approval`이면 document-svc `POST /internal/agent/runs/{run_id}/plan-ready`(body `workspace_id`·`user_id`, `X-Agent-Service-Token`)를 호출한다(`app/modules/agent_run/infrastructure/agent_worker.py:121-122,124-145` → `backend_tool_gateway.py:66-71`). document-svc가 사용자의 자동 승인 설정과 대상 권한을 보고 이 API를 `approved_by=auto:user-setting`으로 부를지 정한다. 알림이 실패해도 경고만 남기고 계획은 승인 대기로 남아 사용자가 직접 승인할 수 있다.
 - 미연동 표시: 없음.
 
 </details>
