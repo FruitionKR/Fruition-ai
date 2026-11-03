@@ -68,23 +68,13 @@ def _chat_wiki_run_in(**data: object):
 @contextmanager
 def _pipeline_client(
     *,
-    use_case: Mock | None = None,
     repository: Mock | None = None,
-    source_reader: Mock | None = None,
     log_reader: Mock | None = None,
 ) -> Iterator[TestClient]:
     previous_overrides = dict(api.app.dependency_overrides)
-    if use_case is not None:
-        api.app.dependency_overrides[pipeline_routes.get_pipeline_run_use_case] = (
-            lambda: use_case
-        )
     if repository is not None:
         api.app.dependency_overrides[pipeline_routes.get_pipeline_run_repository] = (
             lambda: repository
-        )
-    if source_reader is not None:
-        api.app.dependency_overrides[pipeline_routes.get_pipeline_source_reader] = (
-            lambda: source_reader
         )
     if log_reader is not None:
         api.app.dependency_overrides[pipeline_routes.get_pipeline_log_reader] = (
