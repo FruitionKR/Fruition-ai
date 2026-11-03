@@ -1,8 +1,8 @@
 """Skill 평가. 의도 분류(LLM·Jev 켬/끔), Skill 작성, Skill 시험 실행을 운영 경로로 돌려 정답과 비교한다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_skill.py [--limit N] [--ids si-01,st-01]
-- 모델: Claude Haiku. Jev 분류는 JEV_SKILL_INTENT_ENABLED와 TYPESAFE_API_KEY로 켠다.
-- 시험 실행 결과의 판정 기준은 grade_features.py(Codex)가 본다. 여기서는 코드 검사만 한다.
+- 모델: 평가 모델(common.EVAL_MODEL). Jev 분류는 JEV_SKILL_INTENT_ENABLED와 TYPESAFE_API_KEY로 켠다.
+- 시험 실행 결과의 판정 기준은 grade_features.py(Claude)가 본다. 여기서는 코드 검사만 한다.
 """
 import argparse
 import json
@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 from run_edit import format_ok  # noqa: E402
 
 WORKSPACE, USER = "ws-eval", "user-eval"
@@ -124,7 +124,7 @@ def main() -> None:
     if args.ids:
         cases = [case for case in cases if case["id"] in args.ids.split(",")]
     cases = cases[: args.limit] if args.limit else cases
-    load_keys("ANTHROPIC_API_KEY", "TYPESAFE_API_KEY")
+    load_keys("OPENAI_API_KEY", "TYPESAFE_API_KEY")
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.core.jev_client import JEV_SKILL_INTENT_ENABLED_ENV
     from app.modules.markdown_edit.application.generate_markdown_document import GenerateMarkdownDocumentUseCase
@@ -138,11 +138,11 @@ def main() -> None:
     from app.modules.skill.infrastructure.chat_completions_skill_authoring_generator import build_skill_authoring_generator
     from app.modules.skill.infrastructure.jev_skill_intent_classifier import with_jev_skill_intent
 
-    llm = build_skill_authoring_generator(provider=HAIKU[0], model=HAIKU[1])
+    llm = build_skill_authoring_generator(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
     os.environ[JEV_SKILL_INTENT_ENABLED_ENV] = "true"
     jev = with_jev_skill_intent(llm)
     assert jev is not llm, "Jev Skill 분류기를 만들지 못했습니다"
-    editor = build_markdown_editor(provider=HAIKU[0], model=HAIKU[1])
+    editor = build_markdown_editor(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
 
     def run(job):
         case, variant, run_index = job

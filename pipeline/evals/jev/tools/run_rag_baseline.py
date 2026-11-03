@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 from run_rag import evidence_hits  # noqa: E402
 
 # 답변 문맥이 근거 조각을 900자에서 자르므로(AnswerContextFormatter) 청크도 그 안에 들어가게 한다.
@@ -71,7 +71,7 @@ def main() -> None:
     bm25 = Bm25Searcher()
     formatter = AnswerContextFormatter()
     # 운영 질의 답변과 같은 생성기·프롬프트. 워크스페이스·사용자가 없어 스키마 프롬프트는 비어 있다.
-    generator = build_query_chat_answer_generator(provider="openai", model="gpt-6-luna")
+    generator = build_query_chat_answer_generator(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
     assembler = QueryAnswerAssembler(generator)
     print("청크", len(corpus), flush=True)
 

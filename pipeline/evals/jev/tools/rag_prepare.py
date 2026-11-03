@@ -1,4 +1,4 @@
-"""RAG 평가용 워크스페이스 준비: 새 계정·워크스페이스에 원문 11개를 올리고, 최신 dev 코드로 Haiku 편입·후속 편입을 한다.
+"""RAG 평가용 워크스페이스 준비: 새 계정·워크스페이스에 원문 11개를 올리고, 최신 dev 코드로 평가 모델 편입·후속 편입을 한다.
 개념 판정은 기본으로 운영 계획대로 Jev를 쓴다(--concept-judge llm이면 LLM).
 
 운영 편입 워커는 워크스페이스 공용 설정에서 Claude가 오면 Gemini로 바꾼다. 평가 요청대로 Haiku로 편입하려고
@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, results_dir, verify_gold  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, results_dir, verify_gold  # noqa: E402
 from stack_env import load_container_env  # noqa: E402
 
 ACCESS = os.environ.get("JEV_EVAL_ACCESS_URL", "http://localhost:8081")
@@ -93,13 +93,13 @@ def main() -> None:
     parser.add_argument("--resume", help="이어서 편입할 workspace.json 경로. 끝난 문서는 건너뛰고 결과도 그 폴더에 쓴다")
     parser.add_argument("--sources", help="쉼표로 구분한 corpus 문서 이름만 편입(확인용)")
     parser.add_argument("--concept-judge", choices=("jev", "llm"), default="jev", help="편입·후속 편입의 개념 판정기")
-    parser.add_argument("--model", help="편입 모델 provider:model(개념 크기 모델 비교용, 기본 Haiku). --resume이면 저장된 모델을 쓴다")
+    parser.add_argument("--model", help="편입 모델 provider:model(개념 크기 모델 비교용, 기본 평가 모델). --resume이면 저장된 모델을 쓴다")
     args = parser.parse_args()
     # 재개는 처음 편입한 모델로만 한다. 섞이면 한 모델의 결과로 잘못 보고된다.
     stored = json.loads(Path(args.resume).read_text()).get("model") if args.resume else None
     if stored and args.model and args.model != stored:
         parser.error(f"--resume 워크스페이스는 {stored}로 편입했습니다. --model을 빼거나 같게 주세요")
-    args.model = stored or args.model or ":".join(HAIKU)
+    args.model = stored or args.model or ":".join(EVAL_MODEL)
     provider, model = args.model.split(":", 1)
     verify_gold()
     load_container_env("fruition-ingest-worker-dev")

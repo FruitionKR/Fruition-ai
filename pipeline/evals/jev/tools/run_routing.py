@@ -1,7 +1,7 @@
 """라우팅 Jev 켬/끔 비교. 운영 흐름(라우터 → 작업 탭 후처리)을 그대로 부르고 정답과 정확히 비교한다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_routing.py [--dry-run] [--limit N]
-- 끔: LLM 라우터(Haiku)
+- 끔: LLM 라우터(평가 모델)
 - 켬: JEV_ROUTING_ENABLED=true. 스킬 후보가 겹치거나 Jev가 실패하면 운영처럼 같은 LLM 라우터로 넘어가고, 그 횟수를 센다.
 """
 import argparse
@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 
 from app.modules.agent.domain.entities import (  # noqa: E402
     ActiveMarkdownContext,
@@ -98,14 +98,14 @@ def main() -> None:
             print(case["id"], "Jev 선택지", len(options), "| 정답", case["expected"]["action"])
         return
 
-    load_keys("ANTHROPIC_API_KEY", "TYPESAFE_API_KEY")
+    load_keys("OPENAI_API_KEY", "TYPESAFE_API_KEY")
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.modules.agent.infrastructure.chat_completions_turn_router import build_agent_turn_router
     from app.core.jev_client import JEV_ROUTING_ENABLED_ENV, build_jev_client
     from app.modules.agent.infrastructure.chat_completions_turn_router import load_agent_turn_router_prompt
     from app.modules.agent.infrastructure.jev_turn_router import JevTurnRouter
 
-    llm = build_agent_turn_router(provider=HAIKU[0], model=HAIKU[1])
+    llm = build_agent_turn_router(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
     os.environ[JEV_ROUTING_ENABLED_ENV] = "true"
     # 운영 with_jev_routing과 같은 클라이언트·프롬프트로 만든다. 문항마다 만들어 LLM으로 넘어간 횟수를 정확히 센다.
     client = build_jev_client(JEV_ROUTING_ENABLED_ENV, interactive=True)

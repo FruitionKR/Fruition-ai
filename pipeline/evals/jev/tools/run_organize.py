@@ -1,7 +1,7 @@
 """문서 관리 평가. 폴더 정리 계획을 만들어 폴더 트리에 적용해 보고 최종 배치를 정답과 비교한다. 폴더 조회는 고른 폴더를 비교한다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_organize.py [--limit N]
-- 계획·조회 모델: Claude Haiku. 실행(백엔드 반영)은 하지 않고 계획만 메모리 트리에 적용한다.
+- 계획·조회 모델: 평가 모델(common.EVAL_MODEL). 실행(백엔드 반영)은 하지 않고 계획만 메모리 트리에 적용한다.
 - 범위가 있는 사례는 운영 worker처럼 scoped_hierarchy로 잘라 계획을 만들고, 적용은 전체 트리에서 한다.
 """
 import argparse
@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 
 PARENT_KEYS = {"create_folder": "parent_folder_id", "move_folder": "parent_folder_id", "move_document": "folder_id"}
 NAME_KEYS = {"create_folder": "name", "rename_folder": "name", "rename_document": "display_name"}
@@ -120,7 +120,7 @@ def main() -> None:
     organize, lookup = data["organize"], data["lookup"]
     if args.limit:
         organize, lookup = organize[: args.limit], lookup[: args.limit]
-    load_keys("ANTHROPIC_API_KEY")
+    load_keys("OPENAI_API_KEY")
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.modules.agent.domain.entities import AgentTurnRequest
     from app.modules.agent.domain.folder_lookup import folder_entries
@@ -129,8 +129,8 @@ def main() -> None:
     from app.modules.agent_run.infrastructure.agent_worker import scoped_hierarchy
     from app.modules.agent_run.infrastructure.chat_completions_plan_generator import build_plan_generator
 
-    planner = build_plan_generator(provider=HAIKU[0], model=HAIKU[1])
-    resolver = build_folder_reference_resolver(provider=HAIKU[0], model=HAIKU[1])
+    planner = build_plan_generator(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
+    resolver = build_folder_reference_resolver(provider=EVAL_MODEL[0], model=EVAL_MODEL[1])
 
     def run_organize(job):
         case, run_index = job

@@ -1,4 +1,4 @@
-"""개념 평가의 추가 연결(정답 밖 link_to 대상)이 두 정의상 타당한지 Codex로 채점한다.
+"""개념 평가의 추가 연결(정답 밖 link_to 대상)이 두 정의상 타당한지 Claude(common.JUDGE_MODEL)로 채점한다.
 
 사용: python grade_links.py <concept rows.jsonl>
 - 켬/끔을 가리기 위해 (사례, 연결 대상) 쌍으로 합쳐 한 번씩 채점한다. 자기 연결과 기존 개념이 아닌 대상은 뺀다.
@@ -6,13 +6,12 @@
 """
 import json
 import random
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import EVAL_DIR, verify_gold  # noqa: E402
+from common import EVAL_DIR, judge, verify_gold  # noqa: E402
 from grade_rag import schema  # noqa: E402
 
 PROMPT = """You are checking concept links in a Korean/English workspace wiki. Grade each item independently.
@@ -48,18 +47,9 @@ def main() -> None:
     ]
     grades = []
     with tempfile.TemporaryDirectory() as tmp:
-        schema_path = Path(tmp) / "schema.json"
-        schema_path.write_text(json.dumps(SCHEMA))
         for start in range(0, len(items), 23):
             batch = items[start:start + 23]
-            last = Path(tmp) / f"out_{start}.json"
-            subprocess.run(
-                ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", str(schema_path),
-                 "-o", str(last), PROMPT + json.dumps(batch, ensure_ascii=False, indent=1)],
-                # stdin이 열려 있으면 codex가 추가 입력을 기다리며 멈춘다.
-                check=True, cwd=tmp, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900,
-            )
-            got = json.loads(last.read_text())["grades"]
+            got = judge(PROMPT + json.dumps(batch, ensure_ascii=False, indent=1), SCHEMA, Path(tmp), 900)["grades"]
             assert {g["item_id"] for g in got} == {i["item_id"] for i in batch}, "채점 결과가 항목과 맞지 않습니다"
             grades += got
             print("graded", len(grades), "/", len(items), flush=True)

@@ -3,7 +3,7 @@
 사용: PYTHONPATH=<dev>/pipeline python run_rag.py <workspace.json> [--limit N]
 - 끔: 기존 근거 선택기 / 켬: JEV_EVIDENCE_ENABLED=true. 답변은 둘 다 GPT Luna, 웹 검색은 끈다.
 - 질의 워커 환경을 따르되, 임베딩 서버 포트가 밖으로 열려 있지 않아 같은 BGE-M3를 이 프로세스에 올려 쓴다(평가 전용).
-- 근거 채점(정답 문장 포함 여부)은 여기서 하고, 답변 채점은 grade_rag.py(Codex)가 한다.
+- 근거 채점(정답 문장 포함 여부)은 여기서 하고, 답변 채점은 grade_rag.py(Claude)가 한다.
 """
 import argparse
 import json
@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, RUNS, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, results_dir, verify_gold, write_jsonl  # noqa: E402
 from stack_env import load_container_env  # noqa: E402
 
 
@@ -43,6 +43,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--name", default="rag", help="결과 폴더 이름(편입 방식 전후 비교용)")
     parser.add_argument("--ids", help="쉼표로 구분한 질문 id만 실행(일부 문서 편입 확인용)")
+    parser.add_argument("--resume", action="store_true", help="중단된 실행의 rows.partial.jsonl을 이어 쓴다. 끝난 (질문, 켬/끔, 회차)는 다시 묻지 않는다")
     args = parser.parse_args()
     verify_gold()
     workspace = json.loads(Path(args.workspace).read_text())
@@ -85,7 +86,7 @@ def main() -> None:
     use_cases = {}
     for variant, enabled in (("off", "false"), ("on", "true")):
         os.environ[JEV_EVIDENCE_ENABLED_ENV] = enabled
-        use_cases[variant] = build_answer_query_use_case(provider="openai", model="gpt-6-luna", allow_web_search=False)
+        use_cases[variant] = build_answer_query_use_case(provider=EVAL_MODEL[0], model=EVAL_MODEL[1], allow_web_search=False)
     # 최종 결과의 근거는 답변이 인용한 것만 남는다(renumber_used_evidence). 선택기가 고른 근거와
     # 답변 프롬프트를 따로 남기려고 질의 문맥 생성을 감싸 스레드별로 마지막 문맥을 기록한다.
     import threading
@@ -128,21 +129,26 @@ def main() -> None:
         return {
             "id": case["id"], "category": case["category"], "answerable": case["answerable"], "variant": variant,
             "run": run_index, "answer": answer, "cited_evidence": snippets, "evidence": selected, "pages": pages,
-            "provider": "openai", "model": "gpt-6-luna",
+            "provider": EVAL_MODEL[0], "model": EVAL_MODEL[1],
             "answer_context": context.answer_context if context else None, "error": error,
             **evidence_hits(case, selected, source_by_document), "seconds": round(time.monotonic() - started, 2),
         }
 
     jobs = [(case, variant, r) for case in cases for variant in ("off", "on") for r in range(RUNS)]
     out = results_dir(args.name)
-    rows = []
-    with ThreadPoolExecutor(max_workers=4) as executor, (out / "rows.partial.jsonl").open("w") as partial:
+    partial_path = out / "rows.partial.jsonl"
+    rows = [json.loads(line) for line in partial_path.open()] if args.resume and partial_path.exists() else []
+    done = {(row["id"], row["variant"], row["run"]) for row in rows}
+    total = len(jobs)
+    jobs = [job for job in jobs if (job[0]["id"], job[1], job[2]) not in done]
+    print("이어 쓰기", len(rows), "남은", len(jobs), flush=True)
+    with ThreadPoolExecutor(max_workers=4) as executor, partial_path.open("a" if args.resume else "w") as partial:
         for row in executor.map(run, jobs):
             rows.append(row)
             partial.write(json.dumps(row, ensure_ascii=False) + "\n")
             partial.flush()
             if len(rows) % 20 == 0:
-                print("done", len(rows), "/", len(jobs), flush=True)
+                print("done", len(rows), "/", total, flush=True)
     write_jsonl(out / "rows.jsonl", rows)
     for variant in ("off", "on"):
         mine = [row for row in rows if row["variant"] == variant and row["recall"] is not None]
