@@ -72,7 +72,6 @@ def test_handle_retries_running_redelivered_run() -> None:
 
     run_request.assert_called_once_with(
         ingest_worker._build_payload(command),
-        background_tasks=None,
         use_case=get_use_case.return_value,
         repository=repository,
         source_reader=get_source_reader.return_value,

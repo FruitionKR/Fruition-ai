@@ -716,7 +716,7 @@ class AgentWorker:
         if not target_id:
             return False
         if operation.tool_name == "apply_document_edit":
-            current = self._read_tool(context, "get_document_content", {"document_id": target_id})
+            current = self._read_tool(context, "get_document_content", {"document_id": target_id}, budgeted=False)
             expected_version = response.get("current_version")
             expected_hash = response.get("content_hash")
             return (
@@ -728,7 +728,7 @@ class AgentWorker:
                 and current.get("content_hash") == expected_hash
             )
         if operation.target_type == "document" and operation.tool_name == "rename_document":
-            current = self._read_tool(context, "get_document_metadata", {"document_id": target_id})
+            current = self._read_tool(context, "get_document_metadata", {"document_id": target_id}, budgeted=False)
             return _response_name(current) == _response_name(response)
         expected_name = _response_name(response)
         if operation.tool_name in {"create_folder", "create_document"}:
@@ -750,7 +750,7 @@ class AgentWorker:
             )
         tool_name = "list_root_items" if parent_id is None else "list_folder_children"
         arguments = {} if parent_id is None else {"folder_id": str(parent_id)}
-        current = self._read_tool(context, tool_name, arguments)
+        current = self._read_tool(context, tool_name, arguments, budgeted=False)
         items = current.get("items", [])
         return isinstance(items, list) and any(
             isinstance(item, dict)
@@ -764,10 +764,13 @@ class AgentWorker:
         context: AgentRunContext,
         tool_name: str,
         arguments: dict[str, object],
+        *,
+        budgeted: bool = True,
     ) -> dict[str, object]:
         if context.run.skill_version_id is not None and tool_name not in context.allowed_tools:
             raise ValueError("Selected Skill does not allow the required read tool.")
-        if not self._repository.reserve_tool_call(context.run.id):
+        # 실행 후 검증 읽기는 시스템이 성공한 operation 수만큼만 하므로 Tool 예산을 쓰지 않는다.
+        if budgeted and not self._repository.reserve_tool_call(context.run.id):
             raise ValueError("AgentRun tool call limit exceeded.")
         return self._tool_gateway.read(
             tool_name,

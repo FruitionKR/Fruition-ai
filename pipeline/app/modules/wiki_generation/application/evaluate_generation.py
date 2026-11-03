@@ -67,7 +67,7 @@ def evaluate_generation(
     if len(windows) == 1:
         evaluation = _evaluate_window(completion, evaluator_prompt, document, blocks, normalized, previous_requests)
     else:
-        subsets = _normalized_by_window(normalized, windows)
+        window_blocks, subsets = _normalized_by_window(normalized, windows)
         with ThreadPoolExecutor(max_workers=min(EVALUATION_MAX_WORKERS, len(windows))) as executor:
             futures = [
                 executor.submit(
@@ -80,7 +80,7 @@ def evaluate_generation(
                     subset,
                     previous_requests,
                 )
-                for window, subset in zip(windows, subsets, strict=True)
+                for window, subset in zip(window_blocks, subsets, strict=True)
             ]
             results = [future.result() for future in futures]
         evaluation = _merge_evaluations(results, [len(window) for window in windows])
@@ -174,24 +174,53 @@ def _block_windows(blocks: list[Any], max_chars: int) -> list[list[Any]]:
 def _normalized_by_window(
     normalized: dict[str, Any],
     windows: list[list[Any]],
-) -> list[dict[str, Any]]:
-    """구간마다 그 구간 블록을 근거로 가리키는 항목만 고른다. 근거가 없는 항목은 첫 구간에 둔다."""
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """구간마다 그 구간 블록을 근거로 가리키는 항목만 고른다. 근거가 없는 항목은 첫 구간에 둔다.
+
+    핵심 개념은 그 개념을 related_concept_slugs로 가리키는 근거 주장이 간 구간에만 둔다. 개념의 근거 블록은
+    추출 패킷마다 쌓여 여러 구간에 걸치는데, 뒷받침 주장이 없는 구간에서는 평가자가 근거 없는 핵심 개념으로
+    잘못 막는다. 뒷받침 주장이 없는 개념은 근거 블록 구간에 그대로 둬 그 규칙이 걸리게 한다.
+    옮긴 구간에 개념 자신의 근거 블록이 하나도 없으면 그 블록을 구간 원문에 덧붙여 개념을 원문과 대조하게 한다.
+    """
     window_ids = [
         {block.block_id for block in window} | {block.source_reference_id for block in window}
         for window in windows
     ]
+
+    def targets_of(item: Any) -> list[int]:
+        anchors = _anchor_ids(item)
+        return [index for index, ids in enumerate(window_ids) if anchors & ids] or [0]
+
+    evidence_windows: dict[str, set[int]] = {}
+    for evidence in normalized.get("evidence_units", []):
+        for slug in evidence.get("related_concept_slugs", []):
+            evidence_windows.setdefault(str(slug), set()).update(targets_of(evidence))
+    window_blocks = [list(window) for window in windows]
     subsets: list[dict[str, Any]] = [
         {key: [] for key in NORMALIZED_LIST_KEYS} for _ in windows
     ]
     for key in NORMALIZED_LIST_KEYS:
         for item in normalized.get(key, []):
-            anchors = _anchor_ids(item)
-            targets = [index for index, ids in enumerate(window_ids) if anchors & ids] or [0]
+            targets = targets_of(item)
+            if key == "concept_ledger" and str(item.get("slug")) in evidence_windows:
+                anchored = set(targets)
+                targets = sorted(evidence_windows[str(item["slug"])])
+                anchors = _anchor_ids(item)
+                for index in targets:
+                    if index in anchored or not anchors:
+                        continue
+                    # ponytail: 개념의 근거 블록을 크기 제한 없이 덧붙여 120,000자를 넘을 수 있다. 넘치면 뒷받침 주장 근처 블록만 덧붙인다.
+                    window_blocks[index] += [
+                        block
+                        for window in windows
+                        for block in window
+                        if {block.block_id, block.source_reference_id} & anchors and block not in window_blocks[index]
+                    ]
             for index in targets:
                 subsets[index][key].append(item)
     for subset in subsets:
         subset["warnings"] = normalized.get("warnings", [])
-    return subsets
+    return window_blocks, subsets
 
 
 def _anchor_ids(value: Any) -> set[str]:

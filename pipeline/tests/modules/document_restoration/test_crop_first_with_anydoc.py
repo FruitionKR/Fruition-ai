@@ -147,8 +147,124 @@ class CropFirstWithAnyDocTest(unittest.TestCase):
 
             self.assertEqual(
                 output_file.read_text(encoding="utf-8"),
-                "<!-- page 1 -->\n\n> 본문 자동 복원 실패\n\n원본 본문\n",
+                "<!-- page 1 -->\n\n> ⚠️ 이 페이지는 원문 텍스트로 대신했어요.\n\n원본 본문\n",
             )
+
+    def _assemble_broken_pages(self, bodies, repair_summary=None, recovered=()):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output_dir = Path(temp_dir.name) / "output"
+        manifest_file = output_dir / "manifest.json"
+        output_file = output_dir / "final" / "restored.md"
+        output_file.parent.mkdir(parents=True)
+        manifest_file.write_text(json.dumps(bodies, ensure_ascii=False), encoding="utf-8")
+        if repair_summary is not None:
+            (output_dir / "final" / "selective_repair_summary.json").write_text(
+                json.dumps(repair_summary), encoding="utf-8"
+            )
+        text_dir = output_dir / "layout" / "auto" / "text_recovered"
+        text_dir.mkdir(parents=True)
+        for block_id in recovered:
+            (text_dir / f"{block_id}.md").write_text("복원된 본문", encoding="utf-8")
+        module.assemble(manifest_file, output_dir, output_file)
+        summary = json.loads((output_dir / "final" / "restoration_summary.json").read_text(encoding="utf-8"))
+        return output_file.read_text(encoding="utf-8"), summary
+
+    @staticmethod
+    def _body(page, reasons, broken=True):
+        return {
+            "id": f"body-{page}",
+            "page": page,
+            "order": 0,
+            "type": "paragraph",
+            "source_text": "",
+            "fallback_text": f"원본 {page}",
+            "body_broken": broken,
+            "body_reasons": reasons,
+        }
+
+    def test_fallback_note_explains_why_original_text_was_used(self) -> None:
+        markdown, summary = self._assemble_broken_pages(
+            [
+                self._body(1, ["unresolved_font_mapping"]),
+                self._body(2, ["replacement_character"]),
+                self._body(3, ["crop_token_mismatch"]),
+                self._body(4, ["anydoc_failed"]),
+                self._body(5, ["unresolved_font_mapping"]),
+                self._body(6, ["replacement_character"]),
+                self._body(7, ["unresolved_font_mapping"]),
+                self._body(8, [], broken=False),
+            ],
+            repair_summary={
+                "pages": [
+                    {"page": 5, "failures": {"body-5": "repair_rejected"}},
+                    {"page": 6, "failures": {"body-6": "provider_error"}},
+                ]
+            },
+            recovered=["body-7"],
+        )
+
+        self.assertIn("> ⚠️ 이 페이지는 원문 텍스트로 대신했어요. (이유: 글꼴을 읽지 못함)\n\n원본 1", markdown)
+        self.assertIn("(이유: 깨진 글자가 있음)\n\n원본 2", markdown)
+        self.assertIn("(이유: 표·수식 위치가 맞지 않음)\n\n원본 3", markdown)
+        self.assertIn("(이유: 글자를 뽑지 못함)\n\n원본 4", markdown)
+        self.assertIn("(이유: 글꼴을 읽지 못함, AI 복원 결과가 원문과 달라 사용하지 않음)\n\n원본 5", markdown)
+        self.assertIn("(이유: 깨진 글자가 있음, AI 복원 요청 실패)\n\n원본 6", markdown)
+        self.assertNotIn("본문 자동 복원 실패", markdown)
+        self.assertEqual(
+            summary,
+            {
+                "broken_pages": 7,
+                "repaired_pages": 1,
+                "fallback_pages": [
+                    {"page": 1, "reason": "font_mapping", "causes": ["font_mapping"]},
+                    {"page": 2, "reason": "replacement_character", "causes": ["replacement_character"]},
+                    {"page": 3, "reason": "token_mismatch", "causes": ["token_mismatch"]},
+                    {"page": 4, "reason": "extract_failed", "causes": ["extract_failed"]},
+                    {"page": 5, "reason": "repair_rejected", "causes": ["font_mapping", "repair_rejected"]},
+                    {"page": 6, "reason": "provider_error", "causes": ["replacement_character", "provider_error"]},
+                ],
+            },
+        )
+
+    def test_restoration_summary_has_no_document_content(self) -> None:
+        _, summary = self._assemble_broken_pages([self._body(1, ["unresolved_font_mapping"])])
+        self.assertNotIn("원본", json.dumps(summary, ensure_ascii=False))
+
+    def test_figure_description_is_inserted_as_alt_and_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            manifest_file = output_dir / "manifest.json"
+            output_file = output_dir / "final" / "restored.md"
+            descriptions = output_dir / "layout" / "crop_first" / "figure_descriptions"
+            descriptions.mkdir(parents=True)
+            (descriptions / "figure-1.json").write_text(
+                json.dumps({"alt": "분기별 매출 막대그래프", "description": "4분기 매출이 가장 높다."}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            figure = {"type": "figure_candidate", "page": 1, "order": 1, "asset": "layout/crop_first/assets/figures/f.png"}
+            manifest_file.write_text(
+                json.dumps(
+                    [
+                        {"id": "body-1", "page": 1, "order": 0, "type": "paragraph",
+                         "source_text": "a XQ001QX b XQ002QX", "body_broken": False},
+                        {**figure, "id": "figure-1", "token": "XQ001QX"},
+                        {**figure, "id": "figure-2", "order": 2, "token": "XQ002QX"},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            module.assemble(manifest_file, output_dir, output_file)
+
+            result = output_file.read_text(encoding="utf-8")
+            self.assertIn(
+                "![분기별 매출 막대그래프](../layout/crop_first/assets/figures/f.png)\n\n> 그림 설명: 4분기 매출이 가장 높다.",
+                result,
+            )
+            # 설명이 없는 그림은 그대로 둔다.
+            self.assertIn("![figure](../layout/crop_first/assets/figures/f.png)", result)
 
     def test_assemble_separates_inline_and_indented_markers_as_blocks(self) -> None:
         # 문장 중간·들여쓴 줄의 마커도 앞뒤 빈 줄로 분리해야 `$$`·표가 본문에 붙지 않는다.

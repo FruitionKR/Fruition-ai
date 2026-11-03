@@ -1,4 +1,5 @@
 import argparse
+import http.client
 import json
 import os
 import tempfile
@@ -377,6 +378,25 @@ Second
 
             self.assertEqual(raised.exception.code, status_code)
 
+    def test_wraps_dropped_connection_as_block_failure(self) -> None:
+        errors = (
+            http.client.RemoteDisconnected("closed"),
+            http.client.IncompleteRead(b""),
+            ConnectionResetError(),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__), mock.patch(
+                "urllib.request.urlopen", side_effect=error
+            ), self.assertRaisesRegex(RuntimeError, r"^OpenAI Responses API "):
+                call_page(
+                    provider="openai",
+                    api_key="test-key",
+                    model="gpt-5-nano",
+                    prompt="restore",
+                    payload={"blocks": []},
+                    images=[],
+                )
+
     def test_skips_openai_without_api_key_and_keeps_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
@@ -650,7 +670,9 @@ class ContinuedTableRepairTest(unittest.TestCase):
             side_effect=lambda output_dir, pdf_file, block: f"crop-{block['id']}",
         ), mock.patch(
             f"{MODULE}.call_page",
-            side_effect=[(response, {}) for response in responses],
+            side_effect=[
+                response if isinstance(response, Exception) else (response, {}) for response in responses
+            ],
         ) as call_page_mock:
             run(args)
         return output_dir / "layout" / "auto", call_page_mock
@@ -702,6 +724,21 @@ class ContinuedTableRepairTest(unittest.TestCase):
         self.assertTrue((layout / "recovered_blocks" / "table-a.md").exists())
         self.assertTrue((layout / "recovered_blocks" / "table-b.md").exists())
         self.assertFalse((layout / "evaluations" / "table-b.json").read_text(encoding="utf-8").count("merged_into"))
+
+    def test_transport_error_on_merged_table_falls_back_to_each_fragment(self) -> None:
+        for error in (http.client.IncompleteRead(b"partial"), ConnectionResetError("reset")):
+            with self.subTest(error=type(error).__name__):
+                layout, call_page_mock = self._run(
+                    [
+                        error,
+                        {"results": [{"block_id": "table-a", "action": "replace", "replacement": self.TABLE}]},
+                        {"results": [{"block_id": "table-b", "action": "replace", "replacement": self.TABLE}]},
+                    ]
+                )
+
+                self.assertEqual(call_page_mock.call_count, 3)
+                self.assertTrue((layout / "recovered_blocks" / "table-a.md").exists())
+                self.assertTrue((layout / "recovered_blocks" / "table-b.md").exists())
 
 
 if __name__ == "__main__":

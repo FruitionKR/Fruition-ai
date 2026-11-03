@@ -33,6 +33,8 @@ PDF_DIAGNOSTIC_TIMEOUT_SECONDS = int(os.getenv("PDF_DIAGNOSTIC_TIMEOUT_SECONDS",
 # 한 번의 변환 시도(쪽 범위 하나)의 제한 시간이다. 넘기면 범위를 절반으로 나눠 다시 시도한다(ADR 0034).
 ATTEMPT_TIMEOUT_SECONDS = int(os.getenv("CONVERT_ATTEMPT_TIMEOUT_SECONDS", "1500"))
 RESTORATION_COMMAND = os.getenv("RESTORATION_COMMAND", "document-restoration")
+# 결과 계약의 빈 값이다. 복원기가 요약 파일을 남기지 않았을 때(이전 이미지, 테스트 대역)도 같은 모양을 돌려준다.
+EMPTY_RESTORATION_SUMMARY = {"broken_pages": 0, "repaired_pages": 0, "fallback_pages": []}
 
 
 class InputRejectedError(ValueError):
@@ -140,6 +142,7 @@ def process_pdf(
     model: str = DEFAULT_LLM_MODELS["gemini"],
     cancelled: Event | None = None,
     usage_actor: dict[str, str | None] | None = None,
+    describe_figures: bool = False,
 ) -> dict[str, Any]:
     try:
         # 변환 repair는 워크스페이스 공용 모델 설정을 쓴다. 허용 범위 밖이면 워크스페이스 기본 모델로 대체한다.
@@ -162,6 +165,8 @@ def process_pdf(
         output_dir = job_dir / "restoration"
         output_md = output_dir / "final" / f"{job_dir.name}.restored.md"
         repair_summary = output_dir / "final" / "selective_repair_summary.json"
+        restoration_summary = output_dir / "final" / "restoration_summary.json"
+        figure_summary = output_dir / "final" / "figure_descriptions_summary.json"
         process_log = job_dir / "process.log"
 
         if isinstance(content, Path):
@@ -200,6 +205,8 @@ def process_pdf(
                 provider,
                 "--selective-model",
                 model,
+                # 사용자가 켰을 때만 그림을 외부 공급사로 보낸다.
+                *(["--describe-figures"] if describe_figures else []),
             ],
             job_dir,
             _within_deadline(ATTEMPT_TIMEOUT_SECONDS),
@@ -219,7 +226,55 @@ def process_pdf(
             "pdffonts": fonts_txt.read_text(encoding="utf-8", errors="replace"),
             "process_log": process_log.read_text(encoding="utf-8", errors="replace"),
             "repair_summary": json.loads(repair_summary.read_text(encoding="utf-8")),
+            "restoration_summary": _read_json(restoration_summary, EMPTY_RESTORATION_SUMMARY),
+            "figure_descriptions": _read_json(
+                figure_summary, _empty_figure_descriptions(describe_figures)
+            ),
         }
+
+
+def _empty_figure_descriptions(requested: bool) -> dict[str, Any]:
+    return {"requested": requested, "described": 0, "failed": 0, "skipped": 0}
+
+
+def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+
+
+def _page_result(result: dict[str, Any], start: int, describe_figures: bool) -> dict[str, Any]:
+    """process_pdf 결과에서 결과 계약 필드만 고르고, 범위 안 쪽 번호(1부터)를 원본 문서 쪽 번호로 바꾼다."""
+    summary = result.get("restoration_summary") or EMPTY_RESTORATION_SUMMARY
+    figures = result.get("figure_descriptions") or _empty_figure_descriptions(describe_figures)
+    return {
+        "markdown": result["markdown"],
+        "restoration_summary": {
+            "broken_pages": summary["broken_pages"],
+            "repaired_pages": summary["repaired_pages"],
+            "fallback_pages": [
+                {**page, "page": start + int(page["page"])} for page in summary["fallback_pages"]
+            ],
+        },
+        "figure_descriptions": {**figures, "requested": describe_figures},
+    }
+
+
+def _merge_results(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    left, right = first["restoration_summary"], second["restoration_summary"]
+    return {
+        "markdown": "\n\n".join(part for part in (first["markdown"].rstrip(), second["markdown"]) if part),
+        "restoration_summary": {
+            "broken_pages": left["broken_pages"] + right["broken_pages"],
+            "repaired_pages": left["repaired_pages"] + right["repaired_pages"],
+            "fallback_pages": [*left["fallback_pages"], *right["fallback_pages"]],
+        },
+        "figure_descriptions": {
+            "requested": first["figure_descriptions"]["requested"],
+            **{
+                key: first["figure_descriptions"][key] + second["figure_descriptions"][key]
+                for key in ("described", "failed", "skipped")
+            },
+        },
+    }
 
 
 
@@ -304,8 +359,9 @@ def open_pdf(stream: StorageRangeReader):
 
 
 def convert_pages(reader: Any, start: int, end: int, provider: str, model: str, cancelled: Event,
-                  usage_actor: dict[str, str | None] | None = None) -> str:
-    """[start, end) 쪽(0부터)을 Markdown으로 변환한다.
+                  usage_actor: dict[str, str | None] | None = None,
+                  describe_figures: bool = False) -> dict[str, Any]:
+    """[start, end) 쪽(0부터)을 Markdown으로 변환해 markdown·restoration_summary·figure_descriptions를 돌려준다.
 
     시도가 실패하거나 ATTEMPT_TIMEOUT_SECONDS를 넘기면 범위를 절반으로 나눠 각각 다시 시도하고, 1쪽까지
     실패하면 그 예외를 올린다. 입력 거절·취소·전체 마감은 나눠도 같으므로 나누지 않는다.
@@ -323,7 +379,8 @@ def convert_pages(reader: Any, start: int, end: int, provider: str, model: str, 
             with pdf.open("wb") as output:
                 writer.write(output)
             writer.close()
-            return process_pdf(pdf, provider, model, cancelled, usage_actor)["markdown"]
+            result = process_pdf(pdf, provider, model, cancelled, usage_actor, describe_figures=describe_figures)
+            return _page_result(result, start, describe_figures)
     except Exception as error:
         # 시도 마감은 위 with를 벗어났으므로 여기서 보이는 마감은 호출자(batch 전체) 것이다.
         remaining = remaining_seconds()
@@ -334,6 +391,6 @@ def convert_pages(reader: Any, start: int, end: int, provider: str, model: str, 
             raise
         middle = start + (end - start) // 2
         logger.warning("변환 시도 실패, 범위를 나눠 재시도: pages=%d-%d error_type=%s", start, end, type(error).__name__)
-    first = convert_pages(reader, start, middle, provider, model, cancelled, usage_actor)
-    second = convert_pages(reader, middle, end, provider, model, cancelled, usage_actor)
-    return "\n\n".join(part for part in (first.rstrip(), second) if part)
+    first = convert_pages(reader, start, middle, provider, model, cancelled, usage_actor, describe_figures)
+    second = convert_pages(reader, middle, end, provider, model, cancelled, usage_actor, describe_figures)
+    return _merge_results(first, second)

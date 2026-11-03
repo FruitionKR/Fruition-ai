@@ -140,6 +140,43 @@ class EvaluateGenerationTest(unittest.TestCase):
             [["B0003"]],
         )
 
+    def test_window_concepts_follow_supporting_evidence(self) -> None:
+        completion = WindowRecordingCompletion()
+        blocks = [
+            SourceBlock("doc-1", f"B{index:04d}", f"B{index:04d}", "가" * 50_000, index, index)
+            for index in range(1, 5)
+        ]
+        normalized = {
+            "evidence_units": [{
+                "evidence_id": "ev-1",
+                "anchor_reference_ids": ["B0001"],
+                "related_concept_slugs": ["spanning", "moved"],
+            }],
+            "concept_ledger": [
+                # 패킷마다 근거 블록이 쌓여 두 구간에 걸치지만 뒷받침 주장은 첫 구간에만 있다.
+                {"slug": "spanning", "anchor_reference_ids": ["B0001", "B0004"]},
+                # 뒷받침 주장 구간에 자기 근거 블록이 없다.
+                {"slug": "moved", "anchor_reference_ids": ["B0004"]},
+                # 뒷받침 주장이 없으면 근거 블록 구간에 그대로 둬 근거 없는 핵심 개념 규칙이 걸리게 한다.
+                {"slug": "unsupported", "anchor_reference_ids": ["B0004"]},
+            ],
+        }
+
+        evaluate_generation(
+            completion=completion,
+            evaluator_prompt="evaluate",
+            document=SourceDocument("doc-1", "문서", "document.md", "sha1"),
+            blocks=blocks,
+            normalized=normalized,
+            previous_requests=[],
+        )
+
+        first, second = sorted(completion.payloads, key=lambda payload: payload["source_blocks"][0]["block_id"])
+        self.assertEqual([item["slug"] for item in first["normalized"]["concept_ledger"]], ["spanning", "moved"])
+        self.assertEqual([item["slug"] for item in second["normalized"]["concept_ledger"]], ["unsupported"])
+        self.assertEqual([block["block_id"] for block in first["source_blocks"]], ["B0001", "B0002", "B0004"])
+        self.assertEqual([block["block_id"] for block in second["source_blocks"]], ["B0003", "B0004"])
+
     def test_note_items_are_sent_once_through_top_level_lists(self) -> None:
         completion = WindowRecordingCompletion()
         observation = {"title": "관찰", "anchor_reference_ids": ["B0001"]}

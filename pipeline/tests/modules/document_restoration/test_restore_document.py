@@ -169,5 +169,40 @@ class RestoreDocumentUseCaseTest(unittest.TestCase):
                 self.assertEqual(command.selective_model, model)
 
 
+    def test_crop_first_describes_figures_only_when_requested(self) -> None:
+        for describe, expected in (
+            (False, []),
+            (True, [RestorationStage.DESCRIBE_FIGURES_WITH_PROVIDER]),
+        ):
+            with self.subTest(describe_figures=describe):
+                stages = FakeStages(needs_docling_baseline=False)
+                RestoreDocumentUseCase(stages).execute(
+                    RestoreDocumentCommand(
+                        pdf_file=Path("paper.pdf"),
+                        output_dir=Path("output"),
+                        document_slug="paper",
+                        describe_figures=describe,
+                    )
+                )
+                self.assertEqual(
+                    stages.stages,
+                    [
+                        RestorationStage.PREPARE_CROP_FIRST,
+                        RestorationStage.SELECTIVE_REPAIR_WITH_PROVIDER,
+                        *expected,
+                        RestorationStage.ASSEMBLE_CROP_FIRST,
+                    ],
+                )
+
+    def test_cli_describe_figures_flag_defaults_to_false(self) -> None:
+        base = ["restore-document", "--pdf-file", "paper.pdf", "--output-dir", "output", "--document-slug", "paper"]
+        for extra, expected in (([], False), (["--describe-figures"], True)):
+            with self.subTest(extra=extra), patch("sys.argv", base + extra), patch.object(
+                RestoreDocumentUseCase, "execute"
+            ) as execute:
+                main()
+            self.assertIs(execute.call_args.args[0].describe_figures, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
