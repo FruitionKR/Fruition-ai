@@ -296,6 +296,11 @@ components:
       type: object
     AgentPlanResponse:
       properties:
+        approved_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By
         id:
           title: Id
           type: string
@@ -469,6 +474,14 @@ components:
       type: object
     ApproveAgentPlanRequest:
       properties:
+        approved_by:
+          default: user
+          description: 승인 주체. 사용자가 승인 화면에서 직접 승인하면 user(기본값), 사용자의 자동 승인 설정에 따라 document-svc가 대신 승인하면 auto:user-setting이다. 승인 기록(agent_approvals.approved_by)에 남는다.
+          enum:
+          - user
+          - auto:user-setting
+          title: Approved By
+          type: string
         operation_hash:
           maxLength: 64
           minLength: 64
