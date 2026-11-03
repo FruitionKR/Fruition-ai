@@ -26,7 +26,6 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
     ChatWikiRunIn,
     PipelineRunIn,
     PipelineRunOut,
-    ReingestRunIn,
 )
 from app.modules.wiki_schema.interfaces.http.routes import router as wiki_schema_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database

@@ -5,7 +5,7 @@ from typing import Iterator
 from unittest.mock import Mock, patch
 
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -129,17 +129,6 @@ def test_pipeline_run_requires_document_id() -> None:
         assert "document_id" in str(exc)
     else:
         raise AssertionError("document pipeline request should require document_id")
-
-
-def test_reingest_run_accepts_empty_markdown() -> None:
-    payload = api.ReingestRunIn(
-        document_id="document_1",
-        input_markdown="",
-        provider="openai",
-        model="gpt-5-nano",
-    )
-
-    assert payload.input_markdown == ""
 
 
 def test_pipeline_run_rejects_direct_input() -> None:
@@ -306,188 +295,9 @@ def test_pipeline_command_does_not_load_existing_source_context_for_partial() ->
     repository.latest_source_page_context.assert_not_called()
 
 
-def test_pipeline_endpoint_rejects_selection_mode() -> None:
-    client = TestClient(
-        api.app,
-        headers={"X-Internal-Token": "test-internal-token"},
-    )
-
-    response = client.post(
-        "/pipeline/runs",
-        json={"document_id": "chat_document_1", "selection_mode": "full"},
-        headers=_internal_token_headers(),
-    )
-
-    assert response.status_code == 422
-
-
-def test_chat_wiki_endpoint_requires_selection_mode() -> None:
-    client = TestClient(
-        api.app,
-        headers={"X-Internal-Token": "test-internal-token"},
-    )
-
-    response = client.post(
-        "/chat-wiki/runs",
-        json={"document_id": "chat_document_1"},
-        headers=_internal_token_headers(),
-    )
-
-    assert response.status_code == 422
-
-
-def test_pipeline_endpoint_runs_stored_document_in_background() -> None:
-    repository = _repository(
-        document={
-            "id": "document_1",
-            "user_id": "user_1",
-            "workspace_id": "workspace_1",
-            "source_uri": "documents/document_1.md",
-            "extracted_text_uri": None,
-            "mime_type": "text/markdown",
-            "filename": "document.md",
-        },
-    )
-    use_case = _use_case()
-    source_reader = _source_reader("# Stored Document")
-
-    with _pipeline_client(
-        use_case=use_case,
-        repository=repository,
-        source_reader=source_reader,
-    ) as client:
-        response = client.post(
-            "/pipeline/runs",
-            json={"document_id": "document_1", "provider": "openai", "model": "gpt-5-nano"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "running"
-    assert [item[0] for item in use_case.mock_calls] == ["register", "execute"]
-    registration = use_case.register.call_args.args[0]
-    command = use_case.execute.call_args.args[1]
-    assert registration.input_source == "document:document_1"
-    assert command.input_markdown == "# Stored Document"
-    assert command.source_document_id == "document_1"
-    assert command.display_name == "document"
-
-
-def test_reingest_endpoint_uses_inline_markdown_and_previous_source() -> None:
-    repository = _repository(
-        document={
-            "id": "document_1",
-            "user_id": "user_1",
-            "workspace_id": "workspace_1",
-            "filename": "document.md",
-        },
-        source_context={
-            "artifact": {"document_id": "document_1"},
-            "source_markdown": "# 기존 문서",
-        },
-    )
-    repository.list_source_blocks.return_value = [
-        {"document_id": "document_1", "block_id": "B0001", "text": "기존 문서"}
-    ]
-    use_case = _use_case()
-    source_reader = _source_reader()
-
-    with _pipeline_client(
-        use_case=use_case,
-        repository=repository,
-        source_reader=source_reader,
-    ) as client:
-        response = client.post(
-            "/pipeline/reingest-runs",
-            json={
-                "document_id": "document_1",
-                "input_markdown": "# 수정 문서",
-                "provider": "openai",
-                "model": "gpt-5-nano",
-            },
-        )
-
-    assert response.status_code == 200
-    registration = use_case.register.call_args.args[0]
-    command = use_case.execute.call_args.args[1]
-    assert registration.input_source == "document:document_1"
-    assert command.reingest is True
-    assert command.input_markdown == "# 수정 문서"
-    assert command.existing_source_artifact == {"document_id": "document_1"}
-    assert command.existing_source_blocks == repository.list_source_blocks.return_value
-    assert command.display_name == "document"
-    source_reader.read_text.assert_not_called()
-
-
-def test_reingest_endpoint_rejects_document_without_existing_source_page() -> None:
-    repository = _repository(
-        document={
-            "id": "document_1",
-            "user_id": "user_1",
-            "workspace_id": "workspace_1",
-            "filename": "document.md",
-        },
-    )
-
-    with _pipeline_client(
-        use_case=_use_case(),
-        repository=repository,
-        source_reader=_source_reader(),
-    ) as client:
-        response = client.post(
-            "/pipeline/reingest-runs",
-            json={
-                "document_id": "document_1",
-                "input_markdown": "# 수정 문서",
-                "provider": "openai",
-                "model": "gpt-5-nano",
-            },
-        )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "재편입하려면 기존 활성 source page가 필요합니다."
-    repository.list_source_blocks.assert_not_called()
-
-
-def test_pipeline_endpoint_waits_for_synchronous_result() -> None:
-    repository = _repository(
-        document={
-            "id": "document_1",
-            "user_id": "user_1",
-            "workspace_id": "workspace_1",
-            "source_uri": "documents/document_1.md",
-            "extracted_text_uri": None,
-            "mime_type": "text/markdown",
-            "filename": "document.md",
-        },
-    )
-    use_case = _use_case()
-    source_reader = _source_reader("# Stored Document")
-
-    with _pipeline_client(
-        use_case=use_case,
-        repository=repository,
-        source_reader=source_reader,
-    ) as client:
-        response = client.post(
-            "/pipeline/runs",
-            json={
-                "document_id": "document_1",
-                "wait": True,
-                "provider": "openai",
-                "model": "gpt-5-nano",
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "succeeded"
-    assert response.json()["manifest"] == {"manifest": "value"}
-    assert [item[0] for item in use_case.mock_calls] == ["register", "execute"]
-
-
-@pytest.mark.parametrize("wait", [True, False])
 @pytest.mark.parametrize("fails", [False, True])
-def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, wait: bool, fails: bool) -> None:
-    # 호출자가 out을 주지 않으면 runs/api_{run_id}는 실행이 끝나면(성공·실패·백그라운드 모두) 지워진다.
+def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, fails: bool) -> None:
+    # runs/api_{run_id}는 실행이 끝나면(성공·실패 모두) 지워진다.
     monkeypatch.chdir(tmp_path)
     repository = _repository(
         document={
@@ -514,17 +324,21 @@ def test_pipeline_run_removes_scratch_output_dir(tmp_path, monkeypatch, wait: bo
 
     use_case.execute.side_effect = execute
 
-    with _pipeline_client(
-        use_case=use_case,
-        repository=repository,
-        source_reader=_source_reader("# Stored Document"),
-    ) as client:
-        response = client.post(
-            "/pipeline/runs",
-            json={"document_id": "document_1", "wait": wait, "provider": "openai", "model": "gpt-5-nano"},
+    def run() -> None:
+        pipeline_routes._run_pipeline_request(
+            _pipeline_run_in(document_id="document_1"),
+            use_case,
+            repository,
+            _source_reader("# Stored Document"),
+            run_id="run-1",
         )
 
-    assert response.status_code == (500 if wait and fails else 200)
+    if fails:
+        with pytest.raises(HTTPException) as exc_info:
+            run()
+        assert exc_info.value.status_code == 500
+    else:
+        run()
     assert len(created) == 1 and created[0].parts[0] == "runs"
     assert not created[0].exists()
 
@@ -533,6 +347,21 @@ def test_pipeline_run_rejects_caller_specified_output_dir() -> None:
     # out으로 임의 경로를 지우게 할 수 없다. 요청 스키마는 알 수 없는 필드를 거부한다.
     with pytest.raises(ValidationError):
         _pipeline_run_in(document_id="document_1", out="/tmp/chosen")
+
+
+@pytest.mark.parametrize("field", ["system_prompt", "concept_system_prompt", "existing_wiki_dir", "log_callback_url"])
+def test_pipeline_run_rejects_caller_specified_paths_and_callback(field: str) -> None:
+    # 프롬프트 파일 경로·콜백 URL은 호출자가 정할 수 없다.
+    with pytest.raises(ValidationError):
+        _pipeline_run_in(document_id="document_1", **{field: "/proc/self/environ"})
+
+
+@pytest.mark.parametrize("path", ["/pipeline/runs", "/pipeline/reingest-runs", "/chat-wiki/runs"])
+def test_manual_ingest_http_routes_are_removed(path: str) -> None:
+    with _pipeline_client() as client:
+        response = client.post(path, json={"document_id": "document_1"})
+
+    assert response.status_code == 404
 
 
 def test_pipeline_run_status_uses_repository_dependency() -> None:
@@ -596,13 +425,13 @@ def test_chat_wiki_inline_markdown_uses_document_id_as_source_key() -> None:
 
     response = pipeline_routes._run_pipeline_request(
         payload,
-        BackgroundTasks(),
         use_case,
         repository,
         source_reader,
+        run_id="run-1",
     )
 
-    assert response.status == "running"
+    assert response.status == "succeeded"
     registration = use_case.register.call_args.args[0]
     assert registration.document_id == "chat_document_1"
     assert registration.input_source == "document:chat_document_1"
@@ -667,10 +496,8 @@ def test_pipeline_command_records_requester_who_is_not_document_owner() -> None:
         workspace_id="workspace_1",
     )
 
-    background_tasks = BackgroundTasks()
     pipeline_routes._run_pipeline_request(
         payload,
-        background_tasks,
         use_case,
         repository,
         _source_reader(),
@@ -678,7 +505,7 @@ def test_pipeline_command_records_requester_who_is_not_document_owner() -> None:
     )
 
     assert use_case.register.call_args.args[0].user_id == "co-editor"
-    assert background_tasks.tasks[0].args[1].user_id == "co-editor"
+    assert use_case.execute.call_args.args[1].user_id == "co-editor"
 
 
 def test_pipeline_command_falls_back_to_document_owner_without_requester() -> None:
@@ -694,10 +521,8 @@ def test_pipeline_command_falls_back_to_document_owner_without_requester() -> No
     )
     use_case = _use_case()
 
-    background_tasks = BackgroundTasks()
     pipeline_routes._run_pipeline_request(
         _pipeline_run_in(document_id="document_1"),
-        background_tasks,
         use_case,
         repository,
         _source_reader(),
@@ -706,7 +531,7 @@ def test_pipeline_command_falls_back_to_document_owner_without_requester() -> No
 
     # run 기록과 위키 행이 같은 귀속 값을 쓴다.
     assert use_case.register.call_args.args[0].user_id == "owner"
-    assert background_tasks.tasks[0].args[1].user_id == "owner"
+    assert use_case.execute.call_args.args[1].user_id == "owner"
 
 
 def test_pipeline_command_rejects_workspace_mismatch_after_registering_run() -> None:
@@ -727,7 +552,6 @@ def test_pipeline_command_rejects_workspace_mismatch_after_registering_run() -> 
     with pytest.raises(HTTPException) as exc_info:
         pipeline_routes._run_pipeline_request(
             payload,
-            BackgroundTasks(),
             use_case,
             repository,
             _source_reader(),
@@ -755,10 +579,10 @@ def test_chat_wiki_inline_markdown_requires_existing_document() -> None:
     try:
         pipeline_routes._run_pipeline_request(
             payload,
-            BackgroundTasks(),
             use_case,
             repository,
             _source_reader(),
+            run_id="run-1",
         )
     except HTTPException as exc:
         assert exc.status_code == 404
@@ -824,8 +648,8 @@ def test_pipeline_route_rejects_missing_internal_token(monkeypatch) -> None:
     monkeypatch.setenv("INTERNAL_CALLBACK_TOKEN", "expected-token")
 
     response = TestClient(api.app).post(
-        "/pipeline/runs",
-        json={"document_id": "document_1"},
+        "/wiki/pages/lookup",
+        json={"page_ids": []},
     )
 
     assert response.status_code == 401
@@ -848,7 +672,7 @@ def test_pipeline_route_authenticates_before_parsing_body(monkeypatch) -> None:
     monkeypatch.setenv("INTERNAL_CALLBACK_TOKEN", "expected-token")
 
     response = TestClient(api.app).post(
-        "/pipeline/runs",
+        "/wiki/pages/lookup",
         content=b"not-json",
         headers={"Content-Type": "application/json"},
     )
@@ -911,12 +735,11 @@ def test_stored_document_uses_delta_only_with_previous_source(previous: bool) ->
     blocks = [{"block_id": "B0001", "text": "old"}]
     repository.list_source_blocks.return_value = blocks
     use_case = _use_case()
-    background = BackgroundTasks()
     pipeline_routes._run_pipeline_request(
         _pipeline_run_in(document_id="doc", source_revision=3, source_content_hash="hash"),
-        background, use_case, repository, _source_reader("new"),
+        use_case, repository, _source_reader("new"), run_id="run-1",
     )
-    command = background.tasks[0].args[1]
+    command = use_case.execute.call_args.args[1]
     assert command.reingest is previous
     assert command.input_markdown == "new"
     assert command.source_revision == 3
