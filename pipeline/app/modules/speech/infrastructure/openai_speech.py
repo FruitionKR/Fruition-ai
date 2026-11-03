@@ -23,7 +23,8 @@ AUDIO_TYPES = {
 }
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
 TRANSCRIBE_MODEL = "gpt-transcribe"
-# 호출자가 deadline_seconds를 주지 않는 회의 녹음 파일(최대 24 MiB)은 전체 시간 상한 없이 공급사 응답만 이 시간까지 기다린다.
+# deadline_seconds 없이 부르면 전체 시간 상한 없이 공급사 응답만 이 시간까지 기다린다.
+# 현재 호출자(채팅 전사 100초, 회의 녹음 전사 command의 남은 마감)는 모두 마감을 준다.
 TRANSCRIBE_DEFAULT_TIMEOUT_SECONDS = 900
 TTS_MODEL = "gpt-realtime-2.1-mini"
 TTS_VOICE = "marin"
