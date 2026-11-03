@@ -6,8 +6,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.core.jev_client import JevClient
-from app.modules.query.infrastructure.jev_evidence_selector import EVIDENCE_CRITERIA, EVIDENCE_POLICY
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
 
 
@@ -218,45 +216,6 @@ def retrieval_reference_metrics(
         "gold_ref_hit": rank is not None,
         "gold_ref_rank": rank,
         "reciprocal_rank": 0.0 if rank is None else 1.0 / rank,
-    }
-
-
-def jev_evidence_precision(
-    client: JevClient,
-    question: str,
-    evidence_snippets: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """검색 근거마다 질의 근거 선택과 같은 기준으로 Jev가 필요 여부를 판정한다. 통과 조건이 아닌 검색 문맥 지표다.
-
-    `evidence_precision`은 필요한 근거 비율, `irrelevant_evidence_ranks`는 필요 없다고 본 근거 순위다.
-    Jev를 쓸 수 없으면 `JevUnavailable`을 그대로 올린다.
-    """
-    if not evidence_snippets:
-        return {"evidence_precision": None, "irrelevant_evidence_ranks": []}
-    candidates = {
-        f"r{int(snippet.get('rank') or index)}": {
-            "id": f"r{int(snippet.get('rank') or index)}",
-            "text": snippet.get("text"),
-            "source_document_id": snippet.get("source_document_id"),
-            "block_refs": sorted(_evidence_source_refs(snippet)),
-        }
-        for index, snippet in enumerate(evidence_snippets, start=1)
-    }
-    answers = client.choose(
-        json.dumps({"question": question, "candidates": list(candidates.values())}, ensure_ascii=False, sort_keys=True),
-        {
-            key: {
-                "type": "choice",
-                "instructions": EVIDENCE_POLICY + f"\n판정할 후보 ID: {key}",
-                "criteria": EVIDENCE_CRITERIA,
-            }
-            for key in candidates
-        },
-    )
-    irrelevant = sorted(int(key[1:]) for key in candidates if answers[key]["choice"] != "include")
-    return {
-        "evidence_precision": round(1 - len(irrelevant) / len(candidates), 4),
-        "irrelevant_evidence_ranks": irrelevant,
     }
 
 

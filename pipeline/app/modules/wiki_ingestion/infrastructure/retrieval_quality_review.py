@@ -69,19 +69,19 @@ def list_quality_review_candidates(
         workspace_id,
         sorted({ref for row, evaluation in failed for ref in _gold_refs(evaluation, row["document_id"])}),
     )
+    # 지금 통과 조건으로는 어느 유형에도 안 맞는 실패(예: 예전 정밀도 기준으로만 떨어진 문항)는 보고하지 않는다.
     return [
         {
             "document_id": row["document_id"],
             "post_ingest_run_id": row["post_ingest_run_id"],
             "question": str(evaluation.get("question") or ""),
-            "failure_type": classify_quality_failure(
-                evaluation, _gold_refs(evaluation, row["document_id"]), indexed
-            ),
+            "failure_type": failure_type,
             "gold_source_refs": sorted(_gold_refs(evaluation, row["document_id"])),
             "missing_claims": list(evaluation.get("missing_claims") or []),
             "reason": str(evaluation.get("reason") or ""),
         }
         for row, evaluation in failed
+        if (failure_type := classify_quality_failure(evaluation, _gold_refs(evaluation, row["document_id"]), indexed))
     ]
 
 
@@ -89,7 +89,7 @@ def classify_quality_failure(
     evaluation: dict[str, Any],
     gold_refs: set[str],
     indexed_refs: set[str],
-) -> str:
+) -> str | None:
     if not all(evaluation.get(field) is True for field in QUESTION_FIELDS):
         return "question"
     if evaluation.get("contradictory_evidence_ranks"):
@@ -102,7 +102,9 @@ def classify_quality_failure(
         or float(evaluation.get("evidence_recall") or 0.0) < MIN_QUALITY_SCORE
     ):
         return "incomplete"
-    return "imprecise"
+    if float(evaluation.get("source_alignment") or 0.0) < MIN_QUALITY_SCORE:
+        return "imprecise"
+    return None
 
 
 def _gold_refs(evaluation: dict[str, Any], document_id: str) -> set[str]:

@@ -22,7 +22,6 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
 from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
-from app.core.jev_client import JEV_EVIDENCE_ENABLED_ENV, JevUnavailable, build_jev_client
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
@@ -80,7 +79,6 @@ from app.modules.wiki_generation.infrastructure.post_ingest_cluster import (
 from app.modules.wiki_generation.infrastructure.post_ingest_quality import (
     evaluate_post_ingest_evidence,
     generate_post_ingest_quality_cases,
-    jev_evidence_precision,
     retrieval_reference_metrics,
 )
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
@@ -761,34 +759,13 @@ def _run_post_ingest_wiki_quality_evaluation(
             cases=retrieved_cases,
             source_blocks=source_blocks,
         )
-    precisions = _post_ingest_evidence_precisions(retrieved_cases, state)
     evaluations = [
-        {**retrieved, **judgment, **precision}
-        for retrieved, judgment, precision in zip(retrieved_cases, judgments, precisions, strict=True)
+        {**retrieved, **judgment}
+        for retrieved, judgment in zip(retrieved_cases, judgments, strict=True)
     ]
     state["wiki_quality_evaluations"] = evaluations
     database.checkpoint_pipeline_run(str(command["run_id"]), state)
     return evaluations
-
-
-def _post_ingest_evidence_precisions(
-    retrieved_cases: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """검색 문맥에 실린 근거 중 질문에 필요한 비율(Jev). 통과 조건이 아니므로 Jev를 쓸 수 없으면 비워 둔다."""
-    empty = [{"evidence_precision": None, "irrelevant_evidence_ranks": []} for _ in retrieved_cases]
-    client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV)
-    if client is None:
-        return empty
-    try:
-        with _post_ingest_stage(state, "evidence_precision"):
-            return [
-                jev_evidence_precision(client, str(case["question"]), list(case.get("evidence_snippets") or []))
-                for case in retrieved_cases
-            ]
-    except JevUnavailable as exc:
-        logger.warning("[post_ingest 정밀도 생략] %s", exc)
-        return empty
 
 
 def _post_ingest_embedding(page_ids: list[str], timing_state: dict[str, Any]) -> dict[str, int]:
