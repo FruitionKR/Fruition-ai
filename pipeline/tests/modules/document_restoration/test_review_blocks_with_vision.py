@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import tempfile
 import unittest
@@ -8,6 +9,12 @@ from unittest import mock
 
 from app.modules.document_restoration.infrastructure import (
     process_auto_layout_blocks as process_module,
+)
+from app.modules.document_restoration.infrastructure import (
+    recover_figure_blocks_with_vision as figure_module,
+)
+from app.modules.document_restoration.infrastructure import (
+    review_blocks_with_vision as review_module,
 )
 from app.modules.document_restoration.infrastructure.review_blocks_with_vision import (
     evaluate_result,
@@ -149,3 +156,16 @@ class VisionRejectionTest(unittest.TestCase):
                     process_module.skip_layout_adjudicated_block(block)
                 )
                 self.assertEqual(process_module.layout_decision(block), "")
+
+
+class CallVisionTransportErrorTest(unittest.TestCase):
+    def test_wraps_transport_errors_as_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "crop.png"
+            image.write_bytes(b"png")
+            for module in (review_module, figure_module):
+                for error in (http.client.RemoteDisconnected("closed"), ConnectionResetError("reset")):
+                    with self.subTest(module=module.__name__, error=type(error).__name__):
+                        with mock.patch("urllib.request.urlopen", side_effect=error):
+                            with self.assertRaises(RuntimeError):
+                                module.call_vision("http://vision", "model", "prompt", image)
