@@ -126,6 +126,18 @@ BEGIN
     END IF;
 END $$;
 
+-- wiki_pending_contributions: AI가 커밋했지만 document-svc 원장에 아직 오르지 않은 편입 기여.
+-- 원장으로 페이지를 다시 그리는 작업이 이 행을 원장 뒤에 붙이고, 원장에 오른 행은 지운다.
+CREATE TABLE IF NOT EXISTS wiki_pending_contributions (
+    page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    operation_id varchar(255) NOT NULL,
+    workspace_id varchar(255) NOT NULL,
+    document_id varchar(255) NOT NULL,
+    object_key text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (page_id, operation_id)
+);
+
 CREATE TABLE IF NOT EXISTS wiki_page_links (
     from_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
     to_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
@@ -723,7 +735,8 @@ BEGIN
         ['source_blocks','block_id,document_id'], ['source_block_snapshots','document_id'],
         ['wiki_page_embeddings','page_id,embedding_model'], ['wiki_embedding_vectors','id'],
         ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id'],
-        ['document_quality_reviews','document_id']
+        ['document_quality_reviews','document_id'],
+        ['wiki_pending_contributions','page_id,operation_id']
     ] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS ai_task_change ON %I', item[1]);
         EXECUTE format('CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON %I '

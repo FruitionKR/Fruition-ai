@@ -140,6 +140,8 @@ def test_lint_replays_link_add_and_remove_actions_in_operation_order() -> None:
 def test_postgres_lint_reads_active_contribution_logs_and_removes_orphan(
     monkeypatch,
 ) -> None:
+    # 원장 반영 대기 기여는 이 시험 범위가 아니다(test_reingest_ledger_lag). 가짜 연결은 그 조회를 받지 않는다.
+    monkeypatch.setattr(repository, "with_pending_contributions", lambda _conn, ledger, _page_ids: ledger)
     shared = {
         "source": "concept:shared",
         "target": "concept:target",
