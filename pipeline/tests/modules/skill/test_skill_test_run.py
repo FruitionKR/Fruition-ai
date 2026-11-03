@@ -17,6 +17,7 @@ from app.modules.skill.application.author_skill import AuthorSkillUseCase
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.skill_test_run import SkillTestRunUseCase
 from app.modules.skill.domain.exceptions import SkillTestRunUnsupportedError
+from app.modules.skill.domain.instruction_placeholders import REFERENCE_CONTEXT_DOCUMENT_REFERENCE
 from app.modules.skill.domain.section_changes import section_changes
 from app.modules.skill.interfaces.http import routes
 from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
@@ -79,11 +80,12 @@ def build(status: str = "proposal_ready") -> tuple[SkillTestRunUseCase, ReviewGe
     return use_case, generator, editor, repository
 
 
-def run(use_case: SkillTestRunUseCase, capabilities=("document-edit",), target=None, instructions="'연구 개요' 섹션만 고친다."):
+def run(use_case: SkillTestRunUseCase, capabilities=("document-edit",), target=None, instructions="'연구 개요' 섹션만 고친다.",
+        requires_source=None):
     return use_case.execute(
         workspace_id="ws", user_id="user", name="research-summary", description="연구 개요를 정리합니다.",
         instructions_markdown=instructions, capabilities=capabilities, document_id="doc",
-        markdown=MARKDOWN, target=target,
+        markdown=MARKDOWN, target=target, requires_source=requires_source,
     )
 
 
@@ -146,13 +148,62 @@ def test_rule_based_safety_issue_blocks_before_any_llm():
 def test_create_test_run_returns_only_document_markdown():
     use_case, _, editor, _ = build()
 
-    result = run(use_case, capabilities=("template",))
+    result = run(use_case, capabilities=("template",), requires_source=True)
 
     assert result.status == "completed"
     assert result.changes == () and result.untouched_sections == ()
     assert result.result_markdown == "# 요약\n핵심만 남겼다."
     assert editor.create_requests[0].reference_context["source_document"]["markdown"] == MARKDOWN
     assert editor.edit_requests == []
+
+
+def test_create_test_run_reads_selected_document_when_requires_source_is_true():
+    use_case, _, editor, _ = build()
+
+    run(use_case, capabilities=("document-create",), instructions="회의록을 요약한다.", requires_source=True)
+
+    request = editor.create_requests[0]
+    assert request.reference_context == {"source_document": {"document_id": "doc", "markdown": MARKDOWN}}
+    assert "참고 문서" in request.instruction
+
+
+def test_create_test_run_skips_selected_document_when_requires_source_is_false():
+    use_case, _, editor, _ = build()
+
+    run(use_case, capabilities=("document-create",), instructions="원문: {문서}\n요약한다.", requires_source=False)
+
+    request = editor.create_requests[0]
+    assert request.reference_context == {}
+    assert "참고 문서" not in request.instruction
+    # 원문을 읽지 않으므로 `{문서}`에도 고른 문서 본문을 넣지 않는다.
+    assert "긴 개요 문장이다" not in request.skill_instructions
+    assert REFERENCE_CONTEXT_DOCUMENT_REFERENCE not in request.skill_instructions
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "instructions", "reads_source"),
+    [
+        (("document-create",), "원문: {문서}\n요약한다.", True),
+        (("template",), "원문: {문서}\n양식을 채운다.", True),
+        (("template",), "양식을 채운다.", False),
+        # 규칙으로 정할 수 없으면 원문을 읽지 않는다.
+        (("document-create",), "회의록 양식으로 새 문서를 쓴다.", False),
+    ],
+)
+def test_create_test_run_without_requires_source_follows_publish_rule(capabilities, instructions, reads_source):
+    use_case, _, editor, _ = build()
+
+    run(use_case, capabilities=capabilities, instructions=instructions)
+
+    assert ("source_document" in editor.create_requests[0].reference_context) is reads_source
+
+
+def test_edit_test_run_ignores_requires_source():
+    use_case, _, editor, _ = build()
+
+    run(use_case, target=MarkdownEditTarget(type="selection", start_line=1, end_line=3), requires_source=False)
+
+    assert editor.edit_requests[0].markdown == MARKDOWN
 
 
 def test_folder_organize_is_unsupported_before_llm():
@@ -249,6 +300,30 @@ def test_route_rejects_allowed_tools_in_definition(client):
     body = payload(definition={**payload()["definition"], "allowed_tools": ["apply_document_edit"]})
 
     response = test_client.post("/skills/test-run", json=body, headers={"X-Request-Id": "skill_test_3"})
+
+    assert response.status_code == 422
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize(("requires_source", "reads_source"), [(True, True), (False, False), (None, False)])
+def test_route_threads_requires_source_to_create_test_run(client, requires_source, reads_source):
+    test_client, _, editor, _ = client
+    definition = {**payload()["definition"], "instructions_markdown": "회의록을 요약한다.", "capabilities": ["document-create"]}
+    if requires_source is not None:
+        definition["requires_source"] = requires_source
+    body = payload(definition=definition, target=None)
+
+    response = test_client.post("/skills/test-run", json=body, headers={"X-Request-Id": "skill_test_5"})
+
+    assert response.status_code == 200, response.text
+    assert ("source_document" in editor.create_requests[0].reference_context) is reads_source
+
+
+def test_route_rejects_unknown_definition_field(client):
+    test_client, execute, _, _ = client
+    body = payload(definition={**payload()["definition"], "requires_sources": True})
+
+    response = test_client.post("/skills/test-run", json=body, headers={"X-Request-Id": "skill_test_6"})
 
     assert response.status_code == 422
     execute.assert_not_called()
