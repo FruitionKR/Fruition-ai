@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import logging
 import mimetypes
@@ -304,6 +305,11 @@ def post_json(
         if exc.code == 429 or exc.code >= 500:
             raise
         raise RuntimeError(f"{api_name} HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError):
+        raise
+    except (OSError, http.client.HTTPException) as exc:
+        # 응답 중 끊긴 연결처럼 URLError로 감싸지지 않는 전송 오류도 블록 실패로 넘긴다.
+        raise RuntimeError(f"{api_name} {type(exc).__name__}") from exc
 
 
 def call_openai(
