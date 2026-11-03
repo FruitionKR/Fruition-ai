@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import logging
 import mimetypes
@@ -840,7 +841,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 merged = save_replacements(
                     args.output_dir, blocks[:1], result, provider, fragments
                 )["replace"] == 1
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ) as exc:
                 batch_error = type(exc).__name__
             if merged:
                 save_merged(args.output_dir, blocks[0], blocks[1:], provider)
@@ -857,7 +865,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     counts[name] += count
                 fallback_blocks = rejected_candidates(blocks, result, fragments)
                 counts["rejected"] -= len(fallback_blocks)
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ) as exc:
                 batch_error = type(exc).__name__
                 fallback_blocks = blocks
 
@@ -868,7 +883,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 item_counts = save_replacements(
                     args.output_dir, [block], result, provider, fragments
                 )
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError):
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ):
                 counts["failed"] += 1
                 failures[block["id"]] = "provider_error"
                 continue

@@ -1,4 +1,5 @@
 import argparse
+import http.client
 import json
 import os
 import tempfile
@@ -157,6 +158,13 @@ class BrokenPageRetryTest(unittest.TestCase):
         summary, call_page_mock, _ = self._run([error, error])
         self.assertEqual(call_page_mock.call_count, 2)
         self.assertEqual(summary["pages"][0]["failures"], {"body-1": "provider_error"})
+
+    def test_transport_error_during_read_is_retried_once_and_recorded(self) -> None:
+        for error in (http.client.IncompleteRead(b"partial"), ConnectionResetError("reset")):
+            with self.subTest(error=type(error).__name__):
+                summary, call_page_mock, _ = self._run([error, error])
+                self.assertEqual(call_page_mock.call_count, 2)
+                self.assertEqual(summary["pages"][0]["failures"], {"body-1": "provider_error"})
 
     def test_successful_first_attempt_is_not_retried(self) -> None:
         summary, call_page_mock, _ = self._run([self._reply(SOURCE_SENTENCE * 10)])
