@@ -82,7 +82,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.write_lock:
         files = {str(p.relative_to(EVAL_DIR)): digest(p) for p in locked_files()}
-        (EVAL_DIR / "gold.lock.json").write_text(json.dumps({"files": files}, ensure_ascii=False, indent=1) + "\n")
+        lock_path = EVAL_DIR / "gold.lock.json"
+        # 개정 이력(revisions) 등 다른 항목은 그대로 두고 files만 바꾼다.
+        lock = json.loads(lock_path.read_text()) if lock_path.exists() else {}
+        lock["files"] = files
+        lock_path.write_text(json.dumps(lock, ensure_ascii=False, indent=1) + "\n")
         print("locked", len(files))
         return
     if not args.image:
@@ -120,7 +124,12 @@ def main() -> None:
             rows = list(executor.map(convert, [(case, run) for case in cases for run in range(RUNS)]))
     finally:
         os.remove(env_file)
-        (out / "rows.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        # 같은 날 일부 사례만 다시 돌려도 다른 사례 결과가 남도록, 같은 (사례, 회차)만 바꿔 쓴다.
+        rows_path = out / "rows.jsonl"
+        kept = [json.loads(line) for line in rows_path.read_text().splitlines()] if rows_path.exists() else []
+        done = {(r["id"], r["run"]) for r in rows}
+        merged = [r for r in kept if (r["id"], r["run"]) not in done] + rows
+        rows_path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in merged))
     print("completed", sum(r["status"] == "completed" for r in rows), "/", len(rows), "saved", out)
 
 
