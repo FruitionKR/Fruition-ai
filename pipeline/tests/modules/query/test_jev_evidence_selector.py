@@ -4,7 +4,7 @@ from threading import Lock
 
 from app.core.jev_client import JevUnavailable
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, WikiEmbeddingUnit, WikiPage
-from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSelector
+from app.modules.query.infrastructure.jev_evidence_selector import EVIDENCE_POLICY, JevEvidenceSelector
 
 
 class UnitRepository:
@@ -37,6 +37,7 @@ class IncludingJev:
         self._lock = Lock()
         self.batch_sizes: list[int] = []
         self.states: list[dict] = []
+        self.questions: list[dict] = []
 
     def choose(self, state: str, questions: dict) -> dict:
         decoded = json.loads(state)
@@ -44,6 +45,7 @@ class IncludingJev:
         with self._lock:
             self.batch_sizes.append(len(questions))
             self.states.append(decoded)
+            self.questions.append(questions)
         answers = {}
         for key in questions:
             include = self._keyword in candidates[key]
@@ -164,6 +166,16 @@ class JevEvidenceSelectorTest(unittest.TestCase):
                 "weight": 1.0,
             },
         )
+
+    def test_sends_rule_once_in_state_not_per_candidate(self) -> None:
+        jev = IncludingJev("환불")
+        selector, _ = _selector(jev, [_unit("u1", "환불 기한은 7일이다."), _unit("u2", "환불 절차", "B0002")])
+
+        selector.select("환불 기한은?", [], {}, workspace_id="ws")
+
+        self.assertEqual(jev.states[0]["rule"], EVIDENCE_POLICY)
+        for key, question in jev.questions[0].items():
+            self.assertEqual(question["instructions"], f"판정할 후보 ID: {key}")
 
     def test_reuses_selection_for_same_question_in_one_query(self) -> None:
         jev = IncludingJev("환불")

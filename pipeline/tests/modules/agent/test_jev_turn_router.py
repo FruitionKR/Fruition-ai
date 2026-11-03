@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from app.modules.agent.domain.entities import (
 )
 from app.modules.agent.infrastructure.jev_turn_router import (
     JevTurnRouter,
+    jev_route_instructions,
     route_options,
     with_jev_routing,
 )
@@ -23,6 +25,18 @@ class RecordingRouter:
         return AgentTurnRoute(action="conversation_reply", confidence=0.5, reason="기존 라우터")
 
 
+def _fields(text: str) -> dict:
+    """`필드=값; …` 선택지 설명을 dict로 되돌린다. 문자열이 아닌 값은 JSON이다."""
+    fields = {}
+    for part in text.split("; "):
+        key, _, raw = part.partition("=")
+        try:
+            fields[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            fields[key] = raw
+    return fields
+
+
 class ChoosingJev:
     """criteria 값이 조건에 맞는 첫 선택지를 고른다."""
 
@@ -34,7 +48,7 @@ class ChoosingJev:
         self.calls.append(questions)
         predicate = self._predicates.pop(0)
         criteria = questions["route"]["criteria"]
-        choice = next(key for key, value in criteria.items() if predicate(value))
+        choice = next(key for key, value in criteria.items() if predicate(_fields(value)))
         return {"route": {"choice": choice, "confidence": 0.7}}
 
 
@@ -76,8 +90,8 @@ class JevTurnRouterTest(unittest.TestCase):
         self.assertEqual(route.action, "markdown_edit")
         self.assertEqual(route.edit_goal, "shorten")
         self.assertEqual(route.edit_operation, "replace")
-        self.assertNotIn("edit_goal", next(iter(jev.calls[0]["route"]["criteria"].values())))
-        self.assertIn("edit_goal", next(iter(jev.calls[1]["route"]["criteria"].values())))
+        self.assertNotIn("edit_goal", _fields(next(iter(jev.calls[0]["route"]["criteria"].values()))))
+        self.assertIn("edit_goal", _fields(next(iter(jev.calls[1]["route"]["criteria"].values()))))
 
     def test_shuffles_options_deterministically_with_evaluated_fields(self) -> None:
         request = AgentTurnRequest(message="정책 알려줘")
@@ -90,13 +104,20 @@ class JevTurnRouterTest(unittest.TestCase):
         criteria = first.calls[0]["route"]["criteria"]
         self.assertEqual(list(criteria.values()), list(second.calls[0]["route"]["criteria"].values()))
         self.assertNotEqual(
-            [value["action"] for value in criteria.values()],
+            [_fields(value)["action"] for value in criteria.values()],
             [option["action"] for option in route_options(request)],
         )
         self.assertEqual(
-            list(next(iter(criteria.values()))),
+            list(_fields(next(iter(criteria.values())))),
             ["action", "retrieval_source", "document_operation", "persist", "required_capabilities", "selected_skill_id", "skill_candidates", "notice_kind"],
         )
+
+    def test_jev_instructions_drop_llm_json_output_section(self) -> None:
+        prompt = "규칙을 따른다.\nReturn only one JSON object matching the required schema. 요청만 본다.\n\nRequired JSON schema:\n{\"action\": \"x\"}"
+
+        instructions = jev_route_instructions(prompt)
+
+        self.assertEqual(instructions, "규칙을 따른다.\n요청만 본다.")
 
     def test_unavailable_jev_uses_existing_router(self) -> None:
         fallback = RecordingRouter()
