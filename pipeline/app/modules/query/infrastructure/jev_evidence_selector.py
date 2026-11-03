@@ -1,7 +1,7 @@
-"""기존 하이브리드 검색으로 근거 후보 300개를 추리고 Jev가 질문에 필요한 근거를 고른다.
+"""기존 하이브리드 검색으로 근거 후보 200개를 추리고 Jev가 질문에 필요한 근거를 고른다.
 
-평가(output/reports/latest-four/02_rag-evidence-300, run_jev_300_parallel.py)와 같은 구성이다.
-- 후보: workspace embedding unit을 (본문, block ref, 문서)로 묶고 BGE-M3 0.75 + BM25 0.25 점수 상위 300개
+평가(output/reports/latest-four/02_rag-evidence-300, run_jev_300_parallel.py)의 구성을 따르되 후보 수는 200개다(ADR-0027).
+- 후보: workspace embedding unit을 (본문, block ref, 문서)로 묶고 BGE-M3 0.75 + BM25 0.25 점수 상위 200개
 - 입력: 순위 단서가 되지 않도록 섞은 순서. 후보 필드는 평가와 같고, 운영 unit에 없는 PDF 쪽번호(pages)만 뺀다.
 - 묶음: cl100k 기준 요청 28,000 토큰·80개 이하, 최대 4개 묶음 동시 요청
 - 결과: include 확률이 높은 순으로 상위 근거. 이미 고른 근거의 블록만 가리키는 근거는 건너뛴다
@@ -72,7 +72,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         embedding_search: EmbeddingSearchPort,
         text_search: TextSearchPort,
         *,
-        candidate_limit: int = 300,
+        candidate_limit: int = 200,
         max_evidence_snippets: int = 8,
         max_batch_candidates: int = 80,
         max_batch_tokens: int = MAX_BATCH_TOKENS,
