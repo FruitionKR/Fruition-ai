@@ -378,6 +378,25 @@ Second
 
             self.assertEqual(raised.exception.code, status_code)
 
+    def test_wraps_dropped_connection_as_block_failure(self) -> None:
+        errors = (
+            http.client.RemoteDisconnected("closed"),
+            http.client.IncompleteRead(b""),
+            ConnectionResetError(),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__), mock.patch(
+                "urllib.request.urlopen", side_effect=error
+            ), self.assertRaisesRegex(RuntimeError, r"^OpenAI Responses API "):
+                call_page(
+                    provider="openai",
+                    api_key="test-key",
+                    model="gpt-5-nano",
+                    prompt="restore",
+                    payload={"blocks": []},
+                    images=[],
+                )
+
     def test_skips_openai_without_api_key_and_keeps_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
