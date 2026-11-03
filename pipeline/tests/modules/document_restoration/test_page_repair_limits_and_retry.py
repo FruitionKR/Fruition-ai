@@ -56,6 +56,21 @@ class PageBodyLengthThresholdTest(unittest.TestCase):
         self.assertFalse(body_valid("a", source))
         self.assertTrue(body_valid(SOURCE_SENTENCE * 5, source))
 
+    def test_mostly_garbage_source_uses_its_full_length(self) -> None:
+        # 읽을 수 있는 글자 3자 + 깨진 글자 100자: 읽을 수 있는 글자만 세면 2자 복원도 통과한다.
+        source = "가나다" + "\ue000" * 100
+        self.assertFalse(body_valid("가나", source))
+        self.assertTrue(body_valid(SOURCE_SENTENCE * 5, source))
+
+    def test_short_readable_source_is_unaffected(self) -> None:
+        self.assertTrue(body_valid("가나", "가나다"))
+        self.assertFalse(body_valid("가", "가나다"))
+
+    def test_empty_or_whitespace_source_skips_length_check(self) -> None:
+        for source in ("", "  \n\t"):
+            with self.subTest(source=repr(source)):
+                self.assertTrue(body_valid("a", source))
+
     def test_moderately_shorter_repair_is_accepted(self) -> None:
         # 머리말·중복 공백 정리로 45% 수준까지 줄어든 복원은 받는다(이전 50% 기준이면 거부).
         self.assertTrue(body_valid(SOURCE_SENTENCE * 9, SOURCE_SENTENCE * 20))

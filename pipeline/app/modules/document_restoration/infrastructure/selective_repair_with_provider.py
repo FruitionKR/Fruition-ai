@@ -65,6 +65,8 @@ PROVIDER_TIMEOUT_SECONDS = 180
 PAGE_BODY_MIN_LENGTH_RATIO = 0.4
 # 글꼴 매핑이 없는 쪽의 원문은 �·사용자 정의 영역·제어 문자로 부풀어 있다. 길이 비교에서 뺀다.
 UNREADABLE_CATEGORIES = {"Cc", "Cf", "Cn", "Co", "Cs"}
+# 원문에서 읽을 수 있는 글자가 이 비율보다 적으면 깨진 글자도 길이에 센다(대부분 깨진 쪽의 짧은 복원 방지).
+PAGE_BODY_MIN_READABLE_SHARE = 0.25
 
 
 def select_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -179,8 +181,11 @@ def valid_replacement(
     ):
         return False
     if scope == "page_body":
-        # 쪽 전체가 깨진 글자뿐이면 읽을 수 있는 글자가 0이다. 그때는 공백을 뺀 원문 글자 수로 잰다.
-        source_length = readable_length(source_text) or len(re.sub(r"\s+", "", source_text))
+        # 읽을 수 있는 글자가 원문의 일부뿐이면(쪽 대부분이 깨짐) 공백을 뺀 원문 글자 수로 잰다.
+        source_length = readable_length(source_text)
+        raw_length = len(re.sub(r"\s+", "", source_text))
+        if source_length < raw_length * PAGE_BODY_MIN_READABLE_SHARE:
+            source_length = raw_length
         replacement_length = readable_length(replacement)
         if source_length and replacement_length < source_length * PAGE_BODY_MIN_LENGTH_RATIO:
             return False
