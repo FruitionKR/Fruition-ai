@@ -8,13 +8,13 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | 도메인 | API 수 | 현재 Gateway 연결 |
 |---|---:|---|
 | [Agent](agent.md) | 11 | turn은 Kafka, run·artifact 조회·Tool 인가는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
-| [Wiki Ingest](pipeline.md) | 7 | ingest는 Kafka, run 상태는 내부 HTTP, 나머지는 운영용 |
-| [음성·회의록](speech.md) | HTTP 2 + WS 1 + Kafka | 전사·실시간은 내부 HTTP/WS, 합성은 호출자 없음, 회의록은 Kafka `ai.maintenance.command`, 화면은 전부 미연동 |
+| [Wiki Ingest](pipeline.md) | 4 | ingest는 Kafka, run 상태는 내부 HTTP, 나머지는 운영용 |
+| [음성·회의록](speech.md) | HTTP 2 + WS 1 + Kafka | 전사·합성·실시간은 내부 HTTP/WS, 회의 녹음 전사·회의록은 Kafka `ai.maintenance.command`, 화면은 전부 미연동 |
 | [Skills](skills.md) | 9 | 작업 실행·테스트 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
 | [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
 | [AI 데이터 파기](purge.md) | 2 | 내부 HTTP, Document 쪽 호출 연결 전 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
-| [Wiki Schema](wiki-schema.md) | 4 | 내부 HTTP |
+| [Wiki Schema](wiki-schema.md) | 5 | 내부 HTTP |
 | [임베딩 서버](embedding.md) | 2 | 별도 프로세스의 내부 HTTP, 배포 전 호출자 없음 |
 
 Agent 승인 run 5개와 실행 결과 기반 Skill 초안 API는 `AGENT_SKILLS_ENABLED=true`,
@@ -54,22 +54,22 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `POST /internal/agent/runs/tool-authorizations/{read,execute}` | `core/agent/repository/PipelineAgentToolAuthorizationClient.java`:34,39 | |
 | `POST /internal/agent/runs/artifacts/{list,resolve}` | `core/agent/repository/PipelineAgentArtifactClient.java`:39,59 | |
 | `POST /internal/agent/runs/artifacts/register` | **호출자 없음** | |
-| `POST /pipeline/runs`, `/pipeline/reingest-runs`, `/chat-wiki/runs` | **HTTP 호출자 없음** | Kafka `ai.ingest.command`(`core/document/repository/IngestCommandOutbox.java`:56) |
 | `GET /pipeline/runs/{run_id}` | `core/document/repository/PipelineRunStatusRequester.java`:30 | |
 | `GET /pipeline/runs/{run_id}/logs` | **호출자 없음** | |
 | `GET /documents/{document_id}` | **호출자 없음** | 방향이 반대다(아래 아웃바운드 참고) |
 | `GET /health` | 서비스 간 호출자 없음 | probe 전용 |
 | `GET /wiki/graph`, `POST /wiki/pages/lookup`, `GET /wiki/pages/{page_id}`, `GET /wiki/documents/{document_id}/context`, `DELETE /wiki/workspaces/.../documents/...`, `GET /wiki/workspaces/.../last-updated` | `core/wiki/repository/PipelineWikiStateRequester.java` | `app.wiki-state.endpoint` |
 | `PATCH /wiki/pages/{page_id}/rename` | `core/wiki/repository/PipelineWikiPageRequester.java`:37 | `app.wiki-page.endpoint` |
-| 회의 녹음 전사(`kind: meeting_transcription`) | **HTTP route 없음** | Kafka `ai.maintenance.command`([계약](speech.md#회의-녹음-전사)) |
+| 회의 녹음 전사(`kind: meeting_transcription`) | **HTTP route 없음** — `core/meeting/MeetingTranscriptionService.java`:62-64 | Kafka `ai.maintenance.command`([계약](speech.md#회의-녹음-전사)) |
 | 회의록 생성(`kind: meeting_notes`, 예전 `POST /meeting-notes/preview`) | **HTTP route 없음** | Kafka `ai.maintenance.command`([계약](speech.md#회의록-초안)) |
 | `POST /wiki/maintenance/lint`, `/wiki/ingest-restore-runs`, `/wiki/lint-restore-runs` | **HTTP 호출자 없음** | Kafka `ai.maintenance.command`(`core/wikimaintenance/service/WikiMaintenanceService.java`:66, `core/aihistory/service/RestoreExecuteService.java`:132) |
 | `POST /wiki-schema/preview`, `/drafts`, `/{schema_id}/activate`, `GET /wiki-schema/active` | `core/wikischema/repository/PipelineWikiSchemaRequester.java`:31,35,39,44-50 | 순수 passthrough |
+| `GET /wiki-schema/drafts` | **호출자 없음** | |
 | `POST /skills/tasks`, `POST /skills/test-run`, `GET /skills`, `GET /skills/{id}`, `DELETE /skills/{id}`, `POST /skills/{id}/{enable,disable}` | `core/skill/repository/PipelineSkillRequester.java` | `app.skill.endpoint` |
 | `POST /skills/preview`, `POST /skills/draft-from-runs/preview` | **호출자 없음** | |
-| `POST /speech/transcriptions` | `core/speech/SpeechTranscriptionClient.java`:31-38, `core/meeting/MeetingTranscriptionWorker.java`:69-72 | |
-| `POST /speech/synthesis` | **호출자 없음** | 중계 설정조차 없다 |
-| `WS /speech/transcriptions/live` | `core/meeting/MeetingLiveHandler.java`:146-152 | |
+| `POST /speech/transcriptions` | `core/speech/SpeechTranscriptionClient.java`:43-53 | `app.speech.transcription-endpoint`, 채팅 전사만(`deadline_seconds=100`) |
+| `POST /speech/synthesis` | `core/speech/SpeechSynthesisClient.java`:56-72 | `app.speech.synthesis-endpoint`, NDJSON 스트림 중계 |
+| `WS /speech/transcriptions/live` | `core/meeting/MeetingLiveHandler.java`:201-206 | |
 | `POST /internal/ai/tasks/{run_id}/cancel`, `GET /internal/ai/tasks/{run_id}`, `POST .../rollback-backend` | `core/aitask/repository/PipelineTaskCancellationClient.java`:26,38-40,32 | |
 | `GET /usage/models` | `core/usage/service/ModelUsageService.java`:35-40 | |
 | `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
@@ -85,11 +85,11 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (Agent turn의 폴더 원문 Skill) | `app/modules/agent/infrastructure/backend_folder_source_reader.py` |
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/folder-lookup/tree` (Agent turn의 폴더 내용 조회 `folder_lookup`) | `app/modules/agent/infrastructure/backend_folder_tree_reader.py` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (agent_worker의 폴더 정리 본문 중복 확인) | `pipeline/agent_worker.py`의 `_build_folder_content_reader` |
-| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}` | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:27,51 |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}`, `POST /internal/agent/runs/{run_id}/plan-ready`(승인 대기 계획 알림) | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:28,52,69 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
-| OpenAI | `/v1/audio/transcriptions`, `/v1/audio/speech`, `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:40,65,97 |
-| OpenAI · Gemini · Claude | ChatCompletions / Responses / messages | `app/modules/wiki_generation/infrastructure/chat_completions_llm.py`, `app/modules/document_restoration/infrastructure/selective_repair_with_provider.py`:58,60,62 |
+| OpenAI | `/v1/audio/transcriptions`, `wss://.../v1/realtime?model=gpt-realtime-2.1-mini`(합성), `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:60,100,197 |
+| OpenAI · Gemini · Claude | ChatCompletions / Responses / messages | `app/modules/wiki_generation/infrastructure/chat_completions_llm.py`, `app/modules/document_restoration/infrastructure/selective_repair_with_provider.py`:56,57-58,60 |
 | Tavily | `POST https://api.tavily.com/search` | `app/modules/query/infrastructure/web_search.py`:14,73 |
 
 `DOCUMENT_INTERNAL_BASE_URL`·`AGENT_BACKEND_URL`·`ACCESS_INTERNAL_BASE_URL`은 서로 다른
@@ -122,8 +122,3 @@ document-svc는 모든 AI command를 Postgres outbox에 쓰고
 실제 값은 확인할 수 없다. **flag로 꺼진 route는 "미연동"과 다르다** — 호출자는 있으나
 노출되지 않을 수 있다. `/agent/runs/**`와 `POST /skills/draft-from-runs/preview`는
 기본값에서 노출되지 않지만 `/agent/runs/**`에는 document-svc 호출자가 있다.
-
-### 진행 중
-
-`GET /wiki-schema/drafts`(query `workspace_id`, `user_id`; 응답 `{"wiki_schemas": [...]}`)는
-다른 작업자가 추가하는 중이며 `origin/main`에는 없다. 이 문서의 연동 표에도 넣지 않았다.

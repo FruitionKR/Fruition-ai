@@ -24,6 +24,7 @@ from app.modules.wiki_generation.application.evaluation_guards import (
 from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
+    stored_generation_evaluation,
 )
 from app.modules.wiki_generation.application.judge_candidates import (
     judge_concept_update_candidates,
@@ -1029,14 +1030,14 @@ def run_pipeline(
     normalized, number_dropped = drop_unsupported_number_items(normalized, block_texts)
     if number_dropped:
         if generation_evaluations:
-            clear_resolved_number_issues(generation_evaluations[-1], normalized, block_texts)
+            clear_resolved_number_issues(stored_generation_evaluation(generation_evaluations), normalized, block_texts)
         normalized.setdefault("warnings", []).append(f"원문에 없는 숫자를 쓴 항목을 뺌: {', '.join(number_dropped)}")
 
     # 평가 재시도 뒤에도 근거 주장이 없거나 참고문헌 블록에만 있는 핵심 개념은 개념 페이지 대신 언급으로 둔다.
     normalized, demoted_concepts = demote_unsupported_core_concepts(normalized, blocks)
     if demoted_concepts:
         if generation_evaluations:
-            clear_resolved_core_concept_issues(generation_evaluations[-1], demoted_concepts)
+            clear_resolved_core_concept_issues(stored_generation_evaluation(generation_evaluations), demoted_concepts)
         normalized.setdefault("warnings", []).append(f"근거 주장이 없는 핵심 개념을 언급으로 내림: {', '.join(demoted_concepts)}")
 
     # 4. Backend normalize/merge/mention expansion.

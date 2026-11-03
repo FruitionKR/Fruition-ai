@@ -1,12 +1,11 @@
 import logging
 import re
 import shutil
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from psycopg.errors import UniqueViolation
 
@@ -29,20 +28,18 @@ from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     get_pipeline_log_reader,
     pipeline_log_uri,
     get_pipeline_run_repository,
-    get_pipeline_run_use_case,
-    get_pipeline_source_reader,
     get_restore_wiki_pages_use_case,
     get_wiki_embedding_job,
     get_wiki_maintenance,
 )
 from app.modules.wiki_ingestion.interfaces.http.schemas import (
     CHAT_SEMANTIC_PROMPT,
+    DOCUMENT_SEMANTIC_PROMPT,
     ChatWikiRunIn,
     IngestOperationRestoreIn,
     LintOperationRestoreIn,
     PipelineRunIn,
     PipelineRunOut,
-    ReingestRunIn,
     WikiLintIn,
     WikiLintOut,
     WikiPageLookupIn,
@@ -184,57 +181,6 @@ def lint_wiki_workspace(
     return WikiLintOut.model_validate(result)
 
 
-@router.post("/pipeline/runs", response_model=PipelineRunOut, tags=["wiki-ingest"])
-def run_pipeline_endpoint(
-    payload: PipelineRunIn,
-    background_tasks: BackgroundTasks,
-    use_case: RunPipelineUseCase = Depends(get_pipeline_run_use_case),
-    repository: PipelineRunRepositoryPort = Depends(get_pipeline_run_repository),
-    source_reader: PipelineSourceReaderPort = Depends(get_pipeline_source_reader),
-) -> PipelineRunOut:
-    return _run_pipeline_request(
-        payload,
-        background_tasks,
-        use_case,
-        repository,
-        source_reader,
-    )
-
-
-@router.post("/pipeline/reingest-runs", response_model=PipelineRunOut, tags=["wiki-ingest"])
-def run_reingest_pipeline_endpoint(
-    payload: ReingestRunIn,
-    background_tasks: BackgroundTasks,
-    use_case: RunPipelineUseCase = Depends(get_pipeline_run_use_case),
-    repository: PipelineRunRepositoryPort = Depends(get_pipeline_run_repository),
-    source_reader: PipelineSourceReaderPort = Depends(get_pipeline_source_reader),
-) -> PipelineRunOut:
-    return _run_pipeline_request(
-        payload,
-        background_tasks,
-        use_case,
-        repository,
-        source_reader,
-    )
-
-
-@router.post("/chat-wiki/runs", response_model=PipelineRunOut, tags=["wiki-ingest"])
-def run_chat_wiki_endpoint(
-    payload: ChatWikiRunIn,
-    background_tasks: BackgroundTasks,
-    use_case: RunPipelineUseCase = Depends(get_pipeline_run_use_case),
-    repository: PipelineRunRepositoryPort = Depends(get_pipeline_run_repository),
-    source_reader: PipelineSourceReaderPort = Depends(get_pipeline_source_reader),
-) -> PipelineRunOut:
-    return _run_pipeline_request(
-        payload,
-        background_tasks,
-        use_case,
-        repository,
-        source_reader,
-    )
-
-
 @router.get("/pipeline/runs/{run_id}", tags=["wiki-ingest"])
 def get_pipeline_run(
     run_id: str,
@@ -270,15 +216,13 @@ def get_pipeline_logs(
 
 
 def _run_pipeline_request(
-    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
-    background_tasks: BackgroundTasks | None,
+    payload: PipelineRunIn | ChatWikiRunIn,
     use_case: RunPipelineUseCase,
     repository: PipelineRunRepositoryPort,
     source_reader: PipelineSourceReaderPort,
-    run_id: str | None = None,
+    run_id: str,
 ) -> PipelineRunOut:
     # Kafka worker는 backend가 command에 실어 보낸 run_id를 그대로 쓴다(문서의 runId 대조 유지).
-    run_id = run_id or str(uuid.uuid4())
     # run 전용 임시 폴더다. 실행이 끝나면 지운다(원문이 담긴 디버그 JSON 포함). 호출자가 경로를 정할 수 없다.
     out = Path("runs") / f"api_{run_id}"
     log_path = pipeline_log_uri(run_id)
@@ -298,27 +242,11 @@ def _run_pipeline_request(
             status_code=409,
             detail="Pipeline command workspace does not match the document.",
         )
-    input_name = payload.input_name or "inline.md"
     reingest_source_context = None
     reingest_source_blocks: list[dict[str, Any]] = []
 
     if isinstance(payload, ChatWikiRunIn):
         input_markdown, input_source, input_name = _resolve_chat_wiki_input(payload)
-    elif isinstance(payload, ReingestRunIn):
-        reingest_source_context = _require_reingest_source_context(
-            payload.document_id,
-            workspace_id,
-            repository,
-        )
-        reingest_source_blocks = _load_existing_source_blocks(
-            payload.document_id,
-            repository,
-        )
-        input_markdown = payload.input_markdown
-        input_name = payload.input_name or str(
-            document.get("filename") or f"{_safe_name(payload.document_id)}.md"
-        )
-        input_source = f"inline:{input_name}"
     else:
         input_markdown, input_source, input_name = _load_stored_document_input(
             document,
@@ -346,22 +274,6 @@ def _run_pipeline_request(
         display_name=_source_display_name(payload, document),
     )
 
-    if not payload.wait:
-        background_tasks.add_task(
-            _execute_pipeline_run,
-            run_id,
-            command,
-            use_case,
-            out,
-        )
-        return PipelineRunOut(
-            run_id=run_id,
-            status="running",
-            manifest=None,
-            output_dir=str(out),
-            log_path=str(log_path),
-        )
-
     try:
         manifest = use_case.execute(run_id, command)
     except Exception as exc:
@@ -385,7 +297,7 @@ def _run_pipeline_request(
 
 def _register_run(
     use_case: RunPipelineUseCase,
-    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
+    payload: PipelineRunIn | ChatWikiRunIn,
     run_id: str,
     out: Path,
     user_id: str | None,
@@ -407,7 +319,7 @@ def _register_run(
 
 
 def _build_pipeline_command(
-    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
+    payload: PipelineRunIn | ChatWikiRunIn,
     run_id: str,
     input_markdown: str | None,
     input_name: str,
@@ -434,7 +346,7 @@ def _build_pipeline_command(
         source_revision=payload.source_revision,
         source_content_hash=payload.source_content_hash,
         selection_mode=getattr(payload, "selection_mode", None),
-        reingest=isinstance(payload, ReingestRunIn) or reingest_source_context is not None,
+        reingest=reingest_source_context is not None,
         input=input_name,
         input_markdown=input_markdown,
         input_blocks=[
@@ -452,14 +364,10 @@ def _build_pipeline_command(
         overlap_blocks=payload.overlap_blocks,
         model=payload.model,
         system_prompt=(
-            payload.chat_system_prompt
+            CHAT_SEMANTIC_PROMPT
             if isinstance(payload, ChatWikiRunIn)
-            else payload.system_prompt
+            else DOCUMENT_SEMANTIC_PROMPT
         ),
-        concept_system_prompt=payload.concept_system_prompt,
-        concept_resolution_system_prompt=payload.concept_resolution_system_prompt,
-        wiki_evaluator_system_prompt=payload.wiki_evaluator_system_prompt,
-        existing_wiki_dir=payload.existing_wiki_dir,
         existing_concept_index=existing_concept_index,
         existing_source_artifact=(existing_source_context or {}).get("artifact"),
         existing_source_markdown=(existing_source_context or {}).get(
@@ -470,7 +378,6 @@ def _build_pipeline_command(
         max_eval_attempts=payload.max_eval_attempts,
         save_debug_json=payload.save_debug_json,
         log_path=str(log_path),
-        log_callback_url=payload.log_callback_url,
         user_id=user_id,
         workspace_id=workspace_id,
     )
@@ -487,26 +394,6 @@ def _load_existing_concept_index_for_run(
         return []
 
 
-def _require_reingest_source_context(
-    document_id: str,
-    workspace_id: str,
-    repository: PipelineRunRepositoryPort,
-) -> dict[str, Any]:
-    try:
-        context = repository.latest_source_page_context(
-            document_id,
-            workspace_id,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    if not context:
-        raise HTTPException(
-            status_code=409,
-            detail="재편입하려면 기존 활성 source page가 필요합니다.",
-        )
-    return context
-
-
 def _load_existing_source_blocks(
     document_id: str,
     repository: PipelineRunRepositoryPort,
@@ -518,7 +405,7 @@ def _load_existing_source_blocks(
 
 
 def _source_display_name(
-    payload: PipelineRunIn | ReingestRunIn | ChatWikiRunIn,
+    payload: PipelineRunIn | ChatWikiRunIn,
     document: dict[str, Any],
 ) -> str | None:
     """소스 페이지 제목. 채팅 export는 document가 생성 제목으로 파일 이름을 정하므로 넘기지 않는다."""
@@ -610,17 +497,3 @@ def _resolve_chat_wiki_input(payload: ChatWikiRunIn) -> tuple[str, str, str]:
 
 def _remove_scratch_out(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
-
-
-def _execute_pipeline_run(
-    run_id: str,
-    command: PipelineRunCommand,
-    use_case: RunPipelineUseCase,
-    scratch_out: Path,
-) -> None:
-    try:
-        use_case.execute(run_id, command)
-    except Exception as exc:
-        logger.error("ERROR: pipeline run failed run_id=%s error=%s", run_id, exc)
-    finally:
-        _remove_scratch_out(scratch_out)

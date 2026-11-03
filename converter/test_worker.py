@@ -73,9 +73,10 @@ def storage_with(pages):
 
 class ConvertBatchTest(unittest.TestCase):
     def fake_process(self, calls):
-        def process(path, provider, model, cancelled, actor):
+        def process(path, provider, model, cancelled, actor, describe_figures=False):
             from pypdf import PdfReader
-            calls.append({"pages": len(PdfReader(path).pages), "actor": actor, "provider": provider, "model": model})
+            calls.append({"pages": len(PdfReader(path).pages), "actor": actor, "provider": provider, "model": model,
+                          "describe_figures": describe_figures})
             return {"markdown": f"# {len(PdfReader(path).pages)} pages\n"}
         return process
 
@@ -84,7 +85,11 @@ class ConvertBatchTest(unittest.TestCase):
         with storage_with(23) as storage, mock.patch.object(converter_app, "process_pdf", side_effect=self.fake_process(calls)):
             result = worker.convert_batch(command(), threading.Event())
         self.assertEqual(result, {"document_id": "doc_1", "page_start": 21, "page_end": 23, "total_pages": 23,
-                                  "result_key": "tmp/convert/ws_1/doc_1/20.md"})
+                                  "result_key": "tmp/convert/ws_1/doc_1/20.md",
+                                  "restoration_summary": {"broken_pages": 0, "repaired_pages": 0, "fallback_pages": []},
+                                  "figure_descriptions": {"requested": False, "described": 0, "failed": 0,
+                                                          "skipped": 0}})
+        self.assertFalse(calls[0]["describe_figures"])
         self.assertEqual(calls[0]["pages"], 3)
         self.assertEqual(storage.puts["tmp/convert/ws_1/doc_1/20.md"],
                          ("# 3 pages\n".encode(), "text/markdown; charset=utf-8"))
@@ -95,6 +100,33 @@ class ConvertBatchTest(unittest.TestCase):
             worker.convert_batch(command(start_page=0, page_count=5), threading.Event())
         self.assertEqual(calls[0]["actor"], {"run_id": "convert:doc_1", "workspace_id": "ws_1", "user_id": "user_1"})
         self.assertEqual((calls[0]["provider"], calls[0]["model"]), ("gemini", "model"))
+
+    def test_describe_figures_flag_reaches_conversion_and_summary_is_logged(self):
+        def process(path, provider, model, cancelled, actor, describe_figures=False):
+            self.assertTrue(describe_figures)
+            return {"markdown": "# p\n", "restoration_summary": {
+                        "broken_pages": 3, "repaired_pages": 1,
+                        "fallback_pages": [{"page": 1, "reason": "font_mapping", "causes": ["font_mapping"]},
+                                           {"page": 2, "reason": "font_mapping", "causes": ["font_mapping"]}]},
+                    "figure_descriptions": {"requested": True, "described": 2, "failed": 1, "skipped": 0}}
+
+        with storage_with(23), mock.patch.object(converter_app, "process_pdf", side_effect=process), \
+             self.assertLogs("converter_worker", "INFO") as logs:
+            result = worker.convert_batch(command(page_count=2, describe_figures=True), threading.Event())
+        # 쪽 번호는 원본 문서 기준(1부터)이다. start_page=20이면 범위 첫 쪽이 21쪽이다.
+        self.assertEqual([page["page"] for page in result["restoration_summary"]["fallback_pages"]], [21, 22])
+        self.assertEqual(result["figure_descriptions"], {"requested": True, "described": 2, "failed": 1, "skipped": 0})
+        line = next(entry for entry in logs.output if "[변환 복원 요약]" in entry)
+        logged = json.loads(line.split("[변환 복원 요약] ", 1)[1])
+        self.assertEqual(logged["fallback_reasons"], {"font_mapping": 2})
+        self.assertEqual((logged["broken_pages"], logged["repaired_pages"], logged["fallback_pages"]), (3, 1, 2))
+        self.assertNotIn("# p", line)
+
+    def test_describe_figures_must_be_boolean_when_present(self):
+        worker.parse_command(command())
+        for value in ("true", 1, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                worker.parse_command(command(describe_figures=value))
 
     def test_start_page_at_or_beyond_total_is_rejected(self):
         with storage_with(23), mock.patch.object(converter_app, "process_pdf") as process:
@@ -178,7 +210,7 @@ class RunCommandTest(unittest.TestCase):
         stub = JournalStub()
         started, finished = threading.Event(), threading.Event()
 
-        def process(path, provider, model, cancelled, actor):
+        def process(path, provider, model, cancelled, actor, describe_figures=False):
             started.set()
             try:
                 if not cancelled.wait(5):

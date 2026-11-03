@@ -350,7 +350,7 @@ class SplitOnFailureTest(unittest.TestCase):
         from threading import Event
         calls = []
 
-        def process(path, provider, model, event, actor):
+        def process(path, provider, model, event, actor, describe_figures=False):
             from pypdf import PdfReader
             count = len(PdfReader(path).pages)
             calls.append(count)
@@ -361,7 +361,8 @@ class SplitOnFailureTest(unittest.TestCase):
 
         with mock.patch.object(converter_app, "process_pdf", side_effect=process):
             try:
-                return converter_app.convert_pages(self.reader, start, end, "gemini", "m", cancelled or Event(), {}), calls
+                result = converter_app.convert_pages(self.reader, start, end, "gemini", "m", cancelled or Event(), {})
+                return result["markdown"], calls
             except Exception as error:
                 error.calls = calls
                 raise
@@ -422,3 +423,78 @@ class SplitOnFailureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestorationSummaryContractTest(unittest.TestCase):
+    """변환 결과에 쪽별 대체 사유와 그림 설명 집계를 싣는다(문서 내용 없음)."""
+
+    def fake_run_to_file(self, command, output_file, working_dir, timeout_seconds, log_file, cancelled=None):
+        output_file.write_text("diagnostic", encoding="utf-8")
+        log_file.touch()
+
+    def run_process(self, write_summaries=True, **kwargs):
+        def fake_run(command, working_dir, timeout_seconds, log_file, cancelled=None, env=None):
+            output_dir = Path(command[command.index("--output-dir") + 1])
+            slug = command[command.index("--document-slug") + 1]
+            final = output_dir / "final"
+            final.mkdir(parents=True)
+            (final / f"{slug}.restored.md").write_text("본문\n", encoding="utf-8")
+            (final / "selective_repair_summary.json").write_text("{}", encoding="utf-8")
+            if write_summaries:
+                (final / "restoration_summary.json").write_text(json.dumps({
+                    "broken_pages": 2, "repaired_pages": 1,
+                    "fallback_pages": [{"page": 2, "reason": "repair_rejected", "causes": ["font_mapping", "repair_rejected"]}],
+                }), encoding="utf-8")
+                if "--describe-figures" in command:
+                    (final / "figure_descriptions_summary.json").write_text(json.dumps(
+                        {"requested": True, "described": 3, "failed": 1, "skipped": 2}), encoding="utf-8")
+
+        with mock.patch.object(converter_app, "missing_commands", return_value=[]), \
+             mock.patch.object(converter_app, "run_to_file", side_effect=self.fake_run_to_file), \
+             mock.patch.object(converter_app, "run", side_effect=fake_run) as restoration:
+            result = process_pdf(b"pdf", usage_actor={"run_id": "r", "workspace_id": "w", "user_id": "u"}, **kwargs)
+        return result, restoration.call_args.args[0]
+
+    def test_restoration_summary_and_figure_counts_are_returned(self):
+        result, command = self.run_process(describe_figures=True)
+        self.assertIn("--describe-figures", command)
+        self.assertEqual(result["restoration_summary"]["fallback_pages"][0]["reason"], "repair_rejected")
+        self.assertEqual(result["figure_descriptions"], {"requested": True, "described": 3, "failed": 1, "skipped": 2})
+
+    def test_figures_are_never_sent_when_flag_is_off(self):
+        result, command = self.run_process()
+        self.assertNotIn("--describe-figures", command)
+        self.assertEqual(result["figure_descriptions"], {"requested": False, "described": 0, "failed": 0, "skipped": 0})
+
+    def test_missing_summary_files_yield_empty_contract(self):
+        result, _ = self.run_process(write_summaries=False)
+        self.assertEqual(result["restoration_summary"], {"broken_pages": 0, "repaired_pages": 0, "fallback_pages": []})
+
+    def test_split_ranges_merge_summaries_with_absolute_page_numbers(self):
+        from threading import Event
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(pdf_bytes(4)))
+        attempts = []
+
+        def process(path, provider, model, event, actor, describe_figures=False):
+            attempts.append(describe_figures)
+            if len(attempts) == 1:
+                raise converter_app.ConversionFailedError("x")
+            return {
+                "markdown": f"[{len(attempts)}]",
+                "restoration_summary": {"broken_pages": 1, "repaired_pages": 0,
+                                        "fallback_pages": [{"page": 1, "reason": "font_mapping", "causes": ["font_mapping"]}]},
+                "figure_descriptions": {"requested": True, "described": 1, "failed": 0, "skipped": 1},
+            }
+
+        with mock.patch.object(converter_app, "process_pdf", side_effect=process):
+            result = converter_app.convert_pages(reader, 0, 4, "gemini", "m", Event(), {}, True)
+        self.assertEqual(attempts, [True, True, True])
+        self.assertEqual(result["markdown"], "[2]\n\n[3]")
+        self.assertEqual(result["restoration_summary"], {
+            "broken_pages": 2, "repaired_pages": 0,
+            "fallback_pages": [{"page": 1, "reason": "font_mapping", "causes": ["font_mapping"]},
+                               {"page": 3, "reason": "font_mapping", "causes": ["font_mapping"]}],
+        })
+        self.assertEqual(result["figure_descriptions"], {"requested": True, "described": 2, "failed": 0, "skipped": 2})

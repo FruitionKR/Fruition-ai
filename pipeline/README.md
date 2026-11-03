@@ -273,12 +273,12 @@ uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```text
 GET  /health
 GET  /documents/{document_id}
-POST /pipeline/runs
 GET  /pipeline/runs/{run_id}
 GET  /pipeline/runs/{run_id}/logs
 ```
 
 `POST /documents`는 없습니다. 문서 업로드와 `documents` row 생성은 Spring이 담당합니다.
+ingest 실행 HTTP API는 없습니다. 문서·채팅 ingest는 Kafka `ai.ingest.command`를 `app/workers/ingest_worker.py`가 실행하고, 수동 실행은 `run_lab.py` CLI를 씁니다.
 DB 스키마 생성과 버전 관리는 Backend Flyway가 담당합니다. pipeline API는 시작할 때 필수 테이블이 적용됐는지만 확인하므로 Backend migration을 먼저 실행해야 합니다.
 
 ## 코드파일별 하는 일
@@ -287,12 +287,7 @@ DB 스키마 생성과 버전 관리는 Backend Flyway가 담당합니다. pipel
 
 FastAPI 서버입니다.
 
-- 일반 문서는 Spring이 먼저 생성한 `document_id`로 pipeline run 생성
-- 채팅 full 누적은 기존 `document_id`와 신규 대화 `input_markdown`을 함께 받을 수 있음
-- Spring/DB 문서 입력이면 MinIO에서 Markdown/text를 읽어 로컬 입력 파일로 materialize
-- background task 또는 `wait=true` 동기 실행 지원
-- 실행 결과를 `pipeline_runs`에 저장
-- 진행 로그 조회 API 제공
+- pipeline run 상태·진행 로그 조회 API 제공
 
 ### `run_lab.py`
 
@@ -449,7 +444,7 @@ LLM stage별 system prompt입니다.
 
 ### 1. 입력 결정
 
-CLI는 `--input` 파일을 사용합니다. FastAPI 일반 문서 API는 Spring이 먼저 생성한 `document_id`로 저장된 Markdown을 읽습니다. 채팅 full 누적에서만 `/chat-wiki/runs`가 신규 대화 `input_markdown`을 우선 입력으로 사용할 수 있습니다.
+CLI는 `--input` 파일을 사용합니다. Kafka ingest worker는 일반 문서면 Spring이 먼저 생성한 `document_id`로 저장된 Markdown을 읽고, 채팅 Wiki 내보내기면 command의 `input_markdown`·`input_blocks`를 그대로 씁니다.
 
 ### 2. Block Extraction
 
@@ -559,40 +554,4 @@ runs/llm_wiki_latest/wiki/concepts/*.md
 runs/llm_wiki_latest/wiki/links.json
 runs/llm_wiki_latest/review_report.md
 runs/llm_wiki_latest/manifest.json
-```
-
-### FastAPI에 inline Markdown으로 실행
-
-```bash
-curl -X POST http://localhost:8000/pipeline/runs \
-  -H "Content-Type: application/json" \
-  -H "X-Internal-Token: ${INTERNAL_CALLBACK_TOKEN}" \
-  -d '{
-    "document_id": "doc_inline",
-    "input_markdown": "# LLM Wiki\n\nLLM이 지속 관리하는 위키...",
-    "provider": "openai",
-    "model": "gpt-6-luna",
-    "out": "runs/api_inline_llm_wiki",
-    "mode": "api",
-    "source_page_mode": "skeleton",
-    "concept_page_mode": "skeleton",
-    "wait": true
-  }'
-```
-
-### Spring/DB 문서로 실행
-
-```bash
-curl -X POST http://localhost:8000/pipeline/runs \
-  -H "Content-Type: application/json" \
-  -H "X-Internal-Token: ${INTERNAL_CALLBACK_TOKEN}" \
-  -d '{
-    "document_id": "doc_123",
-    "provider": "openai",
-    "model": "gpt-6-luna",
-    "mode": "api",
-    "source_page_mode": "skeleton",
-    "concept_page_mode": "skeleton",
-    "log_callback_url": "http://host.docker.internal:8080/internal/pipeline/logs"
-  }'
 ```

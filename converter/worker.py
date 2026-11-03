@@ -57,6 +57,9 @@ def parse_command(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("start_page must be a non-negative integer")
     if type(count) is not int or not 1 <= count <= MAX_PAGES_PER_COMMAND:
         raise ValueError(f"page_count must be between 1 and {MAX_PAGES_PER_COMMAND}")
+    # 선택 필드다. 이전 document-svc는 보내지 않으므로 없으면 false다.
+    if type(command.get("describe_figures", False)) is not bool:
+        raise ValueError("describe_figures must be a boolean")
     return command
 
 
@@ -86,16 +89,44 @@ def convert_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[s
         # 사용량은 document가 정산하는 변환 run(parent_run_id)에 귀속한다.
         actor = {"run_id": command["parent_run_id"], "workspace_id": command["workspace_id"],
                  "user_id": command["user_id"]}
-        markdown = converter_app.convert_pages(reader, start, end, command["provider"], command["model"],
-                                               cancelled, actor)
+        converted = converter_app.convert_pages(reader, start, end, command["provider"], command["model"],
+                                                cancelled, actor, command.get("describe_figures", False))
     finally:
         stream.close()
+    log_conversion_summary(command, converted)
     key = result_key(command)
-    data = markdown.encode("utf-8")
+    data = converted["markdown"].encode("utf-8")
     # 재전달로 다시 쓰면 같은 key를 같은 내용으로 덮어쓴다. 취소로 남은 object는 tmp/convert/ lifecycle이 지운다.
     storage.put_object(bucket, key, BytesIO(data), length=len(data), content_type="text/markdown; charset=utf-8")
     return {"document_id": command["document_id"], "page_start": start + 1, "page_end": end,
-            "total_pages": total, "result_key": key}
+            "total_pages": total, "result_key": key,
+            "restoration_summary": converted["restoration_summary"],
+            "figure_descriptions": converted["figure_descriptions"]}
+
+
+def log_conversion_summary(command: dict[str, Any], converted: dict[str, Any]) -> None:
+    """변환 한 건의 복원·그림 설명 결과를 운영 로그 한 줄로 남긴다. 문서 내용은 싣지 않는다."""
+    summary, figures = converted["restoration_summary"], converted["figure_descriptions"]
+    reasons: dict[str, int] = {}
+    for page in summary["fallback_pages"]:
+        reasons[page["reason"]] = reasons.get(page["reason"], 0) + 1
+    logger.info(
+        "[변환 복원 요약] %s",
+        json.dumps(
+            {
+                "run_id": command["run_id"],
+                "document_id": command["document_id"],
+                "start_page": command["start_page"],
+                "broken_pages": summary["broken_pages"],
+                "repaired_pages": summary["repaired_pages"],
+                "fallback_pages": len(summary["fallback_pages"]),
+                "fallback_reasons": reasons,
+                "figure_descriptions": figures,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
 
 
 def run_command(command: dict[str, Any]) -> dict[str, Any]:

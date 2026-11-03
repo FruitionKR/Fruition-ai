@@ -51,6 +51,11 @@ def main() -> None:
     parser.add_argument("--heron-model", type=Path)
     parser.add_argument("--pdfium-library", type=Path)
     parser.add_argument("--body-ai-budget", type=float, default=0.3)
+    parser.add_argument(
+        "--describe-figures",
+        action="store_true",
+        help="crop-first 그림을 선택 공급사로 보내 대체 텍스트와 설명을 붙입니다.",
+    )
     args = parser.parse_args()
 
     use_case = RestoreDocumentUseCase(SubprocessDocumentRestorationStages())
@@ -82,6 +87,7 @@ def main() -> None:
             heron_model=args.heron_model.resolve() if args.heron_model else None,
             pdfium_library=args.pdfium_library.resolve() if args.pdfium_library else None,
             body_ai_budget=args.body_ai_budget,
+            describe_figures=args.describe_figures,
         )
     )
 

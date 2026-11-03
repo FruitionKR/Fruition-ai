@@ -161,6 +161,21 @@ class SubprocessDocumentRestorationStages(DocumentRestorationStagesPort):
                     "--assemble-only",
                 ],
             ),
+            RestorationStage.DESCRIBE_FIGURES_WITH_PROVIDER: (
+                "describe_figures_with_provider",
+                [
+                    "--manifest-file",
+                    str(prepared.manifest_file),
+                    "--output-dir",
+                    str(command.output_dir),
+                    "--provider",
+                    command.selective_provider,
+                    "--model",
+                    command.selective_model,
+                    "--max-workers",
+                    str(command.selective_max_workers),
+                ],
+            ),
             RestorationStage.PUBLISH_DOCLING_MARKDOWN: (
                 "publish_docling_markdown",
                 [
