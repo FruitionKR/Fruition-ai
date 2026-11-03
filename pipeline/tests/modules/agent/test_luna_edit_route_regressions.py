@@ -226,6 +226,37 @@ class SkillPlaceholderAgentTurnTest(unittest.TestCase):
         self.assertIn(f"SEL[{edit_target_selection_reference(3, 3)}]", instructions)
         self.assertNotIn("이 문서는 가상의 스마트팜 토양 센서 점검 기록이다.", instructions)
 
+    def test_selection_is_inlined_when_edit_goes_to_document_end(self) -> None:
+        # 문서 끝 추가는 편집기가 대상을 문서 전체로 바꾸므로 선택 범위를 가리키면 payload와 어긋난다.
+        use_case, editor = self._use_case(
+            AgentTurnRoute(
+                action="markdown_edit",
+                confidence=0.95,
+                reason="문서 끝 추가",
+                edit_goal="append",
+                edit_operation="insert_after",
+                edit_destination="document_end",
+                selected_skill_id="skill-tag",
+                document_operation="edit",
+                required_capabilities=("document-edit",),
+            )
+        )
+        use_case.execute(
+            AgentTurnRequest(
+                message="/tag-r3 선택한 문장을 문서 끝에 붙여 줘",
+                workspace_id="workspace-1",
+                user_id="user-1",
+                active_markdown_context=ActiveMarkdownContext(
+                    markdown=DOCUMENT,
+                    target=MarkdownEditTarget(type="selection", start_line=3, end_line=3),
+                ),
+            )
+        )
+
+        instructions = editor.requests[0].skill_instructions or ""
+        self.assertIn("SEL[이 문서는 가상의 스마트팜 토양 센서 점검 기록이다.]", instructions)
+        self.assertNotIn(edit_target_selection_reference(3, 3), instructions)
+
     def test_create_carries_active_document_as_source_and_references_it(self) -> None:
         use_case, editor = self._use_case(
             AgentTurnRoute(

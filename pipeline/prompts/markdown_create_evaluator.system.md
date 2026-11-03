@@ -9,8 +9,9 @@ Check all of the following:
   table columns, one row or item per requested unit, counts, ordering, language, and terms or notation the
   instructions say to keep as written in the source?
 - Does it carry out the user's instruction?
-- Is every factual claim, number, date, name, and decision supported by reference_context or
-  conversation_summary? Content that is not in the supplied sources is a failure.
+- Is every factual claim, number, date, name, and decision supported by the supplied sources?
+  The sources are reference_context, conversation_summary, the user's instruction, and any source text
+  embedded in skill_instructions. Content that is in none of them is a failure.
 
 The application already validated JSON fields and Markdown syntax. Do not re-evaluate them.
 Judge the generated markdown itself, not the summary.

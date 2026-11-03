@@ -452,7 +452,9 @@ class HandleAgentTurnUseCase:
                             edit_goal=route.edit_goal,
                             edit_operation=route.edit_operation or "replace",
                             edit_destination=route.edit_destination or "target",
-                            skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True, edit_target=target),
+                            skill_instructions=_skill_instructions(
+                                selected_skill, request, document_in_payload=True, edit_target=_payload_target(route, target)
+                            ),
                             output_language=request.output_language,
                         )
                     ).edit
@@ -699,7 +701,9 @@ class HandleAgentTurnUseCase:
                 edit_goal=route.edit_goal,
                 edit_operation=route.edit_operation or "replace",
                 edit_destination=route.edit_destination or "target",
-                skill_instructions=_skill_instructions(selected_skill, request, document_in_payload=True, edit_target=target),
+                skill_instructions=_skill_instructions(
+                    selected_skill, request, document_in_payload=True, edit_target=_payload_target(route, target)
+                ),
                 output_language=request.output_language,
             )
         )
@@ -1329,6 +1333,11 @@ def _bare_command_mode(
     if can_create and can_edit:
         return "auto"
     return "create" if can_create else "edit"
+
+
+def _payload_target(route: AgentTurnRoute, target: MarkdownEditTarget | None) -> MarkdownEditTarget | None:
+    """편집기가 실제로 받는 대상. 문서 끝 추가는 편집기가 대상을 문서 전체로 바꾸므로 선택 범위를 가리키지 않는다."""
+    return target if (route.edit_destination or "target") == "target" else None
 
 
 def _selection_text(context: ActiveMarkdownContext | None) -> str | None:
