@@ -49,6 +49,12 @@ class PageBodyLengthThresholdTest(unittest.TestCase):
         # 이전 기준(공백만 뺀 원문 300자의 50%=150자)이면 버려지던 온전한 복원(100자)을 받는다.
         self.assertTrue(body_valid(SOURCE_SENTENCE * 10, source))
 
+    def test_source_with_only_garbage_still_requires_a_full_length_repair(self) -> None:
+        # 쪽 전체가 사용자 정의 영역 글자뿐이면 읽을 수 있는 글자가 0이다. 원문 글자 수를 기준으로 삼는다.
+        source = "\ue000" * 100
+        self.assertFalse(body_valid("a", source))
+        self.assertTrue(body_valid(SOURCE_SENTENCE * 5, source))
+
     def test_moderately_shorter_repair_is_accepted(self) -> None:
         # 머리말·중복 공백 정리로 45% 수준까지 줄어든 복원은 받는다(이전 50% 기준이면 거부).
         self.assertTrue(body_valid(SOURCE_SENTENCE * 9, SOURCE_SENTENCE * 20))

@@ -178,7 +178,8 @@ def valid_replacement(
     ):
         return False
     if scope == "page_body":
-        source_length = readable_length(source_text)
+        # 쪽 전체가 깨진 글자뿐이면 읽을 수 있는 글자가 0이다. 그때는 공백을 뺀 원문 글자 수로 잰다.
+        source_length = readable_length(source_text) or len(re.sub(r"\s+", "", source_text))
         replacement_length = readable_length(replacement)
         if source_length and replacement_length < source_length * PAGE_BODY_MIN_LENGTH_RATIO:
             return False
