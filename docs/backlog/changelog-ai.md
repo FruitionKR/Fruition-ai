@@ -12,3 +12,8 @@
 - 회의록 병렬 호출 순서 가정 실패를 변경 전 dev와 현재 브랜치에서 재현했습니다. 호출 시작 순서는 보장되지 않으므로 정확한 batch 구성과 최종 결과 순서를 검증하도록 수정했고 제품 병합 순서는 유지합니다.
 - 전용 PostgreSQL 16과 MockTransport로 전체 pipeline **1996 passed, 6 skipped(실서비스/모델 E2E만), 326 subtests passed**, converter **34 passed, 24 subtests passed**를 확인했습니다. document_restoration 테스트도 포함했습니다. Gitleaks PR 전체 diff 0건, tracked tree의 기존 redaction 테스트 fixture 1건은 합성 값으로 확인했습니다.
 - 실데이터 전송·배포는 수행하지 않았습니다. 활성화 전 migration/권한 및 API 프로세스 설정이 필요하며 fail-open 기록 누락 경고와 dead 행을 모니터링해야 합니다.
+
+## 2026-10-31 보안 수정 통합
+
+- 파기와 AI 쓰기가 겹칠 때 작업 fence·객체 변경 journal을 확인해 삭제 뒤 데이터가 다시 남는 경합을 막는다.
+- 기존 수정의 격리 회귀 검증을 수행했고 최신 main 통합본은 CI에서 전체 회귀를 확인한다.
