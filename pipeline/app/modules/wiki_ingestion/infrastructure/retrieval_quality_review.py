@@ -23,40 +23,21 @@ def list_quality_review_candidates(
     conn: psycopg.Connection,
     workspace_id: str,
 ) -> list[dict[str, Any]]:
-    # 문서마다 최신 성공 run만 본다. 다시 편입해 통과했거나 아직 평가 중이면 후보가 아니다.
+    # 문서마다 최신 성공 편입의 상태 한 행이다. 다시 편입해 통과했거나 아직 평가 중이면 needs_review가 아니다.
     rows = conn.execute(
         """
-        WITH latest AS (
-            SELECT run.document_id,
-                   run.manifest->'post_ingest' AS post_ingest,
-                   row_number() OVER (
-                       PARTITION BY run.document_id
-                       ORDER BY run.finished_at DESC NULLS LAST,
-                                run.created_at DESC,
-                                run.id DESC
-                   ) AS run_rank
-            FROM pipeline_runs run
-            WHERE run.status = 'succeeded'
-              AND run.document_id IS NOT NULL
-              AND run.workspace_id = %s
-        )
-        SELECT latest.document_id,
-               latest.post_ingest->>'run_id' AS post_ingest_run_id,
-               COALESCE(
-                   latest.post_ingest->'result'->'wiki_quality_evaluations',
-                   '[]'::jsonb
-               ) AS evaluations
-        FROM latest
-        WHERE latest.run_rank = 1
-          AND latest.post_ingest->>'status' = 'needs_review'
+        SELECT review.document_id, review.post_ingest_run_id, review.evaluations
+        FROM document_quality_reviews review
+        WHERE review.workspace_id = %s
+          AND review.status = 'needs_review'
           AND NOT EXISTS (
               SELECT 1 FROM wiki_source_tombstones tombstone
-              WHERE tombstone.workspace_id = %s
-                AND tombstone.document_id = latest.document_id
+              WHERE tombstone.workspace_id = review.workspace_id
+                AND tombstone.document_id = review.document_id
           )
-        ORDER BY latest.document_id
+        ORDER BY review.document_id
         """,
-        (workspace_id, workspace_id),
+        (workspace_id,),
     ).fetchall()
     failed = [
         (row, evaluation)
