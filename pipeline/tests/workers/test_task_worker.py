@@ -822,12 +822,13 @@ def test_post_ingest_quality_uses_source_and_concept_rag_with_source_evaluator()
                 {
                     "passed": True,
                     "evidence_recall": 1.0,
-                    "evidence_precision": 1.0,
                     "source_alignment": 1.0,
                 }
             ],
         ) as evaluate,
         patch.object(task_worker.database, "checkpoint_pipeline_run"),
+        # Jev가 꺼져 있으면 정밀도는 비워 두고 통과 판정에는 영향이 없다.
+        patch.object(task_worker, "build_jev_client", return_value=None),
     ):
         evaluations = task_worker._run_post_ingest_wiki_quality_evaluation(command, state)
 
@@ -841,6 +842,7 @@ def test_post_ingest_quality_uses_source_and_concept_rag_with_source_evaluator()
         "evaluator_mode": "disabled",
     }
     assert evaluations[0]["passed"] is True
+    assert evaluations[0]["evidence_precision"] is None
     assert "answer" not in evaluations[0]
     assert evaluations[0]["gold_ref_hit"] is True
     assert evaluations[0]["gold_ref_rank"] == 1
@@ -880,6 +882,34 @@ def test_post_ingest_quality_uses_source_and_concept_rag_with_source_evaluator()
         user_id="user-1",
     )
     use_case.execute.assert_not_called()
+
+
+def test_post_ingest_evidence_precision_uses_jev_and_skips_when_unavailable() -> None:
+    from app.core.jev_client import JevUnavailable
+
+    cases = [{"question": "보존 기간은?", "evidence_snippets": [
+        {"rank": 1, "source_document_id": "doc-1", "source_block_ids": ["B0001"], "text": "45일간 보관한다."},
+        {"rank": 2, "source_document_id": "doc-1", "source_block_ids": ["B0009"], "text": "로그인 화면 안내"},
+    ]}]
+    client = MagicMock()
+    client.choose.return_value = {"r1": {"choice": "include"}, "r2": {"choice": "exclude"}}
+    state: dict = {}
+    with patch.object(task_worker, "build_jev_client", return_value=client):
+        assert task_worker._post_ingest_evidence_precisions(cases, state) == [
+            {"evidence_precision": 0.5, "irrelevant_evidence_ranks": [2]},
+        ]
+    # 질의 근거 선택과 같은 기준으로 근거마다 판정한다.
+    request_state, questions = client.choose.call_args.args
+    assert set(questions) == {"r1", "r2"}
+    assert questions["r1"]["criteria"] == {"include": "질문에 직접 필요한 근거", "exclude": "필요한 근거가 아님"}
+    assert "보존 기간은?" in request_state
+    assert [item["stage"] for item in state["stage_timings"]] == ["evidence_precision"]
+
+    client.choose.side_effect = JevUnavailable("credit")
+    with patch.object(task_worker, "build_jev_client", return_value=client):
+        assert task_worker._post_ingest_evidence_precisions(cases, {}) == [
+            {"evidence_precision": None, "irrelevant_evidence_ranks": []},
+        ]
 
 
 def test_post_ingest_quality_retry_reuses_checkpointed_batch() -> None:

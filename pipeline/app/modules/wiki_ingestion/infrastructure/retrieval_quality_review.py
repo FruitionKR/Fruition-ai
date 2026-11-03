@@ -6,7 +6,7 @@
 - not_in_wiki: 정답 원문 블록을 근거로 가진 검색 단위가 위키에 없다.
 - retrieval: 검색 단위는 있는데 검색 결과에 오르지 못했다. lint로는 고칠 수 없다.
 - incomplete: 정답 근거는 찾았지만 기대 주장 일부가 빠졌다.
-- imprecise: 주장은 다 덮었지만 무관하거나 출처가 맞지 않는 근거가 섞였다(precision·source_alignment 미달).
+- imprecise: 주장은 다 덮었지만 출처가 원문과 맞지 않는 근거가 섞였다(source_alignment 미달). 무관한 근거 비율(precision)은 통과 조건이 아니다.
 """
 from __future__ import annotations
 
