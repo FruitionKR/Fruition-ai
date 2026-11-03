@@ -27,13 +27,15 @@ def token_batches(
     max_tokens: int = MAX_BATCH_TOKENS,
     max_items: int,
 ) -> list[list[T]]:
-    """빈 요청 크기에 항목 하나짜리 요청 크기를 더해 가며 토큰·개수 한도 안에서 묶는다."""
-    header = request_tokens(build_request([])) + BATCH_TOKEN_MARGIN
+    """빈 요청 크기에 항목 하나가 늘리는 크기를 더해 가며 토큰·개수 한도 안에서 묶는다."""
+    empty = request_tokens(build_request([]))
+    header = empty + BATCH_TOKEN_MARGIN
     batches: list[list[T]] = []
     current: list[T] = []
     estimate = header
     for item in items:
-        size = request_tokens(build_request([item])) + BATCH_TOKEN_MARGIN
+        # 항목 하나짜리 요청에서 빈 요청(모델·보안 경계·규칙·질문)을 빼야 머리말이 항목마다 다시 더해지지 않는다.
+        size = request_tokens(build_request([item])) - empty + BATCH_TOKEN_MARGIN
         if current and (len(current) >= max_items or estimate + size > max_tokens):
             batches.append(current)
             current, estimate = [], header

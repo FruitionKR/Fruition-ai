@@ -193,17 +193,18 @@ class JevEvidenceSelector(EvidenceSelectorPort):
 
 
 def _request(question: str, batch: list[_Candidate]) -> dict[str, Any]:
+    # 판정 규칙은 state에 한 번만 두고 질문에는 후보 id만 담는다(개념 판정 _request와 같은 방식).
+    # 질문마다 규칙을 붙이면 후보 수만큼 반복돼 요청 토큰의 80% 이상을 차지했다.
     return {
         "state": json.dumps(
-            {"question": question, "candidates": [candidate.state() for candidate in batch]},
+            {"rule": EVIDENCE_POLICY, "question": question, "candidates": [candidate.state() for candidate in batch]},
             ensure_ascii=False,
             sort_keys=True,
         ),
         "questions": {
             candidate.unit.id: {
                 "type": "choice",
-                # 평가와 같은 문구다. 보안 경계는 클라이언트가 state에 한 번 넣는다.
-                "instructions": EVIDENCE_POLICY + f"\n판정할 후보 ID: {candidate.unit.id}",
+                "instructions": f"판정할 후보 ID: {candidate.unit.id}",
                 "criteria": EVIDENCE_CRITERIA,
             }
             for candidate in batch
