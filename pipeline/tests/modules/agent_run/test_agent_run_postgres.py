@@ -265,3 +265,15 @@ def test_target_folder_only_plan_fails_once_with_out_of_scope_code(repositories)
         job = conn.execute("SELECT status, attempt_count FROM agent_jobs WHERE id = 'planning-job'").fetchone()
     assert (job["status"], job["attempt_count"]) == ("failed", 1)
     assert jobs.claim_next("worker-2") is None
+
+
+def test_revise_gives_the_new_plan_version_a_fresh_tool_budget(repositories) -> None:
+    runs, jobs, connect = repositories
+    run, _ = _awaiting_run(runs)
+    with connect() as conn:
+        conn.execute("UPDATE agent_runs SET tool_call_count = 40 WHERE id = %s", (run.id,))
+    assert jobs.remaining_tool_calls(run.id) == 0
+
+    runs.revise("ws", "user", run.id, "다시 정리", "planning-job-2")
+
+    assert jobs.remaining_tool_calls(run.id) == 40

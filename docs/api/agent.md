@@ -202,6 +202,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 무엇이 불명확한지, 어떤 정보를 주면 되는지 사용자에게 설명하는 한국어 문장이며, 그대로 화면에 보여 줄 수 있습니다.
 실행 중 Tool 예산 소진처럼 다른 이유의 `clarification_required`와 그 밖의 모든 상태에서는 `null`입니다.
 `revise`로 다시 계획을 요청하면 비워집니다.
+Tool 호출 예산은 계획 버전마다 40회이며 `revise`로 새 계획을 요청하면 다시 40회가 됩니다. 실행 후 검증 읽기는 예산을 쓰지 않습니다.
 
 `target_folder_id`는 턴에서 지정한 작업 대상 폴더(`ai.agent.command`의 `folder_id`)이며, 지정하지 않았으면 `null`입니다.
 `rule_summary`는 선택한 Skill의 규칙 요약으로, run을 만들 때의 Skill 설명(`skill_versions.description`)을 보존한 값입니다.
