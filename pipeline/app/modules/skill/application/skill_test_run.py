@@ -21,7 +21,7 @@ from app.modules.skill.domain.instruction_placeholders import (
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
     render_skill_instructions,
 )
-from app.modules.skill.domain.policy import CAPABILITY_TOOLS, canonical_allowed_tools
+from app.modules.skill.domain.policy import CAPABILITY_TOOLS, canonical_allowed_tools, resolve_requires_source
 from app.modules.skill.domain.section_changes import SectionChange, section_changes
 
 
@@ -59,7 +59,9 @@ class SkillTestRunUseCase:
         document_id: str,
         markdown: str,
         target: MarkdownEditTarget | None,
+        requires_source: bool | None = None,
     ) -> SkillTestRunResult:
+        """requires_source는 생성 Skill이 고른 문서를 원문으로 읽을지다. None이면 게시와 같은 규칙(`{문서}`)으로 정한다."""
         require_test_runnable(capabilities)
         _validate_target(markdown, target)
         # 게시와 같은 안전 검토(preserve)를 거친다. 막히면 편집 LLM을 부르지 않는다.
@@ -83,7 +85,11 @@ class SkillTestRunUseCase:
         instructions = reviewed.proposal.instructions_markdown
         if "document-edit" in capabilities:
             return self._edit(name, instructions, workspace_id, user_id, markdown, target)
-        return self._create(name, instructions, workspace_id, user_id, document_id, markdown)
+        # 게시와 같은 순서(명시값 > `{문서}` 규칙 > False)로 정해 게시 후 실행과 원문 사용이 같게 한다.
+        # 테스트 실행에는 결과 방식이 없고 분류도 하지 않는다.
+        reads_source = resolve_requires_source(capabilities, None, instructions, explicit=requires_source)
+        source = (document_id, markdown) if reads_source else None
+        return self._create(name, instructions, workspace_id, user_id, source)
 
     def _edit(
         self,
@@ -141,22 +147,27 @@ class SkillTestRunUseCase:
         instructions: str,
         workspace_id: str,
         user_id: str,
-        document_id: str,
-        markdown: str,
+        source: tuple[str, str] | None,
     ) -> SkillTestRunResult:
-        # 문서 생성형 Skill은 고른 문서를 참고 자료로 새 문서를 만든다. 만들 문서 본문만 돌려준다.
-        instruction = f"'{name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요."
+        # 원문이 필요한 생성 Skill만 고른 문서를 참고 자료로 새 문서를 만든다. 만들 문서 본문만 돌려준다.
+        # 원문이 필요 없으면 게시 후 실행처럼 고른 문서를 싣지도 `{문서}`에 넣지도 않는다.
+        if source is None:
+            instruction = f"'{name}' Skill의 지침과 형식으로 새 문서 초안을 작성해 주세요."
+            reference_context: dict[str, object] = {}
+        else:
+            instruction = f"'{name}' Skill의 지침과 형식으로 참고 문서를 바탕으로 새 문서 초안을 작성해 주세요."
+            reference_context = {"source_document": {"document_id": source[0], "markdown": source[1]}}
         instructions = render_skill_instructions(
             instructions,
             request=instruction,
-            document_reference=REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
+            document_reference=REFERENCE_CONTEXT_DOCUMENT_REFERENCE if source is not None else None,
         )
         document = self._markdown_create_use_case.execute(
             MarkdownCreateRequest(
                 instruction=instruction,
                 workspace_id=workspace_id,
                 user_id=user_id,
-                reference_context={"source_document": {"document_id": document_id, "markdown": markdown}},
+                reference_context=reference_context,
                 skill_instructions=instructions,
             )
         ).document

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
 from app.modules.agent_run.domain.entities import AgentRun
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation, ApprovedBy
 
 
 class AgentRunActorRequest(BaseModel):
@@ -23,6 +23,13 @@ class MarkdownAgentRunStatusResponse(BaseModel):
 class ApproveAgentPlanRequest(AgentRunActorRequest):
     plan_version: int = Field(..., ge=1)
     operation_hash: str = Field(..., min_length=64, max_length=64)
+    approved_by: ApprovedBy = Field(
+        default="user",
+        description=(
+            "승인 주체. 사용자가 승인 화면에서 직접 승인하면 user(기본값), 사용자의 자동 승인 설정에 따라 "
+            "document-svc가 대신 승인하면 auto:user-setting이다. 승인 기록(agent_approvals.approved_by)에 남는다."
+        ),
+    )
     # 빈 배열·20개 초과도 계약대로 400으로 거절하도록 길이 검사는 pydantic(422)이 아니라 도메인에서 한다.
     operation_ids: list[str] | None = Field(
         default=None,
@@ -148,6 +155,8 @@ class AgentPlanResponse(BaseModel):
     operation_hash: str
     status: str
     operations: list[AgentPlanOperationResponse]
+    # 승인 주체. "user"(승인 화면에서 직접) 또는 "auto:user-setting"(사용자의 자동 승인 설정). 승인 전이면 null이다.
+    approved_by: str | None = None
 
     @classmethod
     def from_domain(cls, plan: AgentPlan) -> "AgentPlanResponse":
@@ -157,6 +166,7 @@ class AgentPlanResponse(BaseModel):
             summary=plan.summary,
             operation_hash=plan.operation_hash,
             status=plan.status,
+            approved_by=plan.approved_by,
             operations=[AgentPlanOperationResponse.from_domain(operation) for operation in plan.operations],
         )
 

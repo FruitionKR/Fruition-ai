@@ -85,6 +85,8 @@ class AgentPlan:
     operation_hash: str
     operations: tuple[AgentPlanOperation, ...]
     status: str = "awaiting_approval"
+    # 승인 주체(agent_approvals.approved_by). 승인 전이거나 옛 승인이면 None이다. operation_hash에 넣지 않는다.
+    approved_by: str | None = None
 
 
 def build_agent_plan(
@@ -118,6 +120,12 @@ def build_agent_plan(
         operation_hash=_operation_hash(operations),
         operations=operations,
     )
+
+
+# 승인 주체. 사용자가 승인 화면에서 직접 승인했거나, 사용자의 자동 승인 설정에 따라 document-svc가 대신 승인했다.
+APPROVED_BY_USER = "user"
+APPROVED_BY_AUTO_USER_SETTING = "auto:user-setting"
+ApprovedBy = Literal["user", "auto:user-setting"]
 
 
 # 부분 승인에서 고르지 않은 작업의 상태 코드. 실패가 아니므로 run 결과 판정에서 뺀다.

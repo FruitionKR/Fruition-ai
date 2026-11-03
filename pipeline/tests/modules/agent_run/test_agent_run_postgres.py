@@ -138,6 +138,32 @@ def test_full_approval_keeps_every_operation_pending(repositories) -> None:
     assert approval["operation_ids"] is None
 
 
+def test_approver_is_recorded_and_returned_with_the_plan(repositories) -> None:
+    runs, _, connect = repositories
+    run, plan = _awaiting_run(runs)
+
+    _, awaiting = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert awaiting.approved_by is None
+    runs.approve_and_enqueue(run, plan, "approval-1", "execution-job", approved_by="auto:user-setting")
+
+    _, approved = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert approved.approved_by == "auto:user-setting"
+    with connect() as conn:
+        approval = conn.execute("SELECT approved_by, user_id FROM agent_approvals WHERE id = 'approval-1'").fetchone()
+    # 자동 승인도 그 설정을 켠 사용자의 승인으로 남는다.
+    assert approval == {"approved_by": "auto:user-setting", "user_id": "user"}
+
+
+def test_manual_approval_is_reported_as_user(repositories) -> None:
+    runs, _, _ = repositories
+    run, plan = _awaiting_run(runs)
+
+    runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
+
+    _, approved = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert approved.approved_by == "user"
+
+
 def test_target_folder_is_stored_and_returned_with_the_run(repositories) -> None:
     from app.modules.agent_run.interfaces.http.schemas import AgentRunResponse
 
