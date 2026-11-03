@@ -1,0 +1,57 @@
+{
+ "files": {
+  "cases.json": "dc7b9a2a9e0c3c66b3ec1a2227a2b6746035cf0926dca25a482fd684150df731",
+  "gold/arxiv-2109.04650.json": "a22e6cfd508b6df6b34d996185bfbac3f1bd3d0e1f462ec3184afb0d94a0f9bd",
+  "gold/arxiv-2204.04541.json": "b68728fbc54e127934c255072a6f8cd65332d575a1263bcd94804727b2a8d8d4",
+  "gold/arxiv-2301.12597.json": "2787d26a139fff7735866a9d7dcde885063a430de060ec3ff7527bc368e3fd42",
+  "gold/arxiv-2309.02706.json": "ccd34bc4037df0bbd8608b8e22e29ceb844a75dcf4a04224247151972126244f",
+  "gold/arxiv-2401.01325.json": "bfdac5ce05db9a0af48cedf3ee24ffe7aec547d636eb892fbc94728a69e8d0bd",
+  "gold/arxiv-2403.06412.json": "872ec9a8243eb334112aff89dbc1ebe4638dd65ede933d1df1cbec5e8c39f47c",
+  "gold/arxiv-2404.01954.json": "2c09479554ce6edfde51f6c20d0fb8175f3f0f279b5684a46be103e234cbe457",
+  "gold/en-crs-r49495.json": "9f51a12af307dcc5a5e67af391961d4bc09e096239306cafe2768bddd8b1c74c",
+  "gold/en-usace-admixtures-1978.json": "b8a18593ce71c2713c01ed2b689832fae11d1e5cdc98c053e6e84dfc01be0b93",
+  "gold/ko-ai-ethics-principles.json": "719516c31d84354df7b6ff2bf2f20a26ee15f0f9c6fc81bf8db6f9e9c7440625",
+  "gold/ko-ai-ethics-scanned.json": "7a601b7073f2598db0a12e262c5e151f610f4da99d25d1410edf1c5d5b26bc23",
+  "gold/ko-kedi-school-complex-2026.json": "0222add709e2858436031d13c3ee24a1d7ee6546744c6625e33219e5bfaa5956",
+  "gold/ko-law-publicdata-rasterized.json": "90c90be46a988f9f0ab9dabbfb90cf9a25823cf4db0a0924fdf9e1b84c4a1f1c",
+  "gold/ko-law-publicdata.json": "f5350ef18fe97dfa2cd69a5d47f156c108ccac1af1b732d9098af5959b9dd358",
+  "gold/ko-moef-greenbook-2610.json": "0c5da6e254fc21bc2124bbb0af05ba6e2f155a6cb6607437ad24b45b560ea23a",
+  "sources/arxiv-2109.04650.pdf": "200c2dc36f00405313b315802e5a06d4afb4ef9f66992024e14b85e39e60f671",
+  "sources/arxiv-2204.04541.pdf": "745eca5388bc9a884cf4e899d917f8c35840a7406535a9208b56d2f64f4399f7",
+  "sources/arxiv-2301.12597.pdf": "2815e66a3bbd3ee93afe39ec842ae1c616ea67844998b46564e8375f05918595",
+  "sources/arxiv-2309.02706.pdf": "01b5a5d7df624d55d56fa6d052e65dc2bf0309054a4fda7588ffcde89f9441be",
+  "sources/arxiv-2401.01325.pdf": "f78d64762e9ba1f39ee5656a1bd4cc2acb1cc9e653cb3e6d0b41f751b4f34065",
+  "sources/arxiv-2403.06412.pdf": "d7ad868b0c939ace1b1e5d26a23219d9ae7fa6b0920626f817679aff1fe94fb0",
+  "sources/arxiv-2404.01954.pdf": "839cf7e3985ddf69f2bf4fed776d07f46e8a3e066bf12d3edc0e22a1118a8f33",
+  "sources/en-crs-r49495.pdf": "11783bfd545de6a511d17b98202f105b88ea8024848a3f612729008f4e372634",
+  "sources/en-usace-admixtures-1978.pdf": "fa12c838f1856aa815309751e5e6f6adbd07cea8785003f8cd8977161a4404db",
+  "sources/ko-ai-ethics-principles.pdf": "552af5739ea5918739f2d163234855f114222b4aafffe1568feae6c07abecbf8",
+  "sources/ko-ai-ethics-scanned.pdf": "b462beecb8bb1e6e8804aa5fefb18ece617e17191ec0437f2aa5e535c7dced41",
+  "sources/ko-kedi-school-complex-2026.pdf": "7d6f473f1143f22f4cf6e8dfa716b80ab55d5eb10e2b547c665d0f6df3b35847",
+  "sources/ko-law-publicdata-rasterized.pdf": "2137721a6385f08d4061d34a172838b721449d3eee74def28b98e42dd840eb93",
+  "sources/ko-law-publicdata.pdf": "5d5677501a296090f997e03e2597a1232320b07f7f685a2d972081e68869b10a",
+  "sources/ko-moef-greenbook-2610.pdf": "f7b3f06cc1669e4562128140c97f1223bc264e4a2c389cedb2b9987ed99b5eb3"
+ },
+ "revisions": [
+  {
+   "date": "2026-11-03",
+   "change": "15개 문서(유형 5 × 3) 정답을 쪽 이미지로 작성하고 다른 에이전트가 독립 검수해 고정"
+  },
+  {
+   "date": "2026-11-04",
+   "change": "스캔 유형의 옛 신문 2개(1897 독립신문, 1909 대한매일신보 영문판)를 현대 문서 2개(AI 윤리원칙 16~19쪽 스캔 재현본, 1978 미 육군공병단 타자 보고서 실제 스캔)로 교체. 사용자 결정: 스캔은 현대 문서만"
+  },
+  {
+   "date": "2026-11-04",
+   "change": "표 유형의 정부 통계 부록 3개(국토부 주택통계, 고용노동부 사업체노동력조사, 기재부 재정동향)를 표가 많은 논문 3편(HAE-RAE Bench, HyperCLOVA 연구, HyperCLOVA X 보고서, 모두 CC BY 4.0)으로 교체. 사용자 결정: 표도 대상 사용자가 쓰는 논문 같은 문서로"
+  },
+  {
+   "date": "2026-11-04",
+   "change": "ko-ai-ethics-scanned 설명 정정: 기울기는 실제로 적용되지 않아 '200dpi 흑백 JPEG'로 고침(원문 PDF·정답은 그대로)"
+  },
+  {
+   "date": "2026-11-04",
+   "change": "원문 PDF는 저장소에 넣지 않는다(사용자 결정). cases.json에 원본 sha256(original_sha256)·arXiv 고정 버전 주소·스캔 재현 설정(derivation)을 넣고, sources는 파일 바이트 대신 내용(쪽별 글자·이미지) 기준 sha256으로 고정한다. PDF는 저장마다 문서 ID·생성 시각이 바뀌어 같은 원본으로 다시 만들어도 바이트가 달랐다(15/15). 내용 기준으로는 15/15 같았다. tools/prepare_sources.py로 다시 만든다."
+  }
+ ]
+}

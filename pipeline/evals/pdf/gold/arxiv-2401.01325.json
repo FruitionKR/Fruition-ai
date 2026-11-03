@@ -1,0 +1,135 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "This paper proposes SelfExtend to elicit LLMs’ inherent",
+  "In this section, we first conduct a preliminary investigation",
+  "3.2. SelfExtend LLM Context Window Without Tuning",
+  "Language modeling task is the most fundamental and the",
+  "4.2. Performance on Synthetic Long Context Tasks",
+  "4.3. Performance on Real-World Long Context Tasks",
+  "4.4. Performance on Short Context Tasks",
+  "4.5. Ablations on Group Size and Neighbor Window",
+  "4.7. Varying-Length Passkey Retrieval Task",
+  "5. Conclusion and Discussion",
+  "The impact of this contribution is multifaceted."
+ ],
+ "tables": [
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Model",
+     "Tokens",
+     "Coursera",
+     "GSM",
+     "QuALITY",
+     "TOEFL",
+     "CodeU",
+     "SFiction",
+     "Avg."
+    ],
+    [
+     "Claude1.3-100k",
+     "100k",
+     "60.03",
+     "88.00",
+     "73.76",
+     "83.64",
+     "17.77",
+     "72.65",
+     "65.97"
+    ],
+    [
+     "GPT-4-32k",
+     "32k",
+     "75.58",
+     "96.00",
+     "82.17",
+     "84.38",
+     "25.55",
+     "74.99",
+     "73.11"
+    ],
+    [
+     "Turbo-16k-0613",
+     "16k",
+     "63.51",
+     "84.00",
+     "61.38",
+     "78.43",
+     "12.22",
+     "64.84",
+     "60.73"
+    ]
+   ]
+  },
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Size",
+     "Name",
+     "ARC-c",
+     "Hellaswag",
+     "MMLU",
+     "TruthfulQA",
+     "GSM8k"
+    ],
+    [
+     "7B",
+     "Llama-2",
+     "52.99",
+     "78.66",
+     "46.58",
+     "38.97",
+     "14.94"
+    ],
+    [
+     "7B",
+     "SE-Llama 2",
+     "52.99",
+     "78.65",
+     "46.68",
+     "38.97",
+     "14.71"
+    ],
+    [
+     "7B",
+     "Llama-2-chat",
+     "52.73",
+     "78.49",
+     "48.20",
+     "45.32",
+     "18.73"
+    ]
+   ]
+  },
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Context Length",
+     "2k (vanilla)",
+     "4k",
+     "6k",
+     "8k"
+    ],
+    [
+     "NarrativeQA",
+     "4.46",
+     "6.49 (+45.52%)",
+     "8.98 (+101.35%)",
+     "12.04 (+169.96%)"
+    ],
+    [
+     "Qasper",
+     "7.01",
+     "11.16 (+59.20%)",
+     "12.84 (+83.17%)",
+     "12.10 (+72.61%)"
+    ]
+   ]
+  }
+ ],
+ "notes": "2단 읽기 순서(4·5·8쪽 좌단→우단)와 Table 3·4·5 숫자를 300dpi 이미지로 대조했다. Table 1은 위첨자(> 10^3), Table 5는 'Document QA' 등 구분행 때문에 일부만 넣었다."
+}

@@ -1,0 +1,142 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "BBH is a more challenging subset of this dataset, comprising 23 tasks",
+  "Winogrande is designed so that in-depth reasoning is necessary",
+  "comprising over 600k question-answer-evidence triples",
+  "HyperCLOVA X noticeably suffers from the lack of knowledge in western culture",
+  "the majority of the baseline models struggle to surpass 15 percent accuracy",
+  "This dataset includes 160 test sets that extend up to two turns",
+  "approximately 98% of the responses from LLaMA 2 70B are in English",
+  "Due to some API constraints, we could not evaluate the closed-source models",
+  "HyperCLOVA X was trained primarily on Korean, English, and code data"
+ ],
+ "tables": [
+  {
+   "page": 1,
+   "rows": [
+    [
+     "Model",
+     "5-shot",
+     "5-shot",
+     "0-shot",
+     "25-shot",
+     "5-shot",
+     "Avg."
+    ],
+    [
+     "Polyglot-Ko 1.3b",
+     "24.67",
+     "50.28",
+     "51.74",
+     "26.26",
+     "20.23",
+     "34.63"
+    ],
+    [
+     "Polyglot-Ko 5.8b",
+     "24.48",
+     "49.41",
+     "49.62",
+     "24.05",
+     "20.56",
+     "33.62"
+    ]
+   ]
+  },
+  {
+   "page": 4,
+   "rows": [
+    [
+     "Model",
+     "8-shot, maj@8",
+     "4-shot, maj@4",
+     "Average"
+    ],
+    [
+     "Falcon 7b",
+     "7.58",
+     "2.54",
+     "5.06"
+    ],
+    [
+     "Falcon 40b",
+     "31.61",
+     "6.44",
+     "19.03"
+    ]
+   ]
+  },
+  {
+   "page": 7,
+   "rows": [
+    [
+     "Model",
+     "LW",
+     "RW",
+     "SN",
+     "RC",
+     "HI",
+     "GK",
+     "All"
+    ],
+    [
+     "HCX-S",
+     "79.88",
+     "83.95",
+     "85.62",
+     "75.17",
+     "88.30",
+     "51.14",
+     "77.89"
+    ],
+    [
+     "HCX-L",
+     "82.25",
+     "93.09",
+     "86.93",
+     "81.43",
+     "94.15",
+     "59.09",
+     "84.14"
+    ]
+   ]
+  },
+  {
+   "page": 8,
+   "rows": [
+    [
+     "Model",
+     "AR",
+     "HI",
+     "TH",
+     "UR",
+     "VI",
+     "ZH",
+     "Avg."
+    ],
+    [
+     "LLaMA 2 KoEn 13b",
+     "0.336",
+     "0.347",
+     "0.345",
+     "0.337",
+     "0.354",
+     "0.467",
+     "0.396"
+    ],
+    [
+     "LLaMA 2 7b",
+     "0.349",
+     "0.331",
+     "0.356",
+     "0.329",
+     "0.333",
+     "0.337",
+     "0.338"
+    ]
+   ]
+  }
+ ],
+ "notes": "원문 10–17쪽 발췌본이라 page는 PDF 내 순번이며, 2차 검수에서 Table 5·7·12·13의 셀과 문장 위치·순서를 240dpi 이미지로 대조해 수정 사항이 없었다. Table 5·7·12는 최하위 헤더만 담았다."
+}
