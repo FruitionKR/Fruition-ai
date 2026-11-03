@@ -675,7 +675,9 @@ def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
     assert all(row["elapsed_seconds"] >= 0 and row["status"] == "succeeded" for row in timings)
 
 
-def test_post_ingest_marks_needs_review_after_third_failure() -> None:
+def test_post_ingest_finishes_as_needs_review_after_third_failure() -> None:
+    # 단계 하나가 끝까지 실패해도 run을 실패로 끝내지 않는다. 실패로 끝내면 작업 기록부가
+    # 성공한 단계 결과와 실패 기록까지 되돌린다(ADR 0044).
     command = {
         "run_id": "post-run-1",
         "ingest_run_id": "ingest-run-1",
@@ -728,13 +730,44 @@ def test_post_ingest_marks_needs_review_after_third_failure() -> None:
             side_effect=RuntimeError("embedding unavailable"),
         ),
         patch.object(task_worker.database, "fail_pipeline_run") as fail,
-        pytest.raises(RuntimeError, match="embedding unavailable"),
+        patch.object(task_worker.database, "finish_pipeline_run") as finish,
+    ):
+        result = task_worker._handle_post_ingest(command)
+
+    fail.assert_not_called()
+    assert result["quality_status"] == "needs_review"
+    assert result["error"] == "internal_error"
+    assert result["failed_stage"] == "embedding"
+    assert result["embedding"] is None
+    assert update_parent.call_args.args[1]["status"] == "needs_review"
+    assert update_parent.call_args.args[1]["error"] == "internal_error"
+    assert update_parent.call_args.args[1]["result"] == result
+    assert finish.call_args.args[1]["task_result"] == result
+
+    # 취소는 남기면 안 되므로 마지막 시도여도 그대로 실패시켜 되돌린다.
+    existing["manifest"]["attempt"] = 2
+    with (
+        patch.dict(task_worker.os.environ, {"QUERY_EMBEDDING_MODE": "bge-m3"}),
+        patch.object(
+            task_worker.database,
+            "get_pipeline_run",
+            side_effect=lambda run_id: parent if run_id == "ingest-run-1" else existing,
+        ),
+        patch.object(task_worker.database, "reject_deleted_source"),
+        patch.object(task_worker.database, "checkpoint_pipeline_run"),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(
+            task_worker,
+            "build_wiki_embeddings",
+            side_effect=task_worker.PipelineRunCancelledError("source deleted"),
+        ),
+        patch.object(task_worker.database, "fail_pipeline_run") as fail,
+        patch.object(task_worker.database, "finish_pipeline_run") as finish,
+        pytest.raises(task_worker.PipelineRunCancelledError),
     ):
         task_worker._handle_post_ingest(command)
-
-    fail.assert_called_once_with("post-run-1", "internal_error")
-    assert update_parent.call_args.args[1]["error"] == "internal_error"
-    assert update_parent.call_args.args[1]["status"] == "needs_review"
+    fail.assert_called_once_with("post-run-1", "cancelled")
+    finish.assert_not_called()
 
 
 def test_post_ingest_quality_uses_source_and_concept_rag_with_source_evaluator() -> None:
