@@ -978,12 +978,13 @@ def test_post_ingest_quality_skips_evaluation_when_no_cases_are_generated() -> N
 
 
 @pytest.mark.parametrize(
-    ("generation_status", "evaluation_count"),
-    [("unresolved", 3), ("passed", 1)],
+    ("generation_status", "evaluation_count", "expected_status"),
+    [("unresolved", 3, "needs_review"), ("passed", 0, "needs_review"), ("passed", 1, "ready")],
 )
 def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
     generation_status: str,
     evaluation_count: int,
+    expected_status: str,
 ) -> None:
     evaluations = [
         {"question": f"질문 {index}", "passed": True}
@@ -1046,7 +1047,7 @@ def test_post_ingest_requires_source_and_wiki_quality_to_be_ready(
     ):
         result = task_worker._handle_post_ingest(command)
 
-    assert result["quality_status"] == "needs_review"
+    assert result["quality_status"] == expected_status
     assert result["generation_evaluation_status"] == generation_status
 
 

@@ -20,7 +20,7 @@ from app.core.ai_database import ai_database_url
 
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "wiki_page_entries", "wiki_page_entry_references", "source_blocks", "source_block_snapshots",
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
-                    "document_derived_state", "skills", "skill_versions", "skill_version_sources"})
+                    "document_derived_state", "document_quality_reviews", "skills", "skill_versions", "skill_version_sources"})
 # 종료한 run에서 지울 kind별 command 필드. 전사·초안은 document가 소유하므로 AI는 끝난 작업의 본문을 보관하지 않는다.
 # command_hash와 status·error_code·run_id는 남겨 재전달 판정(재생·불일치)에 쓴다.
 # meeting_transcription은 command에 전사가 없어 녹음 객체 키만 지우고, result의 전사 본문은 같은 방식으로 지운다.

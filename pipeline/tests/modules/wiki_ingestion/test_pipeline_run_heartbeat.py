@@ -58,7 +58,7 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     }
     active_cursor = Mock()
     active_cursor.fetchone.return_value = {"status": "running"}
-    connection.execute.side_effect = [run_cursor, active_cursor, Mock(), Mock()]
+    connection.execute.side_effect = [run_cursor, active_cursor, Mock(), Mock(), Mock()]
 
     with (
         patch.object(database, "connect", return_value=connection),
@@ -82,6 +82,10 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     tombstone_clear = connection.execute.call_args_list[2].args
     assert tombstone_clear[0].startswith("DELETE FROM wiki_source_tombstones")
     assert tombstone_clear[1] == ("ws-1", "doc-1")
+    # 다시 편입하면 문서 품질 상태를 이 run 기준으로 비운다.
+    quality_reset = connection.execute.call_args_list[3].args
+    assert "INSERT INTO document_quality_reviews" in quality_reset[0]
+    assert quality_reset[1] == ("doc-1", "ws-1", "run-1")
 
 
 def test_derived_state_marks_only_the_expected_hash() -> None:
