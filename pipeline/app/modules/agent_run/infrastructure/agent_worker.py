@@ -769,7 +769,7 @@ class AgentWorker:
     ) -> dict[str, object]:
         if context.run.skill_version_id is not None and tool_name not in context.allowed_tools:
             raise ValueError("Selected Skill does not allow the required read tool.")
-        # 실행 후 검증 읽기는 시스템이 성공한 operation 수만큼만 하므로 Tool 예산에서 빼지 않는다.
+        # 실행 후 검증 읽기는 시스템이 성공한 operation 수만큼만 하므로 Tool 예산을 쓰지 않는다.
         if budgeted and not self._repository.reserve_tool_call(context.run.id):
             raise ValueError("AgentRun tool call limit exceeded.")
         return self._tool_gateway.read(
