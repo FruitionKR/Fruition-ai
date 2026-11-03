@@ -390,8 +390,16 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             ).fetchone()
             if run_row is None or run_row["current_plan_id"] is None:
                 return None
+            # 승인 주체를 함께 돌려준다. 이 열이 생기기 전의 승인(NULL)은 사용자가 직접 승인한 것이다.
             plan_row = conn.execute(
-                "SELECT * FROM agent_plans WHERE id = %s AND run_id = %s",
+                """
+                SELECT plan.*, (
+                    SELECT COALESCE(approval.approved_by, 'user') FROM agent_approvals approval
+                    WHERE approval.plan_id = plan.id AND approval.decision = 'approved'
+                    ORDER BY approval.created_at DESC LIMIT 1
+                ) AS approved_by
+                FROM agent_plans plan WHERE plan.id = %s AND plan.run_id = %s
+                """,
                 (run_row["current_plan_id"], run_id),
             ).fetchone()
             operation_rows = conn.execute(
@@ -464,6 +472,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         approval_id: str,
         job_id: str,
         selected_operation_ids: tuple[str, ...] | None = None,
+        approved_by: str = "user",
     ) -> AgentRun:
         with database.connect_ai() as conn:
             locked = conn.execute(
@@ -487,8 +496,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
-                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision, operation_ids
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved', %s)
+                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision, operation_ids,
+                    approved_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved', %s, %s)
                 """,
                 (
                     approval_id,
@@ -498,6 +508,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     plan.operation_hash,
                     run.user_id,
                     list(selected_operation_ids) if selected_operation_ids is not None else None,
+                    approved_by,
                 ),
             )
             conn.execute("UPDATE agent_plans SET status = 'approved' WHERE id = %s", (plan.id,))
@@ -598,7 +609,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 UPDATE agent_runs
                 SET status = 'queued', current_plan_id = NULL, request_summary = %s,
                     error_code = NULL, clarification_question = NULL, updated_at = now(),
-                    finished_at = NULL
+                    finished_at = NULL, tool_call_count = 0
                 WHERE id = %s RETURNING *
                 """,
                 (instruction.strip(), run_id),
@@ -643,6 +654,7 @@ def _rows_to_plan(plan_row: dict[str, Any], operation_rows: list[dict[str, Any]]
         summary=plan_row["summary"],
         operation_hash=plan_row["operation_hash"],
         status=plan_row["status"],
+        approved_by=plan_row.get("approved_by"),
         operations=tuple(
             AgentPlanOperation(
                 id=row["id"],

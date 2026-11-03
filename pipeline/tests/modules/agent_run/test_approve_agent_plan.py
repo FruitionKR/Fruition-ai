@@ -40,15 +40,19 @@ class InMemoryApprovalRepository:
         self.plan = build_agent_plan("plan-1", "run-1", 1, "정리", operations or (_operation("op-1", 1),))
         self.approved = False
         self.selected: tuple[str, ...] | None = None
+        self.approved_by: str | None = None
 
     def get_current_plan_for_user(self, workspace_id: str, user_id: str, run_id: str):
         if (workspace_id, user_id, run_id) != ("workspace-1", "user-1", "run-1"):
             return None
         return self.run, self.plan
 
-    def approve_and_enqueue(self, run, plan, approval_id: str, job_id: str, selected_operation_ids=None):
+    def approve_and_enqueue(
+        self, run, plan, approval_id: str, job_id: str, selected_operation_ids=None, approved_by="user"
+    ):
         self.approved = True
         self.selected = selected_operation_ids
+        self.approved_by = approved_by
         return AgentRun(**{**run.__dict__, "status": "executing"})
 
 
@@ -78,6 +82,41 @@ class ApproveAgentPlanTest(unittest.TestCase):
         self.assertTrue(repository.approved)
         self.assertIsNone(repository.selected)
         self.assertEqual(run.status, "executing")
+
+    def test_records_user_as_approver_by_default(self) -> None:
+        repository = InMemoryApprovalRepository()
+
+        self._approve(repository, None)
+
+        self.assertEqual(repository.approved_by, "user")
+
+    def test_records_auto_approval_from_user_setting(self) -> None:
+        repository = InMemoryApprovalRepository()
+
+        ApproveAgentPlanUseCase(repository).execute(  # type: ignore[arg-type]
+            workspace_id="workspace-1",
+            user_id="user-1",
+            run_id="run-1",
+            plan_version=1,
+            operation_hash=repository.plan.operation_hash,
+            approved_by="auto:user-setting",
+        )
+
+        self.assertEqual(repository.approved_by, "auto:user-setting")
+
+    def test_auto_approval_still_requires_the_reviewed_plan_version_and_hash(self) -> None:
+        repository = InMemoryApprovalRepository()
+
+        with self.assertRaisesRegex(ValueError, "changed"):
+            ApproveAgentPlanUseCase(repository).execute(  # type: ignore[arg-type]
+                workspace_id="workspace-1",
+                user_id="user-1",
+                run_id="run-1",
+                plan_version=1,
+                operation_hash="stale",
+                approved_by="auto:user-setting",
+            )
+        self.assertFalse(repository.approved)
 
     def test_rejects_stale_version_or_hash(self) -> None:
         repository = InMemoryApprovalRepository()

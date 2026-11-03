@@ -100,7 +100,7 @@ def _only_reference_list(item: dict[str, Any], reference_refs: set[str]) -> bool
 
 
 def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted: list[str]) -> None:
-    """언급으로 내려 해결된 근거 없음 문제를 마지막 평가에서 지운다."""
+    """언급으로 내려 해결된 근거 없음 문제를 저장한 결과의 평가에서 지운다."""
     demoted_slugs = set(demoted)
     clear_resolved_issues(
         evaluation,
@@ -113,7 +113,7 @@ def clear_resolved_core_concept_issues(evaluation: GenerationEvaluation, demoted
 
 
 def clear_resolved_issues(evaluation: GenerationEvaluation, resolved: Callable[[dict[str, Any]], bool]) -> None:
-    """편입 뒤 코드가 해결한 문제를 마지막 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
+    """편입 뒤 코드가 해결한 문제를 저장한 결과의 평가에서 지우고, 남은 문제가 없으면 평가자 판정으로 되돌린다."""
     issues = [issue for issue in evaluation.get("issues", []) if not resolved(issue)]
     if len(issues) == len(evaluation.get("issues", [])):
         return

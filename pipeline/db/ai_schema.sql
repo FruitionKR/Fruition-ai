@@ -504,6 +504,9 @@ CREATE TABLE IF NOT EXISTS agent_approvals (
 
 -- 부분 승인으로 고른 작업 ID. NULL이면 계획 전체를 승인했다. 나머지 작업은 skipped(not_selected)가 된다.
 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS operation_ids text[];
+-- 누가 승인했는지. 'user'는 사용자가 승인 화면에서 직접, 'auto:user-setting'은 사용자의 자동 승인 설정에 따라
+-- document-svc가 대신 승인했다. NULL은 이 열이 생기기 전의 승인(사용자 직접)이다.
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS approved_by text;
 
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id text PRIMARY KEY,

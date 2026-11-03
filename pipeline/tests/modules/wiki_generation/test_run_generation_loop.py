@@ -6,6 +6,7 @@ from app.modules.wiki_generation.application.run_generation_loop import (
     EvaluationGuardRepairer,
     generation_evaluation_status,
     generation_retry_block_ids,
+    stored_generation_evaluation,
 )
 from app.modules.wiki_generation.infrastructure.wiki_generation_evaluator_graph import (
     LangGraphWikiGenerationEvaluator,
@@ -603,3 +604,10 @@ class LangGraphWikiGenerationEvaluatorTest(unittest.TestCase):
             generation_evaluation_status([{"passed": False, "issues": [{"target": ["B0001"]}]}]),
             "unresolved",
         )
+
+    def test_status_and_issue_clearing_use_stored_attempt_evaluation(self) -> None:
+        selected = {"passed": False, "issues": [{"target": ["B0001"]}], "selected_for_output": True}
+        evaluations = [selected, {"passed": True, "issues": []}]
+
+        self.assertIs(stored_generation_evaluation(evaluations), selected)
+        self.assertEqual(generation_evaluation_status(evaluations), "unresolved")

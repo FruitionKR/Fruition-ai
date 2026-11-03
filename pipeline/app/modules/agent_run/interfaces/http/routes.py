@@ -160,6 +160,7 @@ def approve_agent_run(
             plan_version=payload.plan_version,
             operation_hash=payload.operation_hash,
             operation_ids=payload.operation_ids,
+            approved_by=payload.approved_by,
         )
     except AgentPlanSelectionInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

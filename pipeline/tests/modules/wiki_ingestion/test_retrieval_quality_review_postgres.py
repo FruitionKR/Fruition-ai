@@ -22,7 +22,7 @@ def _case(question: str, block: str, **overrides) -> dict:
     return {
         "question": question, "source_block_ids": [block], "passed": False, "gold_ref_hit": False,
         "contradictory_evidence_ranks": [], "missing_claims": [], "reason": f"{question} 이유",
-        "answerability": True, "evidence_recall": 1.0,
+        "answerability": True, "evidence_recall": 1.0, "source_alignment": 1.0,
         **GOOD_QUESTION, **overrides,
     }
 
@@ -62,7 +62,9 @@ def test_lint_classifies_failed_quality_cases_from_latest_runs(world: World) -> 
         _case("나쁜 질문", "B0001", standalone=False),
         _case("옛 근거", "B0001", gold_ref_hit=True, contradictory_evidence_ranks=[2]),
         _case("일부 누락", "B0001", gold_ref_hit=True, missing_claims=["빠진 주장"]),
-        _case("무관 근거", "B0001", gold_ref_hit=True, evidence_precision=0.4),
+        _case("출처 불일치", "B0001", gold_ref_hit=True, source_alignment=0.5),
+        # 예전 정밀도 기준으로만 떨어진 문항은 지금 통과 조건으로는 실패가 아니므로 보고하지 않는다.
+        _case("정밀도만 미달", "B0001", gold_ref_hit=True, evidence_precision=0.4),
         _case("통과", "B0001", passed=True, gold_ref_hit=True),
     ])
     # 다시 편입해 통과한 문서는 옛 실패를 보고하지 않는다.
@@ -80,7 +82,7 @@ def test_lint_classifies_failed_quality_cases_from_latest_runs(world: World) -> 
         ("나쁜 질문", "question"),
         ("옛 근거", "contradictory"),
         ("일부 누락", "incomplete"),
-        ("무관 근거", "imprecise"),
+        ("출처 불일치", "imprecise"),
     ]
     assert candidates[0]["gold_source_refs"] == ["doc-a:B0001"]
     assert candidates[4]["missing_claims"] == ["빠진 주장"]

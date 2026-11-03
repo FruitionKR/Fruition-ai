@@ -138,6 +138,32 @@ def test_full_approval_keeps_every_operation_pending(repositories) -> None:
     assert approval["operation_ids"] is None
 
 
+def test_approver_is_recorded_and_returned_with_the_plan(repositories) -> None:
+    runs, _, connect = repositories
+    run, plan = _awaiting_run(runs)
+
+    _, awaiting = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert awaiting.approved_by is None
+    runs.approve_and_enqueue(run, plan, "approval-1", "execution-job", approved_by="auto:user-setting")
+
+    _, approved = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert approved.approved_by == "auto:user-setting"
+    with connect() as conn:
+        approval = conn.execute("SELECT approved_by, user_id FROM agent_approvals WHERE id = 'approval-1'").fetchone()
+    # 자동 승인도 그 설정을 켠 사용자의 승인으로 남는다.
+    assert approval == {"approved_by": "auto:user-setting", "user_id": "user"}
+
+
+def test_manual_approval_is_reported_as_user(repositories) -> None:
+    runs, _, _ = repositories
+    run, plan = _awaiting_run(runs)
+
+    runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
+
+    _, approved = runs.get_current_plan_for_user("ws", "user", run.id)
+    assert approved.approved_by == "user"
+
+
 def test_target_folder_is_stored_and_returned_with_the_run(repositories) -> None:
     from app.modules.agent_run.interfaces.http.schemas import AgentRunResponse
 
@@ -239,3 +265,15 @@ def test_target_folder_only_plan_fails_once_with_out_of_scope_code(repositories)
         job = conn.execute("SELECT status, attempt_count FROM agent_jobs WHERE id = 'planning-job'").fetchone()
     assert (job["status"], job["attempt_count"]) == ("failed", 1)
     assert jobs.claim_next("worker-2") is None
+
+
+def test_revise_gives_the_new_plan_version_a_fresh_tool_budget(repositories) -> None:
+    runs, jobs, connect = repositories
+    run, _ = _awaiting_run(runs)
+    with connect() as conn:
+        conn.execute("UPDATE agent_runs SET tool_call_count = 40 WHERE id = %s", (run.id,))
+    assert jobs.remaining_tool_calls(run.id) == 0
+
+    runs.revise("ws", "user", run.id, "다시 정리", "planning-job-2")
+
+    assert jobs.remaining_tool_calls(run.id) == 40

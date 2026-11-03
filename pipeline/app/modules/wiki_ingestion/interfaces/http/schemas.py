@@ -43,23 +43,11 @@ class _PipelineRunBase(BaseModel):
     max_packet_chars: int = 7000
     overlap_blocks: int = 1
     model: str
-    concept_system_prompt: str = "prompts/concept_page_generation.system.md"
-    concept_resolution_system_prompt: str = "prompts/concept_resolution.system.md"
-    wiki_evaluator_system_prompt: str = "prompts/wiki_generation_evaluator.system.md"
-    existing_wiki_dir: str | None = None
     wiki_evaluation_loop: bool = True
     max_eval_attempts: int = 2
     save_debug_json: bool = Field(
         default=False,
         description="True이면 raw LLM output, packet, block_map 같은 디버그 JSON을 저장합니다.",
-    )
-    log_callback_url: str | None = Field(
-        default=None,
-        description="설정하면 pipeline.log 이벤트가 생길 때마다 이 URL로 JSON POST합니다.",
-    )
-    wait: bool = Field(
-        default=False,
-        description="True이면 요청 안에서 완료까지 기다립니다. False이면 백그라운드 실행 후 로그를 조회합니다.",
     )
     user_id: str | None = Field(
         default=None,
@@ -79,12 +67,7 @@ class _PipelineRunBase(BaseModel):
         return self
 
 class PipelineRunIn(_PipelineRunBase):
-    system_prompt: str = DOCUMENT_SEMANTIC_PROMPT
-
-
-class ReingestRunIn(_PipelineRunBase):
-    input_markdown: str
-    system_prompt: str = DOCUMENT_SEMANTIC_PROMPT
+    pass
 
 
 class ChatSourceBlockIn(BaseModel):
@@ -112,7 +95,6 @@ class ChatWikiRunIn(_PipelineRunBase):
         min_length=1,
         description="문답 단위 source block 목록입니다. 파이프라인은 Markdown을 다시 쪼개지 않고 이 목록을 그대로 씁니다.",
     )
-    chat_system_prompt: str = CHAT_SEMANTIC_PROMPT
 
 
 class PipelineRunOut(BaseModel):

@@ -1,7 +1,9 @@
 # 음성 대화·회의록 API
 
 AI 내부 API다. 호출 서비스는 로그인 사용자의 workspace 권한을 검증하고
-`X-Internal-Token`을 전달한다. AI에서도 Access의 workspace membership을 확인한다.
+`X-Internal-Token`을 전달한다. HTTP·WebSocket 음성 경로(`/speech/transcriptions`, `/speech/synthesis`,
+`/speech/transcriptions/live`)는 AI에서도 Access의 workspace membership을 다시 확인한다. Kafka command
+(`meeting_notes`, `meeting_transcription`)는 command를 발행한 document-svc가 권한을 확인하며 worker는 다시 묻지 않는다.
 모든 음성·회의록 요청(WebSocket 포함)은 선택 헤더 `X-Request-Id`(최대 128자)를 받아 사용량 원장의
 `run_id`로 쓴다. 없으면 `unattributed`로 기록한다([사용량 기록](tasks.md#모델별-사용량-조회)).
 브라우저에는 내부 토큰과 OpenAI API 키를 전달하지 않는다.
@@ -122,8 +124,10 @@ Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. `d
 `meeting_date`가 없으면 날짜는 "확인되지 않음"이다. 참석자는 `attendees`를 먼저 두고 전사에서 이름이 확인된 사람을
 중복 없이 덧붙이며, 둘 다 없으면 "확인되지 않음"이다.
 
-`provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 지원하지 않는
-provider/model이거나 빠지면 `MEETING_NOTES_INPUT_REJECTED`, 해당 provider의 API 키가 없으면 `MEETING_NOTES_UNAVAILABLE`로 실패한다.
+`provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 빠지거나 알 수 없는 provider이거나
+허용 목록 안의 model이 provider 계열과 맞지 않으면(예: `openai` + `gemini-3.5-flash-lite`) `MEETING_NOTES_INPUT_REJECTED`다.
+워크스페이스 모델로 쓸 수 없는 값(`claude` provider, 허용 목록 밖 model)은 계열이 맞지 않아도 실패하지 않고 경고 로그를 남긴 뒤 워크스페이스 기본 모델(`gemini`/`gemini-3.5-flash-lite`)로
+대체한다(`resolve_workspace_llm_selection`). 해당 provider의 API 키가 없으면 `MEETING_NOTES_UNAVAILABLE`로 실패한다.
 
 회의 녹음 종료 후 확정 전사를 발화 순서대로 전달한다. 구간 ID는 중복 없는 영문·숫자·`_`·`-`,
 최대 128자다. 최대 1,000구간, 구간별 10,000자, 전체 100,000자다. 초과하면
@@ -320,20 +324,20 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 
 ### `POST /speech/transcriptions`
 
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechTranscriptionClient.java`:31-38 (공개 `POST /api/workspaces/{workspace_id}/speech/transcriptions` 중계), 그리고 회의 녹음 파일 전사 worker `src/main/java/fruition/core/meeting/MeetingTranscriptionWorker.java`:69-72. 둘 다 `app.speech.transcription-endpoint`를 쓴다.
-- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:40), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechTranscriptionClient.java`:43-53 (공개 `POST /api/workspaces/{workspace_id}/speech/transcriptions` 중계, `app.speech.transcription-endpoint`, `deadline_seconds=100`). 회의 녹음 파일은 이 route를 쓰지 않고 `src/main/java/fruition/core/meeting/MeetingTranscriptionService.java`:62-64가 [`meeting_transcription` command](#회의-녹음-전사)로 보낸다.
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:60), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — 호출하는 화면이 없다.
 
 ### `POST /speech/synthesis`
 
-- 인바운드 호출자: Fruition-document가 `POST /api/workspaces/{workspace_id}/speech/synthesis`로 이 스트림을 그대로 중계한다(Fruition-document#113). 호출자가 연결을 닫으면 위 중지 규칙이 적용된다.
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechSynthesisClient.java`:56-72 (`app.speech.synthesis-endpoint`, `X-Internal-Token`)가 부르고, 공개 `POST /api/workspaces/{workspace_id}/speech/synthesis`로 이 스트림을 그대로 중계한다. 호출자가 연결을 닫으면 위 중지 규칙이 적용된다.
 - 아웃바운드 호출: OpenAI Realtime `wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`), access-svc 권한 확인.
 - 미연동 표시: 서비스 간 연결됨(document 중계, Fruition-document#113). **프런트엔드 재생은 별도 확인 필요.**
 
 ### `WS /speech/transcriptions/live`
 
-- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingLiveHandler.java`:146-152. JDK `HttpClient.newWebSocketBuilder`로 `app.speech.live-endpoint`에 `X-Internal-Token`을 붙여 접속하고, 사용자 쪽은 `/api/meetings/{meetingId}/live`로 받는다.
-- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:97), access-svc 권한 확인.
+- 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingLiveHandler.java`:201-206. JDK `HttpClient.newWebSocketBuilder`로 `app.speech.live-endpoint`에 `X-Internal-Token`을 붙여 접속하고, 사용자 쪽은 `/api/meetings/{meetingId}/live`로 받는다.
+- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:197), access-svc 권한 확인.
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — WebSocket을 여는 코드가 없다.
 
 ### Kafka `ai.maintenance.command` `kind: meeting_notes`

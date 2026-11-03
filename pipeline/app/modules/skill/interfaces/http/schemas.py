@@ -317,6 +317,8 @@ class SkillTestRunDefinitionRequest(BaseModel):
     instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
     # allowed_tools는 받지 않는다. 안전 검토에 쓰는 Tool 목록은 capabilities로 계산한다.
     capabilities: list[CapabilityValue] = Field(..., min_length=1)
+    # 생성 Skill이 고른 문서를 원문으로 읽을지. 생략하면 게시와 같은 규칙(`{문서}`)으로 정하고, 정할 수 없으면 읽지 않는다.
+    requires_source: bool | None = None
 
 
 class SkillTestRunDocumentRequest(BaseModel):

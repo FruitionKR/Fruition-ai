@@ -236,6 +236,7 @@ def run_skill_test(payload: SkillTestRunRequest, request_id: RequestId = None) -
                 if target is not None
                 else None
             ),
+            requires_source=definition.requires_source,
         )
         return SkillTestRunResponse.from_domain(result).model_dump(mode="json")
 

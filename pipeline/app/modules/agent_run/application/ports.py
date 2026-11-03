@@ -50,8 +50,10 @@ class AgentApprovalRepositoryPort(Protocol):
         approval_id: str,
         job_id: str,
         selected_operation_ids: tuple[str, ...] | None = None,
+        approved_by: str = "user",
     ) -> AgentRun:
-        """selected_operation_ids가 있으면 나머지 작업을 not_selected로 건너뛴다. None이면 전체 실행이다."""
+        """selected_operation_ids가 있으면 나머지 작업을 not_selected로 건너뛴다. None이면 전체 실행이다.
+        approved_by는 승인 기록에 남기는 승인 주체다("user" 또는 "auto:user-setting")."""
         ...
 
 
@@ -162,6 +164,12 @@ class AgentPlanGeneratorPort(Protocol):
         content_artifacts: tuple[ContentArtifactReference, ...] = (),
         target_folder_id: str | None = None,
     ) -> AgentPlan:
+        ...
+
+
+class PlanReadyNotifierPort(Protocol):
+    def notify_plan_ready(self, *, run_id: str, workspace_id: str, user_id: str) -> None:
+        """계획이 승인 대기에 들어갔음을 document-svc에 알린다. 사용자의 자동 승인 설정은 document-svc가 판단한다."""
         ...
 
 

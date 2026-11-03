@@ -396,7 +396,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 1. capability가 `folder-organize`를 포함하면 LLM 호출 없이 `400 {"detail": {"code": "test_run_unsupported"}}`입니다.
 2. 게시(`skill_publish`)와 같은 안전 검토(`AuthorSkillUseCase.execute(... authoring_mode="preserve")`, Tool 목록은 `capabilities`로 계산)를 먼저 거칩니다. 막히면 편집 LLM을 부르지 않고 `200 {"status": "blocked", "changes": [], "issues": [...]}`를 돌려줍니다(`issues`는 `/skills/tasks` 작성의 `blocked`와 같은 형식).
 3. `document-edit`를 가진 Skill은 Agent `markdown_edit`와 같은 `GenerateMarkdownEditUseCase`에 검토된 초안 지침을 `skill_instructions`로 넣어 편집안을 만들고, 편집이 닿은 섹션을 `changes`, 닿지 않은 섹션 제목을 `untouched_sections`, 적용한 전체 본문을 `result_markdown`으로 돌려줍니다.
-4. 문서 생성형(`document-create`·`template`, `document-edit` 없음)은 고른 문서를 참고 자료로 새 문서를 만들어 `result_markdown`만 돌려줍니다(`changes`는 빈 배열).
+4. 문서 생성형(`document-create`·`template`, `document-edit` 없음)은 새 문서를 만들어 `result_markdown`만 돌려줍니다(`changes`는 빈 배열). 고른 문서를 원문(`reference_context.source_document`)으로 읽는 것은 원문 필요 여부가 true일 때뿐입니다. 게시와 같은 순서로 정합니다: `definition.requires_source` 명시값 → 지침의 `{문서}` 규칙(template은 `{문서}`가 없으면 false) → 정할 수 없으면 false.
 
 모델은 요청의 `provider`·`model`이며 워크스페이스 모델 정책(`AI_ALLOWED_LLM_MODELS`, Claude 불가)을 벗어나면 워크스페이스 기본 모델로 대체합니다(게시와 같음).
 
@@ -409,7 +409,7 @@ Skill 작성·게시·수정을 작업 ID로 기록하고 취소 시 게시 전 
 | 위치 | 이름 | 타입 | 필수 | 설명 |
 |---|---|---|---|---|
 | header | `X-Request-Id` | `string` | 예 | 사용량 원장 `run_id`이자 작업 journal `run_id`(`kind=skill_test_run`) |
-| body | `definition` | object | 예 | `name`, `description`, `instructions_markdown`, `capabilities`. `allowed_tools`는 받지 않습니다(`422`). |
+| body | `definition` | object | 예 | `name`, `description`, `instructions_markdown`, `capabilities`, 선택 `requires_source`(bool, 생성 Skill이 고른 문서를 원문으로 읽을지. 생략하면 규칙으로 정함). `allowed_tools` 등 그 밖의 필드는 받지 않습니다(`422`). |
 | body | `document` | object | 예 | `document_id`, `base_version`, `markdown` |
 | body | `target` | object | 아니오 | `selection`·`current_section`·`whole_document`, 1-based `start_line`·`end_line`. 생략하면 문서 전체. 줄 범위를 벗어나면 LLM 호출 전 `400` |
 

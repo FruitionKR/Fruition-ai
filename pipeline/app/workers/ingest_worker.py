@@ -1,7 +1,7 @@
 """ingest command Kafka worker.
 
 backend가 `ai.ingest.command` topic에 발행한 문서/채팅 Wiki ingest 명령을 소비해
-기존 HTTP 실행 경로(`_run_pipeline_request`)를 그대로 재사용한다.
+`_run_pipeline_request`로 실행한다.
 
 동시성 모델:
 - 같은 document_id는 같은 partition → 문서별 순서 보장, 문서 간 병렬.
@@ -100,7 +100,6 @@ def _build_payload(command: dict) -> PipelineRunIn | ChatWikiRunIn:
             "display_name": command.get("display_name"),
             "model": str(command["model"]).strip(),
             "provider": str(command.get("provider") or "").strip(),
-            "wait": True,
         }
         if command.get("kind") == "chat_wiki":
             return ChatWikiRunIn(
@@ -276,7 +275,6 @@ def _handle(command: dict) -> dict:
     try:
         response = _run_pipeline_request(
             payload,
-            background_tasks=None,
             use_case=get_deferred_pipeline_run_use_case(),
             repository=repository,
             source_reader=get_pipeline_source_reader(),

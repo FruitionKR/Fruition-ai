@@ -22,6 +22,7 @@ from app.modules.agent_run.application.ports import (
     AgentPlanRepositoryPort,
     AgentToolGatewayPort,
     FolderContentReaderPort,
+    PlanReadyNotifierPort,
     ToolGatewayError,
 )
 from app.modules.agent_run.domain.entities import (
@@ -76,8 +77,10 @@ class AgentWorker:
         plan_generator: AgentPlanGeneratorPort | None,
         checkpointer: BaseCheckpointSaver[str] | None = None,
         folder_content_reader: FolderContentReaderPort | None = None,
+        plan_ready_notifier: PlanReadyNotifierPort | None = None,
     ) -> None:
         self._repository = repository
+        self._plan_ready_notifier = plan_ready_notifier
         self._folder_content_reader = folder_content_reader
         self._run_repository = run_repository
         self._tool_gateway = tool_gateway
@@ -93,10 +96,12 @@ class AgentWorker:
             daemon=True,
         )
         heartbeat.start()
+        completed = False
         try:
             with self._execution_lock(job):
                 self._run_job(job)
             self._repository.complete(job)
+            completed = True
         except Exception as exc:
             code = failure_code(exc)
             logger.error(
@@ -111,6 +116,33 @@ class AgentWorker:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
+        # 실행 잠금을 풀고 job을 끝낸 뒤 알린다. 승인 대기 interrupt가 checkpoint에 남은 뒤라야
+        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있다.
+        if completed and job.job_type == "planning":
+            self._notify_plan_ready(job.run_id)
+
+    def _notify_plan_ready(self, run_id: str) -> None:
+        """계획이 승인 대기에 들어갔으면 document-svc에 알려 사용자의 자동 승인 설정을 적용하게 한다.
+
+        승인 여부는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 정한다. 알림이 실패해도 계획은 승인 대기로
+        남아 사용자가 직접 승인할 수 있고(화면 조회 때 document-svc가 다시 판단한다), job 결과는 바꾸지 않는다.
+        """
+        if self._plan_ready_notifier is None:
+            return
+        try:
+            run = self._repository.load_context(run_id).run
+            if run.status != "awaiting_approval":
+                return
+            self._plan_ready_notifier.notify_plan_ready(
+                run_id=run.id, workspace_id=run.workspace_id, user_id=run.user_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "Agent 계획 승인 대기 알림 실패(수동 승인으로 남김): run_id=%s type=%s detail=%s",
+                run_id,
+                type(exc).__name__,
+                _failure_detail(exc),
+            )
 
     def _execution_lock(self, job: AgentJob):
         """실행 중인 run과 같은 run을 동시에 진행하지 않게 잠근다.
@@ -684,7 +716,7 @@ class AgentWorker:
         if not target_id:
             return False
         if operation.tool_name == "apply_document_edit":
-            current = self._read_tool(context, "get_document_content", {"document_id": target_id})
+            current = self._read_tool(context, "get_document_content", {"document_id": target_id}, budgeted=False)
             expected_version = response.get("current_version")
             expected_hash = response.get("content_hash")
             return (
@@ -696,7 +728,7 @@ class AgentWorker:
                 and current.get("content_hash") == expected_hash
             )
         if operation.target_type == "document" and operation.tool_name == "rename_document":
-            current = self._read_tool(context, "get_document_metadata", {"document_id": target_id})
+            current = self._read_tool(context, "get_document_metadata", {"document_id": target_id}, budgeted=False)
             return _response_name(current) == _response_name(response)
         expected_name = _response_name(response)
         if operation.tool_name in {"create_folder", "create_document"}:
@@ -718,7 +750,7 @@ class AgentWorker:
             )
         tool_name = "list_root_items" if parent_id is None else "list_folder_children"
         arguments = {} if parent_id is None else {"folder_id": str(parent_id)}
-        current = self._read_tool(context, tool_name, arguments)
+        current = self._read_tool(context, tool_name, arguments, budgeted=False)
         items = current.get("items", [])
         return isinstance(items, list) and any(
             isinstance(item, dict)
@@ -732,10 +764,13 @@ class AgentWorker:
         context: AgentRunContext,
         tool_name: str,
         arguments: dict[str, object],
+        *,
+        budgeted: bool = True,
     ) -> dict[str, object]:
         if context.run.skill_version_id is not None and tool_name not in context.allowed_tools:
             raise ValueError("Selected Skill does not allow the required read tool.")
-        if not self._repository.reserve_tool_call(context.run.id):
+        # 실행 후 검증 읽기는 시스템이 성공한 operation 수만큼만 하므로 Tool 예산을 쓰지 않는다.
+        if budgeted and not self._repository.reserve_tool_call(context.run.id):
             raise ValueError("AgentRun tool call limit exceeded.")
         return self._tool_gateway.read(
             tool_name,
