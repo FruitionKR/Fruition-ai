@@ -33,6 +33,8 @@ class RestoreDocumentCommand:
     heron_model: Path | None = None
     pdfium_library: Path | None = None
     body_ai_budget: float = 0.3
+    # 참일 때만 crop-first 그림을 공급사로 보내 대체 텍스트·설명을 붙인다.
+    describe_figures: bool = False
 
 
 @dataclass(frozen=True)

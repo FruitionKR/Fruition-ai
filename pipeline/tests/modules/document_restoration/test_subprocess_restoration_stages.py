@@ -162,6 +162,38 @@ class SubprocessDocumentRestorationStagesTest(unittest.TestCase):
         )
         self.assertEqual(args[args.index("--max-workers") + 1], "8")
 
+    def test_describe_figures_stage_uses_repair_provider_configuration(self) -> None:
+        command = RestoreDocumentCommand(
+            pdf_file=Path("paper.pdf"),
+            output_dir=Path("output"),
+            document_slug="paper",
+            selective_provider="gemini",
+            selective_model="gemini-3.5-flash-lite",
+            selective_max_workers=8,
+            describe_figures=True,
+        )
+        prepared = PreparedRestoration(
+            pdf_file=Path("output/paper.pdf"),
+            docling_json=Path("output/docling.json"),
+            docling_markdown=Path("output/docling.md"),
+            manifest_file=Path("output/manifest.json"),
+        )
+
+        with mock.patch("subprocess.run") as run:
+            SubprocessDocumentRestorationStages().run_stage(
+                RestorationStage.DESCRIBE_FIGURES_WITH_PROVIDER, command, prepared
+            )
+
+        args = run.call_args.args[0]
+        self.assertIn(
+            "app.modules.document_restoration.infrastructure.describe_figures_with_provider",
+            args,
+        )
+        self.assertEqual(args[args.index("--manifest-file") + 1], "output/manifest.json")
+        self.assertEqual(args[args.index("--provider") + 1], "gemini")
+        self.assertEqual(args[args.index("--model") + 1], "gemini-3.5-flash-lite")
+        self.assertEqual(args[args.index("--max-workers") + 1], "8")
+
     def test_detected_markdown_ignores_stale_recovery_results(self) -> None:
         command = RestoreDocumentCommand(
             pdf_file=Path("paper.pdf"),

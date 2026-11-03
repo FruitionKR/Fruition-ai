@@ -48,7 +48,7 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 {"run_id": "convert:<document_id>:<start_page>", "parent_run_id": "convert:<document_id>", "kind": "convert_batch",
  "workspace_id": "ws_...", "user_id": "...", "document_id": "<placeholder 문서 id>",
  "source_key": "sources/documents/<document_id>/original", "start_page": 0, "page_count": 10,
- "provider": "gemini", "model": "..."}
+ "provider": "gemini", "model": "...", "describe_figures": false}
 ```
 
 | 필드 | 규칙 |
@@ -58,6 +58,7 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 | `source_key` | object storage의 원본 PDF key. `sources/documents/{id}/original` 형식만 받는다(`s3://` 불가). converter가 범위 읽기로 직접 읽는다 |
 | `start_page` | 0부터. 전체 쪽수 이상이면 `input_rejected` |
 | `page_count` | 1~50. 전체 쪽수를 넘는 끝은 마지막 쪽으로 줄인다 |
+| `describe_figures` | 선택, boolean(기본 `false`, bool이 아니면 `input_rejected`). `true`일 때만 잘라낸 그림을 repair와 같은 공급사·모델로 보내 대체 텍스트(80자 이하)와 `> 그림 설명: …`을 붙인다. 한 변이 48pt 미만인 그림은 보내지 않고, batch(시도)당 50장까지, 호출당 60초·출력 1024토큰 제한이다. 실패한 그림은 그대로 둔다. 사용량은 `document_conversion`으로 기록한다 |
 
 성공 이벤트(`status: succeeded`, key = `run_id`, 원본 command `request`는 싣지 않는다)의 `payload`:
 
@@ -67,6 +68,8 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 | `page_start`, `page_end` | 실제 변환한 쪽(1부터, 끝 포함) |
 | `total_pages` | 원본 PDF의 전체 쪽수 |
 | `result_key` | `tmp/convert/{workspace_id}/{document_id}/{start_page}.md`. UTF-8 Markdown이며 이미지는 `data:` URI로 포함한다. document가 읽은 뒤 쓰지 않는 object는 lifecycle이 지운다 |
+| `restoration_summary` | `{"broken_pages": int, "repaired_pages": int, "fallback_pages": [{"page": int, "reason": "<code>", "causes": ["<code>"]}]}`. 본문이 깨진 쪽 수, 그중 AI 복원을 쓴 쪽 수, 원문 텍스트로 대신한 쪽(원본 문서 기준 1부터). `reason`은 `font_mapping`·`replacement_character`·`token_mismatch`·`extract_failed`·`repair_rejected`·`provider_error` 중 하나로, AI 복원이 거부·실패했으면 그 코드, 아니면 첫 깨짐 원인이다. `causes`는 모든 코드다. 해당 쪽 Markdown에는 `> ⚠️ 이 페이지는 원문 텍스트로 대신했어요. (이유: …)` 안내가 들어간다. 문서 내용은 싣지 않는다 |
+| `figure_descriptions` | `{"requested": bool, "described": int, "failed": int, "skipped": int}`. `requested`는 command의 `describe_figures`다 |
 
 실패 이벤트(`status: failed`)의 `error`는 위 [실패 코드](#실패-코드-계약)의 공통 코드다: 암호·손상 PDF, 범위·`source_key` 위반은 `input_rejected`, 전체 마감(`CONVERT_BATCH_DEADLINE_SECONDS`, 기본 7200초) 초과는 `deadline_exceeded`, 취소는 `cancelled`, 그 외는 `internal_error`. 예외 원문은 싣지 않는다.
 

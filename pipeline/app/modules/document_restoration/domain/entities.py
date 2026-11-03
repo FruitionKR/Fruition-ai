@@ -11,6 +11,7 @@ class RestorationMode(str, Enum):
 class RestorationStage(str, Enum):
     PREPARE_CROP_FIRST = "prepare_crop_first_with_anydoc"
     ASSEMBLE_CROP_FIRST = "assemble_crop_first_markdown"
+    DESCRIBE_FIGURES_WITH_PROVIDER = "describe_figures_with_provider"
     DOCLING_BASELINE = "docling_baseline"
     PUBLISH_DOCLING_MARKDOWN = "publish_docling_markdown"
     DETECT_LAYOUT_BLOCKS = "detect_layout_blocks"
