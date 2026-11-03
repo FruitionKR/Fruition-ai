@@ -209,6 +209,7 @@ def _normalized_by_window(
                 for index in targets:
                     if index in anchored or not anchors:
                         continue
+                    # ponytail: 개념의 근거 블록을 크기 제한 없이 덧붙여 120,000자를 넘을 수 있다. 넘치면 뒷받침 주장 근처 블록만 덧붙인다.
                     window_blocks[index] += [
                         block
                         for window in windows
