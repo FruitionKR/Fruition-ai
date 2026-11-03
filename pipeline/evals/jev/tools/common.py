@@ -6,8 +6,26 @@ import time
 from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parents[1]
-HAIKU = ("claude", "claude-haiku-4-5-20251001")
+# 모든 평가의 LLM. 모델이 섞이면 결과를 한 모델 기준으로 보고할 수 없다.
+EVAL_MODEL = ("openai", "gpt-6-luna")
 RUNS = 3
+# 채점자. 실험 모델(gpt-6-luna)과 다른 모델이 판정한다.
+JUDGE_MODEL = "claude-opus-5-5"
+
+
+def judge(prompt: str, schema: dict, cwd: Path, timeout: int, tools: str = "") -> dict:
+    """Claude Code 헤드리스(`claude -p`)로 채점하고 JSON 스키마에 맞는 결과를 돌려준다. tools가 비면 도구 없이 판정한다."""
+    import subprocess
+
+    proc = subprocess.run(
+        ["claude", "-p", prompt, "--model", JUDGE_MODEL, "--output-format", "json", "--json-schema", json.dumps(schema),
+         "--tools", tools, "--no-session-persistence"],
+        # stdin이 열려 있으면 추가 입력을 기다리며 멈춘다.
+        check=True, cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout,
+    )
+    result = json.loads(proc.stdout)
+    assert not result.get("is_error") and result.get("structured_output"), f"채점 실패: {result.get('result', '')[:200]}"
+    return result["structured_output"]
 
 
 def verify_gold() -> dict:

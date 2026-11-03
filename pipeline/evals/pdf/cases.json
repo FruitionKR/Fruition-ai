@@ -1,0 +1,206 @@
+[
+ {
+  "id": "ko-law-publicdata",
+  "type": "text",
+  "file": "ko-law-publicdata.pdf",
+  "title": "공공데이터의 제공 및 이용 활성화에 관한 법률 (법률 제21392호, 2026.8.28 시행)",
+  "language": "ko",
+  "source_url": "https://www.law.go.kr/법령/공공데이터의제공및이용활성화에관한법률 (PDF: POST https://www.law.go.kr/LSW/lsPdfPrint.do, lsiSeq=283737)",
+  "license": "Korean statute — not protected (저작권법 제7조 제1호)",
+  "license_evidence_url": "https://www.law.go.kr/법령/저작권법/제7조",
+  "original_pages": "1-8",
+  "original_sha256": "e8ac5edfde1c2830932203aaa97cb867156badfaecf92636139ba0b768c3c9c0"
+ },
+ {
+  "id": "ko-ai-ethics-principles",
+  "type": "text",
+  "file": "ko-ai-ethics-principles.pdf",
+  "title": "대한민국 인공지능 윤리원칙 (관계부처 합동, 2026.8.21)",
+  "language": "ko",
+  "source_url": "https://www.korea.kr/common/download.do?tblKey=EDN&fileId=198561423",
+  "license": "KOGL Type 1 (공공누리 제1유형)",
+  "license_evidence_url": "https://www.korea.kr/archive/expDocView.do?docId=41882",
+  "original_pages": "3-10",
+  "original_sha256": "6e804825267bf809405f221226017c11b3f22ad8c79fac8f60ab236fbb27b78f"
+ },
+ {
+  "id": "en-crs-r49495",
+  "type": "text",
+  "file": "en-crs-r49495.pdf",
+  "title": "Decommissioning Offshore Oil and Gas Infrastructure: Issues for Congress (CRS R49495, 2026-10-29)",
+  "language": "en",
+  "source_url": "https://www.everycrsreport.com/files/2026-10-29_R49495_4a682cd382ab0486b29c0fdc8bcd7bc345e64924.pdf",
+  "license": "Public domain (US Government work)",
+  "license_evidence_url": "https://www.everycrsreport.com/reports/R49495.html",
+  "original_pages": "4-11",
+  "original_sha256": "bd73c586c3967c514a034577657230fa04d12000430925b66e73a4f67746fc51"
+ },
+ {
+  "id": "arxiv-2309.02706",
+  "type": "table",
+  "file": "arxiv-2309.02706.pdf",
+  "title": "HAE-RAE Bench: Evaluation of Korean Knowledge in Language Models",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2309.02706v5",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2309.02706v5",
+  "original_pages": "1-8",
+  "notes": "표가 많은 논문. 본문 안의 결과·데이터 표를 평가한다",
+  "original_sha256": "7d40899f37e312f1f1b9d7cbf0711535e2c463da0938613ae30dd9e4bcdf3261"
+ },
+ {
+  "id": "arxiv-2109.04650",
+  "type": "table",
+  "file": "arxiv-2109.04650.pdf",
+  "title": "What Changes Can Large-scale Language Models Bring? Intensive Study on HyperCLOVA",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2109.04650v2",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2109.04650v2",
+  "original_pages": "1-8",
+  "notes": "표가 많은 논문. 본문 안의 결과·데이터 표를 평가한다",
+  "original_sha256": "6bc9354cea55f12d8194e6d828efe27596a9a9d41e2821d9bdd4ae989e4e87d1"
+ },
+ {
+  "id": "arxiv-2404.01954",
+  "type": "table",
+  "file": "arxiv-2404.01954.pdf",
+  "title": "HyperCLOVA X Technical Report",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2404.01954v2",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2404.01954v2",
+  "original_pages": "10-17",
+  "notes": "표가 많은 논문. 본문 안의 결과·데이터 표를 평가한다",
+  "original_sha256": "52111c1f4bd346d89ccf184cd8e3f2b6f1930511e131da6737ca40312cfcd4e7"
+ },
+ {
+  "id": "arxiv-2301.12597",
+  "type": "multicolumn",
+  "file": "arxiv-2301.12597.pdf",
+  "title": "BLIP-2: Bootstrapping Language-Image Pre-training with Frozen Image Encoders and Large Language Models",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2301.12597v3",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2301.12597v3",
+  "original_pages": "1-8",
+  "original_sha256": "6bc5d399d6127a64ace5167a2f0c00112a49725d2475d80322dbf0083f139e80"
+ },
+ {
+  "id": "arxiv-2204.04541",
+  "type": "multicolumn",
+  "file": "arxiv-2204.04541.pdf",
+  "title": "KOBEST: Korean Balanced Evaluation of Significant Tasks",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2204.04541v1",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2204.04541v1",
+  "original_pages": "1-8",
+  "original_sha256": "131f962b6f9b8371a88496dba834d789e3914285ed07efc0e7165aa9b9599bbc"
+ },
+ {
+  "id": "arxiv-2403.06412",
+  "type": "multicolumn",
+  "file": "arxiv-2403.06412.pdf",
+  "title": "CLIcK: A Benchmark Dataset of Cultural and Linguistic Intelligence in Korean",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2403.06412v4",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2403.06412v4",
+  "original_pages": "1-8",
+  "original_sha256": "a4e9b47084c7abee5b631c37def95e8a25ca102533efe0e08c3913e811bd0ce2"
+ },
+ {
+  "id": "ko-law-publicdata-rasterized",
+  "type": "scan",
+  "file": "ko-law-publicdata-rasterized.pdf",
+  "title": "공공데이터의 제공 및 이용 활성화에 관한 법률 9~11쪽을 200dpi 흑백 이미지로 바꾼 스캔 재현본",
+  "language": "ko",
+  "source_url": "https://www.law.go.kr/법령/공공데이터의제공및이용활성화에관한법률 (PDF: POST https://www.law.go.kr/LSW/lsPdfPrint.do, lsiSeq=283737)",
+  "license": "법령, 저작권법 제7조",
+  "license_evidence_url": "https://www.law.go.kr/법령/저작권법/제7조",
+  "original_pages": "9-11",
+  "notes": "실제 스캔이 아니라 텍스트 레이어 없는 이미지로 재현했다",
+  "original_sha256": "e8ac5edfde1c2830932203aaa97cb867156badfaecf92636139ba0b768c3c9c0",
+  "derivation": {
+   "rasterize": {
+    "dpi": 200,
+    "jpeg_quality": 70
+   }
+  }
+ },
+ {
+  "id": "ko-ai-ethics-scanned",
+  "type": "scan",
+  "file": "ko-ai-ethics-scanned.pdf",
+  "title": "대한민국 인공지능 윤리원칙 16~19쪽을 200dpi 흑백 JPEG(압축 품질 55) 이미지로 바꾼 스캔 재현본",
+  "language": "ko",
+  "source_url": "https://www.korea.kr/common/download.do?tblKey=EDN&fileId=198561423",
+  "license": "KOGL Type 1 (공공누리 제1유형)",
+  "license_evidence_url": "https://www.korea.kr/archive/expDocView.do?docId=41882",
+  "original_pages": "16-19",
+  "notes": "실제 스캔이 아니라 텍스트 레이어 없는 이미지로 재현했다",
+  "original_sha256": "6e804825267bf809405f221226017c11b3f22ad8c79fac8f60ab236fbb27b78f",
+  "derivation": {
+   "rasterize": {
+    "dpi": 200,
+    "jpeg_quality": 55
+   }
+  }
+ },
+ {
+  "id": "en-usace-admixtures-1978",
+  "type": "scan",
+  "file": "en-usace-admixtures-1978.pdf",
+  "title": "Investigation of Proprietary Admixtures, Report 2: 1977-1978 Tests (US Army Corps of Engineers Technical Report C-77-1)",
+  "language": "en",
+  "source_url": "https://commons.wikimedia.org/w/index.php?search=Investigation+of+proprietary+admixtures+Report+2",
+  "license": "미국 연방정부 저작물(Public domain)",
+  "license_evidence_url": "https://www.usa.gov/government-copyright",
+  "original_pages": "8-13",
+  "notes": "타자 보고서의 실제 스캔. 원본 PDF의 OCR 글자층은 버리고 스캔 이미지만 남겼다",
+  "original_sha256": "cc17c725a3fba7ec48566b816d3a6a67ba1a3c9cc91364a7fcd53726e343c247",
+  "derivation": {
+   "rasterize": {
+    "dpi": 200,
+    "jpeg_quality": 75
+   }
+  }
+ },
+ {
+  "id": "arxiv-2401.01325",
+  "type": "mixed",
+  "file": "arxiv-2401.01325.pdf",
+  "title": "LLM Maybe LongLM: SelfExtend LLM Context Window Without Tuning",
+  "language": "en",
+  "source_url": "https://arxiv.org/pdf/2401.01325v3",
+  "license": "CC BY 4.0",
+  "license_evidence_url": "https://arxiv.org/abs/2401.01325v3",
+  "original_pages": "2-9",
+  "original_sha256": "862899506d78fcd547e4c634b30859926b8dfb40c5136053f0472648bb0a0d3a"
+ },
+ {
+  "id": "ko-kedi-school-complex-2026",
+  "type": "mixed",
+  "file": "ko-kedi-school-complex-2026.pdf",
+  "title": "데이터로 읽는 우리 교육 2026 Vol.13 — 학교복합시설, 더 넓게 더 가까이 (교육부·한국교육개발원)",
+  "language": "ko",
+  "source_url": "https://www.korea.kr/common/download.do?tblKey=EDN&fileId=198547382",
+  "license": "KOGL Type 1 (공공누리 제1유형, 텍스트 한정)",
+  "license_evidence_url": "https://www.korea.kr/archive/expDocView.do?docId=41858",
+  "original_pages": "1-10",
+  "original_sha256": "64f1da645ec79b7e4cb431b91989c859cd31f1e9633ea74a54f3b153f2318641"
+ },
+ {
+  "id": "ko-moef-greenbook-2610",
+  "type": "mixed",
+  "file": "ko-moef-greenbook-2610.pdf",
+  "title": "최근 경제동향 2026.10 (그린북, 재정경제부)",
+  "language": "ko",
+  "source_url": "https://www.korea.kr/common/download.do?tblKey=EDN&fileId=198572110",
+  "license": "KOGL Type 1 (공공누리 제1유형, 텍스트 한정)",
+  "license_evidence_url": "https://www.korea.kr/archive/expDocView.do?docId=41913",
+  "original_pages": "8-15",
+  "original_sha256": "4a81b33b12eab40251dd30565a6ba476b04c5ecf351f5223e5e158420affc75d"
+ }
+]

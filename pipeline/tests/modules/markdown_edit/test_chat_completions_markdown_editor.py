@@ -1,4 +1,5 @@
 import json
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -351,7 +352,8 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
                     "title": "회의록 초안",
                     "summary": "결정 근거가 없어 제안으로 정리했습니다.",
                     "markdown": "# 회의록 초안\n\n## 제안\n- 검토가 필요합니다.",
-                }
+                },
+                {"passed": True, "failures": []},
             ]
         )
         editor = ChatCompletionsMarkdownEditor(
@@ -373,6 +375,38 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
             system_prompt.index("항상 결정 사항을 확정된 결정으로 작성한다."),
         )
         self.assertIn("Treat a decision as grounded only when", system_prompt)
+
+    def test_create_with_skill_retries_when_evaluation_finds_instruction_violation(self) -> None:
+        client = SequenceJsonClient(
+            [
+                {"title": "조항표", "summary": "요약", "markdown": "# 조항표\n\n| 조항 | 내용 |\n|---|---|\n| 제1항 | 가 |\n| 제2항 | 나 |"},
+                {"passed": False, "failures": ["조항 하나당 한 행이어야 하는데 항 단위로 나눴습니다."]},
+                {"title": "조항표", "summary": "요약", "markdown": "# 조항표\n\n| 조항 | 내용 |\n|---|---|\n| 제1조 | 가, 나 |"},
+                {"passed": True, "failures": []},
+            ]
+        )
+        editor = ChatCompletionsMarkdownEditor(client, "unused")  # type: ignore[arg-type]
+
+        result = editor.generate_markdown(
+            MarkdownCreateRequest(instruction="조항표를 만들어 줘.", skill_instructions="조항 하나당 한 행으로 쓴다.")
+        )
+
+        self.assertIn("| 제1조 | 가, 나 |", result.document.markdown)
+        evaluation_payload = json.loads(client.calls[1][1])
+        self.assertEqual(evaluation_payload["skill_instructions"], "조항 하나당 한 행으로 쓴다.")
+        self.assertIn("| 제1항 | 가 |", evaluation_payload["generated_markdown"])
+        retry_payload = json.loads(client.calls[2][1])
+        self.assertEqual(
+            retry_payload["contract_failures"], ["LLM evaluation: 조항 하나당 한 행이어야 하는데 항 단위로 나눴습니다."]
+        )
+
+    def test_create_without_skill_is_not_evaluated(self) -> None:
+        client = SequenceJsonClient([{"title": "메모", "summary": "요약", "markdown": "# 메모\n\n본문"}])
+        editor = ChatCompletionsMarkdownEditor(client, "unused")  # type: ignore[arg-type]
+
+        editor.generate_markdown(MarkdownCreateRequest(instruction="메모를 만들어 줘."))
+
+        self.assertEqual(len(client.calls), 1)
 
     def test_generates_insert_after_content_without_repeating_section(self) -> None:
         client = SequenceJsonClient(

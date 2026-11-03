@@ -1,7 +1,7 @@
 """개념 병합 Jev 켬/끔 비교. 기존 개념 58개 + 새 개념 1개로 운영 판정기를 부르고, 운영 정규화를 거친 결정을 채점한다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_concept.py [--dry-run] [--limit N]
-- 끔: LLM 병합(Haiku). 운영 편입 단계는 Claude를 쓰지 않으니 평가 전용 구성이다.
+- 끔: LLM 병합(평가 모델). 운영 편입 단계는 Claude를 쓰지 않으니 평가 전용 구성이다.
 - 켬: 쌍별 판정(#142). 임베딩은 임베딩 서버와 같은 BGE-M3를 이 프로세스에 올려 쓴다(평가 전용).
 """
 import argparse
@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 
 from app.modules.wiki_generation.infrastructure.concept_resolution import normalize_resolution_output  # noqa: E402
 
@@ -83,7 +83,7 @@ def main() -> None:
             print(case["id"], case["expected"]["decision"], "후보", len(pool), "질문", len(req["questions"]))
         return
 
-    load_keys("ANTHROPIC_API_KEY", "TYPESAFE_API_KEY")
+    load_keys("OPENAI_API_KEY", "TYPESAFE_API_KEY")
     os.environ["AI_ALLOWED_LLM_MODELS"] = "*"
     from app.core.jev_client import JEV_CONCEPT_MERGE_ENABLED_ENV, build_jev_client
     from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
@@ -98,8 +98,8 @@ def main() -> None:
     # 실행하는 dev 코드와 같은 체크아웃의 프롬프트를 쓴다.
     prompt_text = (pathlib.Path(app.__file__).resolve().parents[1] / "prompts" / "concept_resolution.system.md").read_text()
     api = ChatCompletionsJsonClient(ChatClientConfig(
-        api_key=os.environ["ANTHROPIC_API_KEY"], model=HAIKU[1], temperature=None, timeout_seconds=120,
-        max_tokens=None, json_mode=True, provider=HAIKU[0],
+        api_key=os.environ["OPENAI_API_KEY"], model=EVAL_MODEL[1], temperature=None, timeout_seconds=120,
+        max_tokens=None, json_mode=True, provider=EVAL_MODEL[0],
     ))
     llm = ApiConceptResolver(api, prompt_text)
     os.environ[JEV_CONCEPT_MERGE_ENABLED_ENV] = "true"

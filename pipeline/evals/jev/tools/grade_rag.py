@@ -1,4 +1,4 @@
-"""RAG 결과를 Codex로 채점한다. 켬/끔을 가리고 순서를 섞어 20건씩 `codex exec`(읽기 전용)로 보낸다.
+"""RAG 결과를 Claude(common.JUDGE_MODEL)로 채점한다. 켬/끔을 가리고 순서를 섞어 20건씩 도구 없이 판정한다.
 
 - 근거 충분성(evidence): 고른 근거 조각만으로 기대 답을 만들 수 있나. 근거 선택기 평가의 본 지표다.
   같은 질문에 같은 근거 묶음이 나온 실행은 한 번만 채점한다. 답이 없는 질문은 채점하지 않는다.
@@ -11,7 +11,6 @@
 import argparse
 import json
 import random
-import subprocess
 import sys
 import tempfile
 import threading
@@ -20,10 +19,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import EVAL_DIR, verify_gold  # noqa: E402
+from common import EVAL_DIR, judge, verify_gold  # noqa: E402
 
 BATCH = 20
-WORKERS = 6  # 동시에 보내는 codex 채점 묶음 수
+WORKERS = 8  # 동시에 보내는 채점 묶음 수
 SNIPPET_CHARS = 900  # AnswerContextFormatter가 근거 조각을 자르는 길이
 EVIDENCE_PROMPT = """You are grading evidence retrieved by a Korean/English workspace Q&A system. Grade each item independently.
 Use only the item's question, expected_answer, acceptable_answers and evidence list. Do not use outside knowledge.
@@ -82,20 +81,16 @@ def grade(items: list[dict], prompt: str, item_schema: dict, out_path: Path, fir
     batches = batches[:1] if first_batch_only else batches
     lock, finished = threading.Lock(), [0]
     with tempfile.TemporaryDirectory() as tmp:
-        schema_path = Path(tmp) / "schema.json"
-        schema_path.write_text(json.dumps(item_schema))
 
         def run(index_batch):
             index, batch = index_batch
-            last = Path(tmp) / f"out_{index}.json"
-            subprocess.run(
-                ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", str(schema_path),
-                 "-o", str(last), prompt + json.dumps(batch, ensure_ascii=False, indent=1)],
-                # stdin이 열려 있으면 codex가 추가 입력을 기다리며 멈춘다.
-                check=True, cwd=tmp, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900,
-            )
-            grades = json.loads(last.read_text())["grades"]
-            assert {g["item_id"] for g in grades} == {i["item_id"] for i in batch}, "채점 결과가 항목과 맞지 않습니다"
+            # 채점자가 항목 id를 빠뜨리거나 바꿔 돌려주면 그 묶음만 다시 묻는다.
+            for _ in range(3):
+                grades = judge(prompt + json.dumps(batch, ensure_ascii=False, indent=1), item_schema, Path(tmp), 900)["grades"]
+                if sorted(g["item_id"] for g in grades) == sorted(i["item_id"] for i in batch):
+                    break
+            else:
+                raise AssertionError("채점 결과가 항목과 맞지 않습니다")
             with lock, out_path.open("a") as f:
                 f.writelines(json.dumps(g, ensure_ascii=False) + "\n" for g in grades)
                 finished[0] += len(batch)
@@ -109,6 +104,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("rows")
     parser.add_argument("--first-batch-only", action="store_true")
+    parser.add_argument("--evidence-only", action="store_true", help="근거 충분성만 채점한다(근거 선택기 비교용)")
     args = parser.parse_args()
     verify_gold()
     cases = {c["id"]: c for c in json.loads((EVAL_DIR / "rag.json").read_text())}
@@ -151,7 +147,8 @@ def main() -> None:
     (rows_path.parent / "grade_map.json").write_text(json.dumps(mapping, ensure_ascii=False, indent=1))
     print("근거 채점", len(evidence_list), "묶음 (행", sum(map(len, mapping["evidence"].values())), ") / 답변 채점", len(answer_items), "건")
     grade(evidence_list, EVIDENCE_PROMPT, EVIDENCE_SCHEMA, rows_path.parent / "evidence_grades.jsonl", args.first_batch_only)
-    grade(answer_items, ANSWER_PROMPT, ANSWER_SCHEMA, rows_path.parent / "answer_grades.jsonl", args.first_batch_only)
+    if not args.evidence_only:
+        grade(answer_items, ANSWER_PROMPT, ANSWER_SCHEMA, rows_path.parent / "answer_grades.jsonl", args.first_batch_only)
 
 
 if __name__ == "__main__":

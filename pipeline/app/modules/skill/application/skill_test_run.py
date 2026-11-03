@@ -18,6 +18,7 @@ from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.exceptions import SkillTestRunUnsupportedError
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    edit_target_selection_reference,
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
     render_skill_instructions,
 )
@@ -111,12 +112,14 @@ class SkillTestRunUseCase:
         # 선택 범위면 지시도 선택 부분을 가리켜야 모델이 대상을 문서 전체로 넓히지 않는다.
         scope = "선택한 부분" if selection is not None else "이 문서"
         instruction = f"'{name}' Skill의 지침을 {scope}에 적용해 주세요."
-        # 문서 본문은 편집 payload에 이미 있으므로 `{문서}`는 그 위치를 가리키게 한다.
+        # 문서 본문과 선택 범위는 편집 payload에 이미 있으므로 `{문서}`·`{선택한 부분}`은 그 위치를 가리키게 한다.
         instructions = render_skill_instructions(
             instructions,
             request=instruction,
-            selection=selection,
             document_reference=EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+            selection_reference=(
+                edit_target_selection_reference(target.start_line, target.end_line) if selection is not None else None
+            ),
         )
         # Agent markdown_edit와 같은 use case에 초안 지침을 넣어 실제 실행 결과와 같게 만든다.
         edit = self._markdown_edit_use_case.execute(

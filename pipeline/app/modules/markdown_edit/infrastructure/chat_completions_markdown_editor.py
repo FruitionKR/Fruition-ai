@@ -72,6 +72,9 @@ DEFAULT_MARKDOWN_EDIT_PROMPT = Path(__file__).resolve().parents[4] / "prompts" /
 DEFAULT_MARKDOWN_CREATE_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_create.system.md"
 DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_source_edit.system.md"
 DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "markdown_edit_evaluator.system.md"
+DEFAULT_MARKDOWN_CREATE_EVALUATOR_PROMPT = (
+    Path(__file__).resolve().parents[4] / "prompts" / "markdown_create_evaluator.system.md"
+)
 JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
 LLM_EVALUATION_PREFIX = "LLM evaluation:"
 logger = logging.getLogger(__name__)
@@ -95,6 +98,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         self._client = client
         self._system_prompt = system_prompt
         self._evaluation_system_prompt = DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT.read_text(encoding="utf-8")
+        self._create_evaluation_system_prompt = DEFAULT_MARKDOWN_CREATE_EVALUATOR_PROMPT.read_text(encoding="utf-8")
         self._create_system_prompt = create_system_prompt or system_prompt
         self._source_edit_system_prompt = source_edit_system_prompt or DEFAULT_MARKDOWN_SOURCE_EDIT_PROMPT.read_text(
             encoding="utf-8"
@@ -345,12 +349,29 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             self._event_publisher, "agent.evaluating",
             "편집안이 요청에 맞는지 확인하고 있어요.",
         )
+        return self._llm_evaluation_failures(self._evaluation_system_prompt, payload)
+
+    def _evaluate_create(self, request: MarkdownCreateRequest, result: MarkdownCreateResult) -> list[str]:
+        """Skill로 만든 새 문서가 지침의 명시 조건과 원문 근거를 지켰는지 LLM으로 확인한다."""
+        payload = {
+            "instruction": request.instruction,
+            "skill_instructions": request.skill_instructions or "",
+            "output_language": request.output_language,
+            "conversation_summary": request.conversation_summary,
+            "reference_context": request.reference_context or {},
+            "generated_title": result.document.title,
+            "generated_markdown": result.document.markdown,
+        }
+        publish_query_event(
+            self._event_publisher, "agent.evaluating",
+            "새 문서가 Skill 지침에 맞는지 확인하고 있어요.",
+        )
+        return self._llm_evaluation_failures(self._create_evaluation_system_prompt, payload)
+
+    def _llm_evaluation_failures(self, system_prompt: str, payload: dict[str, object]) -> list[str]:
         invalid = ["LLM evaluation must return a boolean passed and consistent string-list failures"]
         try:
-            raw = self._client.complete_json(
-                self._evaluation_system_prompt,
-                json.dumps(payload, ensure_ascii=False, indent=2),
-            )
+            raw = self._client.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
         except JsonParseError:
             return invalid
         if not isinstance(raw, dict) or type(raw.get("passed")) is not bool:
@@ -439,6 +460,9 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         )
         failures.extend(validate_markdown_create_output(result.document))
         failures.extend(validate_markdown_syntax(result.document.markdown))
+        # Skill로 만드는 문서만 지침 준수를 LLM으로 확인한다. 형식이 깨진 결과는 평가하지 않는다.
+        if not failures and (request.skill_instructions or "").strip():
+            failures.extend(self._evaluate_create(request, result))
         return result, failures, raw
 
 

@@ -33,6 +33,10 @@ For shortening or summarizing requests, leaving out details, conditions, example
 sub-items is the expected effect, not a failure. Fail only when what remains is wrong or
 misleading, changes numbers or article numbers, or drops something the user explicitly
 asked to keep.
+For requests that convert prose into another form (a list, checklist, table, steps, or
+outline), restructuring sentences, splitting or merging them, and dropping connectives,
+hedging words, or repeated wording is the expected effect, not a failure. Apply the same
+failure conditions as for shortening.
 Whitespace, spacing around links or punctuation, and quote or dash style that do not change
 meaning are formatting, not content; do not fail for them.
 Blank lines that only separate blocks are layout, not content. The application places

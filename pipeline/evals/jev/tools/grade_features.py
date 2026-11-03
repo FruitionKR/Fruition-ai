@@ -1,4 +1,4 @@
-"""문서 편집·Skill 시험 실행 결과를 사례별 판정 기준으로 Codex가 채점한다. 같은 결과 문서는 한 번만 채점한다.
+"""문서 편집·Skill 시험 실행 결과를 사례별 판정 기준으로 Claude(common.JUDGE_MODEL)가 채점한다. 같은 결과 문서는 한 번만 채점한다.
 
 사용: python grade_features.py edit ../results/<날짜>/edit/rows.jsonl
       python grade_features.py skill ../results/<날짜>/skill/rows.jsonl

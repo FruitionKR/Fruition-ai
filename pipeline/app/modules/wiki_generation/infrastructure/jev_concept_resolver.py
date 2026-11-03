@@ -74,6 +74,9 @@ PART_OF_CRITERIA = {
 # part_of는 이 확률 이상일 때만 배정한다. 애매하면 배정하지 않고 따로 둔다(ADR-0042).
 PART_OF_MIN_PROBABILITY = 0.9
 CANDIDATE_LIMIT = 100
+# 한 요청에 함께 판정하는 후보 수. 관련 판정 문구·0.9 기준은 후보를 약 30개씩 나눠 볼 때 맞춘 값이라,
+# 한 번에 더 많이 보면 정답 밖 연결이 늘었다(88건 × 3회에서 45 → 58). 토큰 한도와 별개로 이 크기를 지킨다.
+BATCH_ITEM_LIMIT = 30
 # 같은 하위 항목 찾기(ADR-0042)에서 새 항목마다 쌍 판정할 기존 항목 수. 편입 잠금 안의 판정이라 개념보다 적게 묻는다.
 ENTRY_CANDIDATE_LIMIT = 10
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
@@ -284,7 +287,7 @@ class JevConceptResolver(ConceptResolver):
             for batch in token_batches(
                 _shuffled(concept, candidates),
                 lambda batch, concept=concept: _request(concept, batch),
-                max_items=CANDIDATE_LIMIT,
+                max_items=BATCH_ITEM_LIMIT,
             )
         ]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -348,7 +351,7 @@ class JevConceptResolver(ConceptResolver):
             for batch in token_batches(
                 list(details.values()),
                 lambda batch, head=head: _part_of_request(head, batch),
-                max_items=CANDIDATE_LIMIT,
+                max_items=BATCH_ITEM_LIMIT,
             )
         ]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
