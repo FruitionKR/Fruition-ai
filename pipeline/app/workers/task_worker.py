@@ -932,7 +932,8 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         wiki_ready = (
             not quality_required
             or (
-                len(evaluations) == POST_INGEST_AUDIT_LIMIT
+                # 생성기가 원문과 맞지 않는 문항을 버려 3개보다 적을 수 있다. 만든 문항이 모두 통과하면 준비된 것으로 본다.
+                bool(evaluations)
                 and all(item["passed"] for item in evaluations)
             )
         )
