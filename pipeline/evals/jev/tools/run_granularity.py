@@ -1,6 +1,6 @@
 """개념 크기 측정(ADR-0042 0단계): 같은 corpus 11개를 모델마다 새 워크스페이스에 편입하고 개념 페이지 수와 이름 겹침을 잰다.
 
-사용: PYTHONPATH=<dev>/pipeline python run_granularity.py [--models claude:claude-haiku-4-5-20251001,claude:<다른 모델>]
+사용: PYTHONPATH=<dev>/pipeline python run_granularity.py [--models openai:gpt-6-luna,<provider>:<다른 모델>]
       PYTHONPATH=<dev>/pipeline python run_granularity.py --workspaces <a>/workspace.json,<b>/workspace.json
 - 편입은 모델마다 rag_prepare.py --model 을 따로 실행한다(results/<날짜>/granularity-<모델>/workspace.json).
 - --workspaces 를 주면 편입 없이 이미 편입한 워크스페이스만 잰다.
@@ -16,7 +16,7 @@ from itertools import permutations
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import HAIKU, results_dir, verify_gold  # noqa: E402
+from common import EVAL_MODEL, results_dir, verify_gold  # noqa: E402
 from stack_env import load_container_env  # noqa: E402
 
 
@@ -108,7 +108,7 @@ def measure(workspace_path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models", default=":".join(HAIKU), help="쉼표로 구분한 provider:model. 모델마다 새 워크스페이스에 편입한다")
+    parser.add_argument("--models", default=":".join(EVAL_MODEL), help="쉼표로 구분한 provider:model. 모델마다 새 워크스페이스에 편입한다")
     parser.add_argument("--workspaces", help="쉼표로 구분한 workspace.json. 주면 편입하지 않고 잰다")
     args = parser.parse_args()
     verify_gold()

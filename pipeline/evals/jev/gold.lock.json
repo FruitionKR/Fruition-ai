@@ -3,7 +3,7 @@
  "note": "검수 페이지(K2YHXDB7z946bCiUSE4X5h) 검수 반영 후 확정. 기대 답은 바꾸지 않는다. 결과 검토에서 타당한 답이 보이면 허용 답만 더하고 revisions에 사례와 이유를 남긴 뒤 sha256을 다시 계산한다.",
  "files": {
   "routing.jsonl": {
-   "sha256": "66b1bd9d126dcc96a170ffea2cd971d6bccc8f036c209ce8ca7ff7361663cdbc",
+   "sha256": "9ef1bade5b89011871aae6c5071ed549b45ded842931ad0460b1b1317338a42f",
    "cases": 102
   },
   "rag.json": {
@@ -106,6 +106,12 @@
    "file": "skill.json",
    "change": "st-01 허용 설명(acceptable_notes) 추가(기대 답·코드 검사·판정 기준은 유지)",
    "reason": "원문이 H1 제목으로 시작하는데, 그 제목 바로 아래에 넣은 `## 요약`을 '문서 첫 제목 줄이 아님'으로 실패시켰다. 제목 아래 요약은 '문서 맨 위에'의 합리적인 해석이다."
+  },
+  {
+   "date": "2026-11-04",
+   "file": "routing.jsonl",
+   "change": "허용 답 추가(기대 답은 유지): edit-05(1), edit-12(1), edit-13(1), edit-24(1), ind-01(1), ind-02(1), ind-03(1), ind-04(1), ind-05(1), ind-07(1), pair-02b(1), pair-04a(1), pair-04b(1)",
+   "reason": "gpt-6-luna 라우팅 결과 검토(Jev 켬/끔 모두)에서 문맥상 타당한 답을 확인했다. edit-05: 회의 할 일을 새 체크리스트 문서로 만드는 것(markdown_create)도 요청의 합리적인 해석이다 / edit-12: 섹션에 '넣어줘'는 기존 내용 뒤에 추가(insert_after)로도 읽힌다 / edit-13: 정리 내용을 붙일 때 목록 형식(bullet_list) 목표도 합리적이다 / edit-24: '다듬어줘'는 문체 정리(style_change)로도 읽힌다 / ind-01: 모호한 불만 표현이라 무엇을 줄일지 되묻는 것(clarify, details)도 합리적이다 / ind-02: 모호한 불만 표현이라 어떻게 바꿀지 되묻는 것(clarify, details)도 합리적이다 / ind-03: 희망 표현이라 새 문서를 만들지 되묻는 것(clarify, details)도 합리적이다 / ind-04: 모호한 불만 표현이라 어떤 형식으로 바꿀지 되묻는 것(clarify, details)도 합리적이다 / ind-05: 모호한 희망 표현이라 어떻게 보여 줄지 되묻는 것(clarify, details)도 합리적이다 / ind-07: 고칠 범위를 되묻는 것(clarify, details)도 합리적이다 / pair-02b: 항목 하나를 추가할 때 목록 형식(bullet_list) 목표도 합리적이다 / pair-04a: 섹션 '보강'은 기존 내용 뒤에 추가(insert_after)로도 읽힌다 / pair-04b: 섹션 '보강'은 기존 내용 뒤에 추가(insert_after)로도 읽힌다. 채팅 탭으로 돌려보내는 clarify(notice_kind=chat_tab), 원본을 덮어쓰는 번역, 할 수 있는 요청의 거절, 명확한 요청에 되묻기는 추가하지 않았다. 사용자 승인."
   }
  ]
 }

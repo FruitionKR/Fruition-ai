@@ -37,7 +37,7 @@
 
 ## 실행
 
-`pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. Wiki RAG와 일반 RAG 답변 모델은 모두 OpenAI GPT Luna(`gpt-6-luna`)이며 `OPENAI_API_KEY`가 필요하다. `rag_prepare.py`의 기본 편입 모델과 다른 기능 평가의 모델은 Claude Haiku(`claude-haiku-4-5-20251001`)이다. 각 사례를 3회 반복하며, 이전 Haiku 답변 결과와 비교할 때는 모델 차이를 명시한다.
+`pipeline/`의 코드를 쓰므로 `PYTHONPATH`에 평가할 체크아웃의 `pipeline/`을 둔다. 모든 단계가 실제 모델을 호출해 비용이 든다. 모든 평가의 LLM은 `tools/common.py`의 `EVAL_MODEL` 하나로 고정하며 OpenAI GPT Luna(`gpt-6-luna`)다. `OPENAI_API_KEY`가 필요하다. 각 사례를 3회 반복한다. 2026-11-03 이전 결과는 편입·답변 외 기능을 Claude Haiku(`claude-haiku-4-5-20251001`)로 쟀으므로, 비교할 때는 모델 차이를 명시한다.
 
 ```bash
 cd pipeline/evals/jev/tools
@@ -59,9 +59,9 @@ python grade_features.py skill ../results/<날짜>/skill/rows.jsonl
 RAG는 로컬 스택(platform 통합 스크립트로 띄운 PostgreSQL, MinIO, document-svc, access-svc, 각 워커 컨테이너)이 필요하다.
 
 ```bash
-python rag_prepare.py --name rag                   # 새 계정·워크스페이스에 corpus를 올리고 Haiku로 편입
+python rag_prepare.py --name rag                   # 새 계정·워크스페이스에 corpus를 올리고 평가 모델로 편입
 python run_rag.py ../results/<날짜>/rag/workspace.json --name rag   # 질문 100건 × 켬·끔 × 3
-python grade_rag.py ../results/<날짜>/rag/rows.jsonl              # Codex 채점(codex CLI 필요)
+python grade_rag.py ../results/<날짜>/rag/rows.jsonl              # Claude 채점(claude CLI 필요)
 python analyze_rag.py ../results/<날짜>/rag                       # 집계
 python run_rag_baseline.py                                         # 일반 RAG 대조군(원문 청크 검색, 같은 답변 모델) × 3
 python grade_rag.py ../results/<날짜>/rag_baseline/rows.jsonl      # 대조군도 같은 방식으로 채점
@@ -70,17 +70,17 @@ python run_lint.py ../results/<날짜>/rag/workspace.json --dry-run   # 운영 �
 ```
 
 - `rag_prepare.py --sources en-rag-paper`처럼 일부 문서만 편입해 프롬프트 변경을 빠르게 확인할 수 있다.
-- 채점(`grade_rag.py`, `grade_claims.py`)은 codex 묶음을 동시에 6개씩 보낸다.
+- 채점(`grade_rag.py`, `grade_claims.py`, `grade_features.py`, `grade_links.py`)은 실험 모델과 다른 Claude(`common.JUDGE_MODEL`, `claude-opus-5-5`)가 `claude -p`로 판정한다. 묶음을 동시에 8개씩 보낸다. 2026-11-03 이전 결과는 Codex가 채점했다.
 
 - 편입이 끊기면 `python rag_prepare.py --resume ../results/<날짜>/rag/workspace.json`으로 같은 계정·워크스페이스에서 끝난 문서를 건너뛰고 이어서 편입한다. 결과도 그 폴더에 쓴다.
 - 결과는 `results/<날짜>/<이름>/`에 저장되며 저장소에 넣지 않는다.
 
 ## 개념 크기 측정(ADR-0042 0단계)
 
-같은 corpus 11개를 모델마다 새 워크스페이스에 편입해 개념 페이지가 얼마나 잘게 생기는지 잰다. 편입은 `rag_prepare.py --model`(기본 Haiku)과 같은 운영 경로이고, 로컬 스택이 필요하다.
+같은 corpus 11개를 모델마다 새 워크스페이스에 편입해 개념 페이지가 얼마나 잘게 생기는지 잰다. 편입은 `rag_prepare.py --model`(기본 평가 모델)과 같은 운영 경로이고, 로컬 스택이 필요하다.
 
 ```bash
-python run_granularity.py --models claude:claude-haiku-4-5-20251001,claude:<비교 모델>   # 모델마다 편입 후 측정
+python run_granularity.py --models openai:gpt-6-luna,<provider>:<비교 모델>            # 모델마다 편입 후 측정
 python run_granularity.py --workspaces ../results/<날짜>/rag/workspace.json,...        # 편입 없이 기존 워크스페이스만 측정
 python test_granularity.py                                                             # 순수 함수·subentry.json 형식 확인(모델 호출 없음)
 ```
@@ -96,24 +96,24 @@ python test_granularity.py                                                      
 ## 채점
 
 - **라우팅·개념:** 코드로 채점한다. 기대 답이나 허용 답 중 하나와 같으면 정답이다. 개념 `link_to`는 연결 대상에 `canonical_slug`나 `also_link` 중 하나가 있으면 정답이고, 그 밖의 대상은 추가 연결로 센다.
-  - 추가 연결이 정의상 타당한지는 `python grade_links.py ../results/<날짜>/concept/rows.jsonl`로 Codex가 쌍마다 valid/weak/invalid로 채점한다(결과 `link_grades.json`). valid인 대상은 정답셋의 `also_link`·허용 답에 더할 후보다.
+  - 추가 연결이 정의상 타당한지는 `python grade_links.py ../results/<날짜>/concept/rows.jsonl`로 Claude가 쌍마다 valid/weak/invalid로 채점한다(결과 `link_grades.json`). valid인 대상은 정답셋의 `also_link`·허용 답에 더할 후보다.
 - **RAG:** 실행 행마다 선택기가 고른 근거 전체(`evidence`), 답변이 인용한 근거(`cited_evidence`), 답변 모델이 받은 프롬프트(`answer_context`)를 저장한다. 최종 결과의 근거는 인용된 것만 남으므로(`renumber_used_evidence`), 근거 선택은 반드시 `evidence`로 본다. 켬/끔을 가리고 순서를 섞어 Codex가 다음을 채점한다.
   - 근거 충분성: 고른 근거만으로 기대 답이나 허용 답을 만들 수 있는지(sufficient/partial/none). 같은 질문에 같은 근거가 나온 실행은 한 번만 채점한다.
   - 정답: 기대 답이나 허용 답을 말하면 correct. 질문이 묻는 사실이 빠지거나 틀렸을 때만 partial이다.
   - 환각: 답변 프롬프트에 없는 구체적 사실을 단정했는지. 다른 근거로 답했어도 받은 문맥에 있으면 환각이 아니다.
   - 정답 인용문이 고른 근거에 그대로 들어 있는지(코드 재현율)도 함께 센다.
 
-- **문서 편집:** 실행 오류가 없고, 코드 검사(대상 밖 줄 그대로, 보존·필수·금지 문자열, 형식, 원문과 같은 결과 아님)와 Codex의 판정 기준 채점을 모두 통과하면 성공이다.
+- **문서 편집:** 실행 오류가 없고, 코드 검사(대상 밖 줄 그대로, 보존·필수·금지 문자열, 형식, 원문과 같은 결과 아님)와 Claude의 판정 기준 채점을 모두 통과하면 성공이다.
 - **문서 관리:** 정리 계획을 메모리 폴더 트리에 적용해 최종 배치(이동 위치, 같은 폴더로 묶일 문서, 이름, 건드리면 안 되는 항목, 요약 안내)를 정답과 비교한다. 되묻기가 정답인 사례는 되물었을 때만 성공이다. 범위가 있는 사례는 운영 worker처럼 `scoped_hierarchy`로 잘라 계획을 만든다. 조회는 고른 폴더 id 집합이 정답과 같으면 성공이다.
-- **Skill:** 의도 분류는 판단·Skill 종류·참고 방식·원문 필요 여부가 정답과 같으면, 작성은 상태·기능·초안 검사가 맞으면 성공이다. 시험 실행은 `completed`이고 코드 검사와 Codex 판정을 통과하면 성공이다.
-- **RAG 주장 단위 검증:** 답변을 원자 주장으로 나누고 Codex가 corpus 원문 파일을 직접 읽어 supported/unsupported/contradicted로 판정한다. 근거 없는 주장 비율 = (unsupported + contradicted) / 전체 주장.
+- **Skill:** 의도 분류는 판단·Skill 종류·참고 방식·원문 필요 여부가 정답과 같으면, 작성은 상태·기능·초안 검사가 맞으면 성공이다. 시험 실행은 `completed`이고 코드 검사와 Claude 판정을 통과하면 성공이다.
+- **RAG 주장 단위 검증:** 답변을 원자 주장으로 나누고 Claude가 corpus 원문 파일을 직접 읽어 supported/unsupported/contradicted로 판정한다. 근거 없는 주장 비율 = (unsupported + contradicted) / 전체 주장.
 
 ## 평가 전용 설정
 
 운영과 다르게 평가 스크립트 안에서만 바꾼 것이다.
 
-- 편입과 개념 병합에도 Claude(Haiku)를 쓴다. 운영 편입은 워크스페이스 공용 설정에서 Claude를 Gemini로 바꾼다.
-- Claude 출력 한도를 32k, 요청 시간 한도를 600초로 둔다. 편입 평가 구간을 4만 자로 줄인다(Haiku 입력 한도 200k).
+- 편입과 개념 병합도 평가 모델을 쓴다. 운영 편입 워커가 워크스페이스 공용 설정의 Claude를 Gemini로 바꾸는 대체는 이 프로세스에서 끈다.
+- 출력 한도를 32k, 요청 시간 한도를 600초로 둔다. 편입 평가 구간을 4만 자로 줄인다(이전 Haiku 입력 한도 200k 기준).
 - 편입 개념 판정은 운영 계획대로 Jev(`JEV_CONCEPT_MERGE_ENABLED=true`)를 쓴다. 임베딩 서버 포트가 밖으로 열려 있지 않아 Jev 후보 임베딩도 같은 BGE-M3를 프로세스에 올려 쓴다(`rag_prepare.py --concept-judge`, 기본 jev). 2026-10-30 이전 편입(b3·a3)은 LLM 판정이었다.
 - 임베딩은 임베딩 서버 대신 같은 BGE-M3를 프로세스에 올리고, 운영과 같은 `MAX_TEXT_CHARS` 한도를 건다. 로컬 모델은 동시 호출에서 죽어 호출을 직렬화한다.
 - `en-rag-paper.md`의 NUL 문자는 올릴 때만 지운다(PostgreSQL text에 들어가지 않음, 정답 인용문에는 없음).

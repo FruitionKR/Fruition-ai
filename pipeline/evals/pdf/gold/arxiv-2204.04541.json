@@ -1,0 +1,126 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "A well-formulated benchmark plays a critical",
+  "When it comes to the Korean language, two",
+  "Next, we evaluated widely used Korean PLMs",
+  "We extracted paragraphs from Korean",
+  "All sentences should be written in the past",
+  "KB-WiC is a task that determines whether a word",
+  "The original HellaSwag benchmark was designed to ascertain",
+  "Our data is free from copyright issues.",
+  "As a benchmark suite, accomplishing high data",
+  "Social biases embedded in training data can lead",
+  "The fine-tuning results can be seen in the first",
+  "A well-designed benchmark dataset is crucial for"
+ ],
+ "tables": [
+  {
+   "page": 2,
+   "rows": [
+    [
+     "Tasks",
+     "|Train|",
+     "|Dev|",
+     "|Test|",
+     "Metrics",
+     "Text Source"
+    ],
+    [
+     "KB-BoolQ",
+     "3.665",
+     "700",
+     "1,404",
+     "F1",
+     "Wikipedia"
+    ],
+    [
+     "KB-COPA",
+     "3,076",
+     "1,000",
+     "1,000",
+     "F1",
+     "N.A"
+    ],
+    [
+     "KB-WiC",
+     "3,318",
+     "1,260",
+     "1,260",
+     "F1",
+     "Korean Dictionary"
+    ]
+   ]
+  },
+  {
+   "page": 7,
+   "rows": [
+    [
+     "Model",
+     "KB-BoolQ",
+     "KB-COPA",
+     "KB-WiC",
+     "KB-HellaSwag",
+     "KB-SentiNeg",
+     "Average"
+    ],
+    [
+     "KoBERT (FT)",
+     "62.9±3.0",
+     "74.6±0.8",
+     "77.3±0.8",
+     "74.4±0.4",
+     "86.8±2.0",
+     "75.2"
+    ],
+    [
+     "KoElectra (FT)",
+     "75.1±1.0",
+     "81.5±0.4",
+     "79.7±1.8",
+     "74.7±0.8",
+     "91.9±1.1",
+     "80.6"
+    ],
+    [
+     "KoGPT3-1.2B (FT)",
+     "73.5±1.6",
+     "79.3±0.6",
+     "68.4±2.2",
+     "73.8±1.0",
+     "89.5±3.3",
+     "77.0"
+    ]
+   ]
+  },
+  {
+   "page": 7,
+   "rows": [
+    [
+     "BoolQ",
+     "COPA",
+     "WiC",
+     "HellaSwag",
+     "SentiNeg"
+    ],
+    [
+     "b-size",
+     "8",
+     "16",
+     "16",
+     "8",
+     "16"
+    ],
+    [
+     "s-len",
+     "256",
+     "128",
+     "256",
+     "256",
+     "128"
+    ]
+   ]
+  }
+ ],
+ "notes": "Table 1의 KB-BoolQ |Train| 값은 원문대로 마침표('3.665')로 인쇄돼 있다. Table 4는 최하위 헤더가 모두 F_test라 과제명 행을 헤더로 썼고, Table 5 헤더는 빈 첫 칸을 생략했다."
+}

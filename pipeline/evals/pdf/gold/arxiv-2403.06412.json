@@ -1,0 +1,99 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "Despite the rapid development of large language models (LLMs)",
+  "Recent advancements in Large Language Models",
+  "The popularity of commonsense datasets has",
+  "Contemporary benchmarks prioritize preserving",
+  "CLIcK contains 1,995 QA pairs, organized into two",
+  "Following the validation process, the initial dataset,",
+  "We evaluate the capabilities of established",
+  "Our primary evaluation metric is accuracy.",
+  "To measure the challenging problems within our dataset,",
+  "The score is normalized between 0 and 1,",
+  "TOPIK is evaluated on an absolute scale,",
+  "This project was funded by Institute of Information"
+ ],
+ "tables": [
+  {
+   "page": 3,
+   "rows": [
+    [
+     "Category",
+     "Textbook",
+     "Exams",
+     "Total"
+    ],
+    [
+     "Korean Culture",
+     "Society",
+     "284",
+     "25",
+     "309"
+    ],
+    [
+     "Tradition",
+     "161",
+     "61",
+     "222"
+    ],
+    [
+     "History",
+     "0",
+     "280",
+     "280"
+    ]
+   ]
+  },
+  {
+   "page": 4,
+   "rows": [
+    [
+     "Source",
+     "Code",
+     "Type",
+     "Subject"
+    ],
+    [
+     "Korean Immigration and Integration Program",
+     "KIIP",
+     "Textbook",
+     "Culture"
+    ],
+    [
+     "Public Service Aptitude Test",
+     "PSAT",
+     "Exam",
+     "Constitution"
+    ],
+    [
+     "Korean History Exam-Basic",
+     "KHB",
+     "Exam",
+     "History"
+    ]
+   ]
+  },
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Factor",
+     "F",
+     "p"
+    ],
+    [
+     "Model Scale",
+     "0.33",
+     ".57"
+    ],
+    [
+     "Korean corpus",
+     "0.30",
+     ".59"
+    ]
+   ]
+  }
+ ],
+ "notes": "1쪽 초록은 전폭 단일 단이라 맨 앞에 두었다. Table 1의 'Korean Culture' 병합 셀은 규칙대로 첫 데이터 행에만 넣었고, 표들은 일부 행만 담았다."
+}

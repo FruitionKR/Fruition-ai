@@ -2,7 +2,7 @@
 
 사용: python grade_claims.py <out_dir> <rows.jsonl>[:variant] ...
   예: python grade_claims.py ../results/<날짜>/claims ../results/<날짜>/rag/rows.jsonl:on ../results/<날짜>/rag_baseline/rows.jsonl
-- 켬/끔·대조군을 가리고 순서를 섞어 Codex(읽기 전용)가 corpus 파일을 직접 읽어 판정한다. 같은 질문의 같은 답변은 한 번만 본다.
+- 켬/끔·대조군을 가리고 순서를 섞어 Claude(common.JUDGE_MODEL)가 읽기 도구(Read·Grep·Glob)로 corpus 파일을 직접 읽어 판정한다. 같은 질문의 같은 답변은 한 번만 본다.
 - 판정: supported(원문이 뒷받침) / unsupported(원문에 없음) / contradicted(원문과 다름).
 결과: <out_dir>/claim_grades.jsonl, claim_map.json, claims_summary.json
 """
@@ -10,7 +10,6 @@ import collections
 import json
 import random
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -19,14 +18,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import EVAL_DIR, verify_gold  # noqa: E402
+from common import EVAL_DIR, judge, verify_gold  # noqa: E402
 from grade_rag import schema  # noqa: E402
 
 BATCH = 5
-WORKERS = 6  # 동시에 보내는 codex 채점 묶음 수
+WORKERS = 8  # 동시에 보내는 채점 묶음 수
 PROMPT = """You are verifying answers from a Korean/English Q&A system against the original source documents.
-The source documents are the Markdown files in the current directory (read them with shell commands such as grep, sed
-or cat; do not use any other knowledge). For each item:
+The source documents are the Markdown files in the current directory (read them with the Read, Grep and Glob tools;
+do not use any other knowledge). For each item:
 1. Split the answer into atomic factual claims: each claim states one checkable fact (a number, date, name, rule,
    condition, definition or relation). Skip greetings, hedges, statements that information is unavailable, and
    restatements of the question.
@@ -76,20 +75,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "corpus"
         shutil.copytree(EVAL_DIR / "corpus", work)
-        schema_path = Path(tmp) / "schema.json"
-        schema_path.write_text(json.dumps(SCHEMA))
         lock = threading.Lock()
 
         def run(start):
             batch = pending[start:start + BATCH]
-            last = Path(tmp) / f"out_{start}.json"
-            subprocess.run(
-                ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--output-schema", str(schema_path),
-                 "-o", str(last), PROMPT + json.dumps(batch, ensure_ascii=False, indent=1)],
-                # stdin이 열려 있으면 codex가 추가 입력을 기다리며 멈춘다.
-                check=True, cwd=work, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=1800,
-            )
-            grades = json.loads(last.read_text())["grades"]
+            grades = judge(PROMPT + json.dumps(batch, ensure_ascii=False, indent=1), SCHEMA, work, 1800, "Read,Grep,Glob")["grades"]
             assert {g["item_id"] for g in grades} == {i["item_id"] for i in batch}, "채점 결과가 항목과 맞지 않습니다"
             with lock, grades_path.open("a") as f:
                 f.writelines(json.dumps(g, ensure_ascii=False) + "\n" for g in grades)

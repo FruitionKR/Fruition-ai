@@ -1,7 +1,7 @@
 """문서 편집 평가. 운영과 같은 편집 use case로 사례를 실행하고 결과에 코드 검사를 적용한다.
 
 사용: PYTHONPATH=<dev>/pipeline python run_edit.py [--limit N] [--ids edit-01,edit-02] [--model provider:model]
-- 편집 모델: 기본 Claude Haiku. 결과 판정(Codex)은 grade_features.py가 한다.
+- 편집 모델: 기본 평가 모델(common.EVAL_MODEL). 결과 판정(Claude)은 grade_features.py가 한다.
 """
 import argparse
 import json
@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import EVAL_DIR, HAIKU, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
+from common import EVAL_DIR, EVAL_MODEL, RUNS, load_keys, results_dir, verify_gold, write_jsonl  # noqa: E402
 
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
@@ -71,7 +71,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--name", default="edit", help="결과 폴더 이름(수정 전후 비교용)")
     parser.add_argument("--ids", help="쉼표로 구분한 사례 id만 실행")
-    parser.add_argument("--model", default=":".join(HAIKU), help="provider:model (기본 Claude Haiku)")
+    parser.add_argument("--model", default=":".join(EVAL_MODEL), help="provider:model (기본 평가 모델)")
     args = parser.parse_args()
     verify_gold()
     cases = json.loads((EVAL_DIR / "edit.json").read_text())

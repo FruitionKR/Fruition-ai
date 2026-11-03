@@ -1,0 +1,120 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "The cost of vision-and-language pre-training has",
+  "Vision-language pre-training (VLP) research has witnessed",
+  "In order to leverage pre-trained unimodal models for VLP,",
+  "We name our VLP framework as BLIP-2: Bootstrapping",
+  "2.2. Modular Vision-Language Pre-training",
+  "In our experiments, we use 32 queries where each query",
+  "We experiment with two types of LLMs: decoder-based",
+  "The same set of pre-training hyper-parameters are used for",
+  "4.1. Instructed Zero-shot Image-to-Text Generation",
+  "Effect of Vision-Language Representation Learning.",
+  "The ITC and ITM losses are essential for image-text retrieval",
+  "We propose BLIP-2, a generic and compute-efficient method"
+ ],
+ "tables": [
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Models",
+     "#Trainable Params",
+     "Open-sourced?",
+     "VQA acc.",
+     "CIDEr",
+     "SPICE",
+     "TR@1",
+     "IR@1"
+    ],
+    [
+     "BLIP (Li et al., 2022)",
+     "583M",
+     "✓",
+     "-",
+     "113.2",
+     "14.8",
+     "96.7",
+     "86.7"
+    ],
+    [
+     "SimVLM (Wang et al., 2021b)",
+     "1.4B",
+     "✗",
+     "-",
+     "112.2",
+     "-",
+     "-",
+     "-"
+    ],
+    [
+     "BLIP-2",
+     "188M",
+     "✓",
+     "65.0",
+     "121.6",
+     "15.8",
+     "97.6",
+     "89.7"
+    ]
+   ]
+  },
+  {
+   "page": 7,
+   "rows": [
+    [
+     "Models",
+     "#Trainable Params",
+     "test-dev",
+     "test-std"
+    ],
+    [
+     "ALBEF (Li et al., 2021)",
+     "314M",
+     "75.84",
+     "76.04"
+    ],
+    [
+     "BLIP (Li et al., 2022)",
+     "385M",
+     "78.25",
+     "78.32"
+    ],
+    [
+     "OFA (Wang et al., 2022a)",
+     "930M",
+     "82.00",
+     "82.00"
+    ]
+   ]
+  },
+  {
+   "page": 8,
+   "rows": [
+    [
+     "COCO finetuning objectives",
+     "R@1",
+     "R@5",
+     "R@1",
+     "R@5"
+    ],
+    [
+     "ITC + ITM",
+     "84.5",
+     "96.2",
+     "67.2",
+     "87.1"
+    ],
+    [
+     "ITC + ITM + ITG",
+     "85.4",
+     "97.0",
+     "68.3",
+     "87.7"
+    ]
+   ]
+  }
+ ],
+ "notes": "1쪽 초록은 왼쪽 단에 있어 단 순서대로 뒀고, 5쪽은 Figure 4 전면 그림이라 문장이 없다. Table 1·2·6은 일부 행만 담았고 'Open-sourced?'는 줄바꿈 하이픈이 아니라 원래 복합어 하이픈으로 판단해 유지했다."
+}

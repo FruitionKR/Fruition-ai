@@ -1,0 +1,44 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "the Structures Laboratory received word of products which were said to be",
+  "for their acceptability as type A, water-reducing admixtures.",
+  "Since Report 1 was published, errors have been found in the",
+  "Delete last two sentences of paragraph 31, p 21.",
+  "Type II portland cement (RC-705) from Alabama was used in this",
+  "The air-entraining admixture (AEA-937) used in this investigation",
+  "Mixtures A through E were used in the basic investigation (Report 1).",
+  "Three batches of test concrete and three control batches",
+  "Time of setting was determined by ASTM Method C 403.",
+  "and 120 to 140 percent for long-term strength."
+ ],
+ "tables": [
+  {
+   "page": 4,
+   "rows": [
+    [
+     "Mixture",
+     "Designation",
+     "Amount Used*",
+     "Water-Cement Ratio, by Weight",
+     "No. of Batches"
+    ],
+    [
+     "F",
+     "SM-10-77",
+     "3.0",
+     "0.37",
+     "3"
+    ],
+    [
+     "G",
+     "SM-1-78",
+     "0.8",
+     "0.37",
+     "2"
+    ]
+   ]
+  }
+ ],
+ "notes": "2차 검수에서 문장 10개와 7쪽 혼합물 표(F·G행)를 쪽 이미지와 대조해 모두 일치함을 확인했다. 표는 상위 머리 Chemical Admixture를 빼고 하위 머리만 담았으며, 줄끝 하이픈 분철(investi-gation)은 붙여 썼다."
+}

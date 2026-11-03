@@ -1,0 +1,146 @@
+{
+ "status": "reviewed",
+ "sentences": [
+  "Over time, LLMs and benchmark datasets have",
+  "is derived from machine and human translations",
+  "there is an increasing need to evaluate the cultural knowledge",
+  "This highlights the need for evaluation suites curated",
+  "A fertility rate of 1 implies that the tokenizer’s vocabulary",
+  "Loan words refer to vocabularies directly adopted from foreign languages.",
+  "Accordingly, words with the same Korean letter have related meanings.",
+  "We sourced pairs of definitions and challenging words from past episodes",
+  "the probability of the longest option being correct was 21.53%"
+ ],
+ "tables": [
+  {
+   "page": 3,
+   "rows": [
+    [
+     "Category",
+     "Type",
+     "Question",
+     "Unique Morpheme",
+     "per question",
+     "per passage",
+     "Polyglot-Ko",
+     "Llama-2"
+    ],
+    [
+     "Loan Words",
+     "{Q}",
+     "169",
+     "960",
+     "5.1 (0.3)",
+     "-",
+     "3.9 (0.3)",
+     "6.7 (0.6)"
+    ],
+    [
+     "Rare Words",
+     "{Q}",
+     "405",
+     "2721",
+     "13.0 (3.4)",
+     "-",
+     "3.1 (0.3)",
+     "6.1 (0.4)"
+    ]
+   ]
+  },
+  {
+   "page": 4,
+   "rows": [
+    [
+     "Category",
+     "# of instances",
+     "Average Length"
+    ],
+    [
+     "Tradition",
+     "17",
+     "35.2"
+    ],
+    [
+     "Law",
+     "10",
+     "32.2"
+    ],
+    [
+     "Geography",
+     "49",
+     "46"
+    ]
+   ]
+  },
+  {
+   "page": 6,
+   "rows": [
+    [
+     "Model",
+     "Params",
+     "n=0",
+     "n=5",
+     "n=10",
+     "n=0",
+     "n=5",
+     "n=10",
+     "n=0",
+     "n=5",
+     "n=10"
+    ],
+    [
+     "Polyglot-Ko",
+     "1.3B",
+     "76.92",
+     "88.76",
+     "91.72",
+     "60.13",
+     "69.93",
+     "71.24",
+     "47.41",
+     "61.48",
+     "61.23"
+    ],
+    [
+     "3.8B",
+     "78.70",
+     "88.76",
+     "91.72",
+     "63.40",
+     "79.74",
+     "77.78",
+     "47.16",
+     "70.62",
+     "72.10"
+    ]
+   ]
+  },
+  {
+   "page": 8,
+   "rows": [
+    [
+     "Dataset",
+     "Correct",
+     "Incorrect",
+     "Correct",
+     "Incorrect"
+    ],
+    [
+     "Rare Words",
+     "1.58 (0.81)",
+     "1.58 (0.80)",
+     "1.58 (0.81)",
+     "1.58 (0.80)"
+    ],
+    [
+     "Loan Words",
+     "1.58 (0.80)",
+     "1.56 (0.80)",
+     "1.58 (0.80)",
+     "1.57 (0.80)"
+    ]
+   ]
+  }
+ ],
+ "notes": "2차 검수에서 Table 1·3·5·12의 모든 셀을 240dpi 이미지로, 문장은 원문 위치·순서·유일성을 대조해 수정 사항이 없었다. Table 1·5는 최하위 헤더만 담고 병합 셀 Polyglot-Ko는 첫 행에만 넣었으며 '-'는 인쇄된 값이다."
+}

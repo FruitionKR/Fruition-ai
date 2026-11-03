@@ -47,7 +47,7 @@ python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna
 
 ## Jev 켬/끔 평가
 
-라우팅·개념 병합·RAG 근거 선택에서 Jev를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다. 정답 세트, 실행기, 채점 방식과 평가 전용 설정은 [`pipeline/evals/jev/README.md`](../pipeline/evals/jev/README.md)에 있다. 실제 모델 호출 비용이 들고, RAG 평가는 로컬 전체 스택과 `codex` CLI가 필요하다.
+라우팅·개념 병합·RAG 근거 선택에서 Jev를 켰을 때와 껐을 때를 같은 정답 세트로 비교한다. 정답 세트, 실행기, 채점 방식과 평가 전용 설정은 [`pipeline/evals/jev/README.md`](../pipeline/evals/jev/README.md)에 있다. 모든 평가의 LLM은 `gpt-6-luna` 하나로 고정하고, 채점은 Claude(`claude -p`)가 한다. 실제 모델 호출 비용이 들고, RAG 평가는 로컬 전체 스택과 `claude` CLI가 필요하다. PDF Converter 유형별 평가는 [`pipeline/evals/pdf/README.md`](../pipeline/evals/pdf/README.md)에 있다(원문 PDF는 저장소 밖에서 받아 만든다).
 
 ## 음성 대화·회의록 API 검증
 
