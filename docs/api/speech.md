@@ -125,8 +125,8 @@ Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. `d
 중복 없이 덧붙이며, 둘 다 없으면 "확인되지 않음"이다.
 
 `provider`·`model`은 필수이며 워크스페이스에서 고른 모델을 그대로 보낸다. 빠지거나 알 수 없는 provider이거나
-provider와 model 계열이 맞지 않으면 `MEETING_NOTES_INPUT_REJECTED`다. 워크스페이스 모델로 쓸 수 없는 값(`claude` provider,
-허용 목록 밖 model)은 실패하지 않고 경고 로그를 남긴 뒤 워크스페이스 기본 모델(`gemini`/`gemini-3.5-flash-lite`)로
+허용 목록 안의 model이 provider 계열과 맞지 않으면(예: `openai` + `gemini-3.5-flash-lite`) `MEETING_NOTES_INPUT_REJECTED`다.
+워크스페이스 모델로 쓸 수 없는 값(`claude` provider, 허용 목록 밖 model)은 계열이 맞지 않아도 실패하지 않고 경고 로그를 남긴 뒤 워크스페이스 기본 모델(`gemini`/`gemini-3.5-flash-lite`)로
 대체한다(`resolve_workspace_llm_selection`). 해당 provider의 API 키가 없으면 `MEETING_NOTES_UNAVAILABLE`로 실패한다.
 
 회의 녹음 종료 후 확정 전사를 발화 순서대로 전달한다. 구간 ID는 중복 없는 영문·숫자·`_`·`-`,
