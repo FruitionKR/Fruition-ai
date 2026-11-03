@@ -1,4 +1,5 @@
 import argparse
+import http.client
 import json
 import os
 import tempfile
@@ -96,6 +97,18 @@ class DescribeFiguresTest(unittest.TestCase):
 
         self.assertEqual(summary, {"requested": True, "described": 0, "failed": 3, "skipped": 0})
         self.assertFalse((output_dir / "layout" / "crop_first" / "figure_descriptions").exists())
+
+    def test_transport_error_fails_only_that_figure(self) -> None:
+        summary, _, output_dir = self._run(
+            [figure(1), figure(2)],
+            [
+                http.client.IncompleteRead(b"partial"),
+                ({"alt": "막대그래프", "description": "매출이 늘었다."}, {}),
+            ],
+        )
+
+        self.assertEqual(summary, {"requested": True, "described": 1, "failed": 1, "skipped": 0})
+        self.assertTrue((output_dir / "layout" / "crop_first" / "figure_descriptions" / "figure-2.json").exists())
 
     def test_missing_api_key_sends_nothing_and_counts_failures(self) -> None:
         summary, call_page_mock, _ = self._run([figure(1)], [], env={})

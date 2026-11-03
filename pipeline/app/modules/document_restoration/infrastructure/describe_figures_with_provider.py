@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import logging
 import re
@@ -101,7 +102,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 timeout=CALL_TIMEOUT_SECONDS,
             )
-        except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError, OSError) as exc:
+        except (
+            TimeoutError,
+            urllib.error.URLError,
+            http.client.HTTPException,
+            RuntimeError,
+            ValueError,
+            OSError,
+        ) as exc:
             logger.warning("그림 설명 실패: figure=%s error_type=%s", figure["id"], type(exc).__name__)
             return False
         cleaned = clean_description(result if isinstance(result, dict) else {})
