@@ -12,14 +12,13 @@ Question rules:
 Evidence rules:
 - `answerability` is true only when the retrieved evidence alone is sufficient to answer every expected claim.
 - `evidence_recall` measures how completely the retrieved evidence covers the expected claims.
-- `evidence_precision` measures how much of the retrieved evidence is relevant to the question. Unrelated evidence lowers precision but does not by itself create a contradiction.
 - `source_alignment` measures whether supporting evidence has valid source provenance and agrees with the supplied raw source blocks.
 - Put uncovered expected facts in `missing_claims`.
-- Put ranks of unrelated evidence in `irrelevant_evidence_ranks`.
-- Put ranks of evidence that conflicts with the expected claims or raw source in `contradictory_evidence_ranks`.
+- Put ranks of evidence that conflicts with the expected claims or raw source in `contradictory_evidence_ranks`. Unrelated evidence alone is not a contradiction.
 - A Concept-derived statement is grounded only when its source refs lead to raw blocks that support it.
+- The Wiki may restate raw sources in another language or as a summary. Judge coverage by meaning: translated or summarized evidence covers an expected claim when it states the same facts and its source refs lead to raw blocks that support it. Do not lower `answerability`, `evidence_recall`, or `source_alignment` and do not list a claim in `missing_claims` only because the evidence wording or language differs from the raw source.
 - Do not reward high lexical or vector similarity when the evidence content is wrong.
-- Set `passed=true` only when all question booleans and answerability are true, all three scores are at least 0.75, and both missing and contradictory lists are empty.
+- Set `passed=true` only when all question booleans and answerability are true, both scores are at least 0.75, and both missing and contradictory lists are empty.
 - Write `reason` and `warnings` in Korean.
 
 Return exactly:
@@ -35,10 +34,8 @@ Return exactly:
       "durable": true,
       "answerability": false,
       "evidence_recall": 0.0,
-      "evidence_precision": 0.0,
       "source_alignment": 0.0,
       "missing_claims": ["uncovered expected claim"],
-      "irrelevant_evidence_ranks": [2],
       "contradictory_evidence_ranks": [],
       "reason": "Korean reason",
       "warnings": ["Korean non-blocking warning"]

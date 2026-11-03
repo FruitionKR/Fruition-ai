@@ -234,7 +234,6 @@ def _normalize_evidence_evaluation(value: dict[str, Any]) -> dict[str, Any]:
         field: _bounded_float(value.get(field))
         for field in (
             "evidence_recall",
-            "evidence_precision",
             "source_alignment",
         )
     }
@@ -253,9 +252,6 @@ def _normalize_evidence_evaluation(value: dict[str, Any]) -> dict[str, Any]:
         "answerability": value.get("answerability") is True,
         **scores,
         "missing_claims": missing_claims,
-        "irrelevant_evidence_ranks": _positive_ints(
-            value.get("irrelevant_evidence_ranks")
-        ),
         "contradictory_evidence_ranks": contradictory_ranks,
         "reason": str(value.get("reason") or "").strip(),
         "warnings": _strings(value.get("warnings")),

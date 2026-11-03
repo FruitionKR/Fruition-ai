@@ -822,7 +822,6 @@ def test_post_ingest_quality_uses_source_and_concept_rag_with_source_evaluator()
                 {
                     "passed": True,
                     "evidence_recall": 1.0,
-                    "evidence_precision": 1.0,
                     "source_alignment": 1.0,
                 }
             ],
