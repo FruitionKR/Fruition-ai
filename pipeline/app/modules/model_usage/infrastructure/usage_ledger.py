@@ -108,6 +108,11 @@ def track_call(provider, model):
     try:
         yield receipt
         status = 'succeeded'
+    except BaseException as exc:
+        # Exception이 아닌 중단(agent worker 종료 예산 초과·KeyboardInterrupt)은 호출 실패가 아니라 취소로 닫는다.
+        if not isinstance(exc, Exception):
+            status = 'cancelled'
+        raise
     finally:
         finish_call(call_id, status, receipt, model, (perf_counter()-started)*1000)
 

@@ -40,6 +40,21 @@ def test_records_retries_failures_and_preserves_context(monkeypatch):
     assert calls[0][1][0] != calls[2][1][0]
 
 
+def test_interrupted_call_is_cancelled_not_failed(monkeypatch):
+    calls = []
+    @contextmanager
+    def connect():
+        yield SimpleNamespace(execute=lambda sql, params: calls.append(params))
+    monkeypatch.setattr(ledger.database, 'connect_ai', connect)
+    class WorkerStopping(BaseException):
+        pass
+    with ledger.usage_scope({'run_id': 'r', 'workspace_id': 'w', 'user_id': 'u'}):
+        with pytest.raises(WorkerStopping):
+            with ledger.track_call('openai', 'model'):
+                raise WorkerStopping()
+    assert calls[1][0] == 'cancelled'
+
+
 def test_scope_restores_parent_and_unknown_usage_is_not_zero(monkeypatch):
     calls = []
     @contextmanager
