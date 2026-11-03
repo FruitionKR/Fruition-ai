@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import logging
 import mimetypes
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,6 +58,15 @@ GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 CLAUDE_ENDPOINT = "https://api.anthropic.com/v1/messages"
+# 복원 호출의 출력 상한이다. 한 쪽 본문(수천 토큰)과 추론 토큰을 담고, 끝나지 않는 출력의 비용을 막는다.
+REPAIR_MAX_OUTPUT_TOKENS = 16384
+PROVIDER_TIMEOUT_SECONDS = 180
+# 쪽 본문 복원은 원문에서 읽을 수 있는 글자의 이 비율보다 짧으면 버린다(내용 누락 방지).
+PAGE_BODY_MIN_LENGTH_RATIO = 0.4
+# 글꼴 매핑이 없는 쪽의 원문은 �·사용자 정의 영역·제어 문자로 부풀어 있다. 길이 비교에서 뺀다.
+UNREADABLE_CATEGORIES = {"Cc", "Cf", "Cn", "Co", "Cs"}
+# 원문에서 읽을 수 있는 글자가 이 비율보다 적으면 깨진 글자도 길이에 센다(대부분 깨진 쪽의 짧은 복원 방지).
+PAGE_BODY_MIN_READABLE_SHARE = 0.25
 
 
 def select_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -170,11 +181,26 @@ def valid_replacement(
     ):
         return False
     if scope == "page_body":
-        source_length = len(re.sub(r"\s+", "", source_text))
-        replacement_length = len(re.sub(r"\s+", "", replacement))
-        if source_length and replacement_length < source_length / 2:
+        # 읽을 수 있는 글자가 원문의 일부뿐이면(쪽 대부분이 깨짐) 공백을 뺀 원문 글자 수로 잰다.
+        source_length = readable_length(source_text)
+        raw_length = len(re.sub(r"\s+", "", source_text))
+        if source_length < raw_length * PAGE_BODY_MIN_READABLE_SHARE:
+            source_length = raw_length
+        replacement_length = readable_length(replacement)
+        if source_length and replacement_length < source_length * PAGE_BODY_MIN_LENGTH_RATIO:
             return False
     return all(replacement.count(token) == 1 for token in required_tokens or [])
+
+
+def readable_length(text: str) -> int:
+    """공백과 깨진 글자(�, 사용자 정의 영역, 제어 문자)를 뺀 글자 수다."""
+    return sum(
+        1
+        for character in text
+        if not character.isspace()
+        and character != "\ufffd"
+        and unicodedata.category(character) not in UNREADABLE_CATEGORIES
+    )
 
 
 def normalize_replacement(block_type: str, replacement: str) -> str:
@@ -290,6 +316,7 @@ def post_json(
     body: dict[str, Any],
     headers: dict[str, str],
     api_name: str,
+    timeout: float = PROVIDER_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     request = urllib.request.Request(
         endpoint,
@@ -298,7 +325,7 @@ def post_json(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=180) as raw:
+        with urllib.request.urlopen(request, timeout=timeout) as raw:
             return json.loads(raw.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 429 or exc.code >= 500:
@@ -314,6 +341,9 @@ def call_openai(
     prompt: str,
     payload: dict[str, Any],
     images: list[str],
+    schema: dict[str, Any] = OUTPUT_SCHEMA,
+    max_output_tokens: int = REPAIR_MAX_OUTPUT_TOKENS,
+    timeout: float = PROVIDER_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     page_body = any(
         block.get("scope") == "page_body" for block in payload.get("blocks", [])
@@ -345,9 +375,10 @@ def call_openai(
                 "type": "json_schema",
                 "name": "document_block_restoration",
                 "strict": True,
-                "schema": OUTPUT_SCHEMA,
+                "schema": schema,
             }
         },
+        "max_output_tokens": max_output_tokens,
     }
     # 추론 수준은 지원하는 모델에만 보낸다.
     effort = inference_profile("openai", model).get("reasoning_effort")
@@ -358,6 +389,7 @@ def call_openai(
         body,
         {"Authorization": f"Bearer {api_key}"},
         "OpenAI Responses API",
+        timeout,
     )
     receipt["response"] = ledger_response("openai", response)
     return json.loads(openai_response_text(response)), response.get("usage") or {}
@@ -371,6 +403,9 @@ def call_gemini(
     prompt: str,
     payload: dict[str, Any],
     images: list[str],
+    schema: dict[str, Any] = OUTPUT_SCHEMA,
+    max_output_tokens: int = REPAIR_MAX_OUTPUT_TOKENS,
+    timeout: float = PROVIDER_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     parts: list[dict[str, Any]] = [
         {
@@ -388,8 +423,9 @@ def call_gemini(
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "responseJsonSchema": OUTPUT_SCHEMA,
+            "responseJsonSchema": schema,
             "thinkingConfig": {"thinkingLevel": "LOW"},
+            "maxOutputTokens": max_output_tokens,
         },
     }
     endpoint = GEMINI_ENDPOINT.format(model=urllib.parse.quote(model, safe=""))
@@ -398,6 +434,7 @@ def call_gemini(
         body,
         {"x-goog-api-key": api_key},
         "Gemini API",
+        timeout,
     )
     receipt["response"] = ledger_response("gemini", response)
     try:
@@ -415,6 +452,9 @@ def call_claude(
     prompt: str,
     payload: dict[str, Any],
     images: list[str],
+    schema: dict[str, Any] = OUTPUT_SCHEMA,
+    max_output_tokens: int = REPAIR_MAX_OUTPUT_TOKENS,
+    timeout: float = PROVIDER_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     content: list[dict[str, Any]] = []
     for image in images:
@@ -438,11 +478,11 @@ def call_claude(
     )
     body = {
         "model": model,
-        "max_tokens": 16384,
+        "max_tokens": max_output_tokens,
         "system": prompt,
         "messages": [{"role": "user", "content": content}],
         "output_config": {
-            "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}
+            "format": {"type": "json_schema", "schema": schema}
         },
     }
     response = post_json(
@@ -450,6 +490,7 @@ def call_claude(
         body,
         {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
         "Claude Messages API",
+        timeout,
     )
     receipt["response"] = ledger_response("claude", response)
     try:
@@ -471,6 +512,9 @@ def call_page(
     prompt: str,
     payload: dict[str, Any],
     images: list[str],
+    schema: dict[str, Any] = OUTPUT_SCHEMA,
+    max_output_tokens: int = REPAIR_MAX_OUTPUT_TOKENS,
+    timeout: float = PROVIDER_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     callers = {
         "openai": call_openai,
@@ -492,6 +536,9 @@ def call_page(
                 prompt=prompt,
                 payload=payload,
                 images=images,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                timeout=timeout,
             )
     except psycopg.Error as exc:
         if result is None:
@@ -787,6 +834,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
 
         counts = {"replace": 0, "keep": 0, "rejected": 0, "failed": 0}
+        # 재시도까지 복원하지 못한 블록과 그 까닭이다. 조립 단계가 대체 안내와 복원 요약에 쓴다.
+        failures: dict[str, str] = {}
         usage: dict[str, Any] = {}
         fallback_usage: list[dict[str, Any]] = []
         batch_error: str | None = None
@@ -797,7 +846,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 merged = save_replacements(
                     args.output_dir, blocks[:1], result, provider, fragments
                 )["replace"] == 1
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ) as exc:
                 batch_error = type(exc).__name__
             if merged:
                 save_merged(args.output_dir, blocks[0], blocks[1:], provider)
@@ -814,20 +870,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     counts[name] += count
                 fallback_blocks = rejected_candidates(blocks, result, fragments)
                 counts["rejected"] -= len(fallback_blocks)
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ) as exc:
                 batch_error = type(exc).__name__
                 fallback_blocks = blocks
 
+        # 거부·실패한 블록만 한 번 더 묻는다(블록당 최대 1회 재시도).
         for block in fallback_blocks:
             try:
                 result, item_usage = request([block])
                 item_counts = save_replacements(
                     args.output_dir, [block], result, provider, fragments
                 )
-            except (TimeoutError, urllib.error.URLError, RuntimeError, ValueError):
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                RuntimeError,
+                ValueError,
+                OSError,
+            ):
                 counts["failed"] += 1
+                failures[block["id"]] = "provider_error"
                 continue
             fallback_usage.append(item_usage)
+            if item_counts["rejected"]:
+                failures[block["id"]] = "repair_rejected"
             for name, count in item_counts.items():
                 counts[name] += count
 
@@ -840,6 +914,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "fallback_calls": len(fallback_blocks),
             "fallback_usage": fallback_usage,
             "batch_error": batch_error,
+            "failures": failures,
         }
 
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:

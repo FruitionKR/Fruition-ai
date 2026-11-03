@@ -38,6 +38,11 @@ class RestoreDocumentUseCase:
             stages = [
                 RestorationStage.PREPARE_CROP_FIRST,
                 RestorationStage.SELECTIVE_REPAIR_WITH_PROVIDER,
+                *(
+                    [RestorationStage.DESCRIBE_FIGURES_WITH_PROVIDER]
+                    if command.describe_figures
+                    else []
+                ),
                 RestorationStage.ASSEMBLE_CROP_FIRST,
             ]
             for stage in stages:
