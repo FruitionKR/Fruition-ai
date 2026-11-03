@@ -6,6 +6,7 @@ from app.modules.skill.domain.instruction_placeholders import (
     NO_SELECTION,
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
     TRUNCATED_SUFFIX,
+    edit_target_selection_reference,
     render_skill_instructions,
 )
 from tests.modules.skill.test_skill_test_run import MARKDOWN, build, run
@@ -62,7 +63,9 @@ def test_edit_test_run_substitutes_placeholders_for_selection():
     )
 
     instructions = editor.edit_requests[0].skill_instructions
-    assert "긴 개요 문장이다.\n둘째 문장이다.을 요약한다." in instructions
+    # 선택 범위는 편집 payload의 대상이므로 본문을 다시 싣지 않고 범위를 가리킨다.
+    assert instructions.startswith(f"{edit_target_selection_reference(2, 3)}을 요약한다.")
+    assert "둘째 문장이다." not in instructions
     assert f"전체: {EDIT_PAYLOAD_DOCUMENT_REFERENCE}" in instructions
     assert editor.edit_requests[0].instruction in instructions
     assert MARKDOWN not in instructions
@@ -84,3 +87,18 @@ def test_selected_skill_prompt_tells_model_to_follow_literal_lines():
 
     assert "사용자가 이 Skill을 직접 선택했다" in prompt
     assert "적힌 대로 출력한다" in prompt
+
+
+def test_selection_reference_keeps_instruction_sentence_whole():
+    """선택 본문이 지침 문장 한가운데 끼면 '선택한 부분의 제목 줄은 그대로 둔다'가 본문 끝에 붙어 깨진다."""
+    instructions = "- {선택한 부분}의 제목 줄은 그대로 둔다.\n- 제목 아래 설명을 체크리스트로 바꾼다."
+    selection = "### 워크로드 리소스\n\n파드를 직접 만들 필요가 없다."
+
+    inlined = render_skill_instructions(instructions, request="적용", selection=selection)
+    referenced = render_skill_instructions(
+        instructions, request="적용", selection=selection, selection_reference=edit_target_selection_reference(16, 28)
+    )
+
+    assert "없다.의 제목 줄은 그대로 둔다." in inlined
+    assert referenced.startswith("- [선택한 부분: 요청 payload의 편집 대상 16~28줄]의 제목 줄은 그대로 둔다.\n")
+    assert "### 워크로드 리소스" not in referenced

@@ -17,6 +17,7 @@ from app.modules.skill.application.select_skill import SelectSkillUseCase
 from app.modules.skill.domain.entities import Skill, SkillVersion
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
+    edit_target_selection_reference,
     NO_SELECTION,
     REFERENCE_CONTEXT_DOCUMENT_REFERENCE,
 )
@@ -185,7 +186,7 @@ class SkillPlaceholderAgentTurnTest(unittest.TestCase):
         )
         self.assertNotIn("배액률", instructions)
 
-    def test_selection_fills_selected_text(self) -> None:
+    def test_selection_references_edit_target(self) -> None:
         use_case, editor = self._use_case(
             AgentTurnRoute(
                 action="markdown_edit",
@@ -220,10 +221,10 @@ class SkillPlaceholderAgentTurnTest(unittest.TestCase):
             )
         )
 
-        self.assertIn(
-            "SEL[이 문서는 가상의 스마트팜 토양 센서 점검 기록이다.]",
-            editor.requests[0].skill_instructions or "",
-        )
+        # 선택 범위는 편집 payload의 대상이므로 본문 대신 그 범위를 가리킨다.
+        instructions = editor.requests[0].skill_instructions or ""
+        self.assertIn(f"SEL[{edit_target_selection_reference(3, 3)}]", instructions)
+        self.assertNotIn("이 문서는 가상의 스마트팜 토양 센서 점검 기록이다.", instructions)
 
     def test_create_carries_active_document_as_source_and_references_it(self) -> None:
         use_case, editor = self._use_case(
