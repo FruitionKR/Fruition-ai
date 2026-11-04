@@ -61,7 +61,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
 | 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
 
-라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, 열린 문서를 지목한 "열린 문서를 요약해 줘"(작업 탭)를 `markdown_edit`로 보낸다. "이 문서 세 줄로 요약해 줘"처럼 원문을 바꾸라는 말이 없으면 첨부 수정이 아니다.
+라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, "요약해서 저장해 줘"를 새 문서를 만드는 `workspace_workflow`로 보낸다. 첨부가 있는 턴의 요약·번역은 원문을 바꾸라는 말이 없으면 첨부도 열린 문서도 고치지 않는다. 모델이 수정으로 골라도 코드가 계약 위반으로 돌려보낸다(`app/modules/agent/domain/attached_edit_request.py`). "열린 문서를 요약해 줘"는 `chat_answer`이고 첨부 대신 열린 문서를 근거로 답하며, "열린 문서를 세 줄로 줄여서 고쳐 줘"는 `markdown_edit`다. 첨부 없이 열린 문서만 있는 턴은 `markdown_edit` 미리 보기로 받고(사용자가 적용해야 바뀐다), 저장 갈래(`workspace_workflow`)는 저장하거나 바꾸라는 말이 있을 때만 받는다. 내용 없는 새 노트가 열려 있으면 라우터에는 열린 문서가 없는 턴과 같게 보낸다.
 
 - 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
 - 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.
@@ -71,7 +71,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 ### 첨부 문서 수정(`route.attached_edit_targets`)
 
-첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다.
+첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다. 대상이 둘 이상이면 편집·평가 지시 끝에 이 문서만 다룬다는 적용 범위를 덧붙여 "3개 모두" 같은 요청이 한 문서 평가에서 떨어지지 않게 한다. 사용자에게 보이는 요청 문장과 계획 입력은 그대로다.
 
 - 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다. 요약·번역은 원문과 따로 내는 결과라서, 원문을 바꾸라는 말("세 줄로 줄여서 고쳐 줘", "번역해서 문서에 반영해 줘")이 없으면 코드가 이 배열을 계약 위반으로 돌려보내고 라우터가 한 번 더 고른다. 다시 어기면 턴이 실패한다. 다른 편집은 이 검사를 타지 않는다.
 - 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
