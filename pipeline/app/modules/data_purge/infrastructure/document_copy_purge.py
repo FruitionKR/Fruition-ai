@@ -17,6 +17,7 @@ ingest까지 막힌다. 요청 행(ai_document_purges)의 finished_at이 비어 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import logging
 from typing import Any
 
@@ -50,6 +51,8 @@ _EVIDENCE_COLUMNS = (
     ("document_quality_reviews", "evaluations", "document_id"),
 )
 _EVIDENCE_TEXT_KEYS = {"text": "", "expected_claims": []}
+# 진행 중 run과 연달아 겹치면 이번 시도에서는 그 행을 넘기고 다음 주기에 다시 본다.
+_EVIDENCE_UPDATE_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -57,13 +60,15 @@ class DocumentCopyPurge:
     deleted_artifacts: int = 0
     pending_artifacts: int = 0  # 객체 삭제에 실패해 행을 남겼다. 다음 주기에 다시 시도한다.
     pending_source_objects: int = 0  # 소스 페이지 객체 삭제에 실패했다. 다음 주기에 접두사를 다시 훑는다.
+    pending_evidence: int = 0  # 근거 행이 계속 갱신되어 비우지 못했다. 다음 주기에 다시 시도한다.
     failed: bool = False  # 예기치 못한 실패로 이번 시도를 끝냈다. 다음 주기에 처음부터 다시 시도한다.
     # 결과 event로 document에 알린다. core_db에는 페이지 종류가 없어 document가 버전 본문을 지울 페이지를 스스로 가릴 수 없다.
     source_page_ids: tuple[str, ...] = ()
 
     @property
     def finished(self) -> bool:
-        return not self.failed and self.pending_artifacts == 0 and self.pending_source_objects == 0
+        return (not self.failed and self.pending_artifacts == 0 and self.pending_source_objects == 0
+                and self.pending_evidence == 0)
 
 
 @dataclass(frozen=True)
@@ -129,7 +134,11 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
         with database.connect_ai() as conn:
             scrubbed = _scrub_rows(conn, workspace_id, document_id)
         result = _delete_artifacts(workspace_id, document_id)
-        result = replace(result, pending_source_objects=_delete_source_objects(workspace_id, document_id))
+        result = replace(
+            result,
+            pending_source_objects=_delete_source_objects(workspace_id, document_id),
+            pending_evidence=scrubbed["evidence_pending"],
+        )
     except Exception as exc:
         # 오류 원문은 SQL 값이나 키를 담을 수 있어 타입만 남긴다.
         logger.warning("[문서 복사본 삭제 실패] workspace_id=%s document_id=%s type=%s",
@@ -233,7 +242,7 @@ def _scrub_rows(conn: Any, workspace_id: str, document_id: str) -> dict[str, int
     # 휴지통 이동 때 지웠어야 하는 행이다. 그 command가 처리되지 못했어도 본문이 남지 않게 다시 지운다.
     for table in ("source_blocks", "source_block_snapshots", "document_quality_reviews", "document_derived_state"):
         counts[table] = conn.execute(f"DELETE FROM {table} WHERE document_id = %(doc)s", params).rowcount
-    counts["evidence"] = _blank_evidence(conn, params)
+    counts["evidence"], counts["evidence_pending"] = _blank_evidence(conn, params)
     counts["ai_task_changes"] = _delete_journal_changes(conn, params)
     return counts
 
@@ -329,20 +338,46 @@ def _scrub_agent_operations(conn: Any, params: dict[str, str]) -> dict[str, int]
     return {"undo_snapshots": undo, "tool_results": forward, "skipped_operations": skipped}
 
 
-def _blank_evidence(conn: Any, params: dict[str, str]) -> int:
-    changed = 0
-    for table, column, key in _EVIDENCE_COLUMNS:
+def _blank_evidence(conn: Any, params: dict[str, str]) -> tuple[int, int]:
+    changed = pending = 0
+    for target in _EVIDENCE_COLUMNS:
+        table, column, key = target
         rows = conn.execute(
-            f"SELECT {key} AS key, {column} AS value FROM {table} "
+            f"SELECT {key} AS key, {column}::text AS value FROM {table} "
             f"WHERE workspace_id = %s AND {column}::text LIKE %s",
             (params["ws"], f"%{params['doc']}%"),
         ).fetchall()
         for row in rows:
-            cleaned = _blank_source_text(row["value"], params["doc"])
-            if cleaned != row["value"]:
-                conn.execute(f"UPDATE {table} SET {column} = %s WHERE {key} = %s", (Json(cleaned), row["key"]))
-                changed += 1
-    return changed
+            blanked = _blank_row(conn, target, row["key"], row["value"], params["doc"])
+            changed += blanked is True
+            pending += blanked is None
+    return changed, pending
+
+
+def _blank_row(conn: Any, target: tuple[str, str, str], row_key: Any, stored: str, document_id: str) -> bool | None:
+    """읽은 값이 그대로일 때만 쓴다. 근거는 임의의 깊이에 있어 jsonb 경로로 지정할 수 없고, 진행 중 run이 같은 행을 갱신한다.
+
+    float로 옮기면 달라지는 숫자가 있어 jsonb가 아니라 text로 비교한다. 비웠으면 True, 비울 것이 없으면 False, 포기하면 None이다.
+    """
+    table, column, key = target
+    for _ in range(_EVIDENCE_UPDATE_ATTEMPTS):
+        value = json.loads(stored)
+        cleaned = _blank_source_text(value, document_id)
+        if cleaned == value:
+            return False
+        if conn.execute(
+            f"UPDATE {table} SET {column} = %s WHERE {key} = %s AND {column}::text = %s",
+            (Json(cleaned), row_key, stored),
+        ).rowcount:
+            return True
+        row = conn.execute(
+            f"SELECT {column}::text AS value FROM {table} WHERE {key} = %s AND {column} IS NOT NULL",
+            (row_key,),
+        ).fetchone()
+        if row is None:
+            return False
+        stored = row["value"]
+    return None
 
 
 def _blank_source_text(value: Any, document_id: str) -> Any:
