@@ -90,7 +90,7 @@ class EditEvaluationTest(unittest.TestCase):
                 )
                 self.assertNotIn("범위 밖", json.dumps(payload, ensure_ascii=False))
 
-    def test_agent_turn_cannot_return_an_edit_rejected_by_evaluator(self):
+    def test_agent_turn_returns_best_edit_when_evaluation_rejects_all_attempts(self):
         client = ScriptedClient([proposal(), FAILED, proposal(), FAILED])
         editor = ChatCompletionsMarkdownEditor(client, "system")
         router = Mock()
@@ -107,14 +107,14 @@ class EditEvaluationTest(unittest.TestCase):
             markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
             markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
         )
-        with self.assertRaises(MarkdownOutputContractError):
-            use_case.execute(
-                AgentTurnRequest(
-                    message="간결하게 바꿔줘.",
-                    skill_mode="off",
-                    active_markdown_context=ActiveMarkdownContext(markdown="원래 문장"),
-                )
+        result = use_case.execute(
+            AgentTurnRequest(
+                message="간결하게 바꿔줘.",
+                skill_mode="off",
+                active_markdown_context=ActiveMarkdownContext(markdown="원래 문장"),
             )
+        )
+        self.assertEqual(result.edit.replacement_markdown, "수정한 문장")
         self.assertEqual(len(client.calls), 4)
 
     def request(self, goal="convert_format"):
@@ -159,9 +159,8 @@ class EditEvaluationTest(unittest.TestCase):
             client.calls[2][1]["contract_failures"],
         )
 
-    def test_rejected_or_invalid_evaluation_never_returns_proposal(self):
+    def test_invalid_evaluation_without_valid_candidate_never_returns_proposal(self):
         for verdict in [
-            FAILED,
             {},
             {"passed": "true", "failures": []},
             {"passed": True, "failures": ["위반"]},
@@ -190,11 +189,7 @@ class EditEvaluationTest(unittest.TestCase):
                     responses += [proposal("정리한 문장"), FAILED]
                 client = ScriptedClient(responses)
                 editor = ChatCompletionsMarkdownEditor(client, "system")
-                if verdict["passed"]:
-                    self.assertEqual(editor.generate_edit(self.request("cleanup")).edit.replacement_markdown, "정리한 문장")
-                else:
-                    with self.assertRaises(MarkdownOutputContractError):
-                        editor.generate_edit(self.request("cleanup"))
+                self.assertEqual(editor.generate_edit(self.request("cleanup")).edit.replacement_markdown, "정리한 문장")
                 self.assertEqual(len(client.calls), len(responses))
                 self.assertEqual(client.calls[1][1]["original_markdown"], "원래 문장")
                 self.assertIn("segments", client.calls[0][1])
@@ -202,13 +197,48 @@ class EditEvaluationTest(unittest.TestCase):
 
     def test_invalid_generation_skips_evaluator_and_shares_retry_budget(self):
         client = ScriptedClient([proposal(""), proposal(), FAILED])
-        with self.assertRaises(MarkdownOutputContractError):
-            ChatCompletionsMarkdownEditor(client, "system").generate_edit(
-                self.request()
-            )
+        result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+        self.assertEqual(result.edit.replacement_markdown, "수정한 문장")
         self.assertEqual(len(client.calls), 3)
         self.assertNotIn("proposal", client.calls[1][1])
         self.assertIn("proposal", client.calls[2][1])
+
+    def test_returns_fewest_failures_and_prefers_later_attempt_on_ties(self):
+        worse = {"passed": False, "failures": ["제약 위반", "의미 변경"]}
+        for first, second, expected in [
+            (FAILED, worse, "첫 시도"),
+            (worse, FAILED, "두 번째 시도"),
+            (FAILED, FAILED, "두 번째 시도"),
+        ]:
+            with self.subTest(first=first, second=second):
+                client = ScriptedClient([proposal("첫 시도"), first, proposal("두 번째 시도"), second])
+                result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+                self.assertEqual(result.edit.replacement_markdown, expected)
+
+    def test_keeps_previous_candidate_when_retry_is_invalid(self):
+        for retry in [proposal(""), JsonParseError("invalid JSON")]:
+            with self.subTest(retry=retry):
+                client = ScriptedClient([proposal("첫 시도"), FAILED, retry])
+                result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+                self.assertEqual(result.edit.replacement_markdown, "첫 시도")
+
+    def test_keeps_previous_candidate_when_retry_evaluation_is_invalid(self):
+        client = ScriptedClient([proposal("첫 시도"), FAILED, proposal("두 번째 시도"), {}])
+        result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+        self.assertEqual(result.edit.replacement_markdown, "첫 시도")
+
+    def test_source_range_candidate_can_be_best_attempt(self):
+        source = {"summary": "수정", "edits": [{"id": "text-0001", "replacement": "원문 구간 시도"}]}
+        worse = {"passed": False, "failures": ["제약 위반", "의미 변경"]}
+        client = ScriptedClient([source, FAILED, proposal(), worse, proposal(), worse])
+        result = ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request("cleanup"))
+        self.assertEqual(result.edit.replacement_markdown, "원문 구간 시도")
+
+    def test_no_structurally_valid_attempt_still_raises(self):
+        client = ScriptedClient([proposal(""), proposal("")])
+        with self.assertRaises(MarkdownOutputContractError):
+            ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+        self.assertEqual(len(client.calls), 2)
 
     def test_evaluator_transport_failure_does_not_accept_proposal(self):
         client = ScriptedClient([proposal(), RuntimeError("provider unavailable")])
