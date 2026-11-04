@@ -129,7 +129,9 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 | `agent_runs.result`(이 문서의 `markdown_turn`) | `edit`·`generated_markdown`을 뺀다 |
 | 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서인 항목의 `text`·`expected_claims`만 비운다 |
 | `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
-| `ai_task_changes` | 이 문서·소스 페이지의 변경 기록을 지운다(소스 페이지 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다 |
+| `pipeline_runs.manifest`(이 문서의 run. post_ingest는 `document_id`가 없어 같은 id의 `ai_task_runs.command`로 찾는다) | `{"scrubbed": true}`로 바꾼다 |
+| `ai_task_changes` | 이 문서·소스 페이지·이 문서 run의 변경 기록을 지운다(소스 페이지·소스 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다. 다른 문서 run의 `pipeline_runs`·`document_quality_reviews` 기록은 이 문서의 근거만 비운다 |
+| `wiki/{ws}/clusters/active.md`·`archived.md`, `wiki/{ws}/logs/*.md`와 그 객체 변경 기록 | 이 문서를 인용한 근거 줄과 이 문서의 편입 항목만 뺀다. 근거가 없어진 클러스터는 지우고, 다른 문서가 남은 클러스터의 대표명·승격 사유는 남긴다. 변경 기록에도 같은 변환을 적용해 작업 취소의 대조가 맞고 본문이 되살아나지 않는다. 개념 잠금을 5초 안에 못 잡으면 다음 주기로 넘긴다 |
 | `pipeline_runs.manifest` | `{"scrubbed": true}`로 바꾼다 |
 | 소스 페이지 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`), `wiki_pages.summary`·`markdown_uri` | 객체를 지우고 요약은 빈 값, `markdown_uri`는 NULL로 둔다. 행은 `deleted`로 남긴다. 위키 조회·그래프·임베딩은 활성 페이지만 읽고, 로그 되돌리기는 이 페이지를 건너뛰고 개념 페이지를 복구한다 |
 | `source_blocks`·`source_block_snapshots`·`document_quality_reviews`·`document_derived_state` | 행을 지운다 |

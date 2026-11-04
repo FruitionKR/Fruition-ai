@@ -1,11 +1,13 @@
 """문서 영구 삭제(document_purged)가 AI 쪽 본문 복사본을 지우는지 실제 PostgreSQL로 검증한다. 객체 저장소만 가짜다."""
 
 import hashlib
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from minio.error import S3Error
 from psycopg.types.json import Json
 
 from app.modules.agent_run.application.approve_agent_plan import ApproveAgentPlanUseCase
@@ -44,7 +46,23 @@ class WikiObjects:
 
     def __init__(self) -> None:
         self.keys: set[str] = set()
+        self.texts: dict[str, dict[str, str]] = {}  # 본문을 읽고 다시 쓰는 공유 객체
         self.failing = False
+
+    def get_object(self, bucket, key):
+        if self.failing:
+            raise OSError("storage down")
+        if key not in self.texts:
+            raise S3Error(code="NoSuchKey", message="missing", resource="", request_id="", host_id="", response=None)
+        value = self.texts[key]
+        return SimpleNamespace(read=lambda: value["text"].encode(), headers={"Content-Type": value["content_type"]},
+                               close=lambda: None, release_conn=lambda: None)
+
+    def put_object(self, bucket, key, data, length, content_type):
+        if self.failing:
+            raise OSError("storage down")
+        self.texts[key] = {"text": data.read().decode(), "content_type": content_type}
+        self.keys.add(key)
 
     def list_objects(self, bucket, prefix, recursive):
         assert recursive
@@ -56,6 +74,7 @@ class WikiObjects:
         if self.failing:
             raise OSError("storage down")
         self.keys.discard(key)
+        self.texts.pop(key, None)
 
 
 @pytest.fixture
@@ -69,6 +88,7 @@ def wiki_objects(monkeypatch) -> WikiObjects:
 def stack(repositories, cleanup_storage, wiki_objects, monkeypatch):  # noqa: F811
     runs, jobs, connect = repositories
     monkeypatch.setattr(journal, "connect", connect)
+    monkeypatch.setenv("AI_DATABASE_URL", os.environ["TEST_AGENT_DATABASE_URL"])  # 워크스페이스 개념 잠금
     return runs, jobs, connect, cleanup_storage
 
 
@@ -122,9 +142,16 @@ def _undo_metadata(connect, operation_id: str) -> dict:
 # ── 단일 문서·여러 문서 ─────────────────────────────────────────────
 
 
+def _finish_run(connect) -> None:
+    """실행 중인 run은 끝난 뒤에 쓸 수 있어 삭제 정리가 끝나지 않는다."""
+    with connect() as conn:
+        conn.execute("UPDATE agent_runs SET status = 'completed' WHERE id = %s", (RUN_ID,))
+
+
 def test_single_document_removes_artifact_objects_rows_and_snapshot(stack) -> None:
     runs, jobs, connect, objects = stack
     _execute_two_documents(runs, jobs, connect)
+    _finish_run(connect)
 
     result = _purge()
 
@@ -227,6 +254,7 @@ def test_undo_and_created_document_artifacts_are_removed_by_link(stack) -> None:
 def test_object_failure_keeps_row_and_sweep_retries(stack) -> None:
     runs, jobs, connect, objects = stack
     _execute_two_documents(runs, jobs, connect)
+    _finish_run(connect)
     failing = next(iter(_keys(1)))
     objects.failing.add(failing)
 

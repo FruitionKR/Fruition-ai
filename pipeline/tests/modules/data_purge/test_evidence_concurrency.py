@@ -47,7 +47,7 @@ def _seed(stack, target, value=EVIDENCE) -> None:  # noqa: F811
     elif target is AGENT:
         runs.create_with_planning_job(_workflow_run(), "edit-job")
         with connect() as conn:
-            conn.execute("UPDATE agent_runs SET result = %s WHERE id = %s", (Json(value), RUN_ID))
+            conn.execute("UPDATE agent_runs SET result = %s, status = 'completed' WHERE id = %s", (Json(value), RUN_ID))
     elif target is PIPELINE:
         with connect() as conn:
             _insert_pipeline_run(conn, value)

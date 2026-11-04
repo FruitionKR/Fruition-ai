@@ -11,7 +11,13 @@ ingest까지 막힌다. 요청 행(ai_document_purges)의 finished_at이 비어 
 소스 페이지는 이 문서 하나에서만 나온다. 그래서 본문 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`)와
 요약을 지운다. 행은 status='deleted'로 남긴다. 로그 되돌리기가 page id로 찾고 슬러그 고유 제약과 tombstone이 그대로 맞아야 하며,
 위키 조회·그래프·임베딩은 활성 페이지만 읽어 영향이 없다. markdown_uri가 NULL인 삭제 페이지가 "영구 삭제함" 표시다.
-개념 페이지·기여·클러스터는 여러 문서의 파생이라 지우지 않는다.
+개념 페이지·기여는 여러 문서의 파생이라 지우지 않는다.
+
+클러스터 파일과 편입 로그는 여러 문서가 함께 쓰는 객체라 이 문서의 항목만 뺀다(purged_document_markdown). 작업 기록의 값도 같은
+변환을 거쳐 작업 취소가 계속 맞고 본문을 되살리지 않는다. 다른 편입과 같은 개념 잠금을 잡되 오래 기다리지 않고, 못 잡으면 다음 주기로 넘긴다.
+
+진행 중이던 run은 삭제 전에 읽은 근거를 스캔 뒤에 쓸 수 있다. 그래서 스캔 전에 그런 run이 있으면 끝내지 않고(active_runs) 다음 주기에
+다시 훑는다. 지난 스캔 뒤에 시작한 run은 지워진 본문을 읽을 수 없어 기다리지 않는다.
 """
 
 from __future__ import annotations
@@ -29,9 +35,15 @@ from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
     _delete_if_present,
     _is_in_run_scope,
 )
+from app.modules.data_purge.infrastructure.purged_document_markdown import (
+    without_document_clusters,
+    without_document_log,
+)
+from app.modules.task_cancellation.infrastructure import object_change_journal, postgres_task_journal as journal
 from app.modules.wiki_generation.domain.text_utils import slugify
 from app.modules.wiki_ingestion.infrastructure import object_storage
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import concept_write_lock
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +65,15 @@ _EVIDENCE_COLUMNS = (
 _EVIDENCE_TEXT_KEYS = {"text": "", "expected_claims": []}
 # 진행 중 run과 연달아 겹치면 이번 시도에서는 그 행을 넘기고 다음 주기에 다시 본다.
 _EVIDENCE_UPDATE_ATTEMPTS = 3
+# 근거가 든 행의 작업 기록. 비운 값과 맞도록 변경 전후 값을 같은 방식으로 비운다.
+_EVIDENCE_JOURNAL_TABLES = ["pipeline_runs", "document_quality_reviews"]
+# 소비자에서 도는 경로라 다른 편입이 끝나기를 오래 기다려 파티션을 막지 않는다.
+_SHARED_OBJECT_LOCK_TIMEOUT = "5s"
+# 끝날 때 결과를 쓸 수 있는 상태. 승인을 기다리는 agent run은 쓰지 않는다.
+_ACTIVE_TASK_STATUSES = ["running", "cancel_requested", "rolling_back"]
+_ACTIVE_AGENT_STATUSES = ["queued", "planning", "executing", "verifying", "cancel_requested", "rolling_back"]
+# 죽은 worker의 run이 정리를 영원히 붙잡지 않게 이보다 오래된 run은 기다리지 않는다.
+_ACTIVE_RUN_MAX_AGE = "1 day"
 
 
 @dataclass(frozen=True)
@@ -61,6 +82,8 @@ class DocumentCopyPurge:
     pending_artifacts: int = 0  # 객체 삭제에 실패해 행을 남겼다. 다음 주기에 다시 시도한다.
     pending_source_objects: int = 0  # 소스 페이지 객체 삭제에 실패했다. 다음 주기에 접두사를 다시 훑는다.
     pending_evidence: int = 0  # 근거 행이 계속 갱신되어 비우지 못했다. 다음 주기에 다시 시도한다.
+    pending_shared_objects: int = 0  # 클러스터·로그 객체를 고치지 못했다. 다음 주기에 다시 시도한다.
+    active_runs: int = 0  # 스캔 뒤에 결과를 쓸 수 있는 run. 끝난 다음 주기에 다시 훑는다.
     failed: bool = False  # 예기치 못한 실패로 이번 시도를 끝냈다. 다음 주기에 처음부터 다시 시도한다.
     # 결과 event로 document에 알린다. core_db에는 페이지 종류가 없어 document가 버전 본문을 지울 페이지를 스스로 가릴 수 없다.
     source_page_ids: tuple[str, ...] = ()
@@ -68,7 +91,7 @@ class DocumentCopyPurge:
     @property
     def finished(self) -> bool:
         return (not self.failed and self.pending_artifacts == 0 and self.pending_source_objects == 0
-                and self.pending_evidence == 0)
+                and self.pending_evidence == 0 and self.pending_shared_objects == 0 and self.active_runs == 0)
 
 
 @dataclass(frozen=True)
@@ -103,14 +126,18 @@ def purge_pending_documents(limit: int = PENDING_PURGE_BATCH_SIZE) -> PendingDoc
         ).fetchall()
     finished = 0
     unfinished = 0
+    failures = 0
     for row in rows:
         result = _attempt(row["workspace_id"], row["document_id"])
         if result.finished:
             finished += 1
             continue
         unfinished += 1
-        # 저장소 장애면 객체마다 재시도까지 기다려 agent job이 함께 밀린다.
-        if unfinished >= MAX_STORAGE_FAILURES_PER_CYCLE:
+        # 저장소 장애면 객체마다 재시도까지 기다려 agent job이 함께 밀린다. run을 기다리는 것은 장애가 아니다.
+        if replace(result, active_runs=0).finished:
+            continue
+        failures += 1
+        if failures >= MAX_STORAGE_FAILURES_PER_CYCLE:
             break
     return PendingDocumentPurges(finished=finished, pending=unfinished)
 
@@ -130,6 +157,8 @@ def is_source_page_purged(workspace_id: str, page_id: str) -> bool:
 
 def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
     try:
+        # 스캔 전에 센다. 스캔 뒤에 세면 그 사이에 끝난 run의 쓰기를 놓친다.
+        active_runs = _count_active_runs(workspace_id, document_id)
         _retire_active_source_pages(workspace_id, document_id)
         with database.connect_ai() as conn:
             scrubbed = _scrub_rows(conn, workspace_id, document_id)
@@ -138,6 +167,8 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
             result,
             pending_source_objects=_delete_source_objects(workspace_id, document_id),
             pending_evidence=scrubbed["evidence_pending"],
+            pending_shared_objects=_strip_shared_objects(workspace_id, document_id),
+            active_runs=active_runs,
         )
     except Exception as exc:
         # 오류 원문은 SQL 값이나 키를 담을 수 있어 타입만 남긴다.
@@ -153,11 +184,33 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
         )
     logger.info(
         "[문서 복사본 삭제] workspace_id=%s document_id=%s rows=%s deleted_artifacts=%s pending_artifacts=%s "
-        "pending_source_objects=%s failed=%s",
+        "pending_source_objects=%s pending_shared_objects=%s active_runs=%s failed=%s",
         workspace_id, document_id, scrubbed, result.deleted_artifacts, result.pending_artifacts,
-        result.pending_source_objects, result.failed,
+        result.pending_source_objects, result.pending_shared_objects, result.active_runs, result.failed,
     )
     return result
+
+
+def _count_active_runs(workspace_id: str, document_id: str) -> int:
+    """지난 스캔이 끝나기 전에 시작해 아직 안 끝난 run 수. 첫 시도는 지금까지 시작한 run을 모두 센다."""
+    with database.connect_ai() as conn:
+        return conn.execute(
+            """
+            WITH scan AS (
+                SELECT COALESCE(
+                    (SELECT last_attempt_at FROM ai_document_purges WHERE workspace_id = %(ws)s AND document_id = %(doc)s),
+                    now()) AS at
+            )
+            SELECT (SELECT count(*) FROM ai_task_runs, scan
+                    WHERE workspace_id = %(ws)s AND status = ANY(%(tasks)s)
+                      AND created_at <= scan.at AND created_at > now() - %(age)s::interval)
+                 + (SELECT count(*) FROM agent_runs, scan
+                    WHERE workspace_id = %(ws)s AND status = ANY(%(agents)s)
+                      AND created_at <= scan.at AND created_at > now() - %(age)s::interval) AS count
+            """,
+            {"ws": workspace_id, "doc": document_id, "tasks": _ACTIVE_TASK_STATUSES,
+             "agents": _ACTIVE_AGENT_STATUSES, "age": _ACTIVE_RUN_MAX_AGE},
+        ).fetchone()["count"]
 
 
 def _source_page_ids(conn: Any, workspace_id: str, document_id: str, *, active_only: bool = False) -> list[str]:
@@ -207,10 +260,81 @@ def _delete_source_objects(workspace_id: str, document_id: str) -> int:
     return 0
 
 
+def _strip_shared_objects(workspace_id: str, document_id: str) -> int:
+    """클러스터·로그 객체와 그 작업 기록에서 이 문서의 항목을 뺀다. 실패하면 1을 돌려준다. 다시 해도 결과가 같다."""
+    root = f"wiki/{workspace_id}/"
+    clusters = [f"{root}clusters/active.md", f"{root}clusters/archived.md"]
+    logs = f"{root}logs/"
+
+    def strip(key: str, text: str) -> str:
+        return without_document_log(text, document_id) if key.startswith(logs) else without_document_clusters(text, document_id)
+
+    try:
+        storage = object_storage.client()
+        bucket = object_storage.bucket_name()
+        with database.connect_ai() as conn:
+            changes = conn.execute(
+                """
+                SELECT change.id, change.row_key->>'key' AS key, change.before_value, change.after_value
+                FROM ai_task_changes change
+                WHERE change.run_id = ANY(%(runs)s) AND change.table_name = '__object__'
+                  AND (change.row_key->>'key' = ANY(%(clusters)s) OR left(change.row_key->>'key', %(length)s) = %(logs)s)
+                  AND (change.before_value::text LIKE %(doc)s OR change.after_value::text LIKE %(doc)s)
+                """,
+                {"runs": _workspace_run_ids(conn, workspace_id), "clusters": clusters, "logs": logs,
+                 "length": len(logs), "doc": f"%{document_id}%"},
+            ).fetchall()
+        # 잠금 전에 고를 객체를 가린다. 로그는 날짜마다 하나라 다 읽는 동안 그 워크스페이스의 편입을 막지 않는다.
+        # 잠금 밖에서 놓친 이 문서의 항목은 진행 중 run이 쓴 것이므로 active_runs가 다음 주기에 다시 보게 한다.
+        keys = {change["key"] for change in changes}
+        for key in [*clusters, *(item.object_name for item in storage.list_objects(bucket, prefix=logs, recursive=True))]:
+            current = object_change_journal.snapshot(storage, bucket, key)
+            if current is not None and strip(key, current["text"]) != current["text"]:
+                keys.add(key)
+        if not keys:
+            return 0
+        # 편입은 이 잠금 안에서 파일을 읽어 덧붙인다. 잠금 없이 쓰면 그 덧붙임이 지운 항목을 되살린다.
+        with concept_write_lock(workspace_id, f"document-purge:{document_id}", _SHARED_OBJECT_LOCK_TIMEOUT):
+            for key in sorted(keys):
+                _strip_shared_object(storage, bucket, key, lambda text, key=key: strip(key, text),
+                                     [change for change in changes if change["key"] == key])
+    except Exception as exc:
+        # 잠금 시간 초과를 포함한다. 오류 원문은 키를 담을 수 있어 타입만 남긴다.
+        logger.warning("공유 객체 정리 실패: document_id=%s type=%s", document_id, type(exc).__name__)
+        return 1
+    return 0
+
+
+def _strip_shared_object(storage: Any, bucket: str, key: str, strip: Any, changes: list[dict[str, Any]]) -> None:
+    def stripped(value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return value if value is None else {**value, "text": strip(value["text"])}
+
+    # change_object와 같은 순서로 잠근다. 작업 취소(undo_object)와도 이 객체 잠금으로 겹치지 않는다.
+    with object_change_journal.write_fence(key, True), journal.connect() as conn:
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", (_SHARED_OBJECT_LOCK_TIMEOUT,))
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"ai-object:{bucket}/{key}",))
+        current = object_change_journal.snapshot(storage, bucket, key)
+        if stripped(current) != current:
+            object_change_journal.apply(storage, bucket, key, stripped(current))
+        for change in changes:
+            conn.execute(
+                "UPDATE ai_task_changes SET before_value = %s, after_value = %s WHERE id = %s",
+                (Json(stripped(change["before_value"])), Json(stripped(change["after_value"])), change["id"]),
+            )
+
+
 def _scrub_rows(conn: Any, workspace_id: str, document_id: str) -> dict[str, int]:
-    params = {"ws": workspace_id, "doc": document_id}
+    params: dict[str, Any] = {"ws": workspace_id, "doc": document_id}
     _require_same_workspace(conn, params)
     counts = _scrub_agent_operations(conn, params)
+    # post_ingest 행은 document_id가 비어 있고 같은 id의 작업 command만 문서를 안다.
+    params["runs"] = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM ai_task_runs WHERE workspace_id = %s AND command->>'document_id' = %s AND kind = ANY(%s)",
+            (workspace_id, document_id, _DOCUMENT_TASK_KINDS),
+        ).fetchall()
+    ]
     counts["source_pages"] = conn.execute(
         "UPDATE wiki_pages SET summary = '', markdown_uri = NULL, updated_at = now() "
         "WHERE id = ANY(%s) AND status = 'deleted'",
@@ -235,7 +359,7 @@ def _scrub_rows(conn: Any, workspace_id: str, document_id: str) -> dict[str, int
     counts["pipeline_runs"] = conn.execute(
         """
         UPDATE pipeline_runs SET manifest = %(scrubbed)s, updated_at = now()
-        WHERE workspace_id = %(ws)s AND document_id = %(doc)s AND manifest IS NOT NULL
+        WHERE workspace_id = %(ws)s AND (document_id = %(doc)s OR id::text = ANY(%(runs)s)) AND manifest IS NOT NULL
         """,
         {**params, "scrubbed": _SCRUBBED},
     ).rowcount
@@ -244,6 +368,9 @@ def _scrub_rows(conn: Any, workspace_id: str, document_id: str) -> dict[str, int
         counts[table] = conn.execute(f"DELETE FROM {table} WHERE document_id = %(doc)s", params).rowcount
     counts["evidence"], counts["evidence_pending"] = _blank_evidence(conn, params)
     counts["ai_task_changes"] = _delete_journal_changes(conn, params)
+    blanked, pending = _blank_journal_evidence(conn, params)
+    counts["journal_evidence"] = blanked
+    counts["evidence_pending"] += pending
     return counts
 
 
@@ -354,6 +481,33 @@ def _blank_evidence(conn: Any, params: dict[str, str]) -> tuple[int, int]:
     return changed, pending
 
 
+def _workspace_run_ids(conn: Any, workspace_id: str) -> list[str]:
+    """작업 기록은 워크스페이스 열이 없다. 조인하면 계획기가 표 전체의 본문을 먼저 훑을 수 있어 run id를 먼저 읽어 인덱스로 찾는다."""
+    return [row["id"] for row in conn.execute("SELECT id FROM ai_task_runs WHERE workspace_id = %s", (workspace_id,)).fetchall()]
+
+
+def _blank_journal_evidence(conn: Any, params: dict[str, Any]) -> tuple[int, int]:
+    """다른 문서 run의 작업 기록에 든 이 문서의 근거를 비운다. 지우면 그 run을 취소할 때 다른 문서의 행이 되돌아가지 않는다."""
+    changed = pending = 0
+    rows = conn.execute(
+        """
+        SELECT change.id, change.before_value::text AS before_value, change.after_value::text AS after_value
+        FROM ai_task_changes change
+        WHERE change.run_id = ANY(%(runs)s) AND change.table_name = ANY(%(tables)s)
+          AND (change.before_value::text LIKE %(pattern)s OR change.after_value::text LIKE %(pattern)s)
+        """,
+        {"runs": _workspace_run_ids(conn, params["ws"]), "tables": _EVIDENCE_JOURNAL_TABLES, "pattern": f"%{params['doc']}%"},
+    ).fetchall()
+    for row in rows:
+        for column in ("before_value", "after_value"):
+            if row[column] is None:
+                continue
+            blanked = _blank_row(conn, ("ai_task_changes", column, "id"), row["id"], row[column], params["doc"])
+            changed += blanked is True
+            pending += blanked is None
+    return changed, pending
+
+
 def _blank_row(conn: Any, target: tuple[str, str, str], row_key: Any, stored: str, document_id: str) -> bool | None:
     """읽은 값이 그대로일 때만 쓴다. 근거는 임의의 깊이에 있어 jsonb 경로로 지정할 수 없고, 진행 중 run이 같은 행을 갱신한다.
 
@@ -398,17 +552,21 @@ def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
 
     지운 행은 작업 취소가 되돌리지 않으므로 본문이 되살아나지 않는다. 개념 페이지는 여러 문서의 파생이라 남긴다.
     """
-    query = {**params, "pages": _source_page_ids(conn, params["ws"], params["doc"])}
+    query = {
+        **params,
+        "pages": _source_page_ids(conn, params["ws"], params["doc"]),
+        "source_key": f"wiki/{params['ws']}/sources/{params['doc']}.md",
+        "workspace_runs": _workspace_run_ids(conn, params["ws"]),
+    }
     deleted = conn.execute(
         """
-        DELETE FROM ai_task_changes vector USING ai_task_runs run
-        WHERE vector.run_id = run.id AND run.workspace_id = %(ws)s
+        DELETE FROM ai_task_changes vector
+        WHERE vector.run_id = ANY(%(workspace_runs)s)
           AND vector.table_name = 'wiki_embedding_vectors'
           AND vector.row_key->>'id' IN (
               SELECT COALESCE(unit.after_value, unit.before_value)->>'embedding_vector_id'
               FROM ai_task_changes unit
-              JOIN ai_task_runs unit_run ON unit_run.id = unit.run_id
-              WHERE unit_run.workspace_id = %(ws)s AND unit.table_name = 'wiki_embedding_units'
+              WHERE unit.run_id = ANY(%(workspace_runs)s) AND unit.table_name = 'wiki_embedding_units'
                 AND COALESCE(unit.after_value, unit.before_value)->>'source_document_id' = %(doc)s
           )
         """,
@@ -416,8 +574,8 @@ def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
     ).rowcount
     deleted += conn.execute(
         """
-        DELETE FROM ai_task_changes change USING ai_task_runs run
-        WHERE change.run_id = run.id AND run.workspace_id = %(ws)s
+        DELETE FROM ai_task_changes change
+        WHERE change.run_id = ANY(%(workspace_runs)s)
           AND (
               change.row_key->>'document_id' = %(doc)s
               OR change.before_value->>'document_id' = %(doc)s
@@ -426,6 +584,8 @@ def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
               OR change.after_value->>'source_document_id' = %(doc)s
               OR (change.table_name = 'wiki_pages' AND change.row_key->>'id' = ANY(%(pages)s))
               OR change.row_key->>'page_id' = ANY(%(pages)s)
+              OR (change.table_name = 'pipeline_runs' AND change.row_key->>'id' = ANY(%(runs)s))
+              OR (change.table_name = '__object__' AND change.row_key->>'key' = %(source_key)s)
               OR (change.table_name = '__object__'
                   AND split_part(change.row_key->>'key', '/', 1) = 'wiki'
                   AND split_part(change.row_key->>'key', '/', 2) = %(ws)s
