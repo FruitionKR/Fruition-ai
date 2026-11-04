@@ -137,7 +137,7 @@ class RollbackAgentRunUseCase:
             content_hash = hashlib.sha256(before["markdown"].encode("utf-8")).hexdigest()
             if before["content_hash"] != content_hash:
                 raise ValueError("rollback_snapshot_hash_mismatch")
-        # 문서 편집은 document-svc가 계획 뒤의 변경과 병합하거나 409로 막는다. 여기서 막으면 병합에 닿지 못한다(ADR-0032).
+        # 문서 편집은 document-svc가 계획 뒤의 변경과 병합하거나 409로 막는다. 여기서 막으면 병합에 닿지 못한다(document-svc ADR-0032).
         if tool != "apply_document_edit" and version != arguments["base_version"]:
             raise ValueError("rollback_snapshot_version_conflict")
         return before
