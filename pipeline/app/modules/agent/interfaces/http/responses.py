@@ -29,6 +29,7 @@ def _to_response(result: AgentTurnResult) -> AgentTurnResponse:
             persist=result.route.persist,
             required_capabilities=list(result.route.required_capabilities),
             notice_kind=result.route.notice_kind,
+            attached_edit_targets=list(result.route.attached_edit_targets),
         ),
         message=result.message,
         clarify_reason=result.clarify_reason,

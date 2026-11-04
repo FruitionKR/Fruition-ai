@@ -100,6 +100,9 @@ class SkillAuthoringReference:
     source_blocks: tuple[tuple[str, str], ...] = ()
     # document-svc가 max_chars로 본문 뒷부분을 잘라 돌려줬다.
     truncated: bool = False
+    # 편집 문서의 현재 revision과 요청자의 편집 가능 여부. 구 document-svc와 원본 문서는 주지 않는다.
+    edit_revision: int | None = None
+    can_edit: bool = False
 
 
 @dataclass(frozen=True)

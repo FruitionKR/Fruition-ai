@@ -77,7 +77,14 @@ class BackendSkillReferenceReader:
             markdown=markdown,
             source_blocks=source_blocks,
             truncated=value.get("truncated") is True,
+            edit_revision=_edit_revision(value.get("edit_revision")),
+            can_edit=value.get("can_edit") is True,
         )
+
+
+def _edit_revision(value: object) -> int | None:
+    """편집 revision은 1부터 시작한다. 그 밖의 값은 구 document-svc처럼 없는 것으로 다룬다."""
+    return value if type(value) is int and value >= 1 else None
 
 
 def build_skill_reference_reader() -> BackendSkillReferenceReader:

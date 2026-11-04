@@ -3,6 +3,7 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 
+from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
@@ -22,6 +23,7 @@ from app.modules.agent.domain.entities import (
     PendingSkillProposal,
     RetrievalSource,
 )
+from app.modules.agent.domain.attached_document_edits import attachment_target_message
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.domain.folder_lookup import (
     FolderLookupUnavailableError,
@@ -245,6 +247,7 @@ class HandleAgentTurnUseCase:
         request = selection.request
         if selection.explicit_skill_id is not None and not request.message.strip():
             return self._execute_bare_skill_command(request, selection.skills[0])
+        request = self._with_reference_titles(request)
         routed = self._router.route(request)
         resolved = selection.resolve_route(
             _create_skill_route(routed, _routed_skill(selection, routed))
@@ -545,6 +548,13 @@ class HandleAgentTurnUseCase:
             return self._execute_folder_lookup(request, route)
 
         if route.action == "clarify":
+            if route.notice_kind == "attachment_target":
+                return AgentTurnResult(
+                    action="clarify",
+                    route=route,
+                    message=attachment_target_message(request.reference_document_titles),
+                    clarify_reason="attachment_target_required",
+                )
             if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
                 message = (
                     self._task_clarifier.ask(request, route)
@@ -987,6 +997,34 @@ class HandleAgentTurnUseCase:
         if not sources.documents:
             raise FolderSourceUnavailableError(EMPTY_FOLDER_SOURCE_MESSAGE)
         return sources
+
+    def _with_reference_titles(self, request: AgentTurnRequest) -> AgentTurnRequest:
+        """라우터가 첨부를 제목으로 구분하도록 제목만 읽는다. 읽지 못한 문서는 빈 제목으로 순번을 유지한다."""
+        document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+        if not document_ids or self._reference_reader is None or not request.workspace_id or not request.user_id:
+            return request
+        return replace(
+            request,
+            reference_document_titles=tuple(
+                self._read_reference_title(request, document_id) for document_id in document_ids
+            ),
+        )
+
+    def _read_reference_title(self, request: AgentTurnRequest, document_id: str) -> str:
+        assert self._reference_reader is not None and request.workspace_id and request.user_id
+        try:
+            document = self._reference_reader.read(
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                document_id=document_id,
+                max_chars=1,
+            )
+        except PipelineRunCancelledError:
+            raise
+        # 읽기 실패의 안내는 실제로 본문을 읽는 단계가 정한다.
+        except (ReferenceDocumentTooLargeError, SkillRequestRejectedError, RuntimeError):
+            return ""
+        return clean_reference_title(document.name)
 
     def _read_reference_documents(
         self,
@@ -1580,6 +1618,7 @@ def _create_skill_route(route: AgentTurnRoute, skill: Skill | None) -> AgentTurn
         "document_operation": "create",
         "required_capabilities": ("document-create",),
         "selected_skill_id": skill.id,
+        "attached_edit_targets": (),
     }
     if route.action == "workspace_workflow" and route.document_operation == "edit":
         return replace(route, **create_fields)

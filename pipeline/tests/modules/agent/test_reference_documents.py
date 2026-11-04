@@ -127,10 +127,12 @@ class FakeReferenceReader:
         self.responses = {
             f"doc-{index}": response for index, response in enumerate(responses, start=1)
         }
+        # 본문 읽기만 센다. 라우팅 전 제목 읽기(max_chars=1)는 title_calls에 따로 남는다.
         self.calls: list[dict[str, object]] = []
+        self.title_calls: list[dict[str, object]] = []
 
     def read(self, **kwargs: object) -> SkillAuthoringReference:
-        self.calls.append(kwargs)
+        (self.title_calls if kwargs.get("max_chars") == 1 else self.calls).append(kwargs)
         response = self.responses[str(kwargs["document_id"])]
         if isinstance(response, Exception):
             raise response
@@ -146,7 +148,8 @@ class ClippingReferenceReader:
 
     def read(self, **kwargs: object) -> SkillAuthoringReference:
         limit = int(kwargs["max_chars"])  # type: ignore[arg-type]
-        self.max_chars.append(limit)
+        if limit > 1:  # 라우팅 전 제목 읽기는 본문 예산과 무관하다.
+            self.max_chars.append(limit)
         return SkillAuthoringReference(
             id=str(kwargs["document_id"]),
             name="",
@@ -740,7 +743,7 @@ class SecurityBoundaryTest(unittest.TestCase):
         with_attachments = route_payload(_request("doc-1", "doc-2"))
         serialized = json.dumps(with_attachments, ensure_ascii=False)
 
-        self.assertEqual(with_attachments["reference_documents"], {"count": 2})
+        self.assertEqual(with_attachments["reference_documents"], {"count": 2, "titles": ["", ""]})
         self.assertNotIn("doc-1", serialized)
         self.assertNotIn("reference_documents", route_payload(_request()))
 
@@ -762,7 +765,7 @@ class SecurityBoundaryTest(unittest.TestCase):
         text = (DEFAULT_MARKDOWN_EDIT_PROMPT.parent / "agent_turn_router.system.md").read_text(encoding="utf-8")
 
         self.assertIn("payload.reference_documents", text)
-        self.assertIn("never an edit target", text)
+        self.assertIn("evidence unless the current message asks to change that document itself", text)
 
     def test_body_reaches_the_model_only_inside_the_user_payload(self) -> None:
         client = MagicMock()

@@ -143,10 +143,18 @@ def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     # 기존 턴의 상태는 그대로 두고, 작업 탭 턴에만 mode를 싣는다.
     if request.mode is not None:
         payload["mode"] = request.mode
-    # 첨부가 있는 턴에만 싣는다. 본문과 id는 라우터에 보내지 않는다.
-    if request.reference_document_ids:
-        payload["reference_documents"] = {"count": len(request.reference_document_ids)}
+    # 첨부가 있는 턴에만 싣는다. 본문과 id는 라우터에 보내지 않는다. 제목 순서가 attached_edit_targets의 순번이다.
+    count = _attachment_count(request)
+    if count:
+        payload["reference_documents"] = {
+            "count": count,
+            "titles": list(request.reference_document_titles or ("",) * count),
+        }
     return payload
+
+
+def _attachment_count(request: AgentTurnRequest) -> int:
+    return len(set(request.reference_document_ids))
 
 
 def _route_state(request: AgentTurnRequest) -> dict[str, object]:
@@ -325,6 +333,7 @@ def repair_insert_after_without_section(route: AgentTurnRoute, request: AgentTur
 def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     failures: list[str] = []
     failures.extend(_notice_failures(route, request))
+    failures.extend(_attached_edit_failures(route, request))
     if route.action == "folder_lookup" and request.mode != "task":
         failures.append("folder_lookup is available only in task mode")
     if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
@@ -337,6 +346,7 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
         and route.edit_goal is None
         and not route.skill_candidates
         and request.mode != "task"
+        and route.notice_kind != "attachment_target"
     ):
         failures.append(
             "clarify requires a supported Markdown target reason or ambiguous Skill candidates; "
@@ -438,6 +448,23 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     return failures
 
 
+def _attached_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
+    targets = route.attached_edit_targets
+    if not targets:
+        return []
+    failures: list[str] = []
+    count = _attachment_count(request)
+    if any(target > count for target in targets):
+        failures.append(f"attached_edit_targets must be between 1 and {count}, the number of attached documents")
+    if route.action != "workspace_workflow" or route.document_operation != "edit" or not route.persist:
+        failures.append("attached_edit_targets requires workspace_workflow with document_operation edit and persist true")
+    if "folder-organize" in route.required_capabilities:
+        failures.append("attached_edit_targets cannot be combined with folder-organize")
+    if (route.edit_operation, route.edit_destination) not in {("replace", "target"), ("insert_after", "document_end")}:
+        failures.append("attached_edit_targets requires replace at target or insert_after at document_end")
+    return failures
+
+
 def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     kind = route.notice_kind
     if kind is None:
@@ -445,6 +472,8 @@ def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[s
     if kind in CLARIFY_NOTICE_KINDS:
         if route.action != "clarify" or route.document_operation != "none" or route.skill_candidates:
             return [f"notice_kind {kind} requires clarify with document_operation none and no skill candidates"]
+        if kind == "attachment_target" and not request.reference_document_ids:
+            return ["notice_kind attachment_target requires attached documents"]
         if kind == "web_disabled" and request.allow_web_search is True:
             return ["notice_kind web_disabled requires allow_web_search false"]
         return []
@@ -563,6 +592,17 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
     else:
         notice_kind = cast(NoticeKind | None, raw_notice_kind)
 
+    raw_attached_targets = value.get("attached_edit_targets", [])
+    if (
+        not isinstance(raw_attached_targets, list)
+        or not all(type(target) is int and target >= 1 for target in raw_attached_targets)
+        or len(set(raw_attached_targets)) != len(raw_attached_targets)
+    ):
+        failures.append("attached_edit_targets must be an array of unique positive integers")
+        attached_edit_targets: tuple[int, ...] = ()
+    else:
+        attached_edit_targets = tuple(sorted(raw_attached_targets))
+
     raw_required_capabilities = value.get("required_capabilities")
     if (
         not isinstance(raw_required_capabilities, list)
@@ -593,6 +633,7 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
         persist=persist,
         required_capabilities=required_capabilities,
         notice_kind=notice_kind,
+        attached_edit_targets=attached_edit_targets,
     ), failures
 
 

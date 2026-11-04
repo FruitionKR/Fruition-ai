@@ -78,7 +78,8 @@ class JevTurnRouter(AgentTurnRouterPort):
         guarded = _local_guard(request)
         if guarded is not None:
             return guarded
-        if _may_need_skill_clarification(request):
+        # 첨부 턴은 고칠 문서 순번을 정해야 하는데 조합 선택지로 표현하지 않는다.
+        if request.reference_document_ids or _may_need_skill_clarification(request):
             return self._fallback.route(request)
         payload = route_payload(request)
         # 기존 라우터가 모델에 보내는 사용자 입력과 같은 형식이다.

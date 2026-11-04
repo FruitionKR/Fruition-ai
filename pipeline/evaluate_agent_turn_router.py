@@ -72,6 +72,7 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
 
 def request_from_case(case: dict[str, Any]) -> AgentTurnRequest:
     context = case.get("context", {})
+    titles = context.get("reference_document_titles", [])
     active_markdown = context.get("active_markdown")
     target = active_markdown.get("target") if active_markdown else None
     recent_messages = tuple(
@@ -95,13 +96,20 @@ def request_from_case(case: dict[str, Any]) -> AgentTurnRequest:
             else None
         ),
         allow_web_search=context.get("allow_web_search"),
+        reference_document_ids=tuple(f"attachment-{index}" for index, _ in enumerate(titles, start=1)),
+        reference_document_titles=tuple(titles),
     )
 
 
 def route_values(route: object) -> dict[str, object]:
     values = asdict(route)  # type: ignore[arg-type]
     values["required_capabilities"] = sorted(values["required_capabilities"])
-    return {field: values[field] for field in ROUTE_FIELDS}
+    selected = {field: values[field] for field in ROUTE_FIELDS}
+    selected["attached_edit_targets"] = list(values["attached_edit_targets"])
+    # 다른 되묻기 종류는 평가 대상이 아니어서, 고칠 첨부를 되묻는 경우만 비교한다.
+    if values["notice_kind"] == "attachment_target":
+        selected["notice_kind"] = "attachment_target"
+    return selected
 
 
 def expected_route_values(case: dict[str, Any]) -> list[dict[str, object]]:
@@ -109,6 +117,7 @@ def expected_route_values(case: dict[str, Any]) -> list[dict[str, object]]:
     for raw_route in [case["expected"], *case.get("acceptable", [])]:
         route = dict(raw_route)
         route["required_capabilities"] = sorted(route["required_capabilities"])
+        route.setdefault("attached_edit_targets", [])
         routes.append(route)
     return routes
 

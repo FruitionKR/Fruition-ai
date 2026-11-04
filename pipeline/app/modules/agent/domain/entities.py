@@ -43,12 +43,14 @@ DocumentOperation = Literal["none", "create", "edit"]
 AgentTurnMode = Literal["task"]
 # 사용자에게 무엇을 알릴지. clarify는 되묻기 종류, reject는 거절 이유, 문서 작업은 Skill이 꺼져 있다는 안내다.
 NoticeKind = Literal[
-    "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "display_unsupported", "policy", "skill_off"
+    "chat_tab", "details", "web_disabled", "attachment_target", "sensitive_data", "unsupported",
+    "display_unsupported", "policy", "skill_off",
 ]
 # 되묻기 이유 코드. message 문구가 바뀌어도 화면이 이 값으로 갈래를 정한다.
 # markdown_document_required: 요청에 편집할 Markdown 문맥이 없다. 문서를 안 열었거나 편집 문맥을 못 보낸 경우다.
-ClarifyReason = Literal["markdown_document_required"]
-CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "details", "web_disabled"})
+# attachment_target_required: 첨부 중 어느 문서를 고칠지 알 수 없다. 화면은 첨부 칩을 유지한다.
+ClarifyReason = Literal["markdown_document_required", "attachment_target_required"]
+CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "details", "web_disabled", "attachment_target"})
 REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "display_unsupported", "policy"})
 @dataclass(frozen=True)
 class SkillCandidate:
@@ -103,8 +105,10 @@ class AgentTurnRequest:
     skill_scope_type: SkillScopeType | None = None
     skill_authoring_mode: SkillAuthoringMode = "enhance"
     skill_reference_document_ids: tuple[str, ...] = ()
-    # 사용자가 이 turn에 첨부한 참고 문서(document-svc가 검증한 id, 최대 3개). 근거로만 쓰고 편집 대상이 아니다.
+    # 사용자가 이 turn에 첨부한 문서(document-svc가 검증한 id, 최대 3개). 라우터가 고른 문서만 편집 대상이고 나머지는 근거다.
     reference_document_ids: tuple[str, ...] = ()
+    # 중복을 뺀 첨부와 같은 순서의 제목. 라우터 입력으로만 쓴다. 읽지 못한 문서는 빈 문자열이다.
+    reference_document_titles: tuple[str, ...] = ()
     output_language: OutputLanguage | None = None
     response_length: ResponseLength | None = None
     allow_web_search: bool | None = None
@@ -130,6 +134,8 @@ class AgentTurnRoute:
     persist: bool = False
     required_capabilities: tuple[SkillCapability, ...] = ()
     notice_kind: NoticeKind | None = None
+    # 고칠 첨부의 1부터 시작하는 순번. 비어 있으면 첨부는 근거다.
+    attached_edit_targets: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
