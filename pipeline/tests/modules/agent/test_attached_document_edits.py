@@ -374,6 +374,38 @@ def test_unreadable_evidence_attachment_clarifies_without_model() -> None:
     assert editor.requests == []
 
 
+@pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(lambda: Reader(_document("doc-1", "하나", can_edit=False)), id="forbidden"),
+        pytest.param(lambda: Reader(RuntimeError("down")), id="read_failed"),
+        pytest.param(lambda: Reader(_document("doc-1", "하나", edit_revision=None, can_edit=False)), id="old_service"),
+    ],
+)
+def test_clarify_does_not_announce_attached_targets(reader) -> None:
+    use_case, _, _ = _use_case(_route(1), reader())
+
+    result = use_case.execute(_request("doc-1"))
+
+    assert result.action == "clarify"
+    assert result.route.attached_edit_targets == ()
+
+
+def test_incompatible_explicit_skill_clarify_does_not_announce_attached_targets() -> None:
+    skill = options_skill(capabilities=("folder-organize",), targets=("current_document",), result_mode=None)
+    use_case, _, editor = _use_case(
+        _route(1),
+        Reader(_document("doc-1", "회의록")),
+        skill_selector=SelectSkillUseCase(FixedSkillRepository(skill)),  # type: ignore[arg-type]
+    )
+
+    result = use_case.execute(_request("doc-1", skill_mode="explicit", skill_id=skill.id))
+
+    assert result.action == "clarify"
+    assert result.route.attached_edit_targets == ()
+    assert editor.requests == []
+
+
 def test_unsafe_message_is_rejected_before_reading() -> None:
     reader = Reader(_document("doc-1", "회의록"))
     use_case, _, _ = _use_case(_route(1), reader)

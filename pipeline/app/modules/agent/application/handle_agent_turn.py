@@ -299,6 +299,7 @@ class HandleAgentTurnUseCase:
                     document_operation="none",
                     persist=False,
                     required_capabilities=(),
+                    attached_edit_targets=(),
                 ),
                 message=CLARIFY_INCOMPATIBLE_SKILL_MESSAGE,
             )
@@ -1585,6 +1586,7 @@ def _clarify_document_change(
             edit_operation=route.edit_operation if keeps_edit_context else None,
             edit_destination=route.edit_destination if keeps_edit_context else None,
             persist=False,
+            attached_edit_targets=(),
         ),
         message=message,
         clarify_reason=clarify_reason,
