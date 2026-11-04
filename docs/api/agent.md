@@ -24,13 +24,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(답변·잡담) |
 | | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
 | | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
+| `clarify`(작업·채팅 탭, 문서 동작 없음, 첨부 있음) | `attachment_target` | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
 | `reject` | `sensitive_data`·`unsupported`·`policy` | 민감한 값·워크스페이스 밖 작업·규칙 우회별 거절 이유 |
 | | `display_unsupported` | "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요."(작업 탭·채팅 탭 모두. 표 열 정렬처럼 Markdown으로 나타낼 수 있는 변경은 편집) |
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
 - 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
-- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
+- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
 ### 되묻기 이유 코드(`clarify_reason`)
 
@@ -39,29 +40,68 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | clarify_reason | 뜻 | `message` |
 |---|---|---|
 | `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
+| `attachment_target_required` | 첨부 중 어느 문서를 고칠지 정할 수 없다. 화면은 첨부 칩을 유지한다. | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
 
 ### 첨부 참고 문서(`reference_document_ids`)
 
-`ai.agent.command`의 선택 키 `reference_document_ids`(문자열 배열, 최대 3개)는 사용자가 이 turn에 첨부해 document-svc가 검증한 문서다. 구 document-svc는 키를 싣지 않으며, 키가 없거나 `null`·빈 배열이면 기존과 같다. 첨부는 근거로만 쓰고 편집 대상이 아니다.
+`ai.agent.command`의 선택 키 `reference_document_ids`(문자열 배열, 최대 3개)는 사용자가 이 turn에 첨부해 document-svc가 검증한 문서다. 구 document-svc는 키를 싣지 않으며, 키가 없거나 `null`·빈 배열이면 기존과 같다. 첨부는 근거로 쓰고, 라우터가 수정 대상으로 고른 첨부만 고친다.
 
 - 본문은 Skill 참조 문서와 같은 document-svc `POST /internal/agent/skill-authoring/references/read`(`X-Agent-Service-Token`)로 라우팅 뒤 필요한 갈래에서만 읽는다. 일반 turn은 선택 필드 `max_chars`를 보내고 응답의 `truncated`로 잘렸는지 안다. 원본(ORIGINAL) 문서는 AI DB의 `source_blocks`에서 읽고 여기서 자른다. Skill 작성 경로는 `max_chars`를 보내지 않으며 동작이 같다.
 - 글자 수: 문서당 40,000자, 합계 80,000자(Skill 경로 상한과 같다). 답변 갈래(`chat_answer`·`conversation_reply`)는 입력이 근거 8개(7,200자)를 전제로 하고 재작성·평가로 반복되므로 합계 30,000자(열린 문서 상한과 같다)만 읽는다. 남은 합계를 남은 문서 수로 나눈 값을 문서별 `max_chars`로 쓰므로 앞 문서가 짧으면 남은 양이 뒤 문서로 넘어간다.
 - 제목: 응답에 선택 필드 `display_name`이 있으면 줄바꿈·제어 문자를 정리해 한 줄(최대 200자)로 만들어 `reference_documents[].title`과 답변 근거의 `document_title`에 싣는다. 구 document-svc처럼 없으면 싣지 않는다. 제목도 신뢰하지 않는 데이터다.
-- 라우터는 `reference_documents.count`만 받는다(본문·id 없음).
+- 라우터는 `reference_documents.count`와 `titles`만 받는다(본문·id 없음). 라우팅 전에 문서마다 `max_chars=1`로 읽어 제목을 정리한다. 읽지 못한 문서는 빈 제목으로 두어 순번을 유지하고, 실패 안내는 본문을 읽는 단계가 정한다. Jev에는 보내지 않고 첨부 턴은 LLM 라우터가 처리한다.
 
 | 갈래 | 첨부 사용 |
 |---|---|
 | `chat_answer` | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
 | `conversation_reply` | `reference_context.reference_documents`. 인용 없음. |
 | `markdown_create`·`workspace_workflow`(create) | `reference_context.reference_documents`. 인용 흐름이 없어 본문에 근거 번호를 달지 않는다. 열린 문서 없이 동작한다. |
-| `markdown_edit`·`workspace_workflow`(edit) | 열린 문서(`active_markdown_context`)만 편집하고 첨부는 `reference_context.reference_documents`로 준다. 이미 만든 미리보기를 저장할 때는 읽지 않는다. |
+| `markdown_edit`·`workspace_workflow`(edit), `attached_edit_targets` 없음 | 열린 문서(`active_markdown_context`)만 편집하고 첨부는 `reference_context.reference_documents`로 준다. 이미 만든 미리보기를 저장할 때는 읽지 않는다. |
+| `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
 | 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
 
 - 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
 - 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.
 - 읽기 실패: 검증 뒤 삭제·권한 변경으로 400·403·404이거나 본문이 비어 있으면 "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. …", 그 밖의 서비스 실패는 "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."로 `clarify`다. 한 문서만 실패해도 모델을 부르지 않는다. 첨부 없이 답하면 근거 없는 결과가 나올 수 있어서다. `clarify_reason`은 `null`이다.
-- 열린 문서 없이 첨부를 고치라고 하면 고치지 않고 `clarify` + `markdown_document_required`로 안내한다. 승인형 편집(`apply_document_edit`)은 `document_id`·`base_version`(편집 revision)·대상 범위가 필요한데 위 읽기 API는 revision을 주지 않고, 여러 첨부 중 어느 것이 대상인지 라우터가 고를 수단도 없다.
+- 열린 문서 없이 첨부를 근거로 문서를 고치라고 하면(`attached_edit_targets` 없음) 고치지 않고 `clarify` + `markdown_document_required`로 안내한다.
 - 안전: 첨부 본문은 신뢰하지 않는 데이터다. 사용자 지시(`instruction`·`message`)와 다른 payload 필드에만 싣고, 프롬프트에서 그 안의 지시를 따르지 않게 한다. 모든 LLM 호출과 같은 클라이언트를 거쳐 숫자 개인정보 마스킹·보안 경계·토큰 사용량 기록과 한도를 그대로 탄다. Jev에는 보내지 않고 본문을 로그·진행 이벤트에 남기지 않는다.
+
+### 첨부 문서 수정(`route.attached_edit_targets`)
+
+첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다.
+
+- 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다.
+- 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
+- 수정안: run을 만들기 전에 문서마다 차례로 만든다(최대 3개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
+- 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다.
+- 계획: 미리 보기가 있는 artifact가 있는 `workspace_workflow`는 트리를 읽거나 모델을 부르지 않고 `apply_document_edit` 작업을 첨부 순서대로 만든다. `reason`은 수정안 요약, `summary`는 "아직 바꾸지 않았습니다. 승인하면 문서 N개를 수정합니다."다. 선택한 Skill의 `allowed_tools`는 그대로 검사하고, `depends_on`은 비어 있으며, run의 `target_folder_id`는 `null`이다. 큰 변경에 대한 경고는 만들지 않는다. 만료된 수정안이 있으면 job이 실패한다. `revise`도 같은 수정안으로 다시 계획하므로 지시가 내용에 반영되지 않는다.
+
+계획에서 빠지는 문서는 나머지를 진행하고 결과 메시지에 제목과 이유를 덧붙인다.
+
+| 이유 | 안내 | 남은 문서가 없을 때 |
+|---|---|---|
+| `can_edit=false`, 읽기 400·403·404, 원본 문서 | 편집 권한이 없어 제외 | 권한 문제뿐이면 `clarify` "편집 권한이 없어요. …", `clarify_reason=null` |
+| 413, 30,000자 초과, 결과가 5MiB 초과 | 너무 길어 수정하지 못함 | `clarify` + 그 안내 |
+| 본문이 비어 있음 | 내용이 없어 수정하지 못함 | `clarify` + 그 안내 |
+| `changed=false` 또는 결과가 원문과 같음 | 바꿀 내용이 없어 계획에서 뺌 | 변경 없음뿐이면 `clarify` + `NO_CHANGES_MESSAGE` |
+| 수정안 생성 실패 | 수정안을 만들지 못함 | 턴 실패(일반 편집과 같음) |
+
+읽기 서비스 오류(5xx 등)와 근거 첨부를 읽지 못한 경우는 기존 첨부 안내로 `clarify`다.
+
+실행 결과는 작업마다 정해지고 한 작업이 실패해도 나머지는 계속한다.
+
+| 상황 | 작업 상태 | `error_code` |
+|---|---|---|
+| 계획 뒤 겹치지 않는 변경 | `succeeded`(document-svc가 병합) | |
+| 겹치는 변경 | `conflicted` | `tool_http_409` |
+| 다른 사람이 편집 중 | `failed`(재시도 없음) | `tool_http_423` |
+| 권한 회수 | `forbidden` | `tool_http_403` |
+| 문서 삭제 | `failed` | `tool_http_404` |
+| 실행 전 스냅샷이 맞지 않음 | `failed` | `rollback_snapshot_invalid` |
+
+run 상태는 `finish_run_from_operations`가 정한다. 겹침이 하나라도 있으면 다른 문서가 성공했어도 `conflicted`이고, 그 밖의 실패가 섞이면 `partial_failed`, 전부 실패면 `failed`다. 롤백 스냅샷은 `apply_document_edit`의 버전을 비교하지 않는다. 비교하면 계획 뒤 변경이 document-svc 병합에 닿지 못한다. 스냅샷을 읽지 못한 작업은 요청을 보내지 않았으므로 롤백에서 건너뛴다.
+
+배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 
 ### 폴더 내용 조회(`folder_lookup`)
 
@@ -132,6 +172,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | API | 목적 |
 |---|---|
 | [`GET /agent/runs/{run_id}`](#summary-get-agent-runs-run-id) | 승인형 Agent run의 현재 계획과 상태를 조회합니다. |
+| [`GET /agent/runs/{run_id}/edit-previews`](#summary-get-agent-runs-run-id-edit-previews) | 첨부 문서 수정 계획의 문서별 변경을 조회합니다. |
 | [`POST /agent/runs/{run_id}/approve`](#summary-post-agent-runs-run-id-approve) | 현재 계획의 version과 operation hash를 검증해 승인합니다. |
 | [`POST /agent/runs/{run_id}/cancel`](#summary-post-agent-runs-run-id-cancel) | 실행 가능한 Agent run을 취소합니다. |
 | [`POST /agent/runs/{run_id}/reject`](#summary-post-agent-runs-run-id-reject) | 현재 Agent 계획을 거절합니다. |
@@ -340,6 +381,28 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 - 미연동 표시: 없음.
 
 </details>
+
+<a id="summary-get-agent-runs-run-id-edit-previews"></a>
+### `GET /agent/runs/{run_id}/edit-previews`
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 첨부 문서 수정 계획의 문서별 변경을 조회합니다. |
+| 입력 | **Path** — `run_id`: `string`<br>**Query** — `workspace_id`, `user_id`: `string`<br>**Header** — `X-Agent-Service-Token` |
+| 출력 | `200` — `AgentRunEditPreviewsResponse` |
+| 조건 | `AGENT_SKILLS_ENABLED=true`일 때만 노출되며 workspace·user 소유권을 확인합니다. 문서별 읽기 권한과 현재 제목은 document-svc 프록시가 확인합니다. |
+| 주요 오류 | `401` 토큰 불일치<br>`404` run 없음<br>`503` 토큰 미설정 |
+
+```ts
+type AgentRunEditPreviews = { items: AgentDocumentEditPreview[]; expires_at: string | null };
+type AgentDocumentEditPreview = {
+  operation_id: string; document_id: string; display_name: string;
+  base_version: number; summary: string; added_lines: number; removed_lines: number;
+  hunks: { before_start: number; after_start: number; lines: { type: "context" | "delete" | "insert"; text: string }[] }[];
+};
+```
+
+줄 번호는 1부터 시작하고 문맥은 3줄이다. 계획이 없거나 미리 보기가 없는 run은 `items: []`, `expires_at: null`이다. 만료 뒤에도 내용을 돌려주므로 화면이 `expires_at`으로 수락을 막는다.
 
 <a id="summary-post-agent-runs-run-id-approve"></a>
 ### `POST /agent/runs/{run_id}/approve`
