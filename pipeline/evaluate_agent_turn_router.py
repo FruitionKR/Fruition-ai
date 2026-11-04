@@ -96,6 +96,7 @@ def request_from_case(case: dict[str, Any]) -> AgentTurnRequest:
             else None
         ),
         allow_web_search=context.get("allow_web_search"),
+        mode=context.get("mode"),
         reference_document_ids=tuple(f"attachment-{index}" for index, _ in enumerate(titles, start=1)),
         reference_document_titles=tuple(titles),
     )

@@ -265,7 +265,7 @@ class HandleAgentTurnUseCase:
         resolved = selection.resolve_route(
             _create_skill_route(routed, _routed_skill(selection, routed))
         )
-        # 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
+        # 첨부 없는 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
         route = task_mode_route(resolved.route, request)
         selected_skill = resolved.skill
         action_message = {

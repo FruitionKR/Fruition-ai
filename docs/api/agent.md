@@ -21,7 +21,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 | action | notice_kind | 결과 `message` |
 |---|---|---|
-| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(답변·잡담) |
+| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(첨부 없는 답변·잡담) |
 | | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
 | | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
 | `clarify`(작업·채팅 탭, 문서 동작 없음, 첨부 있음) | `attachment_target` | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
@@ -30,7 +30,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
-- 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부가 있는 작업 탭은 답변 갈래를 그대로 실행한다. 첨부 UI가 작업 탭에만 있어 채팅 탭 안내로는 답을 얻을 수 없기 때문이다. 라우터가 그래도 `clarify`(`chat_tab` 또는 안내 종류 없음, 문서 동작 없음, Skill 후보 없음)를 고르면 `chat_answer`(`retrieval_source=workspace`)로 바꾼다. 응답·기록은 채팅 탭의 답변 갈래와 같다. 첨부를 읽지 못하면 답변하지 않고 읽기 실패 이유를 담은 `clarify`로 끝나며 `chat_tab`이 아니다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
 ### 되묻기 이유 코드(`clarify_reason`)
@@ -53,12 +54,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 | 갈래 | 첨부 사용 |
 |---|---|
-| `chat_answer` | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
-| `conversation_reply` | `reference_context.reference_documents`. 인용 없음. |
+| `chat_answer`(작업 탭 포함) | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
+| `conversation_reply`(작업 탭 포함) | `reference_context.reference_documents`. 인용 없음. |
 | `markdown_create`·`workspace_workflow`(create) | `reference_context.reference_documents`. 인용 흐름이 없어 본문에 근거 번호를 달지 않는다. 열린 문서 없이 동작한다. |
 | `markdown_edit`·`workspace_workflow`(edit), `attached_edit_targets` 없음 | 열린 문서(`active_markdown_context`)만 편집하고 첨부는 `reference_context.reference_documents`로 준다. 이미 만든 미리보기를 저장할 때는 읽지 않는다. |
 | `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
 | 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
+
+라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, 열린 문서를 지목한 "열린 문서를 요약해 줘"(작업 탭)를 `markdown_edit`로 보낸다.
 
 - 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
 - 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.

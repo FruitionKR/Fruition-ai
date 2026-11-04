@@ -26,7 +26,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
-from app.modules.agent.domain.task_mode import TASK_MODE_EXCLUDED_ACTIONS, task_mode_route
+from app.modules.agent.domain.task_mode import task_mode_allows_action, task_mode_route
 from app.modules.markdown_edit.domain.entities import EditDestination, EditOperationType
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
@@ -336,10 +336,10 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     failures.extend(_attached_edit_failures(route, request))
     if route.action == "folder_lookup" and request.mode != "task":
         failures.append("folder_lookup is available only in task mode")
-    if request.mode == "task" and route.action in TASK_MODE_EXCLUDED_ACTIONS:
+    if not task_mode_allows_action(request, route.action):
         failures.append(
-            f"task mode does not allow {route.action}; use clarify with document_operation none "
-            "for questions or conversation"
+            f"task mode without attached documents does not allow {route.action}; "
+            "use clarify with document_operation none for questions or conversation"
         )
     if (
         route.action == "clarify"
