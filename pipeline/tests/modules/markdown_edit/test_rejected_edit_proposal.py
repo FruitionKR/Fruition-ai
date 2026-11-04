@@ -23,6 +23,7 @@ from app.modules.markdown_edit.domain.entities import (
     MarkdownEditTarget,
 )
 from app.modules.markdown_edit.domain.markdown_output_contract import (
+    REFUSAL_FAILURE,
     MarkdownOutputContractError,
     validate_markdown_output,
 )
@@ -186,6 +187,8 @@ class RefusalAsDocumentBodyTest(unittest.TestCase):
             "원문에 있던 문구": ("맞춤법만 고쳐 줘.", "요청을 수행할 수 없습니다..", "요청을 수행할 수 없습니다."),
             "원문을 다듬은 규정": ("문장으로 풀어 줘.", "승인 전 문서 수정 불가.", "승인 전에는 문서를 수정할 수 없습니다."),
             "원문을 다듬은 안내": ("정중하게 바꿔 줘.", "환불은 안 됩니다.", "환불을 진행할 수 없습니다."),
+            "원문의 부정 표현을 풀어 쓴 문장": ("공손한 문장으로 바꿔 줘.", "처리 불가능", "처리할 수 없습니다."),
+            "원문의 부정 표현을 풀어 쓴 긴 문장": ("공손한 문장으로 바꿔 줘.", "오늘 안에 변경 불가능합니다", "오늘 안에 변경할 수 없습니다."),
             "영어 원문을 다듬은 사과": (
                 "Fix the grammar.", "Sorry I cannot attend the review meeting.",
                 "I'm sorry, but I cannot attend the review meeting.",
@@ -204,6 +207,34 @@ class RefusalAsDocumentBodyTest(unittest.TestCase):
                         replacement,
                     ),
                     [],
+                )
+
+    def test_refusal_unrelated_to_a_source_with_negation_is_still_blocked(self):
+        sources = (
+            "처리 불가능",
+            "재고 없음",
+            "수정하지 못함",
+            "재고가 없는 품목은 제외한다.",
+            "처리 불가능한 건은 담당자에게 넘긴다.",
+            "권한이 없는 사용자는 문서를 볼 수 없다.",
+            f"{DOCUMENT}\n\n재고가 없는 품목은 처리 불가능하다.",
+        )
+        cases = [(source, refusal) for source in sources for refusal in OBSERVED_REFUSALS]
+        # "잘못"은 부정 표현이 아니라 비교에서 빠지지 않는다.
+        cases.append(("잘못된 값은 처리 불가능", "요청을 처리할 수 없습니다."))
+        for source, refusal in cases:
+            with self.subTest(source=source, refusal=refusal):
+                self.assertIn(
+                    REFUSAL_FAILURE,
+                    validate_markdown_output(
+                        MarkdownEditRequest(
+                            instruction="공손한 문장으로 바꿔 줘.",
+                            markdown=source,
+                            target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=len(source.split("\n"))),
+                            edit_goal="other",
+                        ),
+                        refusal,
+                    ),
                 )
 
     def test_translation_is_not_judged_as_a_refusal(self):

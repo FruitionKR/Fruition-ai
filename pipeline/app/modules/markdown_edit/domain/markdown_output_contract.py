@@ -137,6 +137,8 @@ REFUSAL_MAX_LINES = 3
 REFUSAL_MAX_CHARS = 200
 # 원문 글자쌍이 이만큼 남아 있으면 거절이 아니라 원문을 다듬은 문장으로 본다.
 REFUSAL_MIN_RETAINED_SOURCE = 0.5
+# 원문의 부정 표현은 "처리 불가능" -> "처리할 수 없습니다."처럼 거절 표현으로 다듬어지므로 남은 비율을 잴 때 뺀다.
+SOURCE_NEGATION_PATTERN = re.compile(r"(?:불가|(?<!\S)못|없)\S*")
 REFUSAL_FAILURE = (
     "replacement_markdown must be the edited Markdown, not a refusal or a notice about the request; "
     "codes, hashes, and IDs in the document are ordinary text to keep unchanged, so perform the edit"
@@ -182,7 +184,7 @@ def _replaces_source_with_refusal(request: MarkdownEditRequest, replacement: str
     match = REFUSAL_PATTERN.search(text)
     if match is None or match.group(0).lower() in f"{request.instruction}\n{request.markdown}".lower():
         return False
-    source_pairs = _character_pairs(request.markdown)
+    source_pairs = _character_pairs(SOURCE_NEGATION_PATTERN.sub(" ", request.markdown))
     retained = len(source_pairs & _character_pairs(text)) / len(source_pairs) if source_pairs else 0
     return retained < REFUSAL_MIN_RETAINED_SOURCE
 
