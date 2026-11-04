@@ -4,7 +4,12 @@ from uuid import uuid4
 from app.core.llm_env import resolve_llm_selection
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent_run.application.ports import AgentRunRepositoryPort, AgentRunStarterPort
-from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact, StartAgentRunRequest
+from app.modules.agent_run.domain.entities import (
+    AgentRun,
+    StartAgentRunArtifact,
+    StartAgentRunContent,
+    StartAgentRunRequest,
+)
 
 
 class StartAgentRunUseCase(AgentRunStarterPort):
@@ -31,18 +36,23 @@ class StartAgentRunUseCase(AgentRunStarterPort):
             target_folder_id=request.target_folder_id,
             rule_summary=(request.rule_summary or "").strip() or None,
         )
-        artifact = None
-        if request.content is not None:
-            artifact = StartAgentRunArtifact(
-                id=str(uuid4()),
-                content_hash=(
-                    f"sha256:{hashlib.sha256(request.content.markdown.encode('utf-8')).hexdigest()}"
-                ),
-                markdown=request.content.markdown,
-                purpose=request.content.purpose,
-                document_id=request.content.document_id,
-                base_version=request.content.base_version,
-                target=request.content.target,
-            )
-        saved = self._repository.create_with_planning_job(run, str(uuid4()), artifact)
+        contents = (request.content, *request.contents) if request.content is not None else request.contents
+        saved = self._repository.create_with_planning_job(
+            run, str(uuid4()), tuple(_artifact(content) for content in contents)
+        )
         return saved.id, saved.status
+
+
+def _artifact(content: StartAgentRunContent) -> StartAgentRunArtifact:
+    return StartAgentRunArtifact(
+        id=str(uuid4()),
+        content_hash=f"sha256:{hashlib.sha256(content.markdown.encode('utf-8')).hexdigest()}",
+        markdown=content.markdown,
+        purpose=content.purpose,
+        document_id=content.document_id,
+        base_version=content.base_version,
+        target=content.target,
+        display_name=content.display_name,
+        summary=content.summary,
+        preview_json=content.preview_json,
+    )

@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.modules.agent_run.domain.entities import AgentRun
@@ -97,6 +100,33 @@ class AgentArtifactResponse(BaseModel):
 
 class AgentArtifactResolveResponse(AgentArtifactResponse):
     markdown: str
+
+
+class MarkdownDiffLineResponse(BaseModel):
+    type: Literal["context", "delete", "insert"]
+    text: str
+
+
+class AgentDocumentEditHunkResponse(BaseModel):
+    before_start: int
+    after_start: int
+    lines: list[MarkdownDiffLineResponse]
+
+
+class AgentDocumentEditPreviewResponse(BaseModel):
+    operation_id: str
+    document_id: str
+    display_name: str
+    base_version: int
+    summary: str
+    added_lines: int
+    removed_lines: int
+    hunks: list[AgentDocumentEditHunkResponse]
+
+
+class AgentRunEditPreviewsResponse(BaseModel):
+    items: list[AgentDocumentEditPreviewResponse]
+    expires_at: datetime | None = None
 
 
 class AgentPlanOperationWarningResponse(BaseModel):

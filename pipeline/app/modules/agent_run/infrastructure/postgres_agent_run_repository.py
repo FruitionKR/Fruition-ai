@@ -13,7 +13,12 @@ from app.modules.agent_run.application.ports import (
     AgentApprovalRepositoryPort,
     AgentRunRepositoryPort,
 )
-from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
+from app.modules.agent_run.domain.entities import (
+    MAX_ARTIFACT_BYTES,
+    AgentRun,
+    DocumentEditArtifact,
+    StartAgentRunArtifact,
+)
 from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
@@ -54,10 +59,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         self,
         run: AgentRun,
         job_id: str,
-        artifact: StartAgentRunArtifact | None = None,
+        artifacts: tuple[StartAgentRunArtifact, ...] = (),
     ) -> AgentRun:
-        object_key = _artifact_object_key(run.id, artifact.id) if artifact is not None else ""
-        object_written = False
+        written_keys: list[str] = []
         try:
             with database.connect_ai() as conn:
                 if self._parent_run_id is not None:
@@ -73,7 +77,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     # 하위 run 생성과 참조를 함께 커밋하여 취소·재전달 경합을 막는다.
                     conn.execute("UPDATE agent_runs SET result = %s, updated_at = now() WHERE id = %s",
                                  (Json({"run_id": run.id}), self._parent_run_id))
-                if artifact is not None:
+                for artifact in artifacts:
                     _validate_artifact_metadata(
                         artifact.purpose,
                         artifact.document_id,
@@ -81,8 +85,14 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         artifact.target,
                     )
                     _validate_content_hash(artifact.markdown, artifact.content_hash)
+                    object_key = _artifact_object_key(run.id, artifact.id)
                     write_text_object(object_key, artifact.markdown)
-                    object_written = True
+                    written_keys.append(object_key)
+                    if artifact.preview_json is not None:
+                        _validate_size(artifact.preview_json)
+                        preview_key = _preview_object_key(run.id, artifact.id)
+                        write_text_object(preview_key, artifact.preview_json, "application/json; charset=utf-8")
+                        written_keys.append(preview_key)
                 row = conn.execute(
                     """
                     INSERT INTO agent_runs (
@@ -104,14 +114,16 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         run.rule_summary,
                     ),
                 ).fetchone()
-                if artifact is not None:
+                for position, artifact in enumerate(artifacts):
+                    # 한 트랜잭션의 now()는 같으므로 created_at에 순서를 담아 계획이 첨부 순서를 따르게 한다.
                     conn.execute(
                         """
                         INSERT INTO agent_run_artifacts (
                             id, run_id, workspace_id, user_id, content_hash, purpose, object_key,
-                            document_id, base_version, target, expires_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                  now() + interval '1 day')
+                            document_id, base_version, target, display_name, summary, preview_object_key,
+                            created_at, expires_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                  now() + %s * interval '1 microsecond', now() + interval '1 day')
                         """,
                         (
                             artifact.id,
@@ -120,10 +132,14 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                             run.user_id,
                             artifact.content_hash,
                             artifact.purpose,
-                            object_key,
+                            _artifact_object_key(run.id, artifact.id),
                             artifact.document_id,
                             artifact.base_version,
                             Json(artifact.target) if artifact.target is not None else None,
+                            artifact.display_name,
+                            artifact.summary,
+                            _preview_object_key(run.id, artifact.id) if artifact.preview_json is not None else None,
+                            position,
                         ),
                     )
                 conn.execute(
@@ -134,10 +150,71 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     (job_id, run.id),
                 )
         except Exception:
-            if object_written:
-                delete_object(object_key)
+            for written_key in written_keys:
+                delete_object(written_key)
             raise
         return _row_to_run(row)
+
+    def load_document_edit_artifacts(self, run_id: str) -> tuple[DocumentEditArtifact, ...]:
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT *, expires_at IS NOT NULL AND expires_at <= now() AS expired
+                FROM agent_run_artifacts
+                WHERE run_id = %s AND preview_object_key IS NOT NULL
+                ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(
+            DocumentEditArtifact(
+                id=row["id"],
+                content_hash=row["content_hash"],
+                document_id=row["document_id"],
+                base_version=row["base_version"],
+                target=row["target"],
+                summary=row["summary"] or "",
+                expired=row["expired"],
+            )
+            for row in rows
+        )
+
+    def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
+        with database.connect_ai() as conn:
+            run = conn.execute(
+                "SELECT current_plan_id FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s",
+                (run_id, workspace_id, user_id),
+            ).fetchone()
+            if run is None:
+                return None
+            rows = conn.execute(
+                """
+                SELECT operation.id AS operation_id, operation.base_version, artifact.document_id,
+                       artifact.display_name, artifact.summary, artifact.preview_object_key, artifact.expires_at
+                FROM agent_plan_operations operation
+                JOIN agent_run_artifacts artifact
+                  ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+                WHERE operation.plan_id = %s AND operation.tool_name = 'apply_document_edit'
+                  AND artifact.preview_object_key IS NOT NULL
+                ORDER BY operation.sequence
+                """,
+                (run_id, run["current_plan_id"]),
+            ).fetchall()
+        # 만료 뒤에도 내용을 돌려준다. 화면이 expires_at을 보고 수락을 막으며 이유를 보여 준다.
+        return {
+            "items": [
+                {
+                    "operation_id": row["operation_id"],
+                    "document_id": row["document_id"],
+                    "display_name": row["display_name"] or "",
+                    "base_version": row["base_version"],
+                    "summary": row["summary"] or "",
+                    **json.loads(read_text_object(row["preview_object_key"])),
+                }
+                for row in rows
+            ],
+            "expires_at": min((row["expires_at"] for row in rows if row["expires_at"] is not None), default=None),
+        }
 
     def get_for_user(self, workspace_id: str, user_id: str, run_id: str) -> AgentRun | None:
         with database.connect_ai() as conn:
@@ -732,9 +809,18 @@ def _artifact_object_key(run_id: str, artifact_id: str) -> str:
     return f"agent-runs/{scope}/artifacts/{suffix}.md"
 
 
-def _validate_content_hash(markdown: str, content_hash: str) -> None:
-    if len(markdown.encode("utf-8")) > 5 * 1024 * 1024:
+def _preview_object_key(run_id: str, artifact_id: str) -> str:
+    """파기가 run 접두사로 지우므로 artifact와 같은 접두사 아래에 둔다(postgres_purge._sweep_artifacts)."""
+    return _artifact_object_key(run_id, artifact_id).removesuffix(".md") + ".preview.json"
+
+
+def _validate_size(text: str) -> None:
+    if len(text.encode("utf-8")) > MAX_ARTIFACT_BYTES:
         raise ValueError("Agent artifact Markdown is too large.")
+
+
+def _validate_content_hash(markdown: str, content_hash: str) -> None:
+    _validate_size(markdown)
     expected = f"sha256:{hashlib.sha256(markdown.encode('utf-8')).hexdigest()}"
     if content_hash != expected:
         raise ValueError("Agent artifact content hash does not match its content.")
