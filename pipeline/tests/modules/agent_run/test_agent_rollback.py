@@ -556,7 +556,9 @@ def test_rollback_marks_never_sent_running_step_cancelled():
     ]
     RollbackAgentRunUseCase(repository, MagicMock(), MagicMock()).execute("run")
     repository.mark_operation.assert_called_once_with("move-1", ("running",), "cancelled")
-    repository.finish_rollback.assert_called_once_with("run")
+    repository.finish_rollback.assert_called_once()
+    run_id, *error_code = repository.finish_rollback.call_args.args
+    assert run_id == "run" and not any(error_code)
 
 
 @pytest.fixture
