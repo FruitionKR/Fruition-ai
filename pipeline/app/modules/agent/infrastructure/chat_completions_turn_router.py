@@ -143,6 +143,9 @@ def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     # 기존 턴의 상태는 그대로 두고, 작업 탭 턴에만 mode를 싣는다.
     if request.mode is not None:
         payload["mode"] = request.mode
+    # 첨부가 있는 턴에만 싣는다. 본문과 id는 라우터에 보내지 않는다.
+    if request.reference_document_ids:
+        payload["reference_documents"] = {"count": len(request.reference_document_ids)}
     return payload
 
 

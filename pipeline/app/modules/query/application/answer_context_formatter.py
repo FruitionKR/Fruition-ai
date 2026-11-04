@@ -55,6 +55,8 @@ class AnswerContextFormatter:
         lines.extend(["", "# Evidence Snippets By Relevance"])
         for snippet in evidence_snippets:
             lines.append(f"## Evidence {snippet.rank}")
+            if snippet.reference_chunk is not None:
+                lines.append("- source: document attached by the user")
             if snippet.entry_path:
                 lines.append(f"- entry: {snippet.entry_path}")
             lines.extend(

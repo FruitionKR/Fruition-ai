@@ -1,6 +1,6 @@
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, StrictBool, model_validator
+from pydantic import BaseModel, Field, StrictBool, StringConstraints, model_validator
 
 from app.core.untrusted_input import validate_untrusted_payload
 from app.core.llm_env import resolve_llm_selection
@@ -13,6 +13,7 @@ from app.modules.agent.domain.entities import (
 from app.modules.markdown_edit.domain.entities import MarkdownEditTarget
 from app.modules.query.domain.entities import ConversationAgentRoute, ConversationMessage
 from app.modules.query.interfaces.http.schemas import ConversationMessageRequest, QueryResponse
+from app.modules.skill.domain.policy import MAX_REFERENCE_COUNT
 from app.modules.skill.interfaces.http.schemas import (
     CapabilityValue,
     SkillAuthoringResponse,
@@ -140,6 +141,10 @@ class AgentTurnRequestBody(BaseModel):
     skill_scope_type: Literal["personal", "team"] | None = None
     skill_authoring_mode: Literal["preserve", "enhance"] = "enhance"
     skill_reference_document_ids: list[str] = Field(default_factory=list, max_length=3)
+    # 사용자가 이 turn에 첨부한 참고 문서. 구 document-svc는 보내지 않는다.
+    reference_document_ids: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]] = Field(
+        default_factory=list, max_length=MAX_REFERENCE_COUNT
+    )
     # 작업 탭에서 보낸 턴이면 "task". 생략하면 기존 동작이다.
     mode: Literal["task"] | None = None
     # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. 생략하면 루트·워크스페이스 전체다.
@@ -183,6 +188,7 @@ class AgentTurnRequestBody(BaseModel):
             skill_scope_type=self.skill_scope_type,
             skill_authoring_mode=self.skill_authoring_mode,
             skill_reference_document_ids=tuple(self.skill_reference_document_ids),
+            reference_document_ids=tuple(self.reference_document_ids),
             mode=self.mode,
             folder_id=self.folder_id,
         )

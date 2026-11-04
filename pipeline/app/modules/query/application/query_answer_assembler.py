@@ -54,12 +54,12 @@ class QueryAnswerAssembler:
         evidence_snippets: list[EvidenceSnippet],
     ) -> tuple[GeneratedAnswer, list[EvidenceSnippet]]:
         snippets_by_rank = {snippet.rank: snippet for snippet in evidence_snippets}
-        key_to_new_rank: dict[tuple[str, tuple[str, ...]], int] = {}
+        key_to_new_rank: dict[tuple[str, tuple[str, ...], int | None], int] = {}
         snippets_by_new_rank: dict[int, EvidenceSnippet] = {}
 
         def next_rank(old_rank: int) -> int:
             snippet = snippets_by_rank[old_rank]
-            key = (snippet.source_document_id, tuple(sorted(snippet.source_block_ids)))
+            key = (snippet.source_document_id, tuple(sorted(snippet.source_block_ids)), snippet.reference_chunk)
             if key not in key_to_new_rank:
                 new_rank = len(key_to_new_rank) + 1
                 key_to_new_rank[key] = new_rank

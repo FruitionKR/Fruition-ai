@@ -96,6 +96,10 @@ class SkillAuthoringReference:
     id: str
     name: str
     markdown: str
+    # 원본 문서의 (block_id, text). 답변 인용이 블록을 가리키게 한다. 편집 문서는 블록이 없다.
+    source_blocks: tuple[tuple[str, str], ...] = ()
+    # document-svc가 max_chars로 본문 뒷부분을 잘라 돌려줬다.
+    truncated: bool = False
 
 
 @dataclass(frozen=True)

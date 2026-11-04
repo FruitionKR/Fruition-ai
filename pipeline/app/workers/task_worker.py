@@ -223,6 +223,8 @@ def _handle_agent(
             "skill_draft_user_directives": command.get("skill_draft_user_directives", []),
             "skill_draft_excluded_literals": command.get("skill_draft_excluded_literals", []),
             "skill_scope_type": command.get("skill_scope_type"),
+            # 사용자가 첨부한 참고 문서. 구 document-svc는 키를 싣지 않는다.
+            "reference_document_ids": command.get("reference_document_ids") or [],
             # 작업 탭 턴은 "task"다. 이 값이 없으면 기존 동작이다.
             "mode": command.get("mode"),
             # 작업 대상 폴더. document-svc는 지정하지 않은 턴에 키를 싣지 않는다.

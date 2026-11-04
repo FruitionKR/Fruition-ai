@@ -35,6 +35,15 @@ from app.modules.agent.domain.folder_sources import (
     folder_source_notice,
     select_folder_sources,
 )
+from app.modules.agent.domain.reference_documents import (
+    ReferenceDocumentUnavailableError,
+    SelectedReferenceDocuments,
+    clip_reference_document,
+    reference_char_limit,
+    reference_document_notice,
+    reference_documents_context,
+    reference_evidence_snippets,
+)
 from app.modules.agent.domain.task_mode import is_task_mode, task_mode_route
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
@@ -68,8 +77,9 @@ from app.modules.query.application.conversation_context_resolver import (
 )
 from app.modules.query.application.ports import ConversationSummarizerPort, QueryEventPublisherPort
 from app.modules.query.application.query_event import publish_query_event
-from app.modules.query.domain.entities import ConversationContext, QueryAnswer
+from app.modules.query.domain.entities import ConversationContext, EvidenceSnippet, GeneratedAnswer, QueryAnswer
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
+from app.modules.skill.application.ports import SkillReferenceReaderPort
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
 from app.modules.skill.application.select_skill import (
     PreparedSkillSelection,
@@ -81,6 +91,10 @@ from app.modules.skill.domain.entities import (
     SkillAuthoringResult,
     SkillScopeType,
 )
+from app.modules.skill.domain.exceptions import (
+    ReferenceDocumentTooLargeError,
+    SkillRequestRejectedError,
+)
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
     edit_target_selection_reference,
@@ -88,15 +102,25 @@ from app.modules.skill.domain.instruction_placeholders import (
     REFERENCE_CONTEXT_FOLDER_REFERENCE,
     render_skill_instructions,
 )
-from app.modules.skill.domain.policy import validate_skill_name
+from app.modules.skill.domain.policy import MAX_TOTAL_REFERENCE_CHARS, validate_skill_name
 from app.modules.skill.domain.safety import inspect_skill_instructions
 
 CLARIFY_MARKDOWN_TARGET_MESSAGE = "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요."
 CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."
+# 첨부 문서는 읽기만 한다. 고칠 문서의 편집 버전을 AI가 알 수 없어 열린 문서만 편집한다(docs/api/agent.md).
+CLARIFY_REFERENCE_EDIT_MESSAGE = "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
+REFERENCE_NOT_ACCESSIBLE_MESSAGE = (
+    "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. 첨부를 확인한 뒤 다시 요청해 주세요."
+)
+REFERENCE_READ_FAILED_MESSAGE = "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+REFERENCE_ALL_TOO_LONG_MESSAGE = (
+    "첨부한 문서가 너무 길어 읽지 못했어요. 문서를 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+)
 CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
     "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
+_DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_REFERENCE_EDIT_MESSAGE})
 CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
 CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
 REJECT_MESSAGES = {
@@ -175,8 +199,10 @@ class HandleAgentTurnUseCase:
         folder_reference_resolver: FolderReferenceResolverPort | None = None,
         on_chat_answer: Callable[[], None] | None = None,
         task_clarifier: TaskClarifierPort | None = None,
+        reference_reader: SkillReferenceReaderPort | None = None,
     ) -> None:
         self._task_clarifier = task_clarifier
+        self._reference_reader = reference_reader
         self._on_chat_answer = on_chat_answer
         self._event_publisher = event_publisher
         self._router = router
@@ -399,7 +425,7 @@ class HandleAgentTurnUseCase:
                 if creation_markdown is None:
                     try:
                         create_request, source_notice = self._markdown_create_request(request, route, selected_skill)
-                    except FolderSourceUnavailableError as exc:
+                    except (FolderSourceUnavailableError, ReferenceDocumentUnavailableError) as exc:
                         return _clarify_document_change(route, str(exc))
                     creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
                 content = StartAgentRunContent(markdown=creation_markdown)
@@ -419,7 +445,7 @@ class HandleAgentTurnUseCase:
                             retrieval_source="none",
                             persist=False,
                         ),
-                        message=CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
+                        message=_clarify_document_message(request),
                         clarify_reason="markdown_document_required",
                     )
                 target = _skill_edit_target(selected_skill, markdown_context)
@@ -441,7 +467,14 @@ class HandleAgentTurnUseCase:
                     # 이미 만든 미리보기를 저장할 때는 LLM을 부르지 않으므로 크기 상한을 보지 않는다.
                     if _edit_scope_too_long(markdown_context.markdown, target):
                         return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
-                    reference_context = self._resolve_reference_context(request, route)
+                    try:
+                        references = self._read_reference_documents(request)
+                    except ReferenceDocumentUnavailableError as exc:
+                        return _clarify_document_change(route, str(exc))
+                    source_notice = reference_document_notice(references)
+                    reference_context = _with_reference_documents(
+                        self._resolve_reference_context(request, route), references
+                    )
                     edit = self._markdown_edit_use_case.execute(
                         MarkdownEditRequest(
                             instruction=request.message,
@@ -521,7 +554,7 @@ class HandleAgentTurnUseCase:
             elif is_task_mode(request) and route.edit_goal is None:
                 message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
             elif is_task_mode(request) and not _has_active_markdown(request):
-                message = CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+                message = _clarify_document_message(request)
             elif route.edit_goal == "template_transform":
                 message = DEFERRED_TEMPLATE_MESSAGE
             elif route.edit_operation == "insert_after":
@@ -532,7 +565,7 @@ class HandleAgentTurnUseCase:
                 action="clarify",
                 route=route,
                 message=message,
-                clarify_reason="markdown_document_required" if message == CLARIFY_MARKDOWN_DOCUMENT_MESSAGE else None,
+                clarify_reason="markdown_document_required" if message in _DOCUMENT_REQUIRED_MESSAGES else None,
             )
 
         if route.action == "reject":
@@ -619,6 +652,7 @@ class HandleAgentTurnUseCase:
         self,
         request: AgentTurnRequest,
         retrieval_source: str,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer:
         allow_web_search = retrieval_source == "web"
         query_kwargs: dict[str, object] = {
@@ -631,6 +665,8 @@ class HandleAgentTurnUseCase:
         if request.response_length is not None:
             query_kwargs["response_length"] = request.response_length
         query_kwargs["allow_web_search"] = allow_web_search
+        if pinned_evidence:
+            query_kwargs["pinned_evidence"] = pinned_evidence
         query_use_case = (
             self._web_search_query_use_case_factory()
             if allow_web_search is True and self._web_search_query_use_case_factory is not None
@@ -643,15 +679,24 @@ class HandleAgentTurnUseCase:
         request: AgentTurnRequest,
         route: AgentTurnRoute,
     ) -> AgentTurnResult:
+        # 첨부를 읽지 못하면 답변 갈래가 아니라 되묻기로 끝나므로 분류를 기록하기 전에 읽는다.
+        try:
+            references = self._read_reference_documents(request)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
         # Record the actual branch before retrieval/generation can fail or be interrupted.
         if self._on_chat_answer is not None:
             self._on_chat_answer()
         return AgentTurnResult(
             action="chat_answer",
             route=route,
-            query_answer=self._answer_query(
-                request,
-                route.retrieval_source,
+            query_answer=_with_answer_notice(
+                self._answer_query(
+                    request,
+                    route.retrieval_source,
+                    reference_evidence_snippets(references),
+                ),
+                reference_document_notice(references),
             ),
         )
 
@@ -662,7 +707,14 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         if self._conversation_replier is None:
             raise AgentConfigurationError("Conversation reply is not configured.")
-        message = self._conversation_replier.reply(request)
+        try:
+            references = self._read_reference_documents(request)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        message = _with_notice(
+            self._conversation_replier.reply(_with_reply_references(request, references)),
+            reference_document_notice(references),
+        )
         return AgentTurnResult(
             action="conversation_reply",
             route=_non_mutating_route(
@@ -682,7 +734,7 @@ class HandleAgentTurnUseCase:
         markdown_context = request.active_markdown_context
         if markdown_context is None or not markdown_context.markdown.strip():
             return _clarify_document_change(
-                route, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, clarify_reason="markdown_document_required"
+                route, _clarify_document_message(request), clarify_reason="markdown_document_required"
             )
         if _is_ambiguous_auto(route, selected_skill):
             return _clarify_result_mode(route)
@@ -696,7 +748,11 @@ class HandleAgentTurnUseCase:
             )
         if _edit_scope_too_long(markdown_context.markdown, target):
             return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
-        reference_context = self._resolve_reference_context(request, route)
+        try:
+            references = self._read_reference_documents(request)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        reference_context = _with_reference_documents(self._resolve_reference_context(request, route), references)
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
         result = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
@@ -717,11 +773,13 @@ class HandleAgentTurnUseCase:
             )
         )
         resolved_route = _resolved_edit_route(route, result.edit)
+        notice = reference_document_notice(references)
+        notice_text = f"\n\n{notice}" if notice else ""
         return AgentTurnResult(
             action="markdown_edit",
             route=resolved_route,
             edit=result.edit,
-            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
+            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}{notice_text}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
             source_markdown_sha256=_markdown_sha256(markdown_context.markdown),
         )
 
@@ -826,7 +884,7 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         try:
             create_request, source_notice = self._markdown_create_request(request, route, selected_skill, bare=bare)
-        except FolderSourceUnavailableError as exc:
+        except (FolderSourceUnavailableError, ReferenceDocumentUnavailableError) as exc:
             return _clarify_document_change(route, str(exc))
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
         result = self._markdown_create_use_case.execute(create_request)
@@ -855,9 +913,15 @@ class HandleAgentTurnUseCase:
         열린 문서가 MAX_ACTIVE_DOCUMENT_CHARS를 넘으면 싣지 않고 위키를 거치라고 안내한다.
         `/slug`만 보낸 실행(bare)은 앞선 대화를 원문처럼 섞지 않도록 대화 맥락을 싣지 않는다.
 
-        폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError를 낸다.
+        사용자가 첨부한 문서는 어느 경우든 reference_documents로 싣는다.
+
+        폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError,
+        첨부를 읽을 수 없으면 ReferenceDocumentUnavailableError를 낸다.
         """
-        reference_context = {} if bare else self._resolve_reference_context(request, route)
+        references = self._read_reference_documents(request)
+        reference_context = _with_reference_documents(
+            {} if bare else self._resolve_reference_context(request, route), references
+        )
         source = _create_source(request, selected_skill)
         notice = None
         if source == "document":
@@ -885,6 +949,7 @@ class HandleAgentTurnUseCase:
                 reference_context["active_document"] = {"document_id": request.document_id, "markdown": markdown}
             else:
                 notice = ACTIVE_DOCUMENT_TOO_LONG_NOTICE
+        notice = _with_notice(notice, reference_document_notice(references))
         return (
             MarkdownCreateRequest(
                 instruction=request.message,
@@ -920,6 +985,46 @@ class HandleAgentTurnUseCase:
         if not sources.documents:
             raise FolderSourceUnavailableError(EMPTY_FOLDER_SOURCE_MESSAGE)
         return sources
+
+    def _read_reference_documents(self, request: AgentTurnRequest) -> SelectedReferenceDocuments:
+        """사용자가 첨부한 문서를 읽는다. 첨부가 없으면 아무것도 읽지 않는다.
+
+        한 문서라도 읽을 수 없거나 전부 길어 쓸 내용이 없으면 ReferenceDocumentUnavailableError를 낸다.
+        호출자는 모델을 부르지 않고 이 문장으로 되묻는다. 첨부 없이 진행하면 근거 없는 결과가 나올 수 있다.
+        """
+        document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+        if not document_ids:
+            return SelectedReferenceDocuments()
+        if self._reference_reader is None or not request.workspace_id or not request.user_id:
+            raise AgentConfigurationError("Reference documents require workspace_id, user_id, and a reader.")
+        publish_query_event(self._event_publisher, "agent.reading_sources", "첨부한 문서를 읽고 있어요.")
+        documents = []
+        too_long_count = 0
+        remaining_chars = MAX_TOTAL_REFERENCE_CHARS
+        for index, document_id in enumerate(document_ids):
+            limit = reference_char_limit(remaining_chars, len(document_ids) - index)
+            try:
+                document = self._reference_reader.read(
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    document_id=document_id,
+                    max_chars=limit,
+                )
+            except ReferenceDocumentTooLargeError:
+                too_long_count += 1
+                continue
+            except SkillRequestRejectedError as exc:
+                raise ReferenceDocumentUnavailableError(REFERENCE_NOT_ACCESSIBLE_MESSAGE) from exc
+            except RuntimeError as exc:
+                raise ReferenceDocumentUnavailableError(REFERENCE_READ_FAILED_MESSAGE) from exc
+            if not document.markdown.strip():
+                raise ReferenceDocumentUnavailableError(REFERENCE_NOT_ACCESSIBLE_MESSAGE)
+            clipped = clip_reference_document(document, limit)
+            documents.append(clipped)
+            remaining_chars -= len(clipped.markdown)
+        if not documents:
+            raise ReferenceDocumentUnavailableError(REFERENCE_ALL_TOO_LONG_MESSAGE)
+        return SelectedReferenceDocuments(documents=tuple(documents), too_long_count=too_long_count)
 
     def _resolve_reference_context(
         self,
@@ -1142,6 +1247,46 @@ def _preview_created_markdown(value: object) -> str | None:
 
 def _markdown_sha256(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
+def _with_notice(text: str | None, notice: str | None) -> str | None:
+    if not text or not notice:
+        return text or notice
+    return f"{text}\n\n{notice}"
+
+
+def _with_answer_notice(answer: QueryAnswer, notice: str | None) -> QueryAnswer:
+    if notice is None:
+        return answer
+    return replace(answer, answer=GeneratedAnswer(content=f"{answer.answer.content}\n\n{notice}"))
+
+
+def _with_reference_documents(
+    reference_context: dict[str, object],
+    references: SelectedReferenceDocuments,
+) -> dict[str, object]:
+    if not references.documents:
+        return reference_context
+    return {**reference_context, "reference_documents": reference_documents_context(references)}
+
+
+def _with_reply_references(request: AgentTurnRequest, references: SelectedReferenceDocuments) -> AgentTurnRequest:
+    """대화 답변은 대화 문맥의 reference_context를 payload로 쓰므로 첨부도 거기에 넣는다."""
+    if not references.documents:
+        return request
+    conversation = request.conversation_context or AgentConversationContext()
+    return replace(
+        request,
+        conversation_context=replace(
+            conversation,
+            reference_context=_with_reference_documents(conversation.reference_context, references),
+        ),
+    )
+
+
+def _clarify_document_message(request: AgentTurnRequest) -> str:
+    """고칠 문서가 없을 때의 안내. 첨부가 있으면 첨부를 왜 고치지 않는지 말한다."""
+    return CLARIFY_REFERENCE_EDIT_MESSAGE if request.reference_document_ids else CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
 
 
 def _clarify_document_change(

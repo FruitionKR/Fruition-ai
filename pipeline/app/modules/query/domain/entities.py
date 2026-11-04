@@ -168,6 +168,8 @@ class EvidenceSnippet:
     source_refs: list[SourceReference] = field(default_factory=list)
     # 근거가 하위 항목에서 왔으면 답변 모델이 어느 항목의 근거인지 보도록 "페이지 제목 > 상위 항목 > 항목"을 둔다.
     entry_path: str | None = None
+    # 사용자가 첨부한 문서의 조각 번호. 첨부 문서에서 온 근거만 값이 있다. 블록이 없어도 조각끼리 구분한다.
+    reference_chunk: int | None = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,8 @@ class QueryContext:
     output_language: OutputLanguage | None = None
     response_length: ResponseLength | None = None
     allow_web_search: bool | None = None
+    # 검색과 무관하게 항상 근거에 넣는 조각(사용자가 첨부한 문서). evidence_snippets 앞쪽에 함께 들어 있다.
+    pinned_evidence: tuple[EvidenceSnippet, ...] = ()
 
 
 @dataclass(frozen=True)

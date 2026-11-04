@@ -38,7 +38,29 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 | clarify_reason | 뜻 | `message` |
 |---|---|---|
-| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요." |
+| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
+
+### 첨부 참고 문서(`reference_document_ids`)
+
+`ai.agent.command`의 선택 키 `reference_document_ids`(문자열 배열, 최대 3개)는 사용자가 이 turn에 첨부해 document-svc가 검증한 문서다. 구 document-svc는 키를 싣지 않으며, 키가 없거나 `null`·빈 배열이면 기존과 같다. 첨부는 근거로만 쓰고 편집 대상이 아니다.
+
+- 본문은 Skill 참조 문서와 같은 document-svc `POST /internal/agent/skill-authoring/references/read`(`X-Agent-Service-Token`)로 라우팅 뒤 필요한 갈래에서만 읽는다. 일반 turn은 선택 필드 `max_chars`를 보내고 응답의 `truncated`로 잘렸는지 안다. 원본(ORIGINAL) 문서는 AI DB의 `source_blocks`에서 읽고 여기서 자른다. Skill 작성 경로는 `max_chars`를 보내지 않으며 동작이 같다.
+- 글자 수: 문서당 40,000자, 합계 80,000자(Skill 경로 상한과 같다). 남은 합계를 남은 문서 수로 나눈 값을 문서별 `max_chars`로 쓰므로 3개면 첫 문서는 26,666자이고, 앞 문서가 짧으면 남은 양이 뒤 문서로 넘어간다.
+- 라우터는 `reference_documents.count`만 받는다(본문·id 없음).
+
+| 갈래 | 첨부 사용 |
+|---|---|
+| `chat_answer` | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
+| `conversation_reply` | `reference_context.reference_documents`. 인용 없음. |
+| `markdown_create`·`workspace_workflow`(create) | `reference_context.reference_documents`. 인용 흐름이 없어 본문에 근거 번호를 달지 않는다. 열린 문서 없이 동작한다. |
+| `markdown_edit`·`workspace_workflow`(edit) | 열린 문서(`active_markdown_context`)만 편집하고 첨부는 `reference_context.reference_documents`로 준다. 이미 만든 미리보기를 저장할 때는 읽지 않는다. |
+| 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
+
+- 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
+- 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.
+- 읽기 실패: 검증 뒤 삭제·권한 변경으로 400·403·404이거나 본문이 비어 있으면 "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. …", 그 밖의 서비스 실패는 "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."로 `clarify`다. 한 문서만 실패해도 모델을 부르지 않는다. 첨부 없이 답하면 근거 없는 결과가 나올 수 있어서다. `clarify_reason`은 `null`이다.
+- 열린 문서 없이 첨부를 고치라고 하면 고치지 않고 `clarify` + `markdown_document_required`로 안내한다. 승인형 편집(`apply_document_edit`)은 `document_id`·`base_version`(편집 revision)·대상 범위가 필요한데 위 읽기 API는 revision을 주지 않고, 여러 첨부 중 어느 것이 대상인지 라우터가 고를 수단도 없다.
+- 안전: 첨부 본문은 신뢰하지 않는 데이터다. 사용자 지시(`instruction`·`message`)와 다른 payload 필드에만 싣고, 프롬프트에서 그 안의 지시를 따르지 않게 한다. 모든 LLM 호출과 같은 클라이언트를 거쳐 숫자 개인정보 마스킹·보안 경계·토큰 사용량 기록과 한도를 그대로 탄다. Jev에는 보내지 않고 본문을 로그·진행 이벤트에 남기지 않는다.
 
 ### 폴더 내용 조회(`folder_lookup`)
 

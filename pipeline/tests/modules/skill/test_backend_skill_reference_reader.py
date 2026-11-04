@@ -47,7 +47,7 @@ class BackendSkillReferenceReaderTest(unittest.TestCase):
             return_value=response,
         ), patch(
             "app.modules.skill.infrastructure.backend_skill_reference_reader.list_source_blocks",
-            return_value=[{"text": "첫 번째 블록"}, {"text": "두 번째 블록"}],
+            return_value=[{"block_id": "B0001", "text": "첫 번째 블록"}, {"block_id": "B0002", "text": "두 번째 블록"}],
         ) as source_reader:
             reference = reader.read(
                 workspace_id="workspace-1",

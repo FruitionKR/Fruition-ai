@@ -1274,6 +1274,27 @@ def test_agent_command_without_mode_keeps_legacy_mode() -> None:
     assert use_case.execute.call_args.args[0].mode is None
 
 
+def test_agent_command_passes_reference_documents_to_request_body() -> None:
+    """document-svc는 검증한 첨부 문서 id를 싣는다. 구 document-svc는 키가 없고, null이어도 첨부 없음이다."""
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "첨부 문서를 요약해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+
+    attached = _run_agent_command({**command, "reference_document_ids": ["doc-1", "doc-2"]})
+
+    assert attached.execute.call_args.args[0].reference_document_ids == ("doc-1", "doc-2")
+    assert _run_agent_command(command).execute.call_args.args[0].reference_document_ids == ()
+    for empty in ([], None):
+        request = _run_agent_command({**command, "reference_document_ids": empty}).execute.call_args.args[0]
+        assert request.reference_document_ids == ()
+
+
 def test_agent_command_passes_target_folder_to_request_body() -> None:
     """document-svc는 작업 대상 폴더를 folder_id로 싣고, 지정하지 않으면 키를 싣지 않는다."""
     command = {

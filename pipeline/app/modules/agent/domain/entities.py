@@ -103,6 +103,8 @@ class AgentTurnRequest:
     skill_scope_type: SkillScopeType | None = None
     skill_authoring_mode: SkillAuthoringMode = "enhance"
     skill_reference_document_ids: tuple[str, ...] = ()
+    # 사용자가 이 turn에 첨부한 참고 문서(document-svc가 검증한 id, 최대 3개). 근거로만 쓰고 편집 대상이 아니다.
+    reference_document_ids: tuple[str, ...] = ()
     output_language: OutputLanguage | None = None
     response_length: ResponseLength | None = None
     allow_web_search: bool | None = None
