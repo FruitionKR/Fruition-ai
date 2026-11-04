@@ -1,10 +1,12 @@
 """첨부가 있는 턴의 의도 판단: 요약·번역이 문서를 덮어쓰지 않고, 여러 첨부 수정과 저장이 끝까지 간다."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from app.modules.agent.application.handle_agent_turn import (
+    CLARIFY_TRANSLATION_LANGUAGE_MESSAGE,
     MAX_ACTIVE_DOCUMENT_CHARS,
     SUMMARY_SAVE_TOO_LONG_MESSAGE,
     HandleAgentTurnUseCase,
@@ -13,9 +15,15 @@ from app.modules.agent.domain.attached_edit_request import (
     attached_edit_instruction,
     lacks_attachment_change_request,
     lacks_save_or_change_request,
+    needs_translation_language,
 )
 from app.modules.agent.domain.entities import ActiveMarkdownContext, AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
+from app.modules.agent.domain.reference_documents import (
+    MAX_REFERENCE_ANSWER_CHARS,
+    SelectedReferenceDocuments,
+    reference_document_notice,
+)
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
     ChatCompletionsTurnRouter,
     _normalize_route,
@@ -664,6 +672,136 @@ def test_summary_save_of_too_long_document_asks_instead_of_inventing_a_document(
 
     assert (result.action, result.message) == ("clarify", SUMMARY_SAVE_TOO_LONG_MESSAGE)
     assert editor.create_requests == []
+
+
+ENGLISH_DOCUMENT = ActiveMarkdownContext(markdown="# Minutes\nThe release date is December 3.")
+
+
+@pytest.mark.parametrize(
+    ("message", "lacks"),
+    [
+        ("번역해서 저장해 줘", True),
+        ("이 문서 번역해 줘", True),
+        ("이 논문 번역해서 저장해 줘", True),
+        ("Translate this document", True),
+        ("영어로 번역해서 저장해 줘", False),
+        ("일본어로 번역해 줘", False),
+        ("영문으로 번역해 줘", False),
+        ("영어 번역해 줘", False),
+        ("Translate it into English", False),
+        ("번역본을 요약해 줘", False),
+        ("번역 섹션을 요약해 줘", False),
+        ("번역하지 말고 요약해서 저장해 줘", False),
+        ("이 문서 요약해 줘", False),
+    ],
+)
+def test_translation_language_detection(message: str, lacks: bool) -> None:
+    assert needs_translation_language(message, OPEN_DOCUMENT.markdown) is lacks
+
+
+def test_translation_of_non_korean_document_defaults_to_korean_without_asking() -> None:
+    assert not needs_translation_language("번역해서 저장해 줘", ENGLISH_DOCUMENT.markdown)
+
+
+@pytest.mark.parametrize("message", ["번역해서 저장해 줘", "번역해서 새 문서로 만들어 줘"])
+def test_translation_save_without_language_asks_and_creates_nothing(message: str) -> None:
+    use_case, editor = _create_use_case()
+
+    result = use_case.execute(_request(message, mode="task"))
+
+    assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+    assert result.generated_markdown is None
+    assert editor.create_requests == []
+
+
+def test_translation_save_with_language_still_creates_new_document() -> None:
+    use_case, editor = _create_use_case()
+
+    result = use_case.execute(_request("영어로 번역해서 저장해 줘", mode="task"))
+
+    assert result.action == "markdown_create"
+    assert editor.create_requests[0].reference_context["source_document"]["markdown"] == OPEN_DOCUMENT.markdown
+
+
+def test_translation_save_of_english_document_creates_new_document() -> None:
+    use_case, editor = _create_use_case()
+
+    result = use_case.execute(_request("번역해서 저장해 줘", mode="task", active_markdown_context=ENGLISH_DOCUMENT))
+
+    assert result.action == "markdown_create"
+    assert len(editor.create_requests) == 1
+
+
+def test_translation_answer_without_language_asks_and_calls_no_model() -> None:
+    replier = RecordingConversationReplier("복제본")
+    use_case, query = _answer_use_case(
+        AgentTurnRoute(action="conversation_reply", confidence=1.0, reason="번역"),
+        Reader(),
+        conversation_replier=replier,
+    )
+
+    result = use_case.execute(_request("이 문서 번역해 줘", mode="task"))
+
+    assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+    assert replier.requests == []
+    assert query.questions == []
+
+
+def test_translation_chat_answer_without_language_asks() -> None:
+    use_case, query = _answer_use_case(ANSWER_ROUTE, Reader())
+
+    result = use_case.execute(_request("이 문서 번역해 줘", mode="task"))
+
+    assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+    assert query.questions == []
+
+
+def test_translation_answer_with_language_or_english_document_replies() -> None:
+    for message, context in [("이 문서를 영어로 번역해 줘", OPEN_DOCUMENT), ("이 문서 번역해 줘", ENGLISH_DOCUMENT)]:
+        replier = RecordingConversationReplier("번역입니다")
+        use_case, _ = _answer_use_case(
+            AgentTurnRoute(action="conversation_reply", confidence=1.0, reason="번역"),
+            Reader(),
+            conversation_replier=replier,
+        )
+
+        result = use_case.execute(_request(message, mode="task", active_markdown_context=context))
+
+        assert result.action == "conversation_reply"
+
+
+def test_translation_change_without_language_keeps_edit_route() -> None:
+    """수정 요청은 이번 처리 범위가 아니다. 언어를 묻지 않고 편집 단계로 간다."""
+    assert _failures(_edit_raw(edit_goal="translate"), _request("번역해서 바꿔 줘", mode="task")) == []
+
+
+def _long_open_document_answer(message: str, *attachments: str) -> str:
+    use_case, _ = _answer_use_case(ANSWER_ROUTE, Reader(_document("doc-1", "첨부")))
+    long_document = ActiveMarkdownContext(markdown="가" * (MAX_REFERENCE_ANSWER_CHARS + 1))
+
+    result = use_case.execute(_request(message, *attachments, mode="task", active_markdown_context=long_document))
+
+    return result.query_answer.answer.content
+
+
+def test_long_open_document_notice_does_not_mention_attachments() -> None:
+    answer = _long_open_document_answer("이 문서 요약해 줘")
+
+    assert "열린 문서가 길어 앞부분만 읽었어요" in answer
+    assert "첨부" not in answer
+
+
+def test_long_open_document_named_on_attachment_turn_says_open_document() -> None:
+    answer = _long_open_document_answer("열린 문서를 요약해 줘", "doc-1")
+
+    assert "열린 문서가 길어 앞부분만 읽었어요" in answer
+    assert "첨부한 문서가 길어" not in answer
+
+
+def test_long_attachment_notice_still_mentions_attachment() -> None:
+    selected = SelectedReferenceDocuments(documents=(replace(_document("doc-1", "첨부"), truncated=True),))
+
+    assert "첨부한 문서가 길어 앞부분만 읽었어요" in (reference_document_notice(selected) or "")
 
 
 def test_open_document_only_answer_pins_the_open_document_without_editing() -> None:
