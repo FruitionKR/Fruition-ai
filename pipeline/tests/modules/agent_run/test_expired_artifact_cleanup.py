@@ -509,7 +509,9 @@ def test_previews_after_removal_are_empty_with_a_past_expiry(repositories, clean
 
     assert previews["items"] == []
     # 화면은 expires_at이 지났는지로 수락을 막는다. null이면 수락 버튼이 열린다.
-    assert previews["expires_at"] < datetime.now(timezone.utc)
+    # expires_at은 DB 시각이라 DB 시계와 비교한다. Docker VM 시계가 앞서면 호스트 시각보다 늦어 보인다.
+    with connect() as conn:
+        assert previews["expires_at"] <= conn.execute("SELECT now() AS now").fetchone()["now"]
 
 
 def test_previews_with_some_artifacts_removed_keep_the_rest_and_a_past_expiry(repositories, cleanup_storage) -> None:
