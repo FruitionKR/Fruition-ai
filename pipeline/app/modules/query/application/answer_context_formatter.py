@@ -1,3 +1,5 @@
+import json
+
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, TraversalPath
 
 
@@ -57,6 +59,8 @@ class AnswerContextFormatter:
             lines.append(f"## Evidence {snippet.rank}")
             if snippet.reference_chunk is not None:
                 lines.append("- source: document attached by the user")
+            if snippet.reference_title:
+                lines.append(f"- document_title: {json.dumps(snippet.reference_title, ensure_ascii=False)}")
             if snippet.entry_path:
                 lines.append(f"- entry: {snippet.entry_path}")
             lines.extend(

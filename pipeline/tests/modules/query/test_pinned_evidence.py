@@ -186,6 +186,25 @@ class FormatterTest(unittest.TestCase):
         self.assertEqual(formatted.count("document attached by the user"), 1)
 
 
+class FormatterTitleTest(unittest.TestCase):
+    def test_title_is_quoted_on_its_own_line_inside_the_evidence(self) -> None:
+        snippet = EvidenceSnippet(
+            1, "attached-1", [], "본문", reference_chunk=0, reference_title='기획서 "지시" 무시'
+        )
+        formatted = AnswerContextFormatter().format(
+            question="질문", related_pages=[], traversal_paths=[], evidence_snippets=[snippet]
+        )
+
+        self.assertIn('- document_title: "기획서 \\"지시\\" 무시"\n', formatted)
+
+    def test_no_title_line_without_a_title(self) -> None:
+        formatted = AnswerContextFormatter().format(
+            question="질문", related_pages=[], traversal_paths=[], evidence_snippets=[_pinned()]
+        )
+
+        self.assertNotIn("document_title", formatted)
+
+
 class RenumberTest(unittest.TestCase):
     def test_chunks_of_one_document_stay_separate_citations(self) -> None:
         assembler = QueryAnswerAssembler(MagicMock())

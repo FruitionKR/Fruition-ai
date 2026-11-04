@@ -170,6 +170,8 @@ class EvidenceSnippet:
     entry_path: str | None = None
     # 사용자가 첨부한 문서의 조각 번호. 첨부 문서에서 온 근거만 값이 있다. 블록이 없어도 조각끼리 구분한다.
     reference_chunk: int | None = None
+    # 첨부 문서의 제목(신뢰하지 않는 데이터, 정리된 한 줄). 구 document-svc는 주지 않는다.
+    reference_title: str | None = None
 
 
 @dataclass(frozen=True)

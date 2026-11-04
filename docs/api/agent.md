@@ -45,7 +45,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `ai.agent.command`의 선택 키 `reference_document_ids`(문자열 배열, 최대 3개)는 사용자가 이 turn에 첨부해 document-svc가 검증한 문서다. 구 document-svc는 키를 싣지 않으며, 키가 없거나 `null`·빈 배열이면 기존과 같다. 첨부는 근거로만 쓰고 편집 대상이 아니다.
 
 - 본문은 Skill 참조 문서와 같은 document-svc `POST /internal/agent/skill-authoring/references/read`(`X-Agent-Service-Token`)로 라우팅 뒤 필요한 갈래에서만 읽는다. 일반 turn은 선택 필드 `max_chars`를 보내고 응답의 `truncated`로 잘렸는지 안다. 원본(ORIGINAL) 문서는 AI DB의 `source_blocks`에서 읽고 여기서 자른다. Skill 작성 경로는 `max_chars`를 보내지 않으며 동작이 같다.
-- 글자 수: 문서당 40,000자, 합계 80,000자(Skill 경로 상한과 같다). 남은 합계를 남은 문서 수로 나눈 값을 문서별 `max_chars`로 쓰므로 3개면 첫 문서는 26,666자이고, 앞 문서가 짧으면 남은 양이 뒤 문서로 넘어간다.
+- 글자 수: 문서당 40,000자, 합계 80,000자(Skill 경로 상한과 같다). 답변 갈래(`chat_answer`·`conversation_reply`)는 입력이 근거 8개(7,200자)를 전제로 하고 재작성·평가로 반복되므로 합계 30,000자(열린 문서 상한과 같다)만 읽는다. 남은 합계를 남은 문서 수로 나눈 값을 문서별 `max_chars`로 쓰므로 앞 문서가 짧으면 남은 양이 뒤 문서로 넘어간다.
+- 제목: 응답에 선택 필드 `display_name`이 있으면 줄바꿈·제어 문자를 정리해 한 줄(최대 200자)로 만들어 `reference_documents[].title`과 답변 근거의 `document_title`에 싣는다. 구 document-svc처럼 없으면 싣지 않는다. 제목도 신뢰하지 않는 데이터다.
 - 라우터는 `reference_documents.count`만 받는다(본문·id 없음).
 
 | 갈래 | 첨부 사용 |

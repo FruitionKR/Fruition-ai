@@ -72,7 +72,8 @@ class BackendSkillReferenceReader:
             raise RuntimeError("Skill reference service response is invalid.")
         return SkillAuthoringReference(
             id=document_id,
-            name="",
+            # 구 document-svc는 주지 않는다. Skill 작성은 이름을 쓰지 않는다.
+            name=value["display_name"] if isinstance(value.get("display_name"), str) else "",
             markdown=markdown,
             source_blocks=source_blocks,
             truncated=value.get("truncated") is True,

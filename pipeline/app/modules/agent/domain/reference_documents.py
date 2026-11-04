@@ -5,6 +5,7 @@
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 
 from app.modules.agent.domain.folder_sources import TRUNCATED_SUFFIX
@@ -14,6 +15,10 @@ from app.modules.skill.domain.policy import MAX_REFERENCE_CHARS, MAX_TOTAL_REFER
 
 # 답변 근거 조각 크기. 답변 입력 formatter가 근거 하나를 자르는 길이(max_paragraph_chars)와 같다.
 MAX_REFERENCE_EVIDENCE_CHARS = 900
+# 답변 갈래(chat_answer·conversation_reply)가 읽는 첨부 합계. 답변 입력은 근거 8개(7,200자)를 전제로 하고
+# 재작성·평가로 반복되므로 합계 상한 대신 열린 문서를 LLM에 싣는 상한(30,000자)에 맞춘다.
+MAX_REFERENCE_ANSWER_CHARS = 30_000
+MAX_REFERENCE_TITLE_CHARS = 200
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
 
 
@@ -26,6 +31,16 @@ class SelectedReferenceDocuments:
     documents: tuple[SkillAuthoringReference, ...] = ()
     # 길어서 document-svc가 거절한 문서 수. max_chars를 모르는 구 document-svc만 413을 준다.
     too_long_count: int = 0
+
+
+def clean_reference_title(title: str) -> str:
+    """제목을 한 줄로 만든다. 줄바꿈으로 프롬프트 구조를 흉내 내거나 제어 문자로 글자를 숨기지 못하게 한다."""
+    visible = "".join(
+        " " if character.isspace() else character
+        for character in title
+        if character.isspace() or unicodedata.category(character) not in {"Cc", "Cf"}
+    )
+    return " ".join(visible.split())[:MAX_REFERENCE_TITLE_CHARS].rstrip()
 
 
 def reference_char_limit(remaining_chars: int, documents_left: int) -> int:
@@ -61,7 +76,10 @@ def reference_document_notice(selected: SelectedReferenceDocuments) -> str | Non
 
 def reference_documents_context(selected: SelectedReferenceDocuments) -> list[dict[str, str]]:
     """문서 생성·편집·대화 답변 payload의 reference_context.reference_documents 값."""
-    return [{"document_id": document.id, "markdown": document.markdown} for document in selected.documents]
+    return [
+        {"document_id": document.id, **({"title": document.name} if document.name else {}), "markdown": document.markdown}
+        for document in selected.documents
+    ]
 
 
 def reference_evidence_snippets(selected: SelectedReferenceDocuments) -> tuple[EvidenceSnippet, ...]:
@@ -77,6 +95,7 @@ def reference_evidence_snippets(selected: SelectedReferenceDocuments) -> tuple[E
                     text=text,
                     source_refs=[SourceReference(document.id, block_id) for block_id in block_ids],
                     reference_chunk=len(snippets),
+                    reference_title=document.name or None,
                 )
             )
     return tuple(snippets)

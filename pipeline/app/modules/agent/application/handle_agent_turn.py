@@ -37,7 +37,9 @@ from app.modules.agent.domain.folder_sources import (
 )
 from app.modules.agent.domain.reference_documents import (
     ReferenceDocumentUnavailableError,
+    MAX_REFERENCE_ANSWER_CHARS,
     SelectedReferenceDocuments,
+    clean_reference_title,
     clip_reference_document,
     reference_char_limit,
     reference_document_notice,
@@ -681,7 +683,7 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         # 첨부를 읽지 못하면 답변 갈래가 아니라 되묻기로 끝나므로 분류를 기록하기 전에 읽는다.
         try:
-            references = self._read_reference_documents(request)
+            references = self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         # Record the actual branch before retrieval/generation can fail or be interrupted.
@@ -708,7 +710,7 @@ class HandleAgentTurnUseCase:
         if self._conversation_replier is None:
             raise AgentConfigurationError("Conversation reply is not configured.")
         try:
-            references = self._read_reference_documents(request)
+            references = self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         message = _with_notice(
@@ -986,7 +988,12 @@ class HandleAgentTurnUseCase:
             raise FolderSourceUnavailableError(EMPTY_FOLDER_SOURCE_MESSAGE)
         return sources
 
-    def _read_reference_documents(self, request: AgentTurnRequest) -> SelectedReferenceDocuments:
+    def _read_reference_documents(
+        self,
+        request: AgentTurnRequest,
+        *,
+        max_total_chars: int = MAX_TOTAL_REFERENCE_CHARS,
+    ) -> SelectedReferenceDocuments:
         """사용자가 첨부한 문서를 읽는다. 첨부가 없으면 아무것도 읽지 않는다.
 
         한 문서라도 읽을 수 없거나 전부 길어 쓸 내용이 없으면 ReferenceDocumentUnavailableError를 낸다.
@@ -1000,7 +1007,7 @@ class HandleAgentTurnUseCase:
         publish_query_event(self._event_publisher, "agent.reading_sources", "첨부한 문서를 읽고 있어요.")
         documents = []
         too_long_count = 0
-        remaining_chars = MAX_TOTAL_REFERENCE_CHARS
+        remaining_chars = max_total_chars
         for index, document_id in enumerate(document_ids):
             limit = reference_char_limit(remaining_chars, len(document_ids) - index)
             try:
@@ -1019,7 +1026,7 @@ class HandleAgentTurnUseCase:
                 raise ReferenceDocumentUnavailableError(REFERENCE_READ_FAILED_MESSAGE) from exc
             if not document.markdown.strip():
                 raise ReferenceDocumentUnavailableError(REFERENCE_NOT_ACCESSIBLE_MESSAGE)
-            clipped = clip_reference_document(document, limit)
+            clipped = clip_reference_document(replace(document, name=clean_reference_title(document.name)), limit)
             documents.append(clipped)
             remaining_chars -= len(clipped.markdown)
         if not documents:
