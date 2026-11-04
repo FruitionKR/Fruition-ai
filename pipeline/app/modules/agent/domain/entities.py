@@ -45,6 +45,9 @@ AgentTurnMode = Literal["task"]
 NoticeKind = Literal[
     "chat_tab", "details", "web_disabled", "sensitive_data", "unsupported", "display_unsupported", "policy", "skill_off"
 ]
+# 되묻기 이유 코드. message 문구가 바뀌어도 화면이 이 값으로 갈래를 정한다.
+# markdown_document_required: 요청에 편집할 Markdown 문맥이 없다. 문서를 안 열었거나 편집 문맥을 못 보낸 경우다.
+ClarifyReason = Literal["markdown_document_required"]
 CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "details", "web_disabled"})
 REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "display_unsupported", "policy"})
 @dataclass(frozen=True)
@@ -141,3 +144,4 @@ class AgentTurnResult:
     run_status: str | None = None
     skill_authoring_result: SkillAuthoringResult | None = None
     updated_conversation_summary: str | None = None
+    clarify_reason: ClarifyReason | None = None

@@ -32,6 +32,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
 
+### 되묻기 이유 코드(`clarify_reason`)
+
+`action=clarify` 결과의 선택 항목이다. 화면이 `message` 문구와 비교하지 않고 갈래를 정하도록 추가했고, 코드가 없는 되묻기와 다른 action은 `null`이다.
+
+| clarify_reason | 뜻 | `message` |
+|---|---|---|
+| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요." |
+
 ### 폴더 내용 조회(`folder_lookup`)
 
 작업 탭에서 "회의록 폴더에 뭐가 있어?"처럼 폴더 내용을 물으면 라우터가 `folder_lookup`(retrieval·문서 동작 없음, persist false, 기능 없음)을 고른다.
