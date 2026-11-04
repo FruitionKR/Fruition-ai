@@ -83,13 +83,16 @@ HTTP middleware와 별도로 WebSocket handshake에서도 토큰과 workspace �
 | 서버 이벤트 | 의미 |
 |---|---|
 | ready | 모델 설정 완료, sample_rate=24000 |
-| committed | segment_id와 previous_segment_id로 발화 순서 제공 |
+| committed | 글이 확인된 구간의 segment_id와 previous_segment_id로 발화 순서 제공 |
 | delta | segment_id의 미확정 text, 화면 표시용 |
 | completed | segment_id의 확정 text와 previous_segment_id, 미확정 문장을 교체 |
 | finished | 전체 확정 완료, segment_count 제공 |
 | error | 전사 중단, 확정 구간은 유지하고 재시도 |
 
-완료 이벤트 도착 순서는 발화 순서와 다를 수 있다. segment_id로 중복을 제거하고
+`committed`는 발화 순서대로 온다. 첫 글(`delta` 또는 `completed`)이 도착해야 보내므로 공급사 commit보다
+늦을 수 있고, 앞 구간의 글 유무가 정해질 때까지 뒤 구간은 기다린다. 공급사가 빈 전사로 끝낸 구간(짧은 꼬리·무음)은
+어떤 이벤트도 보내지 않고 `segment_count`에 넣지 않는다. 사용량(`audio_seconds`)에는 남는다.
+`completed` 도착 순서는 발화 순서와 다를 수 있다. segment_id로 중복을 제거하고
 previous_segment_id로 순서를 맞춘다. 재연결한 세션 간 순서는 호출 서비스가 관리한다.
 모델은 `gpt-live-transcribe`다. 화자·실명 식별, 단어별 시간 정보는 제공하지 않는다.
 
