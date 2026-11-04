@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from app.modules.wiki_ingestion.application.models import SourceSnapshotRestoreCommand
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import sync_source_concept_links
@@ -21,6 +23,11 @@ from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # n
 
 ROLLOUT = [_add("e-rollout", "Rollout", refs=["R1"]),
            *(_add(f"e-r{index}", f"Step {index}", "e-rollout", [f"R{index + 1}"]) for index in range(5))]
+
+
+@pytest.fixture(autouse=True)
+def _explicit_sources(world: World) -> None:
+    world.auto_source = False
 
 
 def _source(world: World, document_id: str, markdown: str = "") -> str:
