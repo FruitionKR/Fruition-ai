@@ -2237,7 +2237,15 @@ def _scan_concept_sources(
                 # 깨진 기록은 근거 없음이 아니다. 지우지 않고 남긴다.
                 logger.warning("[lint 출처 판정 생략] 기록을 재생할 수 없음 page_id=%s", page_id, exc_info=True)
                 continue
-        documents = sorted(live_documents.intersection(rebuilt.source_document_ids)) if rebuilt else []
+        if rebuilt:
+            documents = sorted(live_documents.intersection(rebuilt.source_document_ids))
+        elif contributions or page_id in promoted_page_ids:
+            # 이번에 승격한 페이지는 본문이 아직 저장 전이고, 승격이 이미 살아 있는 원문으로 링크를 맞췄다.
+            documents = []
+        else:
+            # 원장 행이 없는 페이지는 본문에만 출처가 남아 있다(원장이 생기기 전의 승격 등). 인용한 원문이 살아 있으면 잇는다.
+            markdown = read_text_object(str(row["markdown_uri"]))
+            documents = sorted(document_id for document_id in live_documents if document_id in markdown)
         if not documents:
             links = rebuilt.supported_links if rebuilt else ()
             unsourced[page_id] = {**row, "page": EntryPage(page_id, str(row["slug"]), str(row["title"]), (), (), links)}
