@@ -1091,6 +1091,18 @@ def test_lint_deletes_page_without_any_contribution(world: World) -> None:
     assert result["deleted_pages"] == [alpha]
 
 
+def test_lint_deletes_page_without_any_contribution_even_if_source_link_remains(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = world.page_id("alpha")
+    world.ledger = [row for row in world.ledger if row["page_id"] != alpha]
+
+    result = world.lint("lint-empty")
+
+    assert "alpha" not in world.state()["pages"]
+    assert result["deleted_pages"] == [alpha]
+
+
 def test_lint_waits_for_ledger_rows_of_the_previous_lint(world: World) -> None:
     """지난 lint 결과를 document-svc가 아직 반영하지 않은 페이지는 근거를 알 수 없어 지우지 않는다."""
     world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})

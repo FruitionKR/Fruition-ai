@@ -2209,7 +2209,8 @@ def _scan_concept_sources(
     for row in rows:
         page_id = str(row["id"])
         contributions = ledger.get(page_id, [])
-        if page_id in unapplied or (row["has_source_link"] and all(item.get("active") for item in contributions)):
+        healthy = row["has_source_link"] and contributions and all(item.get("active") for item in contributions)
+        if page_id in unapplied or healthy:
             continue
         kept = sorted(
             (item for item in contributions if item.get("active")),
