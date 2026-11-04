@@ -1,16 +1,18 @@
-"""첨부한 문서를 열지 않고 고치는 요청에서 계획에 넣지 못한 문서와 그 안내 문구."""
+"""첨부한 문서를 열지 않고 고치는 요청(열린 문서를 함께 고치는 경우 포함)에서 계획에 넣지 못한 문서와 그 안내 문구."""
 
 from dataclasses import dataclass
 from typing import Literal
 
 UNTITLED_DOCUMENT = "제목 없는 문서"
+OPEN_DOCUMENT_TITLE = "열린 문서"
 ALL_FORBIDDEN_MESSAGE = (
     "편집 권한이 없어요. 편집할 수 있는 문서를 첨부해 다시 요청해 주세요. "
     "채팅에서 만든 문서나 변환 중인 문서도 수정할 수 없어요."
 )
-ExclusionReason = Literal["forbidden", "too_long", "empty", "unchanged", "failed"]
+ExclusionReason = Literal["forbidden", "unsaved", "too_long", "empty", "unchanged", "failed"]
 _EXCLUSION_SENTENCES: dict[ExclusionReason, str] = {
     "forbidden": "{titles}은(는) 편집 권한이 없어 제외했어요.",
+    "unsaved": "{titles}은(는) 아직 저장되지 않아 수정하지 못했어요. 저장한 뒤 다시 요청해 주세요.",
     "too_long": "{titles}은(는) 너무 길어 수정하지 못했어요. 수정할 부분을 나눠 문서를 연 뒤 요청해 주세요.",
     "empty": "{titles}은(는) 내용이 없어 수정하지 못했어요.",
     "unchanged": "{titles}은(는) 바꿀 내용이 없어 계획에서 뺐어요.",

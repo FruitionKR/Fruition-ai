@@ -74,8 +74,9 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다. 대상이 둘 이상이면 편집·평가 지시 끝에 이 문서만 다룬다는 적용 범위를 덧붙여 "3개 모두" 같은 요청이 한 문서 평가에서 떨어지지 않게 한다. 사용자에게 보이는 요청 문장과 계획 입력은 그대로다.
 
 - 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다. 요약·번역은 원문과 따로 내는 결과라서, 원문을 바꾸라는 말("세 줄로 줄여서 고쳐 줘", "번역해서 문서에 반영해 줘")이 없으면 코드가 이 배열을 계약 위반으로 돌려보내고 라우터가 한 번 더 고른다. 다시 어기면 턴이 실패한다. 다른 편집은 이 검사를 타지 않는다.
+- 열린 문서를 함께 고칠 때: 라우터가 `attached_edit_targets`와 함께 `include_active_markdown=true`(기본 `false`)를 낸다. 열린 문서를 맨 앞에 넣어 첨부와 같은 `apply_document_edit` 작업으로 계획한다. 문서별 수락·자동 승인·겹침 409(`conflicted`)가 같고, 본문과 `edit_revision`은 편집기 사본이 아니라 서버 값을 쓴다. 지목 수가 첨부 수보다 많거나("3개 모두"), 둘을 나란히 지목했거나("열린 문서와 첨부 둘 다"), 어느 문서인지 말하지 않고 전부를 고르면("모두") 값이 없을 때 라우터가 재시도하고, 그래도 없으면 턴이 실패한다. "첨부한 문서 3개 모두"처럼 첨부만 지목했거나 열린 문서가 없는 턴은 값을 쓰지 않는다. 첨부 턴의 라우터 입력에는 열린 문서 제목(`active_markdown_context.title`)도 실으며, 이 때문에 제목 읽기(`max_chars=1`)가 한 번 늘어난다.
 - 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
-- 수정안: run을 만들기 전에 문서마다 차례로 만든다(최대 3개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
+- 수정안: run을 만들기 전에 문서마다 차례로 만든다(첨부 최대 3개, 열린 문서를 더하면 4개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
 - 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다. 만료 뒤 정리는 아래 [만료된 수정안 정리](#expired-artifact-cleanup)를 따른다.
 - 계획: 미리 보기가 있는 artifact가 있는 `workspace_workflow`는 트리를 읽거나 모델을 부르지 않고 `apply_document_edit` 작업을 첨부 순서대로 만든다. `reason`은 수정안 요약, `summary`는 "아직 바꾸지 않았습니다. 승인하면 문서 N개를 수정합니다."다. 선택한 Skill의 `allowed_tools`는 그대로 검사하고, `depends_on`은 비어 있으며, run의 `target_folder_id`는 `null`이다. 큰 변경에 대한 경고는 만들지 않는다. 계획 전에 수정안이 만료됐으면 job이 실패한다. `revise`도 같은 수정안으로 다시 계획하므로 지시가 내용에 반영되지 않고, 수정안이 만료됐으면 `409`다.
 
@@ -84,6 +85,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | 이유 | 안내 | 남은 문서가 없을 때 |
 |---|---|---|
 | `can_edit=false`, 읽기 400·403·404, 원본 문서 | 편집 권한이 없어 제외 | 권한 문제뿐이면 `clarify` "편집 권한이 없어요. …", `clarify_reason=null` |
+| 열린 문서에 `document_id`가 없음(저장 안 된 초안) | 아직 저장되지 않아 수정하지 못함 | `clarify` + 그 안내 |
 | 413, 30,000자 초과, 결과가 5MiB 초과 | 너무 길어 수정하지 못함 | `clarify` + 그 안내 |
 | 본문이 비어 있음 | 내용이 없어 수정하지 못함 | `clarify` + 그 안내 |
 | `changed=false` 또는 결과가 원문과 같음 | 바꿀 내용이 없어 계획에서 뺌 | 변경 없음뿐이면 `clarify` + `NO_CHANGES_MESSAGE` |

@@ -120,6 +120,47 @@ _SELECTS_ATTACHMENTS = re.compile(r"둘\s*다|모두|전부|각각|\d+\s*개|번
 _SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
 
 
+# 열린 문서를 첨부와 나란히 고치라는 말에서 열린 문서를 가리키는 표현이다. "이 문서들"은 고른 문서 전체고, "이 문서 3개"는 수를 세는 말이라 뺀다.
+_OPEN_DOCUMENT_PHRASE = (
+    r"(?:(?:(?:(?<![가-힣])이|현재|지금|열린|열려\s*있는|열어\s*둔)\s*(?:문서|노트)(?!들|\s*(?:\d|[두세네]\s*개)))"
+    r"|\b(?:open|opened|current)\s+(?:document|doc|note)\b)"
+)
+_OPEN_DOCUMENT_NAMED = re.compile(_OPEN_DOCUMENT_PHRASE, re.IGNORECASE)
+_OPEN_DOCUMENT_WITH_ATTACHMENT = re.compile(
+    rf"{_OPEN_DOCUMENT_PHRASE}\s*(?:와|과|이랑|랑|하고|및|,|\band\b)\s*(?:\S+\s+){{0,2}}?(?:첨부|attach)"
+    rf"|(?:첨부|attach)\S*(?:\s+\S+){{0,3}}?(?:와|과|이랑|랑|하고|,|\s+및|\s+and)\s+(?:the\s+)?{_OPEN_DOCUMENT_PHRASE}"
+    rf"|{_OPEN_DOCUMENT_PHRASE}\s*(?:도|까지)(?![가-힣])",
+    re.IGNORECASE,
+)
+# 두 문서를 나란히 말해도 한쪽이 근거이거나 제외한 문서면 함께 고치라는 말이 아니다. 놓치면 라우터 판단을 따른다.
+_NOT_EDITED_TOGETHER = re.compile(
+    r"비교|대조|차이|참고|참조|기준|바탕|토대|따라|맞춰|맞게|처럼|대로|빼고|제외|말고"
+    r"|\b(?:compare|based\s+on|according\s+to|using|like|except)\b",
+    re.IGNORECASE,
+)
+# 고를 문서의 수를 말한 표현이다. "3개 항목"처럼 다른 명사를 세는 말은 뒤에 오는 말로 거른다.
+_DOCUMENT_COUNT = re.compile(
+    r"(?P<number>\d+|[두세네])\s*(?:개|건|편)(?:의)?"
+    r"(?=\s*(?:모두|전부|다(?![가-힣])|각각|문서|파일|노트|수정|고쳐|바꿔|변경|교체)|(?:를|을|에)\s)"
+    r"|(?P<noun_number>\d+|[두세네])\s*(?:문서|파일|노트)"
+    r"|(?P<bare_number>[둘셋넷])\s*(?:다(?![가-힣])|모두|전부)"
+    r"|\b(?P<english_number>both|two|three|four)\b"
+    r"(?=\s+(?:of|documents?|docs?|files?|notes?|need|must|should)\b|\s*[.!?]*\s*$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_NUMBER_WORDS = {
+    "두": 2, "둘": 2, "세": 3, "셋": 3, "네": 4, "넷": 4,
+    "both": 2, "two": 2, "three": 3, "four": 4,
+}
+# 수 앞에 올 수 있는 말이다. 그 밖의 한글 낱말 뒤의 수는 그 낱말을 센다("오타 3개", "표 세 개", "오타를 3개").
+_WORDS_BEFORE_DOCUMENT_COUNT = {"이", "그", "저", "위", "이들", "문서", "문서들", "파일", "파일들", "노트", "노트들"}
+# 전부를 고르는 말이다. 수를 말하지 않았으니 눈에 보이는 문서 전체, 곧 열린 문서까지 가리킨다.
+_SELECTS_EVERY_DOCUMENT = re.compile(
+    r"모두|전부|각각|(?<![가-힣])다\s*(?:고쳐|바꿔|수정|변경|교체)|\b(?:all|each|every)\b",
+    re.IGNORECASE,
+)
+
+
 # 번역을 시키는 말이다. 뒤에 다른 명사가 붙거나("번역 용어집") 수식하는 어미로 끝나면("번역하는 방법", "번역된 부분") 시키는 말이 아니다.
 _TRANSLATION_REQUEST = re.compile(
     r"번역\s*(?:본|문서|결과|버전)?\s*(?:을|를|으로|로)?\s*"
@@ -253,8 +294,71 @@ def selects_attachment(message: str) -> bool:
     return names_attachment(message) or _SELECTS_ATTACHMENTS.search(message) is not None
 
 
+def _stated_document_count(message: str) -> int | None:
+    """메시지가 고르라고 말한 문서 수. 다른 명사를 세는 말이면 None이다."""
+    counts = []
+    for match in _DOCUMENT_COUNT.finditer(message):
+        before = message[: match.start()].split()
+        previous = before[-1].strip("'\"‘’“”") if before else ""
+        if previous and "가" <= previous[-1] <= "힣" and previous not in _WORDS_BEFORE_DOCUMENT_COUNT:
+            continue
+        number = next(value for value in match.groups() if value is not None).lower()
+        counts.append(int(number) if number.isdigit() else _NUMBER_WORDS[number])
+    return max(counts) if counts else None
+
+
+def _names_attachment_to_change(stated: str) -> bool:
+    return names_attachment(_ATTACHMENT_AS_SOURCE.sub(" ", stated))
+
+
+def asks_open_document_with_attachments(message: str, attachment_count: int) -> bool:
+    """열린 문서와 첨부를 함께 고치라고 분명히 말하면 True다. 나란히 지목했거나, 말한 문서 수가 첨부 수보다 많을 때다.
+
+    "첨부한 문서 3개 모두"처럼 첨부만 말했으면 수가 맞지 않아도 첨부다.
+    """
+    stated = _NEGATED_VERB.sub(" ∅ ", message)
+    # "첨부 내용대로 열린 문서와 첨부 문서를 모두 고쳐 줘"처럼 첨부를 근거로 말한 부분은 지우고 본다.
+    without_source = _ATTACHMENT_AS_SOURCE.sub(" ∅ ", stated)
+    if _OPEN_DOCUMENT_WITH_ATTACHMENT.search(without_source):
+        return _NOT_EDITED_TOGETHER.search(without_source) is None
+    if names_attachment(without_source) or _OPEN_DOCUMENT_NAMED.search(stated):
+        return False
+    count = _stated_document_count(stated)
+    return count is not None and count > attachment_count
+
+
+def selects_every_document(message: str, attachment_titles: tuple[str, ...]) -> bool:
+    """어느 문서인지 말하지 않고 전부를 고르면 True다. 수를 말했으면 수로 판단하므로 여기서 세지 않는다.
+
+    첨부를 말하거나 제목·순번으로 골랐으면 그 문서들을, 열린 문서를 말했으면 그 문서 안의 항목을 가리킨다.
+    """
+    stated = _NEGATED_VERB.sub(" ∅ ", message)
+    return (
+        _SELECTS_EVERY_DOCUMENT.search(stated) is not None
+        and _stated_document_count(stated) is None
+        and not _names_attachment_to_change(stated)
+        and _OPEN_DOCUMENT_NAMED.search(stated) is None
+        and _SELECTS_DOCUMENT_BY_ORDER.search(stated) is None
+        and not any(title and title in stated for title in attachment_titles)
+    )
+
+
+def selects_only_attachments(message: str, attachment_count: int, attachment_titles: tuple[str, ...]) -> bool:
+    """첨부만 지목해 열린 문서는 고칠 대상이 아니면 True다."""
+    stated = _NEGATED_VERB.sub(" ∅ ", message)
+    if _OPEN_DOCUMENT_NAMED.search(stated):
+        return False
+    count = _stated_document_count(stated)
+    return (
+        _names_attachment_to_change(stated)
+        or (count is not None and count <= attachment_count)
+        or _SELECTS_DOCUMENT_BY_ORDER.search(stated) is not None
+        or any(title and title in stated for title in attachment_titles)
+    )
+
+
 def attached_edit_instruction(message: str, *, position: int, total: int) -> str:
-    """여러 첨부를 한 문서씩 고칠 때의 지시. 한 문서만 받는 편집·평가가 "모두"를 다른 문서까지 요구하지 않게 한다.
+    """여러 문서를 한 문서씩 고칠 때의 지시. 한 문서만 받는 편집·평가가 "모두"를 다른 문서까지 요구하지 않게 한다.
 
     문서 제목은 신뢰하지 않는 값이라 넣지 않는다. 사용자의 요청 문장은 그대로 두고 범위만 덧붙이므로 평가 기준은 그대로다.
     """
@@ -262,6 +366,6 @@ def attached_edit_instruction(message: str, *, position: int, total: int) -> str
         return message
     return (
         f"{message}\n\n"
-        f"[적용 범위] 이 요청은 첨부 문서 {total}개에 문서별로 따로 적용된다. 지금은 {total}개 중 {position}번째 문서만 다룬다. "
+        f"[적용 범위] 이 요청은 문서 {total}개에 문서별로 따로 적용된다. 지금은 {total}개 중 {position}번째 문서만 다룬다. "
         "이 문서 안에서 요청을 빠짐없이 수행했는지만 판단하고, 다른 문서의 변경은 요구하거나 언급하지 않는다."
     )
