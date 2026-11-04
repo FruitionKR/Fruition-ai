@@ -115,14 +115,11 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         scope = build_markdown_target_scope(request.markdown, request.target, self._context_lines)
         scoped_request = replace(request, markdown=scope.markdown)
         requested_operation = request.edit_operation
-        attempts: list[tuple[MarkdownEditResult, list[str]]] = []
         source_range_plan = build_source_range_plan(scoped_request)
         if source_range_plan is not None:
-            source_range_result, source_failures = self._generate_source_range_edit(scoped_request, source_range_plan, scope)
+            source_range_result = self._generate_source_range_edit(scoped_request, source_range_plan, scope)
             if source_range_result is not None:
-                if not source_failures:
-                    return source_range_result
-                attempts.append((source_range_result, source_failures))
+                return source_range_result
 
         protected = protect_markdown(scoped_request)
         payload = {
@@ -174,7 +171,6 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             "retry_instruction": "Correct every contract failure and return the required JSON object again.",
         }
         if result is not None:
-            attempts.append((result[0], result[1]))
             retry_payload["previous_replacement_markdown"] = result[2]
         try:
             retried = self._complete_edit(
@@ -187,16 +183,9 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             )
         except JsonParseError as exc:
             _log_contract_failures("edit", 2, request, [JSON_OBJECT_CONTRACT_FAILURE])
-            best = _best_evaluated_edit(attempts)
-            if best is not None:
-                return best
             raise MarkdownOutputContractError([JSON_OBJECT_CONTRACT_FAILURE], "") from exc
         if retried[1]:
             _log_contract_failures("edit", 2, request, retried[1])
-            attempts.append((retried[0], retried[1]))
-            best = _best_evaluated_edit(attempts)
-            if best is not None:
-                return best
             raise MarkdownOutputContractError(retried[1], retried[0].edit.replacement_markdown)
         return retried[0]
 
@@ -205,7 +194,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         request: MarkdownEditRequest,
         plan: MarkdownSourceRangePlan,
         scope: MarkdownTargetScope,
-    ) -> tuple[MarkdownEditResult | None, list[str]]:
+    ) -> MarkdownEditResult | None:
         payload = {
             "instruction": request.instruction,
             "edit_goal": request.edit_goal,
@@ -237,11 +226,11 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         except JsonParseError:
             result, failures = None, [JSON_OBJECT_CONTRACT_FAILURE]
         if result is not None and not failures:
-            return result, failures
+            return result
         # 원문 범위 편집은 Markdown 구조를 그대로 둔 채 구간 텍스트만 바꾼다. 끊긴 줄·목록 합치기나 번역 중 줄 재배치처럼
         # 구조가 바뀌어야 하는 요청은 이 방식으로 다시 시도해도 통과하지 못하므로, 실패하면 일반 편집으로 넘긴다.
         _log_contract_failures("source_range_edit", 1, request, failures)
-        return result, failures
+        return None
 
     def _complete_source_range_edit(
         self,
@@ -475,18 +464,6 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         if not failures and (request.skill_instructions or "").strip():
             failures.extend(self._evaluate_create(request, result))
         return result, failures, raw
-
-
-def _best_evaluated_edit(
-    attempts: list[tuple[MarkdownEditResult, list[str]]],
-) -> MarkdownEditResult | None:
-    # shortcut: 평가 점수가 없어 지적 개수로 비교한다. 심각도/점수가 도입되면 순위를 교체한다.
-    candidates = [
-        (result, failures)
-        for result, failures in reversed(attempts)
-        if failures and all(failure.startswith(LLM_EVALUATION_PREFIX) for failure in failures)
-    ]
-    return min(candidates, key=lambda attempt: len(attempt[1]))[0] if candidates else None
 
 
 def build_markdown_editor(
