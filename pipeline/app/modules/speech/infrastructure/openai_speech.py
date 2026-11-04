@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 from collections import deque
 from collections.abc import AsyncIterator
 import wave
@@ -14,6 +15,8 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 
 from app.modules.model_usage.infrastructure.usage_ledger import finish_call, start_call, track_call_async
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
+
+logger = logging.getLogger(__name__)
 
 AUDIO_TYPES = {
     "audio/wav": "wav",
@@ -36,6 +39,7 @@ LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
 TTS_EVENT_TIMEOUT_SECONDS = 60
 TTS_CANCEL_WAIT_SECONDS = 5
 PCM_BYTES_PER_SECOND = 48000  # PCM16 mono 24 kHz
+LIVE_MIN_COMMIT_BYTES = PCM_BYTES_PER_SECOND // 10  # 공급사가 100ms 미만 버퍼의 commit을 거절한다.
 
 
 class OpenAISpeech:
@@ -223,6 +227,7 @@ class OpenAISpeech:
                 while True:
                     event = json.loads(await upstream.recv())
                     if event["type"] == "error":
+                        _log_live_provider_error(event)
                         raise SpeechUnavailableError(
                             "실시간 전사를 시작하지 못했습니다."
                         )
@@ -264,11 +269,14 @@ class OpenAISpeech:
                                 )
                             )
                         elif packet in {"commit", "finish"}:
-                            if buffered:
-                                if buffered < 4800:
-                                    raise InvalidAudioError(
-                                        "발화는 최소 100ms가 필요합니다."
-                                    )
+                            if buffered and buffered < LIVE_MIN_COMMIT_BYTES:
+                                # commit은 음성을 공급사 버퍼에 둔 채 다음 구간에 합치고, finish는 이 꼬리를 버린다.
+                                logger.warning(
+                                    "실시간 전사 최소 길이 미만 버퍼: command=%s bytes=%d",
+                                    packet,
+                                    buffered,
+                                )
+                            elif buffered:
                                 sent += 1
                                 if sent - len(completed) > 8:
                                     raise InvalidAudioError(
@@ -314,6 +322,7 @@ class OpenAISpeech:
                             "error",
                             "conversation.item.input_audio_transcription.failed",
                         }:
+                            _log_live_provider_error(event)
                             raise SpeechUnavailableError("실시간 전사가 실패했습니다.")
                         if kind == "input_audio_buffer.committed":
                             committed[event["item_id"]] = event.get("previous_item_id")
@@ -398,6 +407,15 @@ async def _finish_segment(
         {"usage": usage, "audio_seconds": seconds},
         LIVE_TRANSCRIBE_MODEL,
         (perf_counter() - started) * 1000,
+    )
+
+
+def _log_live_provider_error(event: dict) -> None:
+    # 공급사 message에는 입력 내용이 섞일 수 있어 종류와 코드만 남긴다.
+    logger.warning(
+        "실시간 전사 공급사 오류: type=%s code=%s",
+        event.get("type"),
+        (event.get("error") or {}).get("code"),
     )
 
 
