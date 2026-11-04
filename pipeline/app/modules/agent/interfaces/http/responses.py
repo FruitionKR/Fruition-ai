@@ -31,6 +31,7 @@ def _to_response(result: AgentTurnResult) -> AgentTurnResponse:
             notice_kind=result.route.notice_kind,
             attached_edit_targets=list(result.route.attached_edit_targets),
             include_active_markdown=result.route.include_active_markdown,
+            clarified_document_id=result.route.clarified_document_id,
         ),
         message=result.message,
         clarify_reason=result.clarify_reason,

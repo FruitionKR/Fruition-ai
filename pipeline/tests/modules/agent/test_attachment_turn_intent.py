@@ -24,6 +24,7 @@ from app.modules.agent.domain.entities import (
     ActiveMarkdownContext,
     AgentConversationContext,
     AgentTurnRequest,
+    AgentTurnResult,
     AgentTurnRoute,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
@@ -39,10 +40,12 @@ from app.modules.agent.infrastructure.chat_completions_turn_router import (
     repair_create_route_fields,
     route_payload,
 )
+from app.modules.agent.interfaces.http.responses import _to_response
+from app.modules.agent.interfaces.http.schemas import AgentConversationMessageRequest
 from app.modules.markdown_edit.application.generate_markdown_document import GenerateMarkdownDocumentUseCase
 from app.modules.markdown_edit.application.generate_markdown_edit import GenerateMarkdownEditUseCase
 from app.modules.markdown_edit.domain.entities import MarkdownEditTarget
-from app.modules.query.domain.entities import ConversationMessage
+from app.modules.query.domain.entities import ConversationAgentRoute, ConversationMessage
 from tests.modules.agent.test_attached_document_edits import Editor, Reader, _document, _route
 from tests.modules.agent.test_handle_agent_turn import (
     FakeQueryUseCase,
@@ -1171,14 +1174,25 @@ def test_translation_glossary_request_reaches_document_creation_without_asking()
     assert len(editor.create_requests) == 1
 
 
-def _after_language_question(message: str, asked_with: str, **values: object) -> AgentTurnRequest:
+def _after_language_question(
+    message: str, asked_with: str, asked_about: str | None = "open-doc", **values: object
+) -> AgentTurnRequest:
+    route = ConversationAgentRoute(
+        action="clarify",
+        retrieval_source="none",
+        document_operation="none",
+        persist=False,
+        clarified_document_id=asked_about,
+    )
     return _request(
         message,
         mode="task",
         conversation_context=AgentConversationContext(
             recent_messages=(
                 ConversationMessage(role="user", content=asked_with),
-                ConversationMessage(role="assistant", content=CLARIFY_TRANSLATION_LANGUAGE_MESSAGE, action="clarify"),
+                ConversationMessage(
+                    role="assistant", content=CLARIFY_TRANSLATION_LANGUAGE_MESSAGE, action="clarify", agent_route=route
+                ),
             )
         ),
         **values,
@@ -1222,6 +1236,69 @@ def test_language_answer_after_save_request_creates_a_new_document(answer: str, 
 )
 def test_answer_that_is_not_only_a_language_keeps_its_own_message(answer: str) -> None:
     assert answer_to_translation_language_question(answer, "번역해서 저장해 줘") is None
+
+
+_LANGUAGE_ONLY_CREATE = _edit_raw(
+    "markdown_create",
+    document_operation="create",
+    edit_goal="create_from_chat",
+    edit_operation=None,
+    edit_destination=None,
+    required_capabilities=["document-create"],
+)
+
+
+@pytest.mark.parametrize(
+    "asked_about", ["other-doc", None], ids=["question-about-another-document", "question-without-document-id"]
+)
+def test_language_answer_does_not_join_unless_the_question_was_about_this_document(asked_about: str | None) -> None:
+    """문서 A에서 되물은 언어를 문서 B에서 답해도 B를 고치지 않는다. 되물은 문서를 모르면 잇지 않는다."""
+    use_case, editor = _routed_use_case(_LANGUAGE_ONLY_CREATE)
+
+    use_case.execute(_after_language_question("영어로", "이 문서를 번역해서 바꿔 줘", asked_about=asked_about))
+
+    assert editor.create_requests[0].instruction == "영어로"
+
+
+def test_language_answer_does_not_join_when_no_document_is_open_now() -> None:
+    use_case, editor = _routed_use_case(_LANGUAGE_ONLY_CREATE)
+
+    use_case.execute(
+        _after_language_question("영어로", "번역해서 저장해 줘", active_markdown_context=None, document_id=None, base_version=None)
+    )
+
+    assert editor.create_requests[0].instruction == "영어로"
+
+
+@pytest.mark.parametrize("message", ["번역해 줘", "번역해서 저장해 줘"])
+def test_language_question_records_the_document_it_asked_about(message: str) -> None:
+    use_case, _ = _routed_use_case(_answer_raw() if message == "번역해 줘" else _edit_raw(edit_goal="translate"))
+
+    result = use_case.execute(_request(message, mode="task"))
+
+    assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+    assert result.route.clarified_document_id == "open-doc"
+
+
+def test_other_clarify_records_no_document() -> None:
+    use_case, _ = _routed_use_case(_answer_raw())
+
+    result = use_case.execute(_request("이 문서 요약해 줘", mode="task"))
+
+    assert result.route.clarified_document_id is None
+
+
+def test_recorded_document_passes_through_the_turn_result_and_next_command() -> None:
+    """document-svc는 결과의 route를 그대로 저장했다가 다음 턴 agent_route로 돌려준다."""
+    route = AgentTurnRoute(action="clarify", confidence=1.0, reason="언어", clarified_document_id="doc-a")
+    response = _to_response(AgentTurnResult(action="clarify", route=route, message="되묻기"))
+    dumped = response.route.model_dump()
+    assert dumped["clarified_document_id"] == "doc-a"
+
+    message = AgentConversationMessageRequest.model_validate(
+        {"role": "assistant", "content": "되묻기", "action": "clarify", "agent_route": dumped}
+    )
+    assert message.to_domain().agent_route.clarified_document_id == "doc-a"
 
 
 def test_language_answer_only_joins_after_the_language_question() -> None:
