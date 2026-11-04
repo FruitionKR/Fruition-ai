@@ -15,7 +15,7 @@ from app.modules.agent_run.application.ports import (
 )
 from app.modules.agent_run.domain.compensation import compensation_request
 from app.modules.agent_run.domain.entities import AgentRunContext
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import ROLLBACK_DOCUMENT_PURGED, AgentPlan, AgentPlanOperation
 
 
 class RollbackAgentRunUseCase:
@@ -45,6 +45,7 @@ class RollbackAgentRunUseCase:
             self._repository.finish_rollback(run_id, self._repository.parent_rollback_error(run_id))
             return
         versions: dict[tuple[str, str], int] = {}
+        document_purged = False
         for record in self._repository.load_undo_records(run_id):
             try:
                 # HTTP 호출 전에 영속 실행 기록을 남긴다. 그 기록이 없으면 실행하지 않은 단계다.
@@ -55,6 +56,10 @@ class RollbackAgentRunUseCase:
                 if (record["forward_status"] == "failed" and record.get("forward_attempt") == 1
                         and record.get("forward_error_code") in {"tool_http_400", "tool_http_401", "tool_http_403", "tool_http_404", "tool_http_409", "tool_http_422"}):
                     self._repository.complete_undo(record["id"], {})
+                    continue
+                if record["id"] is not None and record["response_metadata"].get("document_purged"):
+                    # 문서가 없어 되돌릴 것도 없다. 멈추면 다른 문서를 되돌리지 못하므로 건너뛰고 끝에 실패로 알린다.
+                    document_purged = True
                     continue
                 if record["id"] is None:
                     raise ValueError("rollback_snapshot_missing")
@@ -86,7 +91,7 @@ class RollbackAgentRunUseCase:
                 code = str(exc) if str(exc) in codes else "rollback_snapshot_invalid"
                 self._repository.finish_rollback(run_id, f"{code}:{record['operation_id']}")
                 return
-        self._repository.finish_rollback(run_id)
+        self._repository.finish_rollback(run_id, ROLLBACK_DOCUMENT_PURGED if document_purged else None)
 
     def _undo(self, context: AgentRunContext, record: dict[str, Any], version: int) -> dict[str, Any]:
         metadata = record["response_metadata"]

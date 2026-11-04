@@ -835,6 +835,7 @@ AI_DB_REQUIRED_TABLES = (
     "document_quality_reviews",
     "wiki_pending_contributions",
     "wiki_source_tombstones",
+    "ai_document_purges",
     *AGENT_REQUIRED_TABLES,
 )
 

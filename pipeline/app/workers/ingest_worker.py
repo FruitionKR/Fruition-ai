@@ -67,7 +67,11 @@ DELETE_LOCK_ATTEMPTS = 10
 
 
 # journal을 거치지 않는 문서 단위 bookkeeping command와 그 결과 event kind. document 결과 consumer는 이 kind들을 처리하지 않고 건너뛴다.
-_EVENT_KINDS = {"document_deleted": "document_cleanup", "document_renamed": "document_rename"}
+_EVENT_KINDS = {
+    "document_deleted": "document_cleanup",
+    "document_renamed": "document_rename",
+    "document_purged": "document_purge",
+}
 _BOOKKEEPING_KINDS = frozenset(_EVENT_KINDS)
 
 
@@ -213,6 +217,8 @@ async def _dispatch_post_ingest(
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command.get("kind") in _BOOKKEEPING_KINDS:
+        if not command.get("workspace_id") or not command.get("document_id"):
+            raise UnprocessableIngestCommand(f"{command.get('kind')} command requires workspace_id and document_id")
         # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 행을 되살리거나 고치지 않도록 직접 확인한다.
         with journal.connect() as conn:
             if journal.workspace_purged(conn, command["workspace_id"]):
@@ -239,6 +245,11 @@ def _delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
 def _handle(command: dict) -> dict:
     if command.get("kind") == "document_deleted":
         _delete_document_wiki_data(command["workspace_id"], command["document_id"])
+        return {}
+    if command.get("kind") == "document_purged":
+        # 실패는 안에서 기록하고 올리지 않는다. 재시도는 agent worker가 한다(파티션을 막지 않는다).
+        from app.modules.data_purge.infrastructure import document_copy_purge
+        document_copy_purge.purge_document(command["workspace_id"], command["document_id"])
         return {}
     if command.get("kind") == "document_renamed":
         title = str(command.get("title") or "").strip()

@@ -765,6 +765,19 @@ CREATE TABLE IF NOT EXISTS ai_purged_scopes (
     PRIMARY KEY (scope_type, scope_id)
 );
 
+-- 영구 삭제한 문서. document_purged를 받으면 먼저 남기고, 본문 복사본을 다 지우면 finished_at을 채운다.
+-- finished_at이 비어 있으면 agent worker가 다시 시도한다. 식별자만 담는다.
+CREATE TABLE IF NOT EXISTS ai_document_purges (
+    workspace_id varchar(255) NOT NULL,
+    document_id varchar(255) NOT NULL,
+    requested_at timestamptz NOT NULL DEFAULT now(),
+    last_attempt_at timestamptz,
+    finished_at timestamptz,
+    PRIMARY KEY (workspace_id, document_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_document_purges_pending
+    ON ai_document_purges (last_attempt_at NULLS FIRST, requested_at) WHERE finished_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS ai_model_usage (
     id uuid PRIMARY KEY,
     run_id text NOT NULL,

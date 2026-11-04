@@ -46,6 +46,11 @@ def _sweep_artifacts(run_ids: list[str]) -> int:
     return _delete_objects(prefixes, [])
 
 
+def delete_run_objects(run_id: str) -> int:
+    """90일 정리가 run 행을 지우기 전에 부른다. 수정안·미리 보기·되돌리기용 artifact가 모두 이 접두사 아래에 있다."""
+    return _sweep_artifacts([run_id])
+
+
 def _mark_purged(scope_type: str, scope_id: str) -> None:
     # 삭제보다 먼저 커밋해 파기 중에 들어온 작업도 journal register에서 거절되게 한다.
     with connect() as conn:
@@ -95,6 +100,7 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
             ("document_derived_state", "DELETE FROM document_derived_state WHERE workspace_id = %(ws)s"),
             ("wiki_source_tombstones", "DELETE FROM wiki_source_tombstones WHERE workspace_id = %(ws)s"),
             ("pipeline_runs", "DELETE FROM pipeline_runs WHERE workspace_id = %(ws)s"),
+            ("ai_document_purges", "DELETE FROM ai_document_purges WHERE workspace_id = %(ws)s"),
         ]
         # 계획·승인·작업·산출물 행은 ON DELETE CASCADE로 함께 지워진다.
         agent_deleted, run_ids = _delete_agent_runs(conn, "workspace_id = %(ws)s", params)

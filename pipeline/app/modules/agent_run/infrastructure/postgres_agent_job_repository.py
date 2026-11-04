@@ -10,6 +10,7 @@ from app.modules.agent_run.domain.entities import AgentJob, AgentRunContext
 from app.modules.agent_run.domain.plan import (
     NON_RETRYABLE_PLAN_FAILURE_CODES,
     NOT_SELECTED_ERROR_CODE,
+    ROLLBACK_DOCUMENT_PURGED,
     AgentPlan,
     AgentPlanOperation,
 )
@@ -20,18 +21,20 @@ from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_re
 MAX_JOB_ATTEMPTS = 3
 # document-svc가 이미 "다시 시도해 주세요" 문구로 보여 주는 기존 코드(AiErrorMessages)를 그대로 쓴다.
 INTERRUPTED_ATTEMPTS_EXHAUSTED = "interrupted_attempts_exhausted"
+_EXPIRED_RUN_STATUSES = ["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled"]
+# 90일 정리 대상. 영구 삭제로 끝난 rollback_failed는 다시 시도해도 같아 끝난 run으로 본다. 다른 rollback_failed는 복구를 기다린다.
+_EXPIRED_RUN_CONDITION = """
+    finished_at < now() - interval '90 days'
+    AND (status = ANY(%(statuses)s) OR (status = 'rollback_failed' AND error_code = %(purged)s))
+"""
 
 
 class PostgresAgentJobRepository:
-    def list_expired_run_ids(self) -> tuple[str, ...]:
+    def list_expired_run_ids(self, limit: int = 100) -> tuple[str, ...]:
         with database.connect_ai() as conn:
             rows = conn.execute(
-                """
-                SELECT id FROM agent_runs
-                WHERE finished_at < now() - interval '90 days'
-                  AND status = ANY(%s)
-                """,
-                (["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled"],),
+                f"SELECT id FROM agent_runs WHERE {_EXPIRED_RUN_CONDITION} ORDER BY finished_at, id LIMIT %(limit)s",
+                {"statuses": _EXPIRED_RUN_STATUSES, "purged": ROLLBACK_DOCUMENT_PURGED, "limit": limit},
             ).fetchall()
         return tuple(row["id"] for row in rows)
 
@@ -40,17 +43,8 @@ class PostgresAgentJobRepository:
             return 0
         with database.connect_ai() as conn:
             rows = conn.execute(
-                """
-                DELETE FROM agent_runs
-                WHERE id = ANY(%s)
-                  AND finished_at < now() - interval '90 days'
-                  AND status = ANY(%s)
-                RETURNING id
-                """,
-                (
-                    list(run_ids),
-                    ["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled"],
-                ),
+                f"DELETE FROM agent_runs WHERE id = ANY(%(ids)s) AND {_EXPIRED_RUN_CONDITION} RETURNING id",
+                {"ids": list(run_ids), "statuses": _EXPIRED_RUN_STATUSES, "purged": ROLLBACK_DOCUMENT_PURGED},
             ).fetchall()
         return len(rows)
 
@@ -285,7 +279,7 @@ class PostgresAgentJobRepository:
     def parent_rollback_error(self, run_id: str) -> str | None:
         with database.connect_ai() as conn:
             row = conn.execute(
-                "SELECT parent.result, child.status AS child_status FROM agent_runs parent "
+                "SELECT parent.result, child.status AS child_status, child.error_code AS child_error_code FROM agent_runs parent "
                 "LEFT JOIN agent_runs child ON child.id = parent.result->>'run_id' "
                 "AND child.workspace_id = parent.workspace_id AND child.user_id = parent.user_id "
                 "WHERE parent.id = %s", (run_id,),
@@ -294,6 +288,8 @@ class PostgresAgentJobRepository:
         if result.get("skill_undo"):
             return self._rollback_skill_publication(run_id)
         if result.get("run_id"):
+            if row["child_status"] == "rollback_failed" and row["child_error_code"] == ROLLBACK_DOCUMENT_PURGED:
+                return ROLLBACK_DOCUMENT_PURGED
             return None if row["child_status"] == "cancelled" else "rollback_child_incomplete"
         if result.get("action") in {"chat_answer", "conversation_reply", "markdown_edit", "markdown_create", "clarify", "reject"}:
             return None
@@ -338,10 +334,11 @@ class PostgresAgentJobRepository:
             conn.execute(
                 """
                 UPDATE agent_runs SET status = %s, error_code = %s, updated_at = now(),
-                    finished_at = CASE WHEN %s::text IS NULL THEN now() ELSE NULL END
+                    finished_at = CASE WHEN %s::text IS NULL OR %s::text = %s THEN now() ELSE NULL END
                 WHERE id = %s AND status = 'rolling_back'
                 """,
-                ("rollback_failed" if error_code else "cancelled", error_code, error_code, run_id),
+                ("rollback_failed" if error_code else "cancelled", error_code, error_code, error_code,
+                 ROLLBACK_DOCUMENT_PURGED, run_id),
             )
 
     def load_context(self, run_id: str) -> AgentRunContext:
