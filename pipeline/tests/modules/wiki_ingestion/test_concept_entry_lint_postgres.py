@@ -1079,11 +1079,47 @@ def test_lint_reconnects_live_source_when_concept_lost_its_source_link(world: Wo
     assert state["documents"] == [("doc-a", "alpha")]
 
 
+def _without_record_or_source_link(world: World, slug: str) -> str:
+    page_id = _drop_source_link(world, slug)
+    world.ledger = [row for row in world.ledger if row["page_id"] != page_id]
+    with world.connect() as conn:
+        conn.execute("DELETE FROM document_wiki_links WHERE wiki_page_id = %s", (page_id,))
+    return page_id
+
+
+def test_lint_reconnects_page_without_contribution_when_body_cites_live_document(world: World) -> None:
+    """원장이 생기기 전에 승격한 페이지는 본문에만 출처가 남아 있다. 원문이 살아 있으면 지우지 않고 잇는다."""
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = _without_record_or_source_link(world, "alpha")
+
+    result = world.lint("lint-empty")
+
+    assert result["deleted_pages"] == []
+    assert result["source_link_repairs"] == [{"page_id": alpha, "slug": "alpha", "document_ids": ["doc-a"]}]
+    assert "alpha" in world.state()["pages"]
+    assert _source_links(world, "alpha") == ["doc-a"]
+
+
+def test_lint_deletes_page_without_contribution_when_body_cites_only_deleted_document(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = _without_record_or_source_link(world, "alpha")
+    world.trash("doc-a")
+
+    result = world.lint("lint-empty")
+
+    assert "alpha" not in world.state()["pages"]
+    assert result["deleted_pages"] == [alpha]
+
+
 def test_lint_deletes_page_without_any_contribution(world: World) -> None:
     world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
     world.mark_linted()
-    alpha = _drop_source_link(world, "alpha")
-    world.ledger = [row for row in world.ledger if row["page_id"] != alpha]
+    alpha = _without_record_or_source_link(world, "alpha")
+    world.write(f"wiki/{WS}/pages/{alpha}/ops/empty.md", "# Alpha\n")
+    with world.connect() as conn:
+        conn.execute("UPDATE wiki_pages SET markdown_uri = %s WHERE id = %s", (f"wiki/{WS}/pages/{alpha}/ops/empty.md", alpha))
 
     result = world.lint("lint-empty")
 
