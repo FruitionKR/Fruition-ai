@@ -1,9 +1,12 @@
 import json
 import unittest
+from pathlib import Path
 
 from app.core.pipeline_control import DeadlineExceededError, PipelineRunCancelledError
 from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
+from app.modules.markdown_edit.domain.markdown_output_contract import MarkdownOutputContractError
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_detail_classifier import (
+    DEFAULT_MARKDOWN_EDIT_DETAIL_PROMPT,
     ChatCompletionsMarkdownEditDetailClassifier,
 )
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import ChatCompletionsMarkdownEditor
@@ -144,3 +147,69 @@ class EditorUsesClassifiedDetailTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplacementRequestClassifiedAsAdditiveTest(unittest.TestCase):
+    """"'없음.' 대신 적어줘"를 addition_only로 분류하면 어떤 답도 통과하지 못한다(실서버 Flash-Lite 편집 실패 재현)."""
+
+    SOURCE = "## 담당자\n\n없음."
+    REPLACED = "## 담당자\n\n민수"
+    KEPT = "## 담당자\n\n없음.\n\n민수"
+    INSTRUCTION = "'없음.' 대신 민수라고 적어줘"
+
+    def _edit(self, detail: MarkdownEditDetail, *replacements: str) -> tuple[object, list[str]]:
+        outputs = [
+            {"operation": "replace", "actual_target": {"type": "whole_document", "start_line": 1, "end_line": 3},
+             "summary": "담당자를 적었습니다.", "replacement_markdown": replacement}
+            for replacement in replacements
+        ]
+        evaluated: list[str] = []
+
+        class Client:
+            def complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, object]:
+                if system_prompt == "evaluator":
+                    replacement = json.loads(user_prompt)["proposal"]["replacement_markdown"]
+                    evaluated.append(replacement)
+                    # 평가기는 요청대로 '없음.'이 빠졌는지 본다.
+                    passed = "없음." not in replacement
+                    return {"passed": passed, "failures": [] if passed else ["'없음.'을 지우고 적어야 합니다."]}
+                return outputs.pop(0)
+
+        editor = ChatCompletionsMarkdownEditor(  # type: ignore[arg-type]
+            Client(), "system", detail_classifier=RecordingClassifier(detail)
+        )
+        editor._evaluation_system_prompt = "evaluator"
+        target = MarkdownEditTarget(type="whole_document", start_line=1, end_line=3)
+        request_value = MarkdownEditRequest(
+            instruction=self.INSTRUCTION, markdown=self.SOURCE, target=target, edit_goal="other",
+        )
+        return editor.generate_edit(request_value), evaluated
+
+    def test_additive_classification_fails_both_ways_the_model_can_answer(self) -> None:
+        with self.assertRaises(MarkdownOutputContractError) as caught:
+            self._edit(MarkdownEditDetail(addition_only=True), self.REPLACED, self.KEPT)
+
+        self.assertTrue(any(failure.startswith("LLM evaluation:") for failure in caught.exception.failures))
+
+    def test_additive_check_still_rejects_replacing_when_classified_additive(self) -> None:
+        with self.assertRaises(MarkdownOutputContractError) as caught:
+            self._edit(MarkdownEditDetail(addition_only=True), self.REPLACED, self.REPLACED)
+
+        self.assertIn("additive edit must preserve every existing non-empty line in order", caught.exception.failures)
+
+    def test_replacement_classification_succeeds_on_first_answer(self) -> None:
+        result, evaluated = self._edit(MarkdownEditDetail(addition_only=False), self.REPLACED)
+
+        self.assertEqual(result.edit.replacement_markdown, self.REPLACED)  # type: ignore[attr-defined]
+        self.assertEqual(evaluated, [self.REPLACED])
+
+    def test_prompt_and_eval_define_replacement_wording_as_not_additive(self) -> None:
+        prompt = DEFAULT_MARKDOWN_EDIT_DETAIL_PROMPT.read_text(encoding="utf-8")
+        self.assertIn("'없음.' 대신", prompt)
+        dataset = Path(__file__).resolve().parents[3] / "evals" / "markdown_edit_detail.jsonl"
+        cases = {
+            case["id"]: case
+            for case in map(json.loads, dataset.read_text(encoding="utf-8").splitlines())
+        }
+        self.assertFalse(cases["replace-instead-of"]["expected"]["addition_only"])
+        self.assertTrue(cases["mention-instead-but-adds"]["expected"]["addition_only"])
