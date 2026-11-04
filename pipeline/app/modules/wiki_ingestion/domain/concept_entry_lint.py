@@ -342,6 +342,13 @@ def _delete_page(plan: EntryLintPlan, page: EntryPage) -> None:
     plan.deleted_page_ids.append(page.page_id)
 
 
+def prune_unsourced_pages(plan: EntryLintPlan, pages: list[EntryPage]) -> None:
+    """원문에서 출처를 찾을 수 있는 근거가 없는 페이지를 지운다. 삭제 기록과 그 직전 본문이 스냅샷으로 남는다."""
+    for page in pages:
+        _delete_page(plan, page)
+        plan.decisions.append({"action": "prune_unsourced", "page_id": page.page_id, "entry_id": None, "slug": page.slug})
+
+
 def movable(page: EntryPage) -> bool:
     """다른 페이지의 하위 항목으로 통째로 옮길 수 있는 페이지인지.
 

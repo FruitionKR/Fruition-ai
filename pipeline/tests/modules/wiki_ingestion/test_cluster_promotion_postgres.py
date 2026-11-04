@@ -65,7 +65,11 @@ class PlacementJudge:
         }
 
 
-def _lint(world: World, monkeypatch, operation_id: str, active: str, judge: PlacementJudge | None = None) -> dict:
+def _lint(
+    world: World, monkeypatch, operation_id: str, active: str, judge: PlacementJudge | None = None, *, live_source: bool = True,
+) -> dict:
+    if live_source:
+        world.add_source("doc-c")
     world.write(f"wiki/{WS}/clusters/active.md", "# Active Meaning Clusters\n\n" + active)
     monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: judge)
     monkeypatch.setattr(wiki_maintenance, "embedding_server_model", lambda: judge.model if judge else None)
@@ -351,3 +355,37 @@ def test_promoted_parent_becomes_a_page_and_the_next_lint_moves_existing_pages_u
     entries = {entry for entry in world.state()["entries"] if entry[1] == "rollout"}
     assert (root, "rollout", "Strategy", None) in entries
     assert ("e-blue", "rollout", "Blue Green", root) in entries
+
+
+def test_lint_with_promotion_still_deletes_concept_without_source(world: World, monkeypatch) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    world.trash("doc-a")
+    alpha = world.page_id("alpha")
+
+    result = _lint(world, monkeypatch, "lint-both", _cluster("rollout", TERMS))
+
+    state = world.state()
+    assert [item["concept_slug"] for item in result["materialized_promotions"]] == ["rollout"]
+    assert "rollout" in state["pages"]
+    assert "alpha" not in state["pages"]
+    with world.connect() as conn:
+        linked = conn.execute(
+            "SELECT 1 FROM wiki_page_links WHERE to_page_id = %s AND link_type = 'source_mentions_concept'",
+            (world.page_id("rollout"),),
+        ).fetchone()
+    assert linked is not None
+    assert result["deleted_pages"] == [alpha]
+    assert world.contribution("alpha", "lint-both")["content_action"] == "delete"
+    assert world.contribution("rollout", "lint-both")["content_action"] == "create"
+
+
+def test_promoted_page_without_live_source_is_deleted_in_the_same_lint(world: World, monkeypatch) -> None:
+    # 근거 문서의 소스 페이지가 없으면 승격이 소스 → 개념 링크를 잇지 못한다.
+    result = _lint(world, monkeypatch, "lint-promote", _cluster("rollout", TERMS), live_source=False)
+
+    assert [item["concept_slug"] for item in result["materialized_promotions"]] == ["rollout"]
+    assert "rollout" not in world.state()["pages"]
+    assert result["deleted_pages"] == [world.page_id("rollout")]
+    assert world.contribution("rollout", "lint-promote")["content_action"] == "delete"
+    assert world.page_id("rollout") in [row["page_id"] for row in result["ledger_contributions"]]

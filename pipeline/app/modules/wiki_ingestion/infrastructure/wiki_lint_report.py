@@ -48,6 +48,13 @@ def render_lint_log_markdown(result: dict[str, Any], lint_date: str) -> str:
             lines.append(f"  reason: {item.get('reason')}")
     else:
         lines.append("- orphan wiki link 없음")
+    lines.extend(["", "### Concept Sources"])
+    unsourced = [item for item in result.get("entry_decisions", []) if item.get("action") == "prune_unsourced"]
+    repairs = result.get("source_link_repairs", [])
+    lines.extend(f"- 출처 없음 삭제: concept:{item.get('slug')}" for item in unsourced)
+    lines.extend(f"- 원문 다시 연결: concept:{item.get('slug')}" for item in repairs)
+    if not unsourced and not repairs:
+        lines.append("- 출처 이상 없음")
     lines.extend(["", "### Invalid Promotions"])
     invalid_promotions = result.get("invalid_promotions", [])
     if invalid_promotions:

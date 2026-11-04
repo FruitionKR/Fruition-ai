@@ -321,4 +321,5 @@ class WikiLintOut(BaseModel):
     entry_decisions: list[dict[str, Any]] = Field(default_factory=list)
     deferred_entry_pages: list[str] = Field(default_factory=list)
     deleted_pages: list[str] = Field(default_factory=list)
+    source_link_repairs: list[dict[str, Any]] = Field(default_factory=list)
     ledger_contributions: list[dict[str, Any]] = Field(default_factory=list)

@@ -9,7 +9,6 @@ import json
 import unittest
 
 from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
-from app.modules.markdown_edit.domain.markdown_output_contract import MarkdownOutputContractError
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import (
     DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT,
     ChatCompletionsMarkdownEditor,
@@ -77,27 +76,36 @@ class LunaContractRegressionTest(unittest.TestCase):
 
     def test_replace_keeps_all_replacement_lines_for_evaluation(self) -> None:
         replacement = "# 토양 수분 센서\n\n짧은 첫 문단이다. 센서는 주 1회 보정한다.\n\n## 센서 기록\n\n운영자는 배액률을 함께 살핀다.\n"
-        client = ScriptedClient(
-            [{
-                "operation": "replace",
-                "actual_target": {"type": "whole_document", "start_line": 1, "end_line": 8},
-                "summary": "첫 문단을 줄였습니다.",
-                "replacement_markdown": replacement,
-            }],
-            [{"passed": True, "failures": []}],
-        )
-        editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
+        for verdict in [
+            {"passed": True, "failures": []},
+            {"passed": False, "failures": ["보정 문장은 첫 문단이 아닌 문서 마지막에 붙여야 합니다."]},
+        ]:
+            with self.subTest(verdict=verdict):
+                attempts = 1 if verdict["passed"] else 2
+                client = ScriptedClient(
+                    [{
+                        "operation": "replace",
+                        "actual_target": {"type": "whole_document", "start_line": 1, "end_line": 8},
+                        "summary": "첫 문단을 줄였습니다.",
+                        "replacement_markdown": replacement,
+                    }] * attempts,
+                    [dict(verdict) for _ in range(attempts)],
+                )
+                editor = ChatCompletionsMarkdownEditor(client, "system")  # type: ignore[arg-type]
 
-        editor.generate_edit(
-            MarkdownEditRequest(
-                instruction="첫 문단을 두 문장으로 더 간결하게 고쳐 줘. 마지막에 '센서는 주 1회 보정한다.'를 붙여.",
-                markdown=DOCUMENT,
-                target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=8),
-                edit_goal="other",
-            )
-        )
+                result = editor.generate_edit(
+                    MarkdownEditRequest(
+                        instruction="첫 문단을 두 문장으로 더 간결하게 고쳐 줘. 마지막에 '센서는 주 1회 보정한다.'를 붙여.",
+                        markdown=DOCUMENT,
+                        target=MarkdownEditTarget(type="whole_document", start_line=1, end_line=8),
+                        edit_goal="other",
+                    )
+                )
 
-        self.assertEqual(client.evaluation_payloads[0]["replacement_lines"], replacement.splitlines())
+                self.assertEqual(client.evaluation_payloads[0]["replacement_lines"], replacement.splitlines())
+                self.assertEqual(len(client.evaluation_payloads), attempts)
+                self.assertEqual(result.edit.replacement_markdown, replacement)
+                self.assertEqual(result.edit.summary, "첫 문단을 줄였습니다.")
 
     def test_logs_contract_failure_codes_without_document_or_evaluation_text(self) -> None:
         rejection = {"passed": False, "failures": ["문서 끝에 태그 줄 외에 빈 줄도 추가했습니다. 배액률 문장을 지우세요."]}
@@ -111,8 +119,8 @@ class LunaContractRegressionTest(unittest.TestCase):
             "app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor",
             level="WARNING",
         ) as logs:
-            with self.assertRaises(MarkdownOutputContractError):
-                editor.generate_edit(tag_request())
+            result = editor.generate_edit(tag_request())
+            self.assertEqual(result.edit.replacement_markdown, luna_tag_line_output()["replacement_markdown"])
 
         output = "\n".join(logs.output)
         self.assertEqual(output.count("[Markdown 편집 계약 실패]"), 2)
