@@ -1914,6 +1914,123 @@ def _consumer_stub():
     )
 
 
+def _run_first_turn(send_error=None):
+    """첫 문답 하나를 처리하며 원장 예약·결과 발행·제목 호출의 순서를 남긴다."""
+    command = {"kind": "agent", "run_id": "run-1", "workspace_id": "w", "user_id": "u", "session_id": "s",
+               "provider": "openai", "model": "m", "message": "질문"}
+
+    async def run_test():
+        stop_callbacks = []
+        order = []
+        consumer = _consumer_stub()
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        message = SimpleNamespace(topic="t", partition=0, offset=1, value=command)
+        delivered = []
+
+        async def getmany(**kwargs):
+            if not delivered:
+                delivered.append(True)
+                return {"partition": [message]}
+            stop_callbacks[0]()
+            await asyncio.sleep(0)
+            return {}
+
+        async def send(topic, event, **kwargs):
+            order.append(event["status"])
+            if send_error is not None:
+                raise send_error
+
+        async def to_thread(function, *args):
+            if function is task_worker._handle_controlled:
+                return {"action": "conversation_reply", "message": "답변"}
+            if function is task_worker._reserve_session_title_call:
+                order.append("reserve")
+                return "call-1"
+            if function is task_worker.release_reserved_call:
+                order.append(("release", args[0]))
+                return None
+            if function is task_worker.generate_chat_session_title:
+                order.append("title_call")
+                return "제목"
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with patch.object(task_worker.database, "ensure_ai_schema"), \
+                patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
+                patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            try:
+                await asyncio.wait_for(task_worker.consume(), timeout=1)
+            except Exception as exc:
+                if exc is not send_error:
+                    raise
+        return order
+
+    return asyncio.run(run_test())
+
+
+def test_title_ledger_row_opens_before_result_publish_and_model_call_stays_after() -> None:
+    # document-svc는 결과를 받으면 run_id로 원장을 읽고, started 행이 있어야 재시도한다.
+    # 행이 발행 전에 있어야 제목 호출을 놓치지 않고, 모델 호출은 발행 뒤라 답변을 늦추지 않는다.
+    assert _run_first_turn() == ["reserve", "succeeded", "title_call", ("release", "call-1"), "session_title"]
+
+
+def test_title_reservation_is_released_when_result_publish_fails() -> None:
+    assert _run_first_turn(send_error=RuntimeError("kafka down")) == ["reserve", "succeeded", ("release", "call-1")]
+
+
+def test_failed_title_generation_still_releases_reservation() -> None:
+    releases = []
+    with patch.object(task_worker, "release_reserved_call", side_effect=releases.append), \
+            patch.object(task_worker, "generate_chat_session_title", side_effect=RuntimeError("no key")):
+        producer = SimpleNamespace(send_and_wait=AsyncMock())
+        asyncio.run(task_worker._publish_session_title(producer, {"run_id": "run-1"}, {}, "call-1"))
+    assert releases == ["call-1"]
+    producer.send_and_wait.assert_not_awaited()
+
+
+def test_cancelled_title_keeps_reservation_because_model_thread_may_still_close_it() -> None:
+    async def run_test() -> list:
+        releases = []
+        started = threading.Event()
+        finish = threading.Event()
+
+        def slow_title(command, result):
+            started.set()
+            finish.wait(timeout=5)
+
+        producer = SimpleNamespace(send_and_wait=AsyncMock())
+        with patch.object(task_worker, "release_reserved_call", side_effect=releases.append), \
+                patch.object(task_worker, "generate_chat_session_title", side_effect=slow_title):
+            task = asyncio.create_task(task_worker._publish_session_title(producer, {"run_id": "r"}, {}, "call-1"))
+            await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            finish.set()
+        return releases
+
+    assert asyncio.run(run_test()) == []
+
+
+def test_reservation_failure_does_not_block_result_publish() -> None:
+    command = {"kind": "query", "run_id": "r", "session_id": "s", "provider": "openai", "model": "m", "question": "질문"}
+    with patch.object(task_worker, "start_call", side_effect=RuntimeError("db down")):
+        assert task_worker._reserve_session_title_call(command, {"answer": "답변"}) is None
+
+
+def test_reservation_is_skipped_when_no_title_is_needed() -> None:
+    command = {"kind": "query", "run_id": "r", "provider": "openai", "model": "m", "question": "질문"}
+    with patch.object(task_worker, "start_call") as start_call:
+        assert task_worker._reserve_session_title_call(command, {"answer": "답변"}) is None
+    start_call.assert_not_called()
+
+
 def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
