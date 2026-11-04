@@ -2211,8 +2211,9 @@ def _scan_concept_sources(
     for row in rows:
         page_id = str(row["id"])
         contributions = ledger.get(page_id, [])
+        # 원장 행이 없어도 소스 → 개념 링크가 살아 있으면 출처가 있다. 재생할 기록이 없어 지우면 복원으로 돌아오지 않는다.
         healthy = row["has_source_link"] and (
-            page_id in promoted_page_ids or (contributions and all(item.get("active") for item in contributions))
+            page_id in promoted_page_ids or all(item.get("active") for item in contributions)
         )
         if page_id in unapplied or healthy:
             continue
