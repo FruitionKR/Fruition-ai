@@ -185,12 +185,11 @@ class ReplacementRequestClassifiedAsAdditiveTest(unittest.TestCase):
         )
         return editor.generate_edit(request_value), evaluated
 
-    def test_additive_classification_rejects_both_answers_and_returns_the_one_only_evaluation_flagged(self) -> None:
-        result, evaluated = self._edit(MarkdownEditDetail(addition_only=True), self.REPLACED, self.KEPT)
+    def test_additive_classification_fails_both_ways_the_model_can_answer(self) -> None:
+        with self.assertRaises(MarkdownOutputContractError) as caught:
+            self._edit(MarkdownEditDetail(addition_only=True), self.REPLACED, self.KEPT)
 
-        # 대신 적은 답은 추가 전용 검사에서 평가 전에 막히고, 남겨 둔 답은 평가에서 지적된다. 지적만 받은 답을 돌려준다.
-        self.assertEqual(evaluated, [self.KEPT])
-        self.assertEqual(result.edit.replacement_markdown, self.KEPT)  # type: ignore[attr-defined]
+        self.assertTrue(any(failure.startswith("LLM evaluation:") for failure in caught.exception.failures))
 
     def test_additive_check_still_rejects_replacing_when_classified_additive(self) -> None:
         with self.assertRaises(MarkdownOutputContractError) as caught:
