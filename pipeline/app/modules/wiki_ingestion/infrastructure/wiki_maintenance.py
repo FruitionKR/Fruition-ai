@@ -109,8 +109,7 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     command.workspace_id,
                     command.operation_id,
                     apply=not command.dry_run,
-                    # 같은 lint의 승격이 바꾼 페이지와 기록이 겹치지 않게, 승격이 있으면 다음 lint로 미룬다.
-                    skip=bool(result.get("_lint_page_changes")),
+                    promotion_changes=result.get("_lint_page_changes"),
                     connection=connection,
                     concept_judge=concept_judge,
                     judge_part_of=judge_part_of,
