@@ -69,7 +69,7 @@ from app.modules.wiki_ingestion.domain.concept_entry_lint import (
     movable,
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, RestoreConflictError
-from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import grant_converter_access
+from app.modules.wiki_ingestion.infrastructure.migrate_ai_schema import apply_schema
 from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     manual_link_changes,
     wikilink_slugs,
@@ -875,8 +875,7 @@ def ensure_ai_schema() -> None:
     if migration_url:
         ddl = _AI_SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         with psycopg.connect(migration_url) as conn:
-            conn.execute(ddl)
-            grant_converter_access(conn)
+            apply_schema(conn, ddl)
         logger.info("[startup] ai_db 스키마 적용 완료 (db/ai_schema.sql)")
     verify_ai_schema()
 

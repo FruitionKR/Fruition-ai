@@ -17,7 +17,9 @@ ingest까지 막힌다. 요청 행(ai_document_purges)의 finished_at이 비어 
 변환을 거쳐 작업 취소가 계속 맞고 본문을 되살리지 않는다. 다른 편입과 같은 개념 잠금을 잡되 오래 기다리지 않고, 못 잡으면 다음 주기로 넘긴다.
 
 진행 중이던 run은 삭제 전에 읽은 근거를 스캔 뒤에 쓸 수 있다. 그래서 스캔 전에 그런 run이 있으면 끝내지 않고(active_runs) 다음 주기에
-다시 훑는다. 지난 스캔 뒤에 시작한 run은 지워진 본문을 읽을 수 없어 기다리지 않는다.
+다시 훑는다. 지난 스캔 뒤에 시작한 run은 지워진 본문을 읽을 수 없어 기다리지 않는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를
+읽으므로 문서 id로 좁히지 않고, 위키를 읽지 않는 종류만 뺀다. 요청 뒤 하루가 지나면 그때까지 시작한 run은 나이 제한으로 이미 빠졌으므로,
+겹쳐 도는 새 run을 더 기다리지 않고 그 시도의 스캔으로 끝낸다.
 """
 
 from __future__ import annotations
@@ -72,7 +74,9 @@ _SHARED_OBJECT_LOCK_TIMEOUT = "5s"
 # 끝날 때 결과를 쓸 수 있는 상태. 승인을 기다리는 agent run은 쓰지 않는다.
 _ACTIVE_TASK_STATUSES = ["running", "cancel_requested", "rolling_back"]
 _ACTIVE_AGENT_STATUSES = ["queued", "planning", "executing", "verifying", "cancel_requested", "rolling_back"]
-# 죽은 worker의 run이 정리를 영원히 붙잡지 않게 이보다 오래된 run은 기다리지 않는다.
+# 입력이 음성·전사문·자기 PDF뿐이고 위키와 다른 문서를 읽지 않아 이 문서의 근거를 쓸 수 없는 종류. 새 종류는 기본으로 기다린다.
+_TASK_KINDS_WITHOUT_DOCUMENT_TEXT = ["convert_batch", "meeting_notes", "meeting_transcription"]
+# 죽은 worker의 run이 정리를 영원히 붙잡지 않게 이보다 오래된 run은 기다리지 않는다. 요청 뒤 이만큼 지나면 겹치는 새 run도 기다리지 않는다.
 _ACTIVE_RUN_MAX_AGE = "1 day"
 
 
@@ -192,25 +196,34 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
 
 
 def _count_active_runs(workspace_id: str, document_id: str) -> int:
-    """지난 스캔이 끝나기 전에 시작해 아직 안 끝난 run 수. 첫 시도는 지금까지 시작한 run을 모두 센다."""
+    """지난 스캔이 끝나기 전에 시작해 아직 안 끝난 run 수. 첫 시도는 지금까지 시작한 run을 모두 센다. 대기 상한을 넘기면 0이다."""
     with database.connect_ai() as conn:
-        return conn.execute(
+        row = conn.execute(
             """
-            WITH scan AS (
-                SELECT COALESCE(
-                    (SELECT last_attempt_at FROM ai_document_purges WHERE workspace_id = %(ws)s AND document_id = %(doc)s),
-                    now()) AS at
+            WITH purge AS (
+                SELECT last_attempt_at, requested_at FROM ai_document_purges
+                WHERE workspace_id = %(ws)s AND document_id = %(doc)s
+            ), scan AS (
+                SELECT COALESCE((SELECT last_attempt_at FROM purge), now()) AS at
             )
             SELECT (SELECT count(*) FROM ai_task_runs, scan
-                    WHERE workspace_id = %(ws)s AND status = ANY(%(tasks)s)
+                    WHERE workspace_id = %(ws)s AND status = ANY(%(tasks)s) AND NOT kind = ANY(%(no_text)s)
                       AND created_at <= scan.at AND created_at > now() - %(age)s::interval)
                  + (SELECT count(*) FROM agent_runs, scan
                     WHERE workspace_id = %(ws)s AND status = ANY(%(agents)s)
-                      AND created_at <= scan.at AND created_at > now() - %(age)s::interval) AS count
+                      AND created_at <= scan.at AND created_at > now() - %(age)s::interval) AS count,
+                   COALESCE((SELECT requested_at <= now() - %(age)s::interval FROM purge), false) AS expired
             """,
             {"ws": workspace_id, "doc": document_id, "tasks": _ACTIVE_TASK_STATUSES,
-             "agents": _ACTIVE_AGENT_STATUSES, "age": _ACTIVE_RUN_MAX_AGE},
-        ).fetchone()["count"]
+             "no_text": _TASK_KINDS_WITHOUT_DOCUMENT_TEXT, "agents": _ACTIVE_AGENT_STATUSES, "age": _ACTIVE_RUN_MAX_AGE},
+        ).fetchone()
+    if not row["expired"]:
+        return row["count"]
+    if row["count"]:
+        # 이 시도의 스캔 뒤에 이 run들이 쓰는 근거는 더 찾지 않는다. 언제 놓칠 수 있었는지 알 수 있게 남긴다.
+        logger.warning("[문서 복사본 삭제 대기 상한] workspace_id=%s document_id=%s active_runs=%s",
+                       workspace_id, document_id, row["count"])
+    return 0
 
 
 def _source_page_ids(conn: Any, workspace_id: str, document_id: str, *, active_only: bool = False) -> list[str]:

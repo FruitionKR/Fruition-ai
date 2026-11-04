@@ -676,9 +676,8 @@ CREATE TABLE IF NOT EXISTS ai_task_runs (
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS command jsonb;
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_ai_task_runs_parent ON ai_task_runs(parent_run_id);
--- 문서 영구 삭제가 워크스페이스의 진행 중 run과 작업 기록을 찾고, command의 문서 id로 그 문서의 run을 찾는다.
-CREATE INDEX IF NOT EXISTS idx_ai_task_runs_workspace_status ON ai_task_runs(workspace_id, status);
-CREATE INDEX IF NOT EXISTS idx_ai_task_runs_command_document ON ai_task_runs((command->>'document_id')) WHERE command->>'document_id' IS NOT NULL;
+-- 문서 영구 삭제가 쓰는 이 표의 인덱스는 여기 두지 않는다. 이 파일은 한 트랜잭션이고 위 ALTER TABLE의 ACCESS EXCLUSIVE를 끝까지 쥐어,
+-- 큰 표를 훑는 동안 작업 기록이 멈춘다. migrate_ai_schema가 커밋 뒤에 CONCURRENTLY로 만든다(ONLINE_INDEXES).
 -- 후보 비교용 파생 벡터. 원문을 보관하지 않고 작업 삭제 시 함께 정리한다.
 CREATE TABLE IF NOT EXISTS concept_embedding_cache (
     workspace_id text NOT NULL,

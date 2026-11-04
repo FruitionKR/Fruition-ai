@@ -140,11 +140,12 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 - 남기는 것: 사용자 메시지(`request_summary`), AI 답변, 여러 문서 파생(개념 페이지·개념 기여, 클러스터), Skill 본문, `ai_model_usage`.
 - 취소 API(`/internal/ai/tasks/{run_id}/cancel`)는 document가 본문을 지운 command(`document_purged: true`)를 받으면 해시 대조와 등록을 건너뛴다. 실행이 없으면 `409`다.
 - `document_deleted`가 처리되지 못해 소스 페이지가 아직 활성이면 같은 정리를 먼저 돌린다. 개념 잠금 시간 초과는 실패로 기록하고 다음 주기에 다시 시도한다.
+- 스캔 뒤에 결과를 쓸 수 있는 run이 있으면 끝내지 않고 다음 주기에 다시 훑는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를 읽으므로 문서 id로 좁히지 않는다. 위키를 읽지 않는 `convert_batch`·`meeting_notes`·`meeting_transcription`은 기다리지 않는다. 요청 뒤 하루가 지나면 기다리지 않고 그 시도의 스캔으로 끝내며(그때 아직 도는 run은 경고 로그에 건수를 남긴다), 그 뒤 이 run들이 쓰는 근거는 AI DB에 남을 수 있다. document의 `scrubOrphans`는 core_db만 정리해 이 값을 지우지 않는다.
 - `ai_document_purges`에 요청을 먼저 커밋한다. 객체 삭제나 다른 처리가 실패해도 offset은 넘어가고, `finished_at`이 빈 행을 agent worker가 1시간마다 오래 못 본 것부터 다시 시도한다(한 주기 20건, 3건 실패하면 그 주기 종료). 재전달해도 결과가 같다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 지우지 않고 오류 로그를 남기며 대기로 둔다. 로그에는 건수와 id만 남긴다.
 - 지운 뒤 승인: 나머지 문서는 그대로 승인·실행하고 run은 `partial_failed`로 끝난다. 실행할 작업이 영구 삭제 문서뿐이면 `409`다. `revise`도 수정안이 없어 `409`이고, 미리 보기는 나머지 문서만 돌려준다.
 - 지운 뒤 되돌리기: 그 문서 단계는 document-svc를 부르지 않고 건너뛰고 나머지 문서는 되돌린다. 끝에 run은 `rollback_failed`(`rollback_document_purged`)로 닫히고 `finished_at`을 채운다. 다시 요청해도 결과가 같고, 다른 `rollback_failed`와 달리 90일 정리 대상이다. 상위 `markdown_turn`도 같은 코드를 받는다.
 
-배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다.
+배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다. 같은 명령이 `ai_task_runs`의 인덱스를 `CONCURRENTLY`로 만들고, 못 만들어도 삭제는 동작한다([절차](../script.md#영구-삭제가-쓰는-작업-기록-인덱스)).
 
 배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 

@@ -141,6 +141,41 @@ def test_promotion_keeps_surviving_sources_and_empty_cluster_goes_with_its_reaso
     assert "reason: 근거" not in without_document_clusters(only, "doc-1")
 
 
+NO_CLAIM = "- evidence claim 없음"
+
+
+def _promoted(*sources: str) -> str:
+    """이번 편입이 근거를 더하지 않은 기존 클러스터에 승격 표시만 붙은 모양(meaning_cluster_artifact)."""
+    promotion = f"\n\n### Promotion\nstatus: candidate\nsource_refs: [{', '.join(sources)}]\nreason: 근거\n"
+    return _active(_cluster("marked", NO_CLAIM, promotion=promotion))
+
+
+def test_cluster_without_claims_keeps_the_other_documents_source() -> None:
+    stripped = without_document_clusters(_promoted("doc-1", "doc-2"), "doc-1")
+
+    assert "## cluster: marked" in stripped and "reason: 근거" in stripped
+    assert "source_refs: [doc-2]" in stripped
+    assert without_document_clusters(stripped, "doc-1") == stripped
+
+
+def test_cluster_without_claims_goes_when_its_last_source_is_purged() -> None:
+    assert "## cluster: marked" not in without_document_clusters(_promoted("doc-1"), "doc-1")
+
+
+def test_cluster_without_claims_not_citing_the_document_is_untouched() -> None:
+    text = _promoted("doc-2", "doc-3") + "\n<!-- doc-1 -->\n"
+
+    assert without_document_clusters(text, "doc-1") == text
+
+
+def test_cluster_whose_claims_all_went_is_removed_even_if_another_source_is_listed() -> None:
+    """남은 출처가 있어도 근거 문장이 하나도 없으면 대표명·사유가 지운 본문에서만 나온 것이다."""
+    promotion = "\n\n### Promotion\nsource_refs: [doc-1, doc-2]\nreason: 근거\n"
+    text = _active(_cluster("only", f"- claim_aaaa_001: {BODY} [doc-1:B0001]", promotion=promotion))
+
+    assert "## cluster: only" not in without_document_clusters(text, "doc-1")
+
+
 def test_log_loses_only_the_purged_documents_ingest_sections() -> None:
     stripped = without_document_log(LOG_TEXT, "doc-1")
 
@@ -341,11 +376,13 @@ def test_cancelling_another_documents_run_still_matches_its_blanked_row(stack) -
 # --- 진행 중 run의 늦은 쓰기 ---
 
 
-def _running(connect, run_id: str = "query-live", *, workspace: str = "ws", age: str = "0 seconds") -> None:
+def _running(connect, run_id: str = "query-live", *, workspace: str = "ws", age: str = "0 seconds",
+             kind: str = "query", document_id: str | None = None) -> None:
+    command = {"run_id": run_id, **({"document_id": document_id} if document_id else {})}
     with connect() as conn:
         conn.execute("INSERT INTO ai_task_runs(id, workspace_id, user_id, kind, command, status, created_at) "
-                     "VALUES (%s, %s, 'u', 'query', %s, 'running', now() - %s::interval)",
-                     (run_id, workspace, Json({"run_id": run_id}), age))
+                     "VALUES (%s, %s, 'u', %s, %s, 'running', now() - %s::interval)",
+                     (run_id, workspace, kind, Json(command), age))
 
 
 def _evidence(document_id: str = "doc-1") -> dict:
@@ -440,6 +477,86 @@ def test_waiting_for_runs_is_not_counted_as_a_storage_failure(stack) -> None:  #
     result = purge.purge_pending_documents()
 
     assert result.pending == purge.MAX_STORAGE_FAILURES_PER_CYCLE + 2  # 멈추지 않고 전부 다시 훑는다.
+
+
+@pytest.mark.parametrize("kind", ["convert_batch", "meeting_notes", "meeting_transcription"])
+def test_run_that_cannot_carry_document_text_does_not_delay_finishing(stack, kind) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    _running(connect, "long-run", kind=kind)
+
+    assert _purge().finished
+
+
+@pytest.mark.parametrize("kind", ["query", "lint", "ingest", "post_ingest", "skill_test_run"])
+def test_run_of_another_document_can_still_carry_this_documents_evidence(stack, kind) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    _running(connect, "other-doc-run", kind=kind, document_id="doc-2")
+
+    assert _purge().active_runs == 1
+
+
+def _age_request(connect, age: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE ai_document_purges SET requested_at = requested_at - %s::interval", (age,))
+
+
+def test_overlapping_runs_stop_holding_the_purge_after_the_wait_limit(stack, caplog) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    _running(connect, "overlap-1")
+    assert not _purge().finished
+    # 지난 스캔 전에 시작한 run이 주기마다 새로 겹쳐 있는 상태다.
+    _running(connect, "overlap-2")
+    _rewind_last_attempt(connect)
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET created_at = now() - interval '2 hours' WHERE id = 'overlap-2'")
+    assert purge.purge_pending_documents().finished == 0
+
+    _age_request(connect, "1 day 1 minute")
+    with caplog.at_level("WARNING", logger=purge.__name__):
+        assert purge.purge_pending_documents().finished == 1
+
+    assert "active_runs=" in caplog.text and "overlap" not in caplog.text
+    with connect() as conn:
+        assert conn.execute("SELECT finished_at FROM ai_document_purges").fetchone()["finished_at"] is not None
+
+
+def test_the_last_attempt_at_the_wait_limit_still_scans(stack) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    _running(connect)
+    assert not _purge().finished
+    journal.complete("query-live", _evidence())
+    _running(connect, "still-overlapping", age="2 hours")
+    _rewind_last_attempt(connect)
+    _age_request(connect, "1 day 1 minute")
+
+    assert purge.purge_pending_documents().finished == 1
+
+    with connect() as conn:
+        stored = conn.execute("SELECT result FROM ai_task_runs WHERE id = 'query-live'").fetchone()["result"]
+    assert stored == {"evidence_snippets": [{"source_document_id": "doc-1", "text": ""}]}
+
+
+def test_wait_limit_does_not_finish_a_purge_with_other_work_pending(stack, wiki_objects) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    wiki_objects.texts = {ACTIVE: _object(ACTIVE_TEXT)}
+    wiki_objects.keys = {ACTIVE}
+    wiki_objects.failing = True
+    assert not _purge().finished
+    _age_request(connect, "1 day 1 minute")
+
+    assert purge.purge_pending_documents().finished == 0
+
+
+def test_purge_works_before_the_online_indexes_exist(stack) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    with connect() as conn:
+        present = conn.execute("SELECT to_regclass('idx_ai_task_runs_workspace_status') AS present").fetchone()["present"]
+    _task_run(connect, "own", "document", {"run_id": "own", "document_id": "doc-1", "input_markdown": BODY})
+
+    assert present is None
+    assert _purge().finished
+    with connect() as conn:
+        assert BODY not in str(conn.execute("SELECT command FROM ai_task_runs WHERE id = 'own'").fetchone()["command"])
 
 
 def test_redelivery_after_finishing_changes_nothing(stack, wiki_objects) -> None:  # noqa: F811

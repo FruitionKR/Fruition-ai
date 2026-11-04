@@ -18,7 +18,11 @@ _SOURCE_REFS = re.compile(r"^(\s*source_refs: \[)(.*)(\]\s*)$")
 
 
 def without_document_clusters(markdown: str, document_id: str) -> str:
-    """이 문서를 인용한 근거 줄을 지운다. 근거가 하나도 남지 않은 클러스터는 대표명·승격 사유와 함께 지운다."""
+    """이 문서를 인용한 근거 줄과 승격 출처를 지운다.
+
+    근거가 있던 클러스터에서 근거가 모두 빠지면 대표명·승격 사유와 함께 지운다. 근거 없이 승격 표시만 있는 클러스터는
+    다른 문서의 출처가 남아 있으면 그 문서의 것이라 이 문서의 id만 빼고, 출처가 비면 지운다.
+    """
     if document_id not in markdown and f"claim_{_id_fragment(document_id)}_" not in markdown:
         return markdown
     return "".join(_without_document(part, document_id) for part in _CLUSTER_START.split(markdown))
@@ -37,28 +41,32 @@ def _without_document(section: str, document_id: str) -> str:
     own_claim = f"claim_{_id_fragment(document_id)}_"
     kept: list[str] = []
     remaining_claims = 0
-    changed = False
+    removed_claims = False
+    source_removed = False
+    sources_left = False
     lines = section.split("\n")
     index = 0
     while index < len(lines):
         line = lines[index]
         if not _CLAIM_START.match(line):
             refs = _without_source(line, document_id)
-            changed = changed or refs != line
+            if refs != line:
+                source_removed = True
+                sources_left = bool(_SOURCE_REFS.match(refs).group(2).strip())
             kept.append(refs)
             index += 1
             continue
         end = _claim_end(lines, index)
         claim = "\n".join(lines[index:end])
         if citation.search(claim) or own_claim in line:
-            changed = True
+            removed_claims = True
         else:
             kept.extend(lines[index:end])
             remaining_claims += 1
         index = end
-    if not changed:
+    if not removed_claims and not source_removed:
         return section
-    return "\n".join(kept) if remaining_claims else ""
+    return "\n".join(kept) if remaining_claims or (not removed_claims and sources_left) else ""
 
 
 def _claim_end(lines: list[str], start: int) -> int:
