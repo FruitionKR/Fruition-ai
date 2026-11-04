@@ -61,7 +61,12 @@ from app.modules.agent.domain.reference_documents import (
     reference_documents_context,
     reference_evidence_snippets,
 )
-from app.modules.agent.domain.task_mode import is_task_mode, summarizes_open_document, task_mode_route
+from app.modules.agent.domain.task_mode import (
+    is_task_mode,
+    saves_open_document_result_as_new,
+    summarizes_open_document,
+    task_mode_route,
+)
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
     AgentRunStarterPort,
@@ -189,6 +194,10 @@ CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = (
 ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
     "열린 문서가 길어 초안에 참고하지 않았어요. "
     "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+)
+SUMMARY_SAVE_TOO_LONG_MESSAGE = (
+    f"열린 문서가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 새 문서를 만들지 않았어요. "
+    "원문은 그대로예요. 저장할 부분을 선택하거나 위키에 올린 뒤 다시 요청해 주세요."
 )
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
@@ -1179,6 +1188,13 @@ class HandleAgentTurnUseCase:
                 for document in sources.documents
             ]
             notice = folder_source_notice(sources)
+        elif selected_skill is None and not bare and saves_open_document_result_as_new(request):
+            # "요약해서 저장해 줘"는 문서를 말하지 않아 active_document면 생성 모델이 무시할 수 있다. 근거 없는 문서가 저장되지 않게 원문으로 싣는다.
+            assert request.active_markdown_context is not None
+            markdown = _selection_text(request.active_markdown_context) or request.active_markdown_context.markdown
+            if len(markdown) > MAX_ACTIVE_DOCUMENT_CHARS:
+                raise ReferenceDocumentUnavailableError(SUMMARY_SAVE_TOO_LONG_MESSAGE)
+            reference_context["source_document"] = {"document_id": request.document_id, "markdown": markdown}
         elif selected_skill is None and not bare and _has_active_markdown(request):
             assert request.active_markdown_context is not None
             markdown = request.active_markdown_context.markdown

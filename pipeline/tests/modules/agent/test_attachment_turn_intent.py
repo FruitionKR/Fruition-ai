@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
+from app.modules.agent.application.handle_agent_turn import (
+    MAX_ACTIVE_DOCUMENT_CHARS,
+    SUMMARY_SAVE_TOO_LONG_MESSAGE,
+    HandleAgentTurnUseCase,
+)
 from app.modules.agent.domain.attached_edit_request import (
     attached_edit_instruction,
     lacks_attachment_change_request,
@@ -28,6 +32,7 @@ from tests.modules.agent.test_handle_agent_turn import (
     FixedRouter,
     RecordingAgentRunStarter,
     RecordingConversationReplier,
+    RecordingMarkdownEditor,
 )
 
 OPEN_DOCUMENT = ActiveMarkdownContext(markdown="# 열린 문서\n열린 문서 본문")
@@ -423,7 +428,23 @@ OPEN_ONLY_EDITS = [
     ("요약해서 고쳐 줘", "shorten"),
     ("이 문서를 영어로 번역해서 바꿔 줘", "translate"),
 ]
-SAVE_SUMMARY = "현재 문서를 요약해서 저장해 줘"
+SAVE_AS_NEW_DOCUMENT = ["현재 문서를 요약해서 저장해 줘", "요약해서 저장해 줘", "번역해서 저장해 줘"]
+SAVE_KEEPS_EDIT = [
+    ("이 문서에 요약해서 저장해 줘", "shorten", "workspace_workflow"),
+    ("이 문서에 요약해서 저장해 줘", "shorten", "markdown_edit"),
+    ("요약본으로 덮어써 줘", "shorten", "markdown_edit"),
+    ("요약해서 고쳐 줘", "shorten", "markdown_edit"),
+    ("요약본으로 바꿔 줘", "shorten", "markdown_edit"),
+    ("오타 고치고 저장해 줘", "cleanup", "workspace_workflow"),
+]
+SAVE_CREATE_ROUTE = AgentTurnRoute(
+    action="markdown_create",
+    confidence=1.0,
+    reason="새 문서",
+    document_operation="create",
+    edit_goal="create_from_chat",
+    required_capabilities=("document-create",),
+)
 
 
 def _reply_raw() -> dict[str, object]:
@@ -502,15 +523,147 @@ def test_open_document_only_question_still_goes_to_chat_tab() -> None:
     assert (route.action, route.notice_kind) == ("clarify", "chat_tab")
 
 
+@pytest.mark.parametrize("mode", [None, "task"])
+@pytest.mark.parametrize("message", SAVE_AS_NEW_DOCUMENT)
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _edit_raw("workspace_workflow"),
+        _edit_raw("markdown_edit"),
+        _answer_raw(),
+        _create_raw(),
+        _edit_raw(
+            "markdown_create",
+            document_operation="create",
+            required_capabilities=["document-create"],
+            edit_goal="create_from_chat",
+            edit_operation=None,
+            edit_destination=None,
+        ),
+    ],
+)
+def test_summary_save_without_attachment_becomes_new_document(
+    message: str, mode: str | None, raw: dict[str, object]
+) -> None:
+    """모델이 무엇을 고르든 재시도 없이 새 문서가 되고 원문을 고치는 route는 나오지 않는다."""
+    client = _Sequence(raw)
+
+    route = ChatCompletionsTurnRouter(client, system_prompt="라우터").route(_request(message, mode=mode))
+
+    assert (route.action, route.document_operation, route.persist) == ("markdown_create", "create", False)
+    assert (route.edit_goal, route.edit_operation, route.edit_destination) == ("create_from_chat", None, None)
+    assert route.required_capabilities == ("document-create",)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("message", SAVE_AS_NEW_DOCUMENT)
 @pytest.mark.parametrize("action", ["workspace_workflow", "markdown_edit"])
-def test_open_document_only_summary_save_clause_stays_an_edit_of_the_open_document(action: str) -> None:
-    """현재 동작을 기록한다. 원문을 덮어쓰는 이 동작을 유지할지는 사용자 결정을 기다린다."""
-    request = _request(SAVE_SUMMARY, mode="task")
+def test_summary_save_edit_route_breaks_contract_for_routers_without_repair(message: str, action: str) -> None:
+    """Jev 라우터는 보정 없이 계약으로 선택지를 거르므로 계약에서도 막는다."""
+    assert any("markdown_create" in failure for failure in _failures(_edit_raw(action), _request(message)))
 
-    route = ChatCompletionsTurnRouter(_Sequence(_edit_raw(action)), system_prompt="라우터").route(request)
 
-    assert (route.action, route.document_operation, route.edit_goal) == (action, "edit", "shorten")
-    assert (route.edit_operation, route.edit_destination) == ("replace", "target")
+@pytest.mark.parametrize(
+    "message",
+    ["새 문서에 요약해서 저장해 줘", "이 문서에 있는 내용을 요약해서 저장해 줘", "요약해서 새 문서로 저장해 줘", "Summarize and save it"],
+)
+def test_summary_save_elsewhere_becomes_new_document(message: str) -> None:
+    route = ChatCompletionsTurnRouter(_Sequence(_edit_raw("workspace_workflow")), system_prompt="라우터").route(
+        _request(message, mode="task")
+    )
+
+    assert route.action == "markdown_create"
+
+
+@pytest.mark.parametrize("mode", [None, "task"])
+@pytest.mark.parametrize(("message", "edit_goal", "action"), SAVE_KEEPS_EDIT)
+def test_change_or_save_into_open_document_keeps_edit(message: str, edit_goal: str, action: str, mode: str | None) -> None:
+    raw = _edit_raw(action, edit_goal=edit_goal)
+    client = _Sequence(raw)
+
+    route = ChatCompletionsTurnRouter(client, system_prompt="라우터").route(_request(message, mode=mode))
+
+    assert (route.action, route.document_operation, route.edit_goal) == (action, "edit", edit_goal)
+    assert len(client.calls) == 1
+
+
+def test_save_into_open_document_cannot_become_new_document() -> None:
+    client = _Sequence(_create_raw(), _edit_raw("workspace_workflow"))
+
+    route = ChatCompletionsTurnRouter(client, system_prompt="라우터").route(
+        _request("이 문서에 요약해서 저장해 줘", mode="task")
+    )
+
+    assert (route.action, route.document_operation) == ("workspace_workflow", "edit")
+    assert len(client.calls) == 2
+
+
+def test_summary_save_with_folder_move_stays_compound_workflow() -> None:
+    """폴더 이동이 섞인 요청은 이번 결정의 범위 밖이라 그대로 둔다."""
+    raw = _edit_raw("workspace_workflow", required_capabilities=["document-edit", "folder-organize"])
+
+    route = ChatCompletionsTurnRouter(_Sequence(raw), system_prompt="라우터").route(
+        _request("현재 문서를 요약한 뒤 보관 폴더로 옮겨 저장해줘")
+    )
+
+    assert (route.action, route.document_operation) == ("workspace_workflow", "edit")
+
+
+def test_summary_save_without_open_document_is_not_repaired() -> None:
+    client = _Sequence(_edit_raw("workspace_workflow"))
+
+    route = ChatCompletionsTurnRouter(client, system_prompt="라우터").route(
+        _request("요약해서 저장해 줘", active_markdown_context=None, document_id=None, base_version=None)
+    )
+
+    assert route.action == "workspace_workflow"
+
+
+def _create_use_case() -> tuple[HandleAgentTurnUseCase, RecordingMarkdownEditor]:
+    editor = RecordingMarkdownEditor(RuntimeError("원문을 고치지 않는다"))
+    use_case = HandleAgentTurnUseCase(
+        router=FixedRouter(SAVE_CREATE_ROUTE),
+        query_use_case=FakeQueryUseCase(),  # type: ignore[arg-type]
+        markdown_edit_use_case=GenerateMarkdownEditUseCase(editor),
+        markdown_create_use_case=GenerateMarkdownDocumentUseCase(editor),
+    )
+    return use_case, editor
+
+
+def test_summary_save_gives_open_document_as_source_of_new_document() -> None:
+    """"요약해서 저장해 줘"는 문서를 말하지 않아 active_document로 실으면 생성 모델이 무시할 수 있다."""
+    use_case, editor = _create_use_case()
+
+    result = use_case.execute(_request("요약해서 저장해 줘", mode="task"))
+
+    assert (result.action, result.edit, result.run_id) == ("markdown_create", None, None)
+    assert result.generated_markdown is not None
+    context = editor.create_requests[0].reference_context
+    assert context["source_document"] == {"document_id": "open-doc", "markdown": OPEN_DOCUMENT.markdown}
+    assert "active_document" not in context
+    assert editor.requests == []
+
+
+def test_summary_save_covers_only_the_selection() -> None:
+    context = ActiveMarkdownContext(
+        markdown="# 제목\n첫 줄\n둘째 줄",
+        target=MarkdownEditTarget(type="selection", start_line=2, end_line=2),
+    )
+    use_case, editor = _create_use_case()
+
+    use_case.execute(_request("요약해서 저장해 줘", mode="task", active_markdown_context=context))
+
+    assert editor.create_requests[0].reference_context["source_document"]["markdown"] == "첫 줄"
+
+
+def test_summary_save_of_too_long_document_asks_instead_of_inventing_a_document() -> None:
+    use_case, editor = _create_use_case()
+    long_document = ActiveMarkdownContext(markdown="가" * (MAX_ACTIVE_DOCUMENT_CHARS + 1))
+
+    result = use_case.execute(_request("요약해서 저장해 줘", mode="task", active_markdown_context=long_document))
+
+    assert (result.action, result.message) == ("clarify", SUMMARY_SAVE_TOO_LONG_MESSAGE)
+    assert editor.create_requests == []
 
 
 def test_open_document_only_answer_pins_the_open_document_without_editing() -> None:
@@ -569,6 +722,7 @@ def test_prompt_routes_open_document_summary_to_an_answer() -> None:
 
     assert "is `markdown_edit` with edit_goal `shorten`; a question" not in prompt
     assert "Open document without attachments:" in prompt
+    assert "Without attached documents, summarizing the active document and saving the result is workspace_workflow" not in prompt
 
 
 def test_open_document_only_summary_cannot_start_saving_run_without_save_clause() -> None:
@@ -578,7 +732,7 @@ def test_open_document_only_summary_cannot_start_saving_run_without_save_clause(
     assert any("save" in failure for failure in failures)
 
 
-@pytest.mark.parametrize("message", ["현재 문서를 요약해서 저장해줘", "요약하고 적용해 줘", "이 문서를 세 줄로 줄여서 고쳐 줘"])
+@pytest.mark.parametrize("message", ["이 문서에 요약해서 저장해 줘", "요약하고 적용해 줘", "이 문서를 세 줄로 줄여서 고쳐 줘"])
 def test_open_document_only_explicit_save_or_change_starts_run(message: str) -> None:
     assert _failures(_edit_raw("workspace_workflow"), _request(message)) == []
 
