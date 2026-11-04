@@ -249,8 +249,8 @@ def _handle(command: dict) -> dict:
     if command.get("kind") == "document_purged":
         # 실패는 안에서 기록하고 올리지 않는다. 재시도는 agent worker가 한다(파티션을 막지 않는다).
         from app.modules.data_purge.infrastructure import document_copy_purge
-        document_copy_purge.purge_document(command["workspace_id"], command["document_id"])
-        return {}
+        result = document_copy_purge.purge_document(command["workspace_id"], command["document_id"])
+        return {"source_page_ids": list(result.source_page_ids)}
     if command.get("kind") == "document_renamed":
         title = str(command.get("title") or "").strip()
         if not title:

@@ -604,18 +604,23 @@ def _controlled(command: dict, *, purged: bool = False) -> dict:
 
 
 def test_document_purged_runs_copy_purge_without_task_journal() -> None:
-    with patch("app.modules.data_purge.infrastructure.document_copy_purge.purge_document") as purge, \
+    from app.modules.data_purge.infrastructure.document_copy_purge import DocumentCopyPurge
+
+    with patch("app.modules.data_purge.infrastructure.document_copy_purge.purge_document",
+               return_value=DocumentCopyPurge(source_page_ids=("page-1",))) as purge, \
             patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.execute") as execute:
-        assert _controlled(_purge_command()) == {}
+        # document가 이 값으로 core_db의 소스 페이지 버전 본문을 지운다.
+        assert _controlled(_purge_command()) == {"source_page_ids": ["page-1"]}
 
     purge.assert_called_once_with("workspace-1", "document-1")
     execute.assert_not_called()
 
 
 def test_document_purged_event_kind_is_document_purge_and_succeeded() -> None:
-    event = ingest_worker._result_event(_purge_command(), {})
+    event = ingest_worker._result_event(_purge_command(), {"source_page_ids": ["page-1"]})
 
     assert (event["kind"], event["status"]) == ("document_purge", "succeeded")
+    assert event["payload"] == {"source_page_ids": ["page-1"]}
     assert ingest_worker._post_ingest_command(_purge_command()) is None
 
 
@@ -637,8 +642,8 @@ def test_document_purged_object_failure_still_advances_the_partition() -> None:
     from app.modules.data_purge.infrastructure.document_copy_purge import DocumentCopyPurge
 
     with patch("app.modules.data_purge.infrastructure.document_copy_purge.purge_document",
-               return_value=DocumentCopyPurge(pending_artifacts=2)):
-        assert _controlled(_purge_command()) == {}
+               return_value=DocumentCopyPurge(pending_artifacts=2, source_page_ids=("page-1",))):
+        assert _controlled(_purge_command()) == {"source_page_ids": ["page-1"]}
 
 
 def test_old_command_kinds_still_work_and_unknown_kind_is_discarded() -> None:

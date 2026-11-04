@@ -922,3 +922,29 @@ def test_cancel_unknown_task_with_purged_command_is_conflict_not_retry_loop(stac
     })
 
     assert response.status_code == 409
+
+
+def test_result_reports_only_this_documents_source_pages_even_when_objects_fail(stack, wiki_objects) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1")
+    _source_page(connect, "S2", "doc-2")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_pages(id, page_type, title, slug, user_id, workspace_id, status, created_at, updated_at) "
+            "VALUES ('concept', 'concept', '개념', 'doc-1', 'user', 'ws', 'active', now(), now())"
+        )
+    wiki_objects.failing = True
+
+    result = _purge()
+
+    assert result.source_page_ids == ("S1",) and not result.finished
+
+
+def test_unexpected_failure_still_reports_source_pages(stack, monkeypatch) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1")
+    monkeypatch.setattr(purge, "_scrub_rows", MagicMock(side_effect=RuntimeError("boom")))
+
+    result = _purge()
+
+    assert result.failed is True and result.source_page_ids == ("S1",)

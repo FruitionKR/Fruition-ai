@@ -58,6 +58,8 @@ class DocumentCopyPurge:
     pending_artifacts: int = 0  # 객체 삭제에 실패해 행을 남겼다. 다음 주기에 다시 시도한다.
     pending_source_objects: int = 0  # 소스 페이지 객체 삭제에 실패했다. 다음 주기에 접두사를 다시 훑는다.
     failed: bool = False  # 예기치 못한 실패로 이번 시도를 끝냈다. 다음 주기에 처음부터 다시 시도한다.
+    # 결과 event로 document에 알린다. core_db에는 페이지 종류가 없어 document가 버전 본문을 지울 페이지를 스스로 가릴 수 없다.
+    source_page_ids: tuple[str, ...] = ()
 
     @property
     def finished(self) -> bool:
@@ -78,7 +80,8 @@ def purge_document(workspace_id: str, document_id: str) -> DocumentCopyPurge:
             "ON CONFLICT (workspace_id, document_id) DO UPDATE SET finished_at = NULL",
             (workspace_id, document_id),
         )
-    return _attempt(workspace_id, document_id)
+        source_page_ids = tuple(_source_page_ids(conn, workspace_id, document_id))
+    return replace(_attempt(workspace_id, document_id), source_page_ids=source_page_ids)
 
 
 def purge_pending_documents(limit: int = PENDING_PURGE_BATCH_SIZE) -> PendingDocumentPurges:
