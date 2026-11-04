@@ -39,3 +39,27 @@ class ChatSessionTitleTest(unittest.TestCase):
                 self.assertFalse(needs_chat_session_title(command, result))
                 self.assertIsNone(generate_chat_session_title(command, result))
             client.assert_not_called()
+
+    def test_session_title_needed_false_skips_both_kinds_without_model_call(self):
+        turns = [
+            ({"kind": "agent", "session_id": "session", "provider": "openai", "model": "m", "message": "질문"}, {"message": "답변"}),
+            ({"kind": "query", "session_id": "session", "provider": "openai", "model": "m", "question": "질문"}, {"answer": "답변"}),
+        ]
+        with patch("app.modules.agent.infrastructure.chat_session_title.ChatCompletionsJsonClient") as client:
+            for first, result in turns:
+                command = {**first, "session_title_needed": False}
+                self.assertFalse(needs_chat_session_title(command, result))
+                self.assertIsNone(generate_chat_session_title(command, result))
+            client.assert_not_called()
+
+    def test_true_missing_and_invalid_session_title_needed_keep_old_behavior(self):
+        # 구 document는 키를 싣지 않는다. 잘못된 타입도 없는 것으로 봐서 제목을 잃지 않는다.
+        turns = [
+            ({"kind": "agent", "session_id": "session", "provider": "openai", "model": "m", "message": "질문"}, {"message": "답변"}),
+            ({"kind": "query", "session_id": "session", "provider": "openai", "model": "m", "question": "질문"}, {"answer": "답변"}),
+        ]
+        values = [{"session_title_needed": value} for value in (True, None, "false", "", 0, 1, [], {})] + [{}]
+        for first, result in turns:
+            for value in values:
+                with self.subTest(kind=first["kind"], value=value):
+                    self.assertTrue(needs_chat_session_title({**first, **value}, result))

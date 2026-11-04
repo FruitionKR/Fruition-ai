@@ -2052,6 +2052,51 @@ def test_reservation_is_skipped_when_no_title_is_needed() -> None:
     start_call.assert_not_called()
 
 
+_TITLE_TURNS = [
+    ({"kind": "agent", "message": "질문"}, {"message": "답변"}),
+    ({"kind": "query", "question": "질문"}, {"answer": "답변"}),
+]
+
+
+def _run_title_flow(fields: dict, result: dict) -> tuple:
+    """실제 판단으로 원장 예약과 제목 발행을 돌린다. 모델·원장 쓰기만 막는다."""
+    command = {"run_id": "r", "workspace_id": "w", "user_id": "u", "session_id": "s",
+               "provider": "openai", "model": "m", **fields}
+    title_module = "app.modules.agent.infrastructure.chat_session_title"
+    producer = SimpleNamespace(send_and_wait=AsyncMock())
+    with patch.object(task_worker, "start_call", return_value="call-1") as start_call, \
+            patch.object(task_worker, "release_reserved_call") as release, \
+            patch.object(task_worker, "resolve_llm_selection", return_value=("openai", "m")), \
+            patch(f"{title_module}.api_key_from_env", return_value="unused"), \
+            patch(f"{title_module}.ChatCompletionsJsonClient") as client:
+        client.return_value.complete_json.return_value = {"title": "제목"}
+        reserved = task_worker._reserve_session_title_call(command, result)
+        asyncio.run(task_worker._publish_session_title(producer, command, result, reserved))
+    return start_call, client, producer, release
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+def test_title_not_needed_skips_reservation_model_call_and_event(fields, result) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, "session_title_needed": False}, result)
+
+    start_call.assert_not_called()
+    client.assert_not_called()
+    producer.send_and_wait.assert_not_awaited()
+    release.assert_not_called()
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+@pytest.mark.parametrize("flag", [{}, {"session_title_needed": True}, {"session_title_needed": None},
+                                  {"session_title_needed": "false"}, {"session_title_needed": 0}])
+def test_title_flow_stays_when_flag_is_true_missing_or_invalid(fields, result, flag) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, **flag}, result)
+
+    start_call.assert_called_once()
+    client.return_value.complete_json.assert_called_once()
+    producer.send_and_wait.assert_awaited_once()
+    release.assert_called_once_with("call-1")
+
+
 def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
