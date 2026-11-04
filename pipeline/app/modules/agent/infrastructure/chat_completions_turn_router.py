@@ -31,7 +31,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
-from app.modules.agent.domain.task_mode import task_mode_allows_action, task_mode_route
+from app.modules.agent.domain.task_mode import summarizes_open_document, task_mode_allows_action, task_mode_route
 from app.modules.markdown_edit.domain.entities import EditDestination, EditOperationType
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
@@ -508,7 +508,7 @@ def _attached_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) ->
 def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
     """문서가 열려 있는데 첨부를 말하지 않았으면 대상은 열린 문서다. 첨부를 고르면 말하지 않은 문서가 바뀐다.
 
-    첨부 수정은 자동 승인으로 바로 저장될 수 있어 코드로 지킨다. 열린 문서 편집은 미리 보기라 틀려도 사용자가 거절할 수 있다.
+    첨부 수정은 자동 승인으로 바로 저장될 수 있어 코드로 지킨다.
     내용 없는 새 노트는 대상이 아니므로 세지 않는다.
     """
     context = request.active_markdown_context
@@ -523,9 +523,8 @@ def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
 def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
     """요약·번역이 열린 문서를 덮어쓰지 않게 한다.
 
-    첨부 턴은 markdown_edit도 막는다. "이 문서"가 첨부를 가리킬 수 있어 고른 문서가 틀릴 수 있고, 첨부를 근거로 답하는 갈래가 있다.
-    첨부 없는 턴은 저장하는 갈래(workspace_workflow)만 막는다. markdown_edit은 미리 보기라 사용자가 적용해야 바뀌고 자동 승인을
-    타지 않으며, 작업 탭에는 답변 갈래가 없어 막으면 요약을 받을 길이 없다.
+    프론트는 자동 승인이 켜져 있으면 markdown_edit도 확인 없이 적용하므로, 첨부가 있든 없든 수정을 시키지 않은 요약·번역은 막는다.
+    첨부 없는 턴의 markdown_edit은 문장에 요약·번역이 있을 때만 막는다. "한 문단으로 압축해 줘"는 그 문서를 고치라는 말로 받는다.
     """
     if route.document_operation != "edit" or route.attached_edit_targets:
         return []
@@ -539,12 +538,21 @@ def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnReques
                 "markdown_create, or workspace_workflow with document_operation create when it asks to save"
             ]
         return []
+    if route.action == "markdown_edit" and summarizes_open_document(request):
+        return [
+            "editing the open document requires the message to explicitly ask to change it; a summary or "
+            "translation without that is chat_answer with retrieval_source workspace or conversation_reply, "
+            "with document_operation none, in task mode too"
+        ]
     if (
         route.action == "workspace_workflow"
         and "folder-organize" not in route.required_capabilities
         and lacks_save_or_change_request(request.message, route.edit_goal)
     ):
-        return ["a summary or translation of the open document without a save clause is markdown_edit with persist false"]
+        return [
+            "a summary or translation of the open document without a save clause is chat_answer or "
+            "conversation_reply; a request to change it without a save clause is markdown_edit with persist false"
+        ]
     return []
 
 
