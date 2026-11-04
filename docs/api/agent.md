@@ -416,7 +416,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:73-76(사용자 승인)·83-86(자동 승인, `approved_by=auto:user-setting`) → 101-107 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
 - 아웃바운드 호출: 승인 실행은 Tool gateway를 거쳐 document-svc `POST /internal/agent/tools/execute/{tool_name}`를 호출한다(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:52`).
-- 아웃바운드 호출(승인 대기 알림): agent worker는 planning job을 끝낸 뒤 run이 `awaiting_approval`이면 document-svc `POST /internal/agent/runs/{run_id}/plan-ready`(body `workspace_id`·`user_id`, `X-Agent-Service-Token`)를 호출한다(`app/modules/agent_run/infrastructure/agent_worker.py:121-122,124-145` → `backend_tool_gateway.py:66-71`). document-svc가 사용자의 자동 승인 설정과 대상 권한을 보고 이 API를 `approved_by=auto:user-setting`으로 부를지 정한다. 알림이 실패해도 경고만 남기고 계획은 승인 대기로 남아 사용자가 직접 승인할 수 있다.
+- 아웃바운드 호출(run 상태 알림): agent worker는 job을 끝낸 뒤 run이 끝난 상태(`completed`·`partial_failed`·`failed`·`conflicted`·`rejected`·`cancelled`·`rollback_failed`)나 `clarification_required`이면, 또는 planning job 뒤 `awaiting_approval`이면 document-svc `POST /internal/agent/runs/{run_id}/plan-ready`(body `workspace_id`·`user_id`, `X-Agent-Service-Token`)를 job마다 한 번 호출한다(`app/modules/agent_run/infrastructure/agent_worker.py`의 `_notify_document_service` → `backend_tool_gateway.py`의 `notify_plan_ready`). `markdown_turn` 복구는 알리지 않는다. document-svc는 사용량 수집을 대기열에 넣고, `awaiting_approval`이면 사용자의 자동 승인 설정과 대상 권한을 보고 이 API를 `approved_by=auto:user-setting`으로 부를지 정하며, 끝난 상태면 run을 닫는다. 알림이 실패해도 경고만 남기고 job 결과는 바뀌지 않는다. 계획은 승인 대기로 남아 사용자가 직접 승인할 수 있고, 사용량은 종료 조회나 일일 대사가 가져간다.
 - 미연동 표시: 없음.
 
 </details>
