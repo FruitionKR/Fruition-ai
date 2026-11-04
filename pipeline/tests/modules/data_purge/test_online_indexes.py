@@ -64,6 +64,17 @@ def test_schema_transaction_does_not_build_the_task_run_indexes(scoped) -> None:
     assert _validity(scoped) == {}
 
 
+def test_schema_adds_the_scan_time_to_an_existing_purge_table(scoped) -> None:
+    _apply_schema(scoped)
+    with psycopg.connect(scoped) as conn:
+        conn.execute("ALTER TABLE ai_document_purges DROP COLUMN last_scan_at")
+
+    _apply_schema(scoped)
+
+    with psycopg.connect(scoped) as conn:
+        assert conn.execute("SELECT last_scan_at FROM ai_document_purges").fetchall() == []
+
+
 def test_migration_builds_valid_indexes_and_is_repeatable(scoped) -> None:
     migrate.main()
     migrate.main()

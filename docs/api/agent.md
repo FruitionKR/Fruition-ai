@@ -145,7 +145,7 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 - 지운 뒤 승인: 나머지 문서는 그대로 승인·실행하고 run은 `partial_failed`로 끝난다. 실행할 작업이 영구 삭제 문서뿐이면 `409`다. `revise`도 수정안이 없어 `409`이고, 미리 보기는 나머지 문서만 돌려준다.
 - 지운 뒤 되돌리기: 그 문서 단계는 document-svc를 부르지 않고 건너뛰고 나머지 문서는 되돌린다. 끝에 run은 `rollback_failed`(`rollback_document_purged`)로 닫히고 `finished_at`을 채운다. 다시 요청해도 결과가 같고, 다른 `rollback_failed`와 달리 90일 정리 대상이다. 상위 `markdown_turn`도 같은 코드를 받는다.
 
-배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다. 같은 명령이 `ai_task_runs`의 인덱스를 `CONCURRENTLY`로 만들고, 못 만들어도 삭제는 동작한다([절차](../script.md#영구-삭제가-쓰는-작업-기록-인덱스)).
+배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다. `last_scan_at` 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) 영구 삭제 처리가 실패한다. 같은 명령이 `ai_task_runs`의 인덱스를 `CONCURRENTLY`로 만들고, 못 만들어도 삭제는 동작한다([절차](../script.md#영구-삭제가-쓰는-작업-기록-인덱스)).
 
 배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 

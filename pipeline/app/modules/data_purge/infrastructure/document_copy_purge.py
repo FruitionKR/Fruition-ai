@@ -17,7 +17,7 @@ ingest까지 막힌다. 요청 행(ai_document_purges)의 finished_at이 비어 
 변환을 거쳐 작업 취소가 계속 맞고 본문을 되살리지 않는다. 다른 편입과 같은 개념 잠금을 잡되 오래 기다리지 않고, 못 잡으면 다음 주기로 넘긴다.
 
 진행 중이던 run은 삭제 전에 읽은 근거를 스캔 뒤에 쓸 수 있다. 그래서 스캔 전에 그런 run이 있으면 끝내지 않고(active_runs) 다음 주기에
-다시 훑는다. 지난 스캔 뒤에 시작한 run은 지워진 본문을 읽을 수 없어 기다리지 않는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를
+다시 훑는다. 빠짐없이 지운 스캔(last_scan_at) 뒤에 시작한 run은 지워진 본문을 읽을 수 없어 기다리지 않는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를
 읽으므로 문서 id로 좁히지 않고, 위키를 읽지 않는 종류만 뺀다. 요청 뒤 하루가 지나면 그때까지 시작한 run은 나이 제한으로 이미 빠졌으므로,
 겹쳐 도는 새 run을 더 기다리지 않고 그 시도의 스캔으로 끝낸다.
 """
@@ -93,9 +93,14 @@ class DocumentCopyPurge:
     source_page_ids: tuple[str, ...] = ()
 
     @property
-    def finished(self) -> bool:
+    def scan_complete(self) -> bool:
+        """이번 시도가 찾은 복사본을 빠짐없이 지웠다. 아니면 그 뒤에 시작한 run도 남은 본문을 읽을 수 있다."""
         return (not self.failed and self.pending_artifacts == 0 and self.pending_source_objects == 0
-                and self.pending_evidence == 0 and self.pending_shared_objects == 0 and self.active_runs == 0)
+                and self.pending_evidence == 0 and self.pending_shared_objects == 0)
+
+    @property
+    def finished(self) -> bool:
+        return self.scan_complete and self.active_runs == 0
 
 
 @dataclass(frozen=True)
@@ -138,7 +143,7 @@ def purge_pending_documents(limit: int = PENDING_PURGE_BATCH_SIZE) -> PendingDoc
             continue
         unfinished += 1
         # 저장소 장애면 객체마다 재시도까지 기다려 agent job이 함께 밀린다. run을 기다리는 것은 장애가 아니다.
-        if replace(result, active_runs=0).finished:
+        if result.scan_complete:
             continue
         failures += 1
         if failures >= MAX_STORAGE_FAILURES_PER_CYCLE:
@@ -183,8 +188,9 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
     with database.connect_ai() as conn:
         conn.execute(
             "UPDATE ai_document_purges SET last_attempt_at = now(), "
+            "last_scan_at = CASE WHEN %s THEN now() ELSE last_scan_at END, "
             "finished_at = CASE WHEN %s THEN now() END WHERE workspace_id = %s AND document_id = %s",
-            (result.finished, workspace_id, document_id),
+            (result.scan_complete, result.finished, workspace_id, document_id),
         )
     logger.info(
         "[문서 복사본 삭제] workspace_id=%s document_id=%s rows=%s deleted_artifacts=%s pending_artifacts=%s "
@@ -196,15 +202,15 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
 
 
 def _count_active_runs(workspace_id: str, document_id: str) -> int:
-    """지난 스캔이 끝나기 전에 시작해 아직 안 끝난 run 수. 첫 시도는 지금까지 시작한 run을 모두 센다. 대기 상한을 넘기면 0이다."""
+    """빠짐없이 지운 마지막 스캔이 끝나기 전에 시작해 아직 안 끝난 run 수. 그런 스캔이 없으면 지금까지 시작한 run을 모두 센다. 대기 상한을 넘기면 0이다."""
     with database.connect_ai() as conn:
         row = conn.execute(
             """
             WITH purge AS (
-                SELECT last_attempt_at, requested_at FROM ai_document_purges
+                SELECT last_scan_at, requested_at FROM ai_document_purges
                 WHERE workspace_id = %(ws)s AND document_id = %(doc)s
             ), scan AS (
-                SELECT COALESCE((SELECT last_attempt_at FROM purge), now()) AS at
+                SELECT COALESCE((SELECT last_scan_at FROM purge), now()) AS at
             )
             SELECT (SELECT count(*) FROM ai_task_runs, scan
                     WHERE workspace_id = %(ws)s AND status = ANY(%(tasks)s) AND NOT kind = ANY(%(no_text)s)

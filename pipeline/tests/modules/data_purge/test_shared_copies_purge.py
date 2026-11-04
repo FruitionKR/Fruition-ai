@@ -391,7 +391,8 @@ def _evidence(document_id: str = "doc-1") -> dict:
 
 def _rewind_last_attempt(connect) -> None:
     with connect() as conn:
-        conn.execute("UPDATE ai_document_purges SET last_attempt_at = last_attempt_at - interval '1 hour'")
+        conn.execute("UPDATE ai_document_purges SET last_attempt_at = last_attempt_at - interval '1 hour', "
+                     "last_scan_at = last_scan_at - interval '1 hour'")
 
 
 def test_result_written_after_the_scan_is_blanked_once_the_run_ends(stack) -> None:  # noqa: F811
@@ -493,6 +494,76 @@ def test_run_of_another_document_can_still_carry_this_documents_evidence(stack, 
     _running(connect, "other-doc-run", kind=kind, document_id="doc-2")
 
     assert _purge().active_runs == 1
+
+
+def _purge_row(connect) -> dict:
+    with connect() as conn:
+        return conn.execute("SELECT last_attempt_at, last_scan_at, finished_at FROM ai_document_purges").fetchone()
+
+
+def test_attempt_that_failed_before_scanning_does_not_excuse_runs_started_after_it(stack, monkeypatch) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    with monkeypatch.context() as broken:
+        broken.setattr(purge, "_retire_active_source_pages", lambda *_: (_ for _ in ()).throw(RuntimeError("잠금 시간 초과")))
+        assert _purge().failed
+    row = _purge_row(connect)
+    assert row["last_attempt_at"] is not None and row["last_scan_at"] is None  # 재시도 순서는 뒤로 가고 대기 기준은 그대로다.
+    _running(connect, "read-the-body")  # 본문이 아직 있을 때 시작해 스캔 뒤에 결과를 쓸 수 있다.
+
+    assert purge.purge_pending_documents().finished == 0
+
+    journal.complete("read-the-body", _evidence())
+    assert purge.purge_pending_documents().finished == 1
+    with connect() as conn:
+        stored = conn.execute("SELECT result FROM ai_task_runs WHERE id = 'read-the-body'").fetchone()["result"]
+    assert stored == {"evidence_snippets": [{"source_document_id": "doc-1", "text": ""}]}
+
+
+def test_attempt_that_left_shared_objects_does_not_excuse_runs_started_after_it(stack, wiki_objects) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    wiki_objects.texts = {ACTIVE: _object(ACTIVE_TEXT)}
+    wiki_objects.keys = {ACTIVE}
+    wiki_objects.failing = True
+    assert _purge().pending_shared_objects == 1
+    assert _purge_row(connect)["last_scan_at"] is None
+    wiki_objects.failing = False
+    _running(connect, "read-the-cluster")  # 아직 남은 클러스터에서 이 문서의 근거를 읽을 수 있다.
+
+    assert purge.purge_pending_documents().finished == 0
+    assert BODY not in wiki_objects.texts[ACTIVE]["text"]
+
+
+def test_failed_attempt_keeps_the_last_complete_scan_as_the_baseline(stack, monkeypatch) -> None:  # noqa: F811
+    _, _, connect, _ = stack
+    _running(connect, "before-scan")
+    assert _purge().active_runs == 1
+    scanned_at = _purge_row(connect)["last_scan_at"]
+    assert scanned_at is not None
+    _running(connect, "after-scan")  # 완전한 스캔 뒤에 시작해 지워진 본문을 읽을 수 없다.
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET status = 'completed' WHERE id = 'before-scan'")
+    with monkeypatch.context() as broken:
+        broken.setattr(purge, "_retire_active_source_pages", lambda *_: (_ for _ in ()).throw(RuntimeError("잠금 시간 초과")))
+        assert purge.purge_pending_documents().finished == 0
+    assert _purge_row(connect)["last_scan_at"] == scanned_at
+
+    assert purge.purge_pending_documents().finished == 1
+
+
+def test_retry_order_still_follows_the_last_attempt_when_attempts_keep_failing(stack, monkeypatch) -> None:  # noqa: F811
+    monkeypatch.setattr(purge, "_retire_active_source_pages", lambda *_: (_ for _ in ()).throw(RuntimeError("잠금 시간 초과")))
+    _purge("doc-a")
+    _purge("doc-b")
+    seen: list[str] = []
+    attempt = purge._attempt
+    monkeypatch.setattr(purge, "_attempt", lambda ws, doc: (seen.append(doc), attempt(ws, doc))[1])
+
+    purge.purge_pending_documents()
+
+    assert seen == ["doc-a", "doc-b"]
+    seen.clear()
+    purge.purge_pending_documents(limit=1)
+    assert seen == ["doc-a"]
 
 
 def _age_request(connect, age: str) -> None:
