@@ -355,7 +355,12 @@ class AgentWorkerTest(unittest.TestCase):
 
         for content, expected in (
             ({"edit_revision": 2, "content_hash": "sha256:abc"}, True),
+            ({"edit_revision": 2, "content_hash": "sha256:other"}, False),
+            # 저장 뒤 다른 사람이 고치면 revision이 올라가고 해시도 달라진다. 저장은 실제로 일어났다.
+            ({"edit_revision": 3, "content_hash": "sha256:other"}, True),
             ({"edit_revision": 1, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": True, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": "3", "content_hash": "sha256:abc"}, False),
             ({"content_hash": "sha256:abc"}, False),
         ):
             with self.subTest(content=content):

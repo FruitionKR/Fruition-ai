@@ -798,14 +798,20 @@ class AgentWorker:
             current = self._read_tool(context, "get_document_content", {"document_id": target_id}, budgeted=False)
             expected_version = response.get("current_version")
             expected_hash = response.get("content_hash")
-            return (
-                isinstance(expected_version, int)
-                and not isinstance(expected_version, bool)
-                and isinstance(expected_hash, str)
-                and bool(expected_hash)
-                and current.get("edit_revision") == expected_version
-                and current.get("content_hash") == expected_hash
-            )
+            current_version = current.get("edit_revision")
+            if (
+                not _is_revision(expected_version)
+                or not _is_revision(current_version)
+                or not isinstance(expected_hash, str)
+                or not expected_hash
+            ):
+                return False
+            # revision이 저장값보다 크면 저장 뒤 다른 쪽이 고친 것이므로 이 저장은 성공했다. 지금 본문이 이 저장본이라는 뜻은 아니다.
+            # 전제: 에이전트 저장은 저널(ai_task_changes)에 남지 않아 작업 취소 undo로 그 값 아래로 내려가지 않는다.
+            # undo는 revision을 이전 값으로 되돌리므로, document가 에이전트 저장을 저널에 남기도록 바꾸면 이 판단은 깨진다.
+            if current_version != expected_version:
+                return current_version > expected_version
+            return current.get("content_hash") == expected_hash
         if operation.target_type == "document" and operation.tool_name == "rename_document":
             current = self._read_tool(context, "get_document_metadata", {"document_id": target_id}, budgeted=False)
             return _response_name(current) == _response_name(response)
@@ -958,6 +964,10 @@ def _resolve_operation_references(
     if isinstance(value, list):
         return [_resolve_operation_references(item, results) for item in value]
     return value
+
+
+def _is_revision(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _response_name(response: dict[str, object]) -> object | None:
