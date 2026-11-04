@@ -83,6 +83,15 @@ _SHORTEN_REQUEST = re.compile(
 
 # 저장하라는 말이다. 첨부 없이 열린 문서만 있는 턴의 "요약해서 저장해 줘"는 원문을 두고 새 문서로 저장한다.
 _SAVE_REQUEST = re.compile(r"저장|\bsave\b", re.IGNORECASE)
+# 별도 문서에 쓰라는 절이다. 원문을 고치는 말이 아니라 저장하라는 말과 같게 새 문서로 만든다. 지시어가 없는 "문서에 적어 줘"는 지금처럼 수정으로 둔다.
+# "새 문서에 적어 둔 내용"은 이미 있는 글을 가리키므로 시키는 말이 뒤따를 때만 센다.
+_WRITE_TO_SEPARATE_DOCUMENT = re.compile(
+    r"(?<![가-힣])(?:새로운|새|신규|별도의?|별개의?|따로|다른(?:\s+\S+의)?|요약본|번역본)\s*(?:문서|노트)"
+    r"(?:\s*(?:맨\s*)?(?:앞|끝|뒤|위|아래|밑))?(?:에|로)\s+"
+    r"(?:\S*[^\s는은던한된둔본준고]\s+){0,3}?"
+    rf"(?:적어|써|붙여|달아|넣어|담아|추가해|반영해){_WRITE_REQUEST_ENDING}",
+    re.MULTILINE,
+)
 # 저장할 곳으로 열린 문서를 가리킨 표현이다("이 문서에 요약해서 저장해 줘"). 가리키는 말이 없으면("문서에 저장해 줘", "별도 문서에 저장해 줘") 열린 문서를
 # 지목한 게 아니므로 라우터 프롬프트의 "저장할 곳을 말하지 않은 저장"과 같게 새 문서로 만든다. 놓쳐도 원문을 고치지 않는 쪽으로 틀린다.
 # 사이의 말이 수식하는 어미로 끝나거나("이 문서에 있는 내용을"), 내용을 가리키거나("이 문서에 대해"), 다른 곳을 말하면("이 문서에 요약해서 따로") 저장할 곳이 아니다.
@@ -166,7 +175,7 @@ def lacks_attachment_change_request(message: str, edit_goal: str | None) -> bool
     if edit_goal not in SEPARATE_RESULT_GOALS and not asks_separate_result:
         return False
     # 지운 자리를 표시해 둔다. 공백만 남기면 "고쳐 주지 말고 요약해 줘"가 "고쳐 요약해 줘"로 읽힌다.
-    stated = _NEGATED_VERB.sub(" ∅ ", message)
+    stated = _WRITE_TO_SEPARATE_DOCUMENT.sub(" ∅ ", _NEGATED_VERB.sub(" ∅ ", message))
     if _asks_change(stated):
         return False
     return asks_separate_result or _SHORTEN_REQUEST.search(stated) is None
@@ -175,7 +184,11 @@ def lacks_attachment_change_request(message: str, edit_goal: str | None) -> bool
 def lacks_save_or_change_request(message: str, edit_goal: str | None) -> bool:
     """요약·번역 요청인데 원문을 바꾸거나 저장하라는 말이 모두 없으면 True다."""
     stated = _NEGATED_VERB.sub(" ", message)
-    return lacks_attachment_change_request(message, edit_goal) and _SAVE_REQUEST.search(stated) is None
+    return (
+        lacks_attachment_change_request(message, edit_goal)
+        and _SAVE_REQUEST.search(stated) is None
+        and _WRITE_TO_SEPARATE_DOCUMENT.search(stated) is None
+    )
 
 
 def saves_result_into_document(message: str) -> bool:
