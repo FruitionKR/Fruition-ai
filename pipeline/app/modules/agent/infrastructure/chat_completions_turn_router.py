@@ -15,6 +15,7 @@ from app.core.llm_env import (
     resolve_llm_selection,
 )
 from app.modules.agent.application.ports import AgentTurnRouterPort
+from app.modules.agent.domain.attached_edit_request import lacks_attachment_change_request
 from app.modules.agent.domain.entities import (
     AgentAction,
     AgentTurnRequest,
@@ -462,6 +463,12 @@ def _attached_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) ->
         failures.append("attached_edit_targets cannot be combined with folder-organize")
     if (route.edit_operation, route.edit_destination) not in {("replace", "target"), ("insert_after", "document_end")}:
         failures.append("attached_edit_targets requires replace at target or insert_after at document_end")
+    if lacks_attachment_change_request(request.message, route.edit_goal):
+        failures.append(
+            "attached_edit_targets requires the message to explicitly ask to change the attached document; "
+            "a summary or translation without that is chat_answer or conversation_reply, or markdown_create "
+            "when it asks for a new document, with an empty array"
+        )
     return failures
 
 

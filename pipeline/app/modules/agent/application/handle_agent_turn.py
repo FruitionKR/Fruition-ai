@@ -124,8 +124,13 @@ logger = logging.getLogger(__name__)
 
 CLARIFY_MARKDOWN_TARGET_MESSAGE = "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요."
 CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."
-# 편집 버전을 주지 않는 구 document-svc이거나, 열린 문서 없이 첨부를 근거로 문서를 고치라는 요청일 때의 안내다.
+# 편집 버전을 주지 않는 구 document-svc에서만 쓴다. 이 경우에만 첨부를 열지 않고는 고칠 수 없다.
 CLARIFY_REFERENCE_EDIT_MESSAGE = "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
+# 열린 문서 없이 첨부를 근거로 문서를 고치라는 요청일 때의 안내다. 첨부는 열지 않아도 고칠 수 있다.
+CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE = (
+    "어느 문서를 고칠지 알 수 없어요. 첨부한 문서를 고치려면 \"첨부한 문서를 고쳐 줘\"처럼 말해 주시고, "
+    "다른 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
+)
 REFERENCE_NOT_ACCESSIBLE_MESSAGE = (
     "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. 첨부를 확인한 뒤 다시 요청해 주세요."
 )
@@ -137,7 +142,7 @@ CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
     "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
-_DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_REFERENCE_EDIT_MESSAGE})
+_DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE})
 CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
 CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
 REJECT_MESSAGES = {
@@ -1565,8 +1570,8 @@ def _with_reply_references(request: AgentTurnRequest, references: SelectedRefere
 
 
 def _clarify_document_message(request: AgentTurnRequest) -> str:
-    """고칠 문서가 없을 때의 안내. 첨부가 있으면 첨부를 왜 고치지 않는지 말한다."""
-    return CLARIFY_REFERENCE_EDIT_MESSAGE if request.reference_document_ids else CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+    """고칠 문서가 없을 때의 안내. 첨부가 있으면 첨부를 고치는 방법도 알려 준다."""
+    return CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE if request.reference_document_ids else CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
 
 
 def _clarify_document_change(
