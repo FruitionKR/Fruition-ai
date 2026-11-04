@@ -157,6 +157,120 @@ def test_request_naming_attachment_too_keeps_attachment_target(message: str) -> 
     assert _failures(raw, request) == []
 
 
+@pytest.mark.parametrize("action", ["markdown_edit", "workspace_workflow"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "문서에 적어 둔 내용을 요약해 줘",
+        "문서에 써 있는 메모 요약해 줘",
+        "문서 끝에 적어 둔 메모를 번역해 줘",
+        "위에 써 있는 내용을 요약해 줘",
+        "문서에 붙여 둔 표를 요약해 줘",
+        "문서에 적어 놓은 내용을 요약해 줘",
+        "문서에 적어 주신 내용을 요약해 줘",
+        "문서에 적어 주지 말고 요약해 줘",
+        "요약해 줘. 문서에 써 주지 마",
+    ],
+)
+def test_words_describing_existing_text_are_not_a_change_request(action: str, message: str) -> None:
+    assert _mentions_overwrite(_failures(_edit_raw(action, edit_goal="other"), _request(message, "doc-1")))
+
+
+def test_words_describing_existing_text_cannot_start_saving_run_without_attachment() -> None:
+    failures = _failures(_edit_raw("workspace_workflow"), _request("문서에 적어 둔 내용을 요약해 줘"))
+
+    assert any("save" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "첨부 내용을 요약해서 문서에 적어 줘",
+        "첨부 내용을 요약해서 문서에 적어줘",
+        "첨부 내용을 요약해서 문서에 적어",
+        "첨부 내용을 요약해서 문서에 적어.",
+        "첨부 내용을 요약해서 문서에 적어요",
+        "첨부 내용을 요약해서 문서에 써 줘",
+        "첨부 내용을 요약해서 문서에 써줘",
+        "첨부 내용을 요약해서 문서에 써 주세요",
+        "첨부 내용을 요약해서 문서에 써 주시겠어요?",
+        "첨부 내용을 요약해서 문서에 써 줄래?",
+        "첨부 내용을 요약해서 문서에 적어 둬",
+        "첨부 내용을 요약해서 문서에 적어 두세요",
+        "첨부 내용을 요약해서 문서에 적어 놔",
+        "첨부 내용을 요약해서 문서에 적어 놓아 줘",
+        "첨부 내용을 요약해서 문서에 적어 봐",
+        "첨부 내용을 요약해서 문서에 적어서 저장해 줘",
+        "첨부 내용을 요약해서 문서에 적어서 줘",
+        "첨부 내용을 요약해서 문서에 적어 달라고 했잖아",
+        "첨부 내용을 요약해서 문서에 적어야 해",
+        "첨부 내용을 요약해서 문서 끝에 달아 줘",
+        "첨부 내용을 번역해서 문서에 붙여 줘",
+        "첨부 내용을 번역해서 문서에 붙여넣기 해 줘",
+    ],
+)
+def test_imperative_write_clause_keeps_open_document_edit(message: str) -> None:
+    raw = _edit_raw(edit_goal="other")
+
+    assert not _mentions_overwrite(_failures(raw, _request(message, "doc-1")))
+
+
+@pytest.mark.parametrize(
+    ("message", "edit_goal"),
+    [
+        ("문서에 이 내용을 적어 줘", "other"),
+        ("문서에 추가해 줘", "other"),
+        ("요약 섹션을 보강해 줘", "other"),
+        ("세 줄로 줄여서 고쳐 줘", "shorten"),
+    ],
+)
+def test_plain_edit_requests_keep_open_document_edit(message: str, edit_goal: str) -> None:
+    raw = _edit_raw(edit_goal=edit_goal)
+
+    assert not _mentions_overwrite(_failures(raw, _request(message, "doc-1")))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "열린 문서의 오타 3개를 고쳐 줘",
+        "열린 문서의 오타를 모두 고쳐 줘",
+        "현재 문서의 오타를 전부 고쳐 줘",
+        "열린 문서의 두 번째 문단을 고쳐 줘",
+        "열린 문서의 단락을 각각 고쳐 줘",
+        "열린 문서의 제목과 본문 둘 다 고쳐 줘",
+        "Fix all typos in the open document",
+        "Fix each heading in the current document",
+    ],
+)
+def test_counting_words_about_open_document_do_not_select_attachment(message: str) -> None:
+    raw = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
+    request = _request(message, "doc-1", reference_document_titles=("회의록",))
+
+    assert any("must name an attachment" in failure for failure in _failures(raw, request))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "3개 모두 고쳐 줘",
+        "각각에서 오타를 고쳐 줘",
+        "첨부한 문서 모두 고쳐 줘",
+        "둘 다 수정해 줘",
+        "두 번째 문서를 고쳐 줘",
+        "Fix typos in all attached documents",
+        "현재 문서 형식에 맞춰 두 번째 문서를 고쳐 줘",
+        "열린 문서 말고 첫 번째 파일을 고쳐 줘",
+        "열린 문서를 참고해서 첨부한 문서를 모두 고쳐 줘",
+    ],
+)
+def test_selecting_attachments_keeps_attachment_target(message: str) -> None:
+    raw = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
+    request = _request(message, "doc-1", "doc-2", "doc-3", reference_document_titles=("회의록",))
+
+    assert _failures(raw, request) == []
+
+
 def test_request_naming_blank_open_document_keeps_attachment_target() -> None:
     raw = _edit_raw("workspace_workflow", attached_edit_targets=[1])
     request = _request("현재 문서를 세 줄로 줄여서 고쳐 줘", "doc-1", active_markdown_context=BLANK_DOCUMENT)
