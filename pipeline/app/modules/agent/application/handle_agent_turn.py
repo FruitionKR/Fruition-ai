@@ -1670,6 +1670,7 @@ def _reject_unsafe_workspace_mutation(route: AgentTurnRoute) -> AgentTurnResult:
             retrieval_source="none",
             document_operation="none",
             persist=False,
+            attached_edit_targets=(),
         ),
         message="보안상 위험한 지시나 민감정보를 Workspace에 추가하는 요청은 처리할 수 없습니다.",
     )
