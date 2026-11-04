@@ -29,8 +29,14 @@ from app.modules.agent_run.domain.entities import (
     AgentJob,
     AgentRunContext,
     ContentArtifactReference,
+    DocumentEditArtifact,
 )
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    AgentPlan,
+    AgentPlanIntentClarificationRequired,
+    AgentPlanOperation,
+    build_agent_plan,
+)
 from app.modules.agent_run.domain.content_duplicates import (
     ContentReview,
     content_review_summary,
@@ -307,8 +313,6 @@ class AgentWorker:
         self._plan_run(job.run_id)
 
     def _plan_run(self, run_id: str) -> str | None:
-        if self._plan_generator is None:
-            raise ValueError("Agent planning requires a plan generator.")
         context = self._repository.load_context(run_id)
         if context.run.status not in {"queued", "planning", "clarification_required"}:
             return
@@ -318,6 +322,14 @@ class AgentWorker:
             "planning",
         ):
             raise ValueError("AgentRun cannot enter planning.")
+        # 첨부 문서 수정은 turn에서 만든 수정안이 곧 계획이다. 트리와 모델이 필요 없다.
+        if context.run.action == "workspace_workflow":
+            edit_artifacts = self._run_repository.load_document_edit_artifacts(run_id)
+            if edit_artifacts:
+                self._save_document_edit_plan(context, edit_artifacts)
+                return None
+        if self._plan_generator is None:
+            raise ValueError("Agent planning requires a plan generator.")
         hierarchy = scoped_hierarchy(self._inspect_hierarchy(context), context.run.target_folder_id)
         content_review = self._review_document_contents(context, hierarchy)
         content_artifacts = self._load_content_artifacts(context)
@@ -358,6 +370,47 @@ class AgentWorker:
                 ),
             )
         self._run_repository.save_plan(run_id, reviewed)
+
+    def _save_document_edit_plan(
+        self,
+        context: AgentRunContext,
+        artifacts: tuple[DocumentEditArtifact, ...],
+    ) -> None:
+        if any(artifact.expired for artifact in artifacts):
+            raise ValueError("Document edit artifact expired.")
+        if context.run.skill_version_id is not None and "apply_document_edit" not in context.allowed_tools:
+            raise ValueError("Agent plan contains tools not allowed by the selected Skill.")
+        operations = tuple(
+            AgentPlanOperation(
+                id=str(uuid4()),
+                sequence=sequence,
+                tool_name="apply_document_edit",
+                target_type="document",
+                target_id=artifact.document_id,
+                base_version=artifact.base_version,
+                source_parent_id=None,
+                destination_parent_id=None,
+                arguments={
+                    "document_id": artifact.document_id,
+                    "base_version": artifact.base_version,
+                    "target": artifact.target,
+                    "content_artifact_id": artifact.id,
+                    "content_hash": artifact.content_hash,
+                },
+                reason=artifact.summary,
+            )
+            for sequence, artifact in enumerate(artifacts, start=1)
+        )
+        self._run_repository.save_plan(
+            context.run.id,
+            build_agent_plan(
+                str(uuid4()),
+                context.run.id,
+                self._repository.next_plan_version(context.run.id),
+                f"아직 바꾸지 않았습니다. 승인하면 문서 {len(operations)}개를 수정합니다.",
+                operations,
+            ),
+        )
 
     def _review_document_contents(
         self,
@@ -635,7 +688,19 @@ class AgentWorker:
                 raise _ToolBudgetExhausted()
             if self._active_execution_context(context.run.id) is None:
                 return None
-            if not self._rollback.prepare(context, plan, operation, arguments):
+            # 스냅샷 실패는 요청을 보내기 전이다. 전방 실행 기록을 남기지 않아 롤백이 실행하지 않은 단계로 건너뛴다.
+            try:
+                if not self._rollback.prepare(context, plan, operation, arguments):
+                    return None
+            except ToolGatewayError as exc:
+                if exc.retryable and attempt < 3:
+                    continue
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), _tool_error_code(exc))
+                return None
+            except (ValueError, KeyError, TypeError):
+                if operation.tool_name != "apply_document_edit":
+                    raise
+                self._repository.mark_operation(operation.id, ("running",), "failed", "rollback_snapshot_invalid")
                 return None
             self._repository.save_tool_execution(
                 run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
@@ -669,10 +734,9 @@ class AgentWorker:
                 self._repository.mark_operation(operation.id, ("running",), "succeeded")
                 return response
             except ToolGatewayError as exc:
-                error_code = f"tool_http_{exc.status_code or 'unavailable'}"
+                error_code = _tool_error_code(exc)
                 if exc.retryable and attempt < 3:
                     continue
-                status = "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
                 self._repository.save_tool_execution(
                     run_id=context.run.id,
                     plan_id=plan.id,
@@ -684,7 +748,7 @@ class AgentWorker:
                     response_metadata={},
                     error_code=error_code,
                 )
-                self._repository.mark_operation(operation.id, ("running",), status, error_code)
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), error_code)
                 return None
         return None
 
@@ -831,6 +895,14 @@ def scoped_hierarchy(
             scoped.append(item)
             in_scope.add(str(item.get("id")))
     return scoped
+
+
+def _tool_error_code(exc: ToolGatewayError) -> str:
+    return f"tool_http_{exc.status_code or 'unavailable'}"
+
+
+def _failed_status(exc: ToolGatewayError) -> str:
+    return "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
 
 
 def _route_job_event(state: AgentRunGraphState) -> str:
