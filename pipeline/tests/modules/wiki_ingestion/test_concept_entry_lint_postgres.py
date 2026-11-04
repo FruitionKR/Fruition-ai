@@ -1091,7 +1091,8 @@ def test_lint_deletes_page_without_any_contribution(world: World) -> None:
     assert result["deleted_pages"] == [alpha]
 
 
-def test_lint_deletes_page_without_any_contribution_even_if_source_link_remains(world: World) -> None:
+def test_lint_keeps_page_without_contribution_while_live_source_link_remains(world: World) -> None:
+    """원장 행이 없어도 원문과 이어져 있으면 출처를 찾을 수 있다. 재생할 기록이 없어 지우면 lint 복원으로도 돌아오지 않는다."""
     world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
     world.mark_linted()
     alpha = world.page_id("alpha")
@@ -1099,8 +1100,8 @@ def test_lint_deletes_page_without_any_contribution_even_if_source_link_remains(
 
     result = world.lint("lint-empty")
 
-    assert "alpha" not in world.state()["pages"]
-    assert result["deleted_pages"] == [alpha]
+    assert "alpha" in world.state()["pages"]
+    assert result["deleted_pages"] == []
 
 
 def test_lint_waits_for_ledger_rows_of_the_previous_lint(world: World) -> None:
