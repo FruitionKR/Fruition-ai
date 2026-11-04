@@ -818,6 +818,7 @@ class AgentWorkerTest(unittest.TestCase):
                     patch.object(agent_worker, "build_plan_generator", return_value=plan_generator) as plan_builder,
                     patch.object(agent_worker, "AgentWorker", return_value=worker) as worker_factory,
                     patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+                    patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
                     patch.object(agent_worker.time, "monotonic", return_value=1),
                 ):
                     database_module.connect_ai.return_value = connection_context
@@ -857,6 +858,7 @@ class AgentWorkerTest(unittest.TestCase):
             patch.object(agent_worker, "build_plan_generator"),
             patch.object(agent_worker, "AgentWorker", return_value=worker),
             patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+            patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
             patch.object(agent_worker.time, "monotonic", return_value=1),
         ):
             database_module.connect_ai.return_value = connection_context

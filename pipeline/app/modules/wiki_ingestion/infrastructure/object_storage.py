@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from minio import Minio
 from minio.credentials.providers import ChainedProvider, EnvAWSProvider, IamAwsProvider
+from minio.error import S3Error
 
 from app.core.pipeline_control import task_run_id
 
@@ -97,6 +98,10 @@ def delete_object(object_name: str) -> None:
         change_object(task_run_id.get(), client(), bucket, key, None)
         return
     client().remove_object(bucket, key)
+
+
+def is_missing_object_error(exc: Exception) -> bool:
+    return isinstance(exc, S3Error) and exc.code in {"NoSuchKey", "NoSuchObject"}
 
 
 def pipeline_log_uri(run_id: str) -> str:
