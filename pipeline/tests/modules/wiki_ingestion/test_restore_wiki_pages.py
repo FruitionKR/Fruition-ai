@@ -759,6 +759,34 @@ def test_missing_source_snapshot_prevents_concept_changes_and_deletion() -> None
     assert embedding_job.calls == []
 
 
+def test_ingest_restore_skips_purged_source_page_and_still_restores_concepts() -> None:
+    """영구 삭제한 문서의 스냅샷은 객체가 없다. 그 때문에 같은 작업의 개념 페이지 복구까지 실패하면 안 된다."""
+    store = ArtifactStore({
+        "wiki/ws-1/pages/C3/ops/A.json": _payload("A", "C3", "남은 근거"),
+    })
+    base = _restore(store)
+    adapter = ObjectStorageWikiPageRestore(
+        base._read_text, base._write_text, base._apply_current_state_and_cleanup, base._restore_archived_clusters,
+        lambda workspace_id, page_id: (workspace_id, page_id) == ("ws-1", "S1"),
+    )
+    command = IngestOperationRestoreCommand(
+        operation_id="restore-1",
+        restore_to_operation_id="purged-op",
+        cancel_operation_ids=("B",),
+        workspace_id="ws-1",
+        source_page=SourceSnapshotRestoreCommand("S1", "doc-source"),
+        rebuild_pages=(
+            RebuildPageCommand("C3", (RestoreContributionCommand("A", "doc-A"),)),
+        ),
+        deleted_pages=(),
+    )
+
+    result = RestoreWikiPagesUseCase(adapter, EmbeddingJob()).execute_ingest(command)
+
+    assert [page["page_id"] for page in result["changed_pages"]] == ["C3"]
+    assert not any("/S1/" in key for key, *_ in store.writes)
+
+
 def test_ingest_restore_does_not_report_source_page_of_deleted_document() -> None:
     store = ArtifactStore(
         {

@@ -131,9 +131,12 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 | `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
 | `ai_task_changes` | 이 문서·소스 페이지의 변경 기록을 지운다(소스 페이지 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다 |
 | `pipeline_runs.manifest` | `{"scrubbed": true}`로 바꾼다 |
+| 소스 페이지 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`), `wiki_pages.summary`·`markdown_uri` | 객체를 지우고 요약은 빈 값, `markdown_uri`는 NULL로 둔다. 행은 `deleted`로 남긴다. 위키 조회·그래프·임베딩은 활성 페이지만 읽고, 로그 되돌리기는 이 페이지를 건너뛰고 개념 페이지를 복구한다 |
 | `source_blocks`·`source_block_snapshots`·`document_quality_reviews`·`document_derived_state` | 행을 지운다 |
 
-- 남기는 것: 사용자 메시지(`request_summary`), AI 답변, 위키 파생(소스 페이지 Markdown 객체, 개념 페이지·개념 기여, 클러스터), Skill 본문, `ai_model_usage`.
+- 남기는 것: 사용자 메시지(`request_summary`), AI 답변, 여러 문서 파생(개념 페이지·개념 기여, 클러스터), Skill 본문, `ai_model_usage`.
+- 취소 API(`/internal/ai/tasks/{run_id}/cancel`)는 document가 본문을 지운 command(`document_purged: true`)를 받으면 해시 대조와 등록을 건너뛴다. 실행이 없으면 `409`다.
+- `document_deleted`가 처리되지 못해 소스 페이지가 아직 활성이면 같은 정리를 먼저 돌린다. 개념 잠금 시간 초과는 실패로 기록하고 다음 주기에 다시 시도한다.
 - `ai_document_purges`에 요청을 먼저 커밋한다. 객체 삭제나 다른 처리가 실패해도 offset은 넘어가고, `finished_at`이 빈 행을 agent worker가 1시간마다 오래 못 본 것부터 다시 시도한다(한 주기 20건, 3건 실패하면 그 주기 종료). 재전달해도 결과가 같다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 지우지 않고 오류 로그를 남기며 대기로 둔다. 로그에는 건수와 id만 남긴다.
 - 지운 뒤 승인: 나머지 문서는 그대로 승인·실행하고 run은 `partial_failed`로 끝난다. 실행할 작업이 영구 삭제 문서뿐이면 `409`다. `revise`도 수정안이 없어 `409`이고, 미리 보기는 나머지 문서만 돌려준다.
 - 지운 뒤 되돌리기: 그 문서 단계는 document-svc를 부르지 않고 건너뛰고 나머지 문서는 되돌린다. 끝에 run은 `rollback_failed`(`rollback_document_purged`)로 닫히고 `finished_at`을 채운다. 다시 요청해도 결과가 같고, 다른 `rollback_failed`와 달리 90일 정리 대상이다. 상위 `markdown_turn`도 같은 코드를 받는다.

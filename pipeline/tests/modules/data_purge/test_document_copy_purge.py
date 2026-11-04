@@ -2,7 +2,8 @@
 
 import hashlib
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from psycopg.types.json import Json
@@ -38,8 +39,34 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+class WikiObjects:
+    """위키 객체 저장소. 소스 페이지 객체 삭제를 기록하고 실패를 끼워 넣는다."""
+
+    def __init__(self) -> None:
+        self.keys: set[str] = set()
+        self.failing = False
+
+    def list_objects(self, bucket, prefix, recursive):
+        assert recursive
+        if self.failing:
+            raise OSError("storage down")
+        return [SimpleNamespace(object_name=key) for key in sorted(self.keys) if key.startswith(prefix)]
+
+    def remove_object(self, bucket, key):
+        if self.failing:
+            raise OSError("storage down")
+        self.keys.discard(key)
+
+
 @pytest.fixture
-def stack(repositories, cleanup_storage, monkeypatch):  # noqa: F811
+def wiki_objects(monkeypatch) -> WikiObjects:
+    fake = WikiObjects()
+    monkeypatch.setattr(purge.object_storage, "client", lambda: fake)
+    return fake
+
+
+@pytest.fixture
+def stack(repositories, cleanup_storage, wiki_objects, monkeypatch):  # noqa: F811
     runs, jobs, connect = repositories
     monkeypatch.setattr(journal, "connect", connect)
     return runs, jobs, connect, cleanup_storage
@@ -715,3 +742,183 @@ def test_wiki_data_of_other_tables_is_unchanged_by_purge(stack) -> None:
     with connect() as conn:
         assert conn.execute("SELECT count(*) AS c FROM wiki_source_tombstones").fetchone()["c"] == 1
         assert conn.execute("SELECT status FROM wiki_pages WHERE id = 'concept'").fetchone()["status"] == "active"
+
+
+# ── 위키 소스 페이지 ────────────────────────────────────────────────
+
+
+def _source_page(connect, page_id: str, document_id: str, status: str = "deleted", workspace_id: str = "ws") -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_pages(id, page_type, title, slug, summary, markdown_uri, user_id, workspace_id, status, "
+            "created_at, updated_at) VALUES (%s, 'source', '제목', %s, %s, %s, 'user', %s, %s, now(), now())",
+            (page_id, slugify(document_id), BODY, f"s3://bucket/wiki/{workspace_id}/sources/{document_id}.md",
+             workspace_id, status),
+        )
+
+
+def _seed_source_objects(objects: WikiObjects) -> None:
+    objects.keys |= {
+        "wiki/ws/sources/doc-1.md",
+        "wiki/ws/pages/S1/ops/op-1.md",
+        "wiki/ws/pages/S1/ops/op-2.md",
+        "wiki/ws/sources/doc-2.md",
+        "wiki/ws/pages/S2/ops/op-1.md",
+        "wiki/ws/pages/concept/ops/op-1.md",
+        "wiki/ws/pages/concept/ops/op-1.json",
+        "wiki/ws/clusters/active.md",
+    }
+
+
+def test_source_page_objects_and_summary_are_removed_and_others_stay(stack, wiki_objects) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1")
+    _source_page(connect, "S2", "doc-2")
+    _seed_source_objects(wiki_objects)
+    with connect() as conn:
+        conn.execute("INSERT INTO wiki_source_tombstones(workspace_id, document_id) VALUES ('ws', 'doc-1')")
+
+    assert _purge().finished
+
+    assert wiki_objects.keys == {
+        "wiki/ws/sources/doc-2.md",
+        "wiki/ws/pages/S2/ops/op-1.md",
+        "wiki/ws/pages/concept/ops/op-1.md",
+        "wiki/ws/pages/concept/ops/op-1.json",
+        "wiki/ws/clusters/active.md",
+    }
+    with connect() as conn:
+        pages = {row["id"]: row for row in conn.execute("SELECT id, status, summary, markdown_uri FROM wiki_pages")}
+        tombstones = conn.execute("SELECT count(*) AS c FROM wiki_source_tombstones").fetchone()["c"]
+    # 행은 남긴다. 로그 되돌리기가 page id로 찾고, tombstone·슬러그 고유 제약도 그대로 둔다.
+    assert (pages["S1"]["status"], pages["S1"]["summary"], pages["S1"]["markdown_uri"]) == ("deleted", "", None)
+    assert pages["S2"]["summary"] == BODY and pages["S2"]["markdown_uri"] is not None
+    assert tombstones == 1
+
+
+def test_source_object_failure_is_retried_on_same_path(stack, wiki_objects) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1")
+    _seed_source_objects(wiki_objects)
+    wiki_objects.failing = True
+
+    result = _purge()
+
+    assert not result.finished and result.pending_source_objects == 1
+    with connect() as conn:
+        assert conn.execute("SELECT summary FROM wiki_pages WHERE id = 'S1'").fetchone()["summary"] == ""
+        assert conn.execute("SELECT finished_at FROM ai_document_purges").fetchone()["finished_at"] is None
+
+    wiki_objects.failing = False
+    assert purge.purge_pending_documents().finished == 1
+    assert "wiki/ws/sources/doc-1.md" not in wiki_objects.keys
+    assert "wiki/ws/pages/S1/ops/op-1.md" not in wiki_objects.keys
+
+
+def test_active_source_page_is_retired_first_when_document_deleted_was_lost(stack, wiki_objects, monkeypatch) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1", status="active")
+    _seed_source_objects(wiki_objects)
+    retired = []
+
+    def retire(workspace_id, document_id):
+        retired.append((workspace_id, document_id))
+        with connect() as conn:
+            conn.execute("UPDATE wiki_pages SET status = 'deleted' WHERE id = 'S1'")
+
+    monkeypatch.setattr(purge.database, "delete_document_wiki_data", retire)
+
+    assert _purge().finished
+    assert retired == [("ws", "doc-1")]
+
+
+def test_concept_lock_timeout_on_retire_stays_pending(stack, wiki_objects, monkeypatch) -> None:
+    from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import ConceptLockTimeout
+
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1", status="active")
+    monkeypatch.setattr(purge.database, "delete_document_wiki_data", MagicMock(side_effect=ConceptLockTimeout("x")))
+
+    assert _purge().failed is True
+    with connect() as conn:
+        assert conn.execute("SELECT finished_at FROM ai_document_purges").fetchone()["finished_at"] is None
+
+
+def test_source_page_purged_lookup(stack) -> None:
+    _, _, connect, _ = stack
+    _source_page(connect, "S1", "doc-1")
+    _source_page(connect, "S2", "doc-2")
+
+    _purge()
+
+    assert purge.is_source_page_purged("ws", "S1") is True
+    assert purge.is_source_page_purged("ws", "S2") is False
+    assert purge.is_source_page_purged("other", "S1") is False
+
+
+# ── document가 본문을 지운 command로 취소할 때 ──────────────────────
+
+
+def _cancel_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.modules.task_cancellation.interfaces.http.routes import router
+
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app)
+
+
+def test_cancel_with_purged_command_skips_hash_check_and_rolls_back(stack) -> None:
+    runs, jobs, connect, _ = stack
+    _execute_two_documents(runs, jobs, connect)
+    with connect() as conn:
+        conn.execute("UPDATE agent_runs SET command_envelope_hash = 'original' WHERE id = %s", (RUN_ID,))
+
+    response = _cancel_client().post(f"/internal/ai/tasks/{RUN_ID}/cancel", json={
+        "workspace_id": "ws", "user_id": "user",
+        "command": {"run_id": RUN_ID, "workspace_id": "ws", "user_id": "user", "kind": "agent", "document_purged": True},
+    })
+
+    assert response.status_code == 200 and response.json()["status"] == "cancel_requested"
+
+
+def test_cancel_with_changed_command_without_marker_is_still_rejected(stack) -> None:
+    _, _, connect, _ = stack
+    _task_run(connect, "task-1", "chat_wiki", {"run_id": "task-1"})
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET command_hash = 'original' WHERE id = 'task-1'")
+
+    response = _cancel_client().post("/internal/ai/tasks/task-1/cancel", json={
+        "workspace_id": "ws", "user_id": "user",
+        "command": {"run_id": "task-1", "workspace_id": "ws", "user_id": "user", "kind": "chat_wiki"},
+    })
+
+    assert response.status_code == 409
+
+
+def test_cancel_journal_task_with_purged_command_skips_registration(stack) -> None:
+    _, _, connect, _ = stack
+    _task_run(connect, "task-1", "chat_wiki", {"run_id": "task-1", "document_id": "doc-1"})
+    with connect() as conn:
+        conn.execute("UPDATE ai_task_runs SET command_hash = 'original' WHERE id = 'task-1'")
+
+    with patch.object(journal, "rollback_pending"):
+        response = _cancel_client().post("/internal/ai/tasks/task-1/cancel", json={
+            "workspace_id": "ws", "user_id": "user",
+            "command": {"run_id": "task-1", "workspace_id": "ws", "user_id": "user", "kind": "chat_wiki",
+                        "document_purged": True},
+        })
+
+    assert response.status_code == 200
+
+
+def test_cancel_unknown_task_with_purged_command_is_conflict_not_retry_loop(stack) -> None:
+    response = _cancel_client().post("/internal/ai/tasks/missing/cancel", json={
+        "workspace_id": "ws", "user_id": "user",
+        "command": {"run_id": "missing", "workspace_id": "ws", "user_id": "user", "kind": "chat_wiki",
+                    "document_purged": True},
+    })
+
+    assert response.status_code == 409

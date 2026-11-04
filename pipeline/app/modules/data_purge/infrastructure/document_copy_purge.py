@@ -7,11 +7,16 @@ run·plan·operation·실행 행은 이력으로 남기고 본문이 든 값만 
 DB 값을 먼저 지우고 객체를 지운다. 객체 삭제가 실패해도 예외를 consumer로 올리지 않는다. 올리면 offset이 멈춰 같은 파티션의
 ingest까지 막힌다. 요청 행(ai_document_purges)의 finished_at이 비어 있으면 agent worker가 다시 시도한다.
 모든 단계가 조건부 삭제·갱신이라 재전달해도 결과가 같다. 로그에는 건수와 id만 남긴다.
+
+소스 페이지는 이 문서 하나에서만 나온다. 그래서 본문 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`)와
+요약을 지운다. 행은 status='deleted'로 남긴다. 로그 되돌리기가 page id로 찾고 슬러그 고유 제약과 tombstone이 그대로 맞아야 하며,
+위키 조회·그래프·임베딩은 활성 페이지만 읽어 영향이 없다. markdown_uri가 NULL인 삭제 페이지가 "영구 삭제함" 표시다.
+개념 페이지·기여·클러스터는 여러 문서의 파생이라 지우지 않는다.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Any
 
@@ -24,6 +29,7 @@ from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
     _is_in_run_scope,
 )
 from app.modules.wiki_generation.domain.text_utils import slugify
+from app.modules.wiki_ingestion.infrastructure import object_storage
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 
@@ -50,11 +56,12 @@ _EVIDENCE_TEXT_KEYS = {"text": "", "expected_claims": []}
 class DocumentCopyPurge:
     deleted_artifacts: int = 0
     pending_artifacts: int = 0  # 객체 삭제에 실패해 행을 남겼다. 다음 주기에 다시 시도한다.
+    pending_source_objects: int = 0  # 소스 페이지 객체 삭제에 실패했다. 다음 주기에 접두사를 다시 훑는다.
     failed: bool = False  # 예기치 못한 실패로 이번 시도를 끝냈다. 다음 주기에 처음부터 다시 시도한다.
 
     @property
     def finished(self) -> bool:
-        return not self.failed and self.pending_artifacts == 0
+        return not self.failed and self.pending_artifacts == 0 and self.pending_source_objects == 0
 
 
 @dataclass(frozen=True)
@@ -100,11 +107,26 @@ def purge_pending_documents(limit: int = PENDING_PURGE_BATCH_SIZE) -> PendingDoc
     return PendingDocumentPurges(finished=finished, pending=unfinished)
 
 
+def is_source_page_purged(workspace_id: str, page_id: str) -> bool:
+    """로그 되돌리기가 스냅샷을 읽기 전에 본다. 객체가 없어 실패하면 같은 작업의 개념 페이지 복구까지 막힌다."""
+    with database.connect_ai() as conn:
+        return conn.execute(
+            """
+            SELECT 1 FROM wiki_pages
+            WHERE id = %s AND workspace_id = %s AND page_type = 'source'
+              AND status = 'deleted' AND markdown_uri IS NULL
+            """,
+            (page_id, workspace_id),
+        ).fetchone() is not None
+
+
 def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
     try:
+        _retire_active_source_pages(workspace_id, document_id)
         with database.connect_ai() as conn:
             scrubbed = _scrub_rows(conn, workspace_id, document_id)
         result = _delete_artifacts(workspace_id, document_id)
+        result = replace(result, pending_source_objects=_delete_source_objects(workspace_id, document_id))
     except Exception as exc:
         # 오류 원문은 SQL 값이나 키를 담을 수 있어 타입만 남긴다.
         logger.warning("[문서 복사본 삭제 실패] workspace_id=%s document_id=%s type=%s",
@@ -118,16 +140,70 @@ def _attempt(workspace_id: str, document_id: str) -> DocumentCopyPurge:
             (result.finished, workspace_id, document_id),
         )
     logger.info(
-        "[문서 복사본 삭제] workspace_id=%s document_id=%s rows=%s deleted_artifacts=%s pending_artifacts=%s failed=%s",
-        workspace_id, document_id, scrubbed, result.deleted_artifacts, result.pending_artifacts, result.failed,
+        "[문서 복사본 삭제] workspace_id=%s document_id=%s rows=%s deleted_artifacts=%s pending_artifacts=%s "
+        "pending_source_objects=%s failed=%s",
+        workspace_id, document_id, scrubbed, result.deleted_artifacts, result.pending_artifacts,
+        result.pending_source_objects, result.failed,
     )
     return result
+
+
+def _source_page_ids(conn: Any, workspace_id: str, document_id: str, *, active_only: bool = False) -> list[str]:
+    # 소스 페이지 슬러그는 문서 id다(upsert_wiki_page). 정규화 전후 둘 다 본다.
+    return [
+        row["id"]
+        for row in conn.execute(
+            """
+            SELECT id FROM wiki_pages
+            WHERE workspace_id = %s AND page_type = 'source' AND slug = ANY(%s)
+              AND (NOT %s OR status <> 'deleted')
+            """,
+            (workspace_id, [document_id, slugify(document_id)], active_only),
+        ).fetchall()
+    ]
+
+
+def _retire_active_source_pages(workspace_id: str, document_id: str) -> None:
+    """휴지통 이동의 document_deleted가 처리되지 못했으면 링크·임베딩·tombstone까지 같은 경로로 먼저 정리한다."""
+    with database.connect_ai() as conn:
+        active = _source_page_ids(conn, workspace_id, document_id, active_only=True)
+    if active:
+        # 잠금 시간 초과는 _attempt가 실패로 기록하고 다음 주기에 다시 시도한다.
+        database.delete_document_wiki_data(workspace_id, document_id)
+
+
+def _delete_source_objects(workspace_id: str, document_id: str) -> int:
+    """이 문서 전용 소스 페이지 객체를 지운다. 실패하면 1을 돌려준다. 키는 행이 아니라 id에서 나와 재시도 때 다시 찾을 수 있다."""
+    with database.connect_ai() as conn:
+        pages = _source_page_ids(conn, workspace_id, document_id)
+    if not pages:
+        return 0
+    try:
+        storage = object_storage.client()
+        bucket = object_storage.bucket_name()
+        keys = [f"wiki/{workspace_id}/sources/{document_id}.md"]
+        keys += [
+            item.object_name
+            for page_id in pages
+            for item in storage.list_objects(bucket, prefix=f"wiki/{workspace_id}/pages/{page_id}/", recursive=True)
+        ]
+        for key in keys:
+            storage.remove_object(bucket, key)  # 없는 키 삭제도 S3에서는 성공이다.
+    except Exception as exc:
+        logger.warning("소스 페이지 객체 삭제 실패: document_id=%s type=%s", document_id, type(exc).__name__)
+        return 1
+    return 0
 
 
 def _scrub_rows(conn: Any, workspace_id: str, document_id: str) -> dict[str, int]:
     params = {"ws": workspace_id, "doc": document_id}
     _require_same_workspace(conn, params)
     counts = _scrub_agent_operations(conn, params)
+    counts["source_pages"] = conn.execute(
+        "UPDATE wiki_pages SET summary = '', markdown_uri = NULL, updated_at = now() "
+        "WHERE id = ANY(%s) AND status = 'deleted'",
+        (_source_page_ids(conn, workspace_id, document_id),),
+    ).rowcount
     counts["ai_task_runs"] = conn.execute(
         """
         UPDATE ai_task_runs
@@ -284,14 +360,7 @@ def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
 
     지운 행은 작업 취소가 되돌리지 않으므로 본문이 되살아나지 않는다. 개념 페이지는 여러 문서의 파생이라 남긴다.
     """
-    pages = [
-        row["id"]
-        for row in conn.execute(
-            "SELECT id FROM wiki_pages WHERE workspace_id = %s AND page_type = 'source' AND slug = %s",
-            (params["ws"], slugify(params["doc"])),
-        ).fetchall()
-    ]
-    query = {**params, "pages": pages}
+    query = {**params, "pages": _source_page_ids(conn, params["ws"], params["doc"])}
     deleted = conn.execute(
         """
         DELETE FROM ai_task_changes vector USING ai_task_runs run

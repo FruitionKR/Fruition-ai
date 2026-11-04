@@ -43,7 +43,9 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             [str, str, list[dict[str, Any]]],
             dict[str, list[str]],
         ],
+        is_source_page_purged: Callable[[str, str], bool] = lambda workspace_id, page_id: False,
     ) -> None:
+        self._is_source_page_purged = is_source_page_purged
         self._read_text = read_text
         self._write_text = write_text
         self._apply_current_state_and_cleanup = apply_current_state_and_cleanup
@@ -127,7 +129,10 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
         restore_to_operation_id: str,
         workspace_id: str,
         source_page: SourceSnapshotRestoreCommand,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        # 영구 삭제한 문서의 스냅샷은 없고 되살리지도 않는다. 나머지 페이지 복구는 계속한다.
+        if self._is_source_page_purged(workspace_id, source_page.page_id):
+            return None
         source_key = (
             f"wiki/{workspace_id}/pages/{source_page.page_id}/ops/"
             f"{restore_to_operation_id}.md"
