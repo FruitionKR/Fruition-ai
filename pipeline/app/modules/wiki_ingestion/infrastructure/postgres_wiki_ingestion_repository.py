@@ -2156,11 +2156,13 @@ def _scan_concept_sources(
     conn: psycopg.Connection,
     workspace_id: str,
     previous_ledger: list[dict[str, Any]],
+    promoted_page_ids: set[str],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """개념 페이지를 원문 출처로 가른다. 결과는 (지울 페이지, 원문과 다시 이을 페이지)다.
 
     출처는 재생 결과의 문서 중 소스 페이지가 살아 있고 삭제 표시가 없는 문서다. 문서 id가 없는 lint 기록은 문서를 지워도
     꺼지지 않으므로 재생 결과만으로 판단하지 않는다. 소스 → 개념 링크가 있고 꺼진 기여도 없는 페이지는 재생하지 않는다.
+    이번 lint가 승격한 페이지의 근거는 아직 원장에 없다. 승격이 맞춘 소스 → 개념 링크가 있으면 출처가 있는 것으로 본다.
     """
     rows = conn.execute(
         """
@@ -2209,7 +2211,9 @@ def _scan_concept_sources(
     for row in rows:
         page_id = str(row["id"])
         contributions = ledger.get(page_id, [])
-        healthy = row["has_source_link"] and contributions and all(item.get("active") for item in contributions)
+        healthy = row["has_source_link"] and (
+            page_id in promoted_page_ids or (contributions and all(item.get("active") for item in contributions))
+        )
         if page_id in unapplied or healthy:
             continue
         kept = sorted(
@@ -2261,7 +2265,7 @@ def lint_concept_entries(
     operation_id: str | None,
     *,
     apply: bool,
-    skip: bool = False,
+    promotion_changes: list[dict[str, Any]] | None = None,
     connection: psycopg.Connection | None = None,
     concept_judge: JevConceptResolver | None = None,
     judge_part_of: PartOfJudge | None = None,
@@ -2274,10 +2278,11 @@ def lint_concept_entries(
 
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
-    skip이면 판정 없이 바뀐 페이지를 모두 다음 lint로 미룬다(같은 lint의 승격이 페이지를 바꿨을 때).
+    promotion_changes는 같은 lint의 승격이 바꾼 페이지다. 있으면 기록이 겹치지 않게 하위 항목 판정은 모두 다음 lint로 미룬다.
 
-    바뀐 페이지와 상관없이 활성 개념 페이지 전체의 원문 출처도 본다. 출처가 없는 페이지는 지우고, 출처가 있는데 소스 → 개념
+    승격이 있어도 마지막에 활성 개념 페이지 전체의 원문 출처를 본다. 출처가 없는 페이지는 지우고, 출처가 있는데 소스 → 개념
     링크가 없는 페이지는 그 원문과 다시 잇는다. 문서 삭제는 개념 페이지를 건드리지 않아 갱신 시각으로는 찾을 수 없다.
+    이번에 승격한 페이지도 출처가 없으면 지운다. 승격 기록을 삭제 기록으로 바꿔 페이지마다 기록이 하나로 남는다.
     """
     with _connection_scope(connection) as conn:
         last = conn.execute(
@@ -2310,10 +2315,13 @@ def lint_concept_entries(
         result: dict[str, Any] = {
             "entry_decisions": [], "deferred_entry_pages": [], "deleted_pages": [], "source_link_repairs": [],
         }
-        if skip:
+        promoted = {str(change["page_id"]): change for change in promotion_changes or []}
+        if promoted:
             result["deferred_entry_pages"] = sorted(str(row["id"]) for row in changed_rows)
-            return result
-        unsourced, relink = _scan_concept_sources(conn, workspace_id, (last or {}).get("ledger_contributions") or [])
+            changed_rows = []
+        unsourced, relink = _scan_concept_sources(
+            conn, workspace_id, (last or {}).get("ledger_contributions") or [], set(promoted),
+        )
         result["source_link_repairs"] = list(relink.values())
         if apply and relink:
             _relink_concept_sources(conn, workspace_id, result["source_link_repairs"])
@@ -2338,7 +2346,9 @@ def lint_concept_entries(
             ledger = with_pending_contributions(conn, read_contributions(page_ids, workspace_id), page_ids)
             for row in rows:
                 page_id = str(row["id"])
-                if page_id in unsourced:
+                # ponytail: 승격한 페이지는 이번 기록이 원장에 없어 다시 그리지 않는다. 지운 페이지로 가던 그 페이지의 링크 기록은
+                # 남고 DB 간선만 지워진다. 그 페이지는 갱신 시각으로 다음 lint가 다시 봐 참조를 지운다.
+                if page_id in unsourced or page_id in promoted:
                     continue
                 if history:
                     for item in ledger:
@@ -2500,7 +2510,7 @@ def lint_concept_entries(
                 return None if found is None else {f"concept:{slug}" for slug in found}
 
             retarget_split_relations(plan, pages, related)
-        if judge_part_of is not None and embedding_model is not None and apply:
+        if judge_part_of is not None and embedding_model is not None and apply and not promoted:
             _plan_page_moves(conn, workspace_id, plan, pages, changed, summaries, load, judge_part_of, embedding_model)
         if plan.deleted_page_ids:
             # 합쳐 지울 자식으로 오던 일반 링크는 그 링크를 낸 개념 페이지의 lint 기록에서 지운다(ADR 0042 결정 2).
@@ -2532,7 +2542,7 @@ def lint_concept_entries(
                         if link not in change["removed_links"]:
                             change["removed_links"].append(link)
     result["entry_decisions"] = plan.decisions
-    result["deferred_entry_pages"] = sorted(plan.deferred_page_ids)
+    result["deferred_entry_pages"] = sorted({*result["deferred_entry_pages"], *plan.deferred_page_ids})
     result["deleted_pages"] = sorted(plan.deleted_page_ids)
     if not apply or not plan.page_changes:
         return result
@@ -2547,6 +2557,11 @@ def lint_concept_entries(
     link_changes: dict[str, list[dict[str, Any]]] = {"removed_links": [], "restored_links": []}
     for page_id, change in plan.page_changes.items():
         page = pages.get(page_id)
+        if page_id in promoted:
+            promoted[page_id].update(content_action="delete", removed_links=[
+                *promoted[page_id].get("removed_links", []), *change["removed_links"],
+            ])
+            continue
         if page_id in unsourced:
             # 재생으로 다시 그릴 근거가 없다. 지우기 직전 본문을 그대로 기록에 남긴다.
             change.setdefault("definition", str(unsourced[page_id].get("summary") or ""))
@@ -2593,7 +2608,7 @@ def lint_concept_entries(
         new_keys = {_page_link_key(link) for link in rebuilt.supported_links}
         link_changes["removed_links"].extend(_page_link(key) for key in sorted(old_keys - new_keys))
         link_changes["restored_links"].extend(_page_link(key) for key in sorted(new_keys - old_keys))
-    result["_lint_page_changes"] = page_changes
+    result["_lint_page_changes"] = [*promoted.values(), *page_changes]
     result["_entry_state"] = {
         "page_ids": sorted(plan.page_changes),
         "pages": state_pages,
@@ -3254,6 +3269,8 @@ def _materialize_promotion_candidates(
                 f"wiki/{workspace_id}/concepts/{slug}.md",
             )
         _upsert_wiki_page(conn, page_id, "concept", title, slug, _markdown_section(markdown, "Definition"), markdown_uri, user_id, workspace_id)
+        # 동기화는 활성 페이지만 잇는다. 항목을 더할 때는 아직 draft라 활성으로 바꾼 뒤 다시 맞춘다.
+        sync_source_concept_links(conn, workspace_id, concept_page_ids=[page_id])
         first_document_id = source_refs[0].split(":", 1)[0] if source_refs else ""
         _persist_embedding_units(conn, page_id, first_document_id, markdown)
         existing_concept_ids[slug] = page_id
