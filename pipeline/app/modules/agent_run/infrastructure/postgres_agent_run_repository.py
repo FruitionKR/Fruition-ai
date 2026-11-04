@@ -22,12 +22,16 @@ from app.modules.agent_run.domain.entities import (
 from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
+    is_missing_object_error,
     read_text_object,
     write_text_object,
 )
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+
+
+ARTIFACT_UNAVAILABLE_MESSAGE = "Agent plan content expired and must be requested again."
 
 
 def agent_command_hash(command: dict[str, Any]) -> str:
@@ -181,39 +185,42 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
 
     def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
         with database.connect_ai() as conn:
+            # 수정안은 run과 같은 트랜잭션에서 만들어 만료 시각이 run 생성 + 1일이다. 행이 지워진 뒤에는 이 값으로 답한다.
             run = conn.execute(
-                "SELECT current_plan_id FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s",
+                """
+                SELECT current_plan_id, LEAST(created_at + interval '1 day', now()) AS removed_expires_at
+                FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s
+                """,
                 (run_id, workspace_id, user_id),
             ).fetchone()
             if run is None:
                 return None
             rows = conn.execute(
                 """
-                SELECT operation.id AS operation_id, operation.base_version, artifact.document_id,
-                       artifact.display_name, artifact.summary, artifact.preview_object_key, artifact.expires_at
+                SELECT operation.id AS operation_id, operation.base_version, artifact.id AS artifact_id,
+                       artifact.document_id, artifact.display_name, artifact.summary, artifact.preview_object_key,
+                       artifact.expires_at,
+                       artifact.expires_at IS NOT NULL AND artifact.expires_at <= now() AS expired
                 FROM agent_plan_operations operation
-                JOIN agent_run_artifacts artifact
+                LEFT JOIN agent_run_artifacts artifact
                   ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
                 WHERE operation.plan_id = %s AND operation.tool_name = 'apply_document_edit'
-                  AND artifact.preview_object_key IS NOT NULL
+                  AND (artifact.id IS NULL OR artifact.preview_object_key IS NOT NULL)
                 ORDER BY operation.sequence
                 """,
                 (run_id, run["current_plan_id"]),
             ).fetchall()
-        # 만료 뒤에도 내용을 돌려준다. 화면이 expires_at을 보고 수락을 막으며 이유를 보여 준다.
+        # 객체가 남아 있으면 만료 뒤에도 내용을 돌려준다. 화면은 expires_at이 지났는지로 수락을 막으며 이유를 보여 주므로,
+        # 정리로 지워진 수정안도 null이 아닌 지난 시각으로 답한다. null이면 만료가 아니라 수락이 열린다.
+        previews = [_edit_preview_item(row) for row in rows]
+        expiries = [
+            row["expires_at"] if row["artifact_id"] else run["removed_expires_at"]
+            for row in rows
+            if row["expires_at"] is not None or not row["artifact_id"]
+        ]
         return {
-            "items": [
-                {
-                    "operation_id": row["operation_id"],
-                    "document_id": row["document_id"],
-                    "display_name": row["display_name"] or "",
-                    "base_version": row["base_version"],
-                    "summary": row["summary"] or "",
-                    **json.loads(read_text_object(row["preview_object_key"])),
-                }
-                for row in rows
-            ],
-            "expires_at": min((row["expires_at"] for row in rows if row["expires_at"] is not None), default=None),
+            "items": [preview for preview in previews if preview is not None],
+            "expires_at": min(expiries, default=None),
         }
 
     def get_for_user(self, workspace_id: str, user_id: str, run_id: str) -> AgentRun | None:
@@ -570,6 +577,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 or current_plan["operation_hash"] != plan.operation_hash
             ):
                 raise ValueError("Agent plan changed and must be reviewed again.")
+            if _has_unavailable_artifact(conn, run.id, plan.id, selected_operation_ids):
+                raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
@@ -677,6 +686,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             if run is None or run["status"] not in {"awaiting_approval", "clarification_required"}:
                 raise ValueError("AgentRun cannot be revised in its current state.")
             if run["current_plan_id"]:
+                # 수정안 없이 다시 계획하면 첨부 수정 경로를 벗어나 모델이 다른 계획을 세운다. 다시 요청하게 막는다.
+                if _has_unavailable_artifact(conn, run_id, run["current_plan_id"]):
+                    raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
                 conn.execute(
                     "UPDATE agent_plans SET status = 'superseded' WHERE id = %s",
                     (run["current_plan_id"],),
@@ -699,6 +711,58 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 (job_id, run_id),
             )
         return _row_to_run(updated)
+
+
+def _edit_preview_item(row: dict[str, Any]) -> dict[str, object] | None:
+    """미리 보기 한 건. 수정안이 정리됐으면(행 없음, 또는 만료된 행의 객체만 먼저 지워짐) None이다."""
+    if row["artifact_id"] is None:
+        return None
+    try:
+        preview = json.loads(read_text_object(row["preview_object_key"]))
+    except Exception as exc:
+        if row["expired"] and is_missing_object_error(exc):
+            return None
+        raise
+    return {
+        "operation_id": row["operation_id"],
+        "document_id": row["document_id"],
+        "display_name": row["display_name"] or "",
+        "base_version": row["base_version"],
+        "summary": row["summary"] or "",
+        **preview,
+    }
+
+
+def _has_unavailable_artifact(
+    conn: Any,
+    run_id: str,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None = None,
+) -> bool:
+    """계획의 작업이 쓰는 artifact가 만료됐거나 정리됐는지 본다. operation_ids가 있으면 그 작업만 본다.
+
+    호출자가 run 행을 잠근 상태에서 부른다. 정리 작업도 run 행을 잠그므로, 이 확인을 통과한 승인과 정리가 겹치지 않는다.
+    """
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_plan_operations operation
+        LEFT JOIN agent_run_artifacts artifact
+          ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+        WHERE operation.plan_id = %s
+          AND jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
+          AND (%s::text[] IS NULL OR operation.id = ANY(%s::text[]))
+          AND (artifact.id IS NULL OR artifact.expires_at <= now())
+        LIMIT 1
+        """,
+        (
+            run_id,
+            plan_id,
+            list(operation_ids) if operation_ids is not None else None,
+            list(operation_ids) if operation_ids is not None else None,
+        ),
+    ).fetchone()
+    return row is not None
 
 
 def _row_to_run(row: dict[str, Any]) -> AgentRun:
@@ -803,10 +867,13 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _run_object_prefix(run_id: str) -> str:
+    return f"agent-runs/{hashlib.sha256(run_id.encode('utf-8')).hexdigest()}/"
+
+
 def _artifact_object_key(run_id: str, artifact_id: str) -> str:
-    scope = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     suffix = hashlib.sha256(f"{run_id}:{artifact_id}".encode("utf-8")).hexdigest()
-    return f"agent-runs/{scope}/artifacts/{suffix}.md"
+    return f"{_run_object_prefix(run_id)}artifacts/{suffix}.md"
 
 
 def _preview_object_key(run_id: str, artifact_id: str) -> str:

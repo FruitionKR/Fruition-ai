@@ -76,8 +76,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다. 요약·번역은 원문과 따로 내는 결과라서, 원문을 바꾸라는 말("세 줄로 줄여서 고쳐 줘", "번역해서 문서에 반영해 줘")이 없으면 코드가 이 배열을 계약 위반으로 돌려보내고 라우터가 한 번 더 고른다. 다시 어기면 턴이 실패한다. 다른 편집은 이 검사를 타지 않는다.
 - 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
 - 수정안: run을 만들기 전에 문서마다 차례로 만든다(최대 3개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
-- 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다.
-- 계획: 미리 보기가 있는 artifact가 있는 `workspace_workflow`는 트리를 읽거나 모델을 부르지 않고 `apply_document_edit` 작업을 첨부 순서대로 만든다. `reason`은 수정안 요약, `summary`는 "아직 바꾸지 않았습니다. 승인하면 문서 N개를 수정합니다."다. 선택한 Skill의 `allowed_tools`는 그대로 검사하고, `depends_on`은 비어 있으며, run의 `target_folder_id`는 `null`이다. 큰 변경에 대한 경고는 만들지 않는다. 만료된 수정안이 있으면 job이 실패한다. `revise`도 같은 수정안으로 다시 계획하므로 지시가 내용에 반영되지 않는다.
+- 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다. 만료 뒤 정리는 아래 [만료된 수정안 정리](#expired-artifact-cleanup)를 따른다.
+- 계획: 미리 보기가 있는 artifact가 있는 `workspace_workflow`는 트리를 읽거나 모델을 부르지 않고 `apply_document_edit` 작업을 첨부 순서대로 만든다. `reason`은 수정안 요약, `summary`는 "아직 바꾸지 않았습니다. 승인하면 문서 N개를 수정합니다."다. 선택한 Skill의 `allowed_tools`는 그대로 검사하고, `depends_on`은 비어 있으며, run의 `target_folder_id`는 `null`이다. 큰 변경에 대한 경고는 만들지 않는다. 계획 전에 수정안이 만료됐으면 job이 실패한다. `revise`도 같은 수정안으로 다시 계획하므로 지시가 내용에 반영되지 않고, 수정안이 만료됐으면 `409`다.
 
 계획에서 빠지는 문서는 나머지를 진행하고 결과 메시지에 제목과 이유를 덧붙인다.
 
@@ -103,6 +103,16 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | 실행 전 스냅샷이 맞지 않음 | `failed` | `rollback_snapshot_invalid` |
 
 run 상태는 `finish_run_from_operations`가 정한다. 겹침이 하나라도 있으면 다른 문서가 성공했어도 `conflicted`이고, 그 밖의 실패가 섞이면 `partial_failed`, 전부 실패면 `failed`다. 롤백 스냅샷은 `apply_document_edit`의 버전을 비교하지 않는다. 비교하면 계획 뒤 변경이 document-svc 병합에 닿지 못한다. 스냅샷을 읽지 못한 작업은 요청을 보내지 않았으므로 롤백에서 건너뛴다.
+
+<a id="expired-artifact-cleanup"></a>
+#### 만료된 수정안 정리
+
+- agent worker가 1시간마다(시작 직후 포함) `expires_at < now() - AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS`(기본 86400초, 음수면 기동 실패)인 artifact의 Markdown·미리 보기 객체와 행을 지운다. 한 주기 100건이고, 100건을 다 지우면 60초 뒤 다시 돈다. 로그에는 건수와 artifact id만 남긴다.
+- `expires_at IS NULL`(되돌리기에 쓴 artifact)과 `queued`·`planning`·`executing`·`verifying`·`cancel_requested`·`rolling_back` run의 artifact는 지우지 않는다. 승인 뒤 실행까지 끝난 수정안은 `expires_at`이 그대로라 끝난 뒤 함께 지워진다. 되돌리기는 실행 전 스냅샷을 쓰므로 이 수정안이 필요 없다.
+- 여러 worker가 겹쳐도 `FOR UPDATE SKIP LOCKED`로 한 번만 처리한다. 승인·`revise`와는 run 행 잠금으로 겹치지 않는다. 진행 중인 승인이 있으면 그 run을 건너뛰고, 정리가 먼저면 승인은 기다렸다가 `409`를 받는다.
+- 객체 삭제에 실패하면 행을 남겨 다음 주기에 다시 시도한다. 없는 객체는 성공으로 본다. 한 주기에 3건 실패하면 저장소 장애로 보고 그 주기를 끝낸다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 객체도 행도 건드리지 않고 오류 로그를 남긴다.
+- 버킷은 버전 관리 중이라 삭제는 현재 버전을 지우는 것이다. 이전 버전은 S3 lifecycle(flatform ADR 0023)로 30일 뒤 사라진다.
+- 문서 삭제는 수정안을 따로 지우지 않는다. 휴지통 이동(`document_deleted`)은 위키 파생 데이터만 지우고, 휴지통 영구 삭제는 AI를 부르지 않는다. 문서를 지워도 수정안은 이 정리 주기까지 남는다.
 
 배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 
@@ -405,7 +415,7 @@ type AgentDocumentEditPreview = {
 };
 ```
 
-줄 번호는 1부터 시작하고 문맥은 3줄이다. 계획이 없거나 미리 보기가 없는 run은 `items: []`, `expires_at: null`이다. 만료 뒤에도 내용을 돌려주므로 화면이 `expires_at`으로 수락을 막는다.
+줄 번호는 1부터 시작하고 문맥은 3줄이다. 계획이 없거나 미리 보기가 없는 run은 `items: []`, `expires_at: null`이다. 객체가 남아 있으면 만료 뒤에도 내용을 돌려주므로 화면이 `expires_at`으로 수락을 막는다. [정리](#expired-artifact-cleanup)로 수정안이 지워지면 그 문서는 `items`에서 빠지고 `expires_at`은 지난 시각이다. 응답 형식은 같고 5xx가 아니다.
 
 <a id="summary-post-agent-runs-run-id-approve"></a>
 ### `POST /agent/runs/{run_id}/approve`
@@ -415,8 +425,8 @@ type AgentDocumentEditPreview = {
 | 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. 고른 작업만 실행하는 부분 승인도 받습니다. |
 | 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids`·선택 `approved_by` |
 | 출력 | `200` — `status=executing`인 `AgentRunResponse` |
-| 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. |
-| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
+| 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. 승인하는 작업이 쓰는 artifact가 만료됐거나 지워졌으면 거절하고 run은 `awaiting_approval`로 남습니다. 거절·취소는 그대로 됩니다. |
+| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌·수정안 만료<br>`422` 요청 검증 실패 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -706,8 +716,8 @@ curl -X POST "$PIPELINE/agent/runs/run_123/reject" \
 | 목적 | 기존 계획을 폐기하고 사용자 지시로 새 계획을 생성하도록 등록합니다. |
 | 입력 | **Path** — `run_id`<br>**Body** — `workspace_id`, `user_id`, `instruction` |
 | 출력 | `200` — `status=queued`인 `AgentRunResponse` |
-| 조건 | `awaiting_approval` 또는 `clarification_required` 상태에서만 허용합니다. |
-| 주요 오류 | `409` 수정할 수 없는 상태 |
+| 조건 | `awaiting_approval` 또는 `clarification_required` 상태에서만 허용합니다. 현재 계획이 쓰는 artifact가 만료됐거나 지워졌으면 거절합니다. |
+| 주요 오류 | `409` 수정할 수 없는 상태·수정안 만료 |
 
 <details>
 <summary>상세 계약 보기</summary>

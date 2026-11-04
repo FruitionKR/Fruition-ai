@@ -12,6 +12,10 @@ from app.modules.agent_run.domain.entities import AgentJob
 from app.modules.agent_run.infrastructure.agent_worker import AgentWorker
 from app.modules.agent_run.infrastructure.backend_tool_gateway import agent_backend_url, build_backend_tool_gateway
 from app.modules.agent_run.infrastructure.chat_completions_plan_generator import build_plan_generator
+from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
+    ARTIFACT_CLEANUP_BATCH_SIZE,
+    delete_expired_artifacts,
+)
 from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
@@ -23,6 +27,10 @@ logger = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 # 마지막 시도 중 죽은 job(lease만 남음)을 닫는 주기. lease가 90초라 그보다 자주 볼 필요는 없다.
 _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS = 60
+# 만료된 수정안 정리. 한 배치가 꽉 차면 밀린 것이 더 있다고 보고 곧 다시 돈다.
+_ARTIFACT_CLEANUP_INTERVAL_SECONDS = 60 * 60
+_ARTIFACT_CLEANUP_BACKLOG_INTERVAL_SECONDS = 60
+_DEFAULT_ARTIFACT_CLEANUP_GRACE_SECONDS = 24 * 60 * 60
 # SIGTERM 뒤 진행 중 job을 기다리는 상한. Pod terminationGracePeriodSeconds(900) - 60초 여유.
 _DEFAULT_SHUTDOWN_BUDGET_SECONDS = 840
 
@@ -71,6 +79,14 @@ def _shutdown_budget_seconds() -> float:
     return float(os.environ.get("AGENT_WORKER_SHUTDOWN_BUDGET_SECONDS", str(_DEFAULT_SHUTDOWN_BUDGET_SECONDS)))
 
 
+def _artifact_cleanup_grace_seconds() -> float:
+    grace = float(os.environ.get("AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS", str(_DEFAULT_ARTIFACT_CLEANUP_GRACE_SECONDS)))
+    # 음수면 아직 만료되지 않은 수정안까지 지운다.
+    if grace < 0:
+        raise ValueError("AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS must not be negative.")
+    return grace
+
+
 def _cleanup_expired_runs_if_due(
     repository: PostgresAgentJobRepository,
     checkpointer: PostgresSaver,
@@ -100,6 +116,21 @@ def _fail_exhausted_leases_if_due(
     return now + _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS
 
 
+def _delete_expired_artifacts_if_due(grace_seconds: float, next_cleanup_at: float, now: float) -> float:
+    if now < next_cleanup_at:
+        return next_cleanup_at
+    result = delete_expired_artifacts(grace_seconds=grace_seconds)
+    if result.deleted or result.failed or result.rejected:
+        logger.info(
+            "만료된 수정안 정리: deleted=%s failed=%s rejected=%s",
+            result.deleted,
+            result.failed,
+            result.rejected,
+        )
+    backlog = result.deleted >= ARTIFACT_CLEANUP_BATCH_SIZE
+    return now + (_ARTIFACT_CLEANUP_BACKLOG_INTERVAL_SECONDS if backlog else _ARTIFACT_CLEANUP_INTERVAL_SECONDS)
+
+
 def _build_folder_content_reader() -> BackendFolderSourceReader:
     """폴더 정리 계획의 본문 중복 확인용. tool gateway와 같은 document-svc 주소(agent_backend_url)·서비스 토큰을 쓴다.
 
@@ -115,6 +146,7 @@ def _build_folder_content_reader() -> BackendFolderSourceReader:
 
 def main(shutdown: ShutdownRequest | None = None) -> None:
     shutdown = shutdown or ShutdownRequest(_shutdown_budget_seconds())
+    artifact_grace_seconds = _artifact_cleanup_grace_seconds()
     database.verify_schema()
     database.verify_agent_schema()
     repository = PostgresAgentJobRepository()
@@ -131,6 +163,7 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
         poll_seconds = float(os.environ.get("AGENT_WORKER_POLL_SECONDS", "1"))
         next_cleanup_at = 0.0
         next_sweep_at = 0.0
+        next_artifact_cleanup_at = 0.0
         while not shutdown.requested:
             next_cleanup_at = _cleanup_expired_runs_if_due(
                 repository,
@@ -139,6 +172,11 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
                 time.monotonic(),
             )
             next_sweep_at = _fail_exhausted_leases_if_due(repository, next_sweep_at, time.monotonic())
+            next_artifact_cleanup_at = _delete_expired_artifacts_if_due(
+                artifact_grace_seconds,
+                next_artifact_cleanup_at,
+                time.monotonic(),
+            )
             job = repository.claim_next(worker_id)
             if job is None:
                 time.sleep(poll_seconds)
