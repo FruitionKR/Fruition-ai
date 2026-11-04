@@ -99,6 +99,8 @@ class World:
         self.objects: dict[str, str] = {}
         self.ledger: list[dict] = []
         self.runs = 0
+        # 편입마다 소스 페이지를 만들고 state()에서는 숨긴다. 소스 페이지 자체를 보는 테스트는 끄고 직접 만든다.
+        self.auto_source = True
         monkeypatch.setenv("S3_BUCKET", "wiki")
         # 페이지 이동 판정은 임베딩 서버가 있어야 한다. 실제 서버·LLM을 부르지 않게 끈다.
         monkeypatch.delenv("EMBEDDING_SERVICE_URL", raising=False)
@@ -146,8 +148,33 @@ class World:
         with self.connect() as conn:
             return str(conn.execute("SELECT id FROM wiki_pages WHERE slug = %s", (slug,)).fetchone()["id"])
 
+    def add_source(self, document_id: str) -> None:
+        """편입이 만드는 소스 페이지와 `source_of` 문서 연결. lint는 이 연결로 살아 있는 원문을 가른다."""
+        with self.connect() as conn:
+            source = conn.execute(
+                """
+                INSERT INTO wiki_pages (
+                    id, page_type, title, slug, markdown_uri, user_id, workspace_id, status, created_at, updated_at
+                )
+                VALUES (%s, 'source', %s, %s, 'unused', 'user', %s, 'active', now(), now())
+                ON CONFLICT (workspace_id, page_type, slug) DO UPDATE SET status = 'active'
+                RETURNING id
+                """,
+                (f"source-{document_id}", document_id, document_id, WS),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO document_wiki_links (document_id, wiki_page_id, relation_type, workspace_id, created_at)
+                VALUES (%s, %s, 'source_of', %s, now()) ON CONFLICT DO NOTHING
+                """,
+                (document_id, source["id"], WS),
+            )
+            conn.execute("DELETE FROM wiki_source_tombstones WHERE document_id = %s", (document_id,))
+
     def ingest(self, operation_id: str, document_id: str, pages: dict[str, dict]) -> None:
         """편입 한 번. 기여 JSON을 쓰고 원장에 더한 뒤 기록 재생으로 현재 상태를 만든다."""
+        if self.auto_source:
+            self.add_source(document_id)
         page_ids = []
         for slug, data in pages.items():
             with self.connect() as conn:
@@ -186,6 +213,11 @@ class World:
             WS, changed, {"removed_links": [], "restored_links": [link for page in changed for link in page["supported_links"]]},
             True,
         )
+
+    def trash(self, document_id: str) -> None:
+        """document-svc처럼 그 문서 기여를 끄고 `document_deleted`를 처리한다. 문서 id가 없는 lint 기록은 켜 둔다."""
+        self._deactivate(lambda row: row["document_id"] == document_id)
+        database.delete_document_wiki_data(WS, document_id)
 
     def _keep(self, page_id: str, without: str | None = None) -> tuple[RestoreContributionCommand, ...]:
         return tuple(
@@ -282,10 +314,14 @@ class World:
         """활성 페이지·본문·링크·항목·문서 연결. 페이지는 slug로 적어 id가 달라도 비교한다."""
         with self.connect() as conn:
             pages = conn.execute(
-                "SELECT id, slug, title, summary, markdown_uri FROM wiki_pages WHERE status = 'active' ORDER BY slug"
+                "SELECT id, slug, title, summary, markdown_uri FROM wiki_pages WHERE status = 'active' "
+                + ("AND page_type = 'concept' " if self.auto_source else "") + "ORDER BY slug"
             ).fetchall()
             slug = {row["id"]: row["slug"] for row in conn.execute("SELECT id, slug FROM wiki_pages").fetchall()}
-            links = conn.execute("SELECT from_page_id, to_page_id, link_type FROM wiki_page_links").fetchall()
+            links = conn.execute(
+                "SELECT from_page_id, to_page_id, link_type FROM wiki_page_links"
+                + (" WHERE link_type <> 'source_mentions_concept'" if self.auto_source else "")
+            ).fetchall()
             entries = conn.execute("SELECT entry_id, page_id, name, parent_entry_id FROM wiki_page_entries").fetchall()
             references = conn.execute(
                 "SELECT page_id, entry_id, target_slug, name, parent_entry_id FROM wiki_page_entry_references"
@@ -897,3 +933,223 @@ def test_child_recreated_under_the_same_slug_after_merge_back_is_judged_by_recor
     world.restore_lint("lint-again")
 
     assert world.state() == before
+
+
+def _source_links(world: World, slug: str) -> list[str]:
+    with world.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source.slug FROM wiki_page_links link
+            JOIN wiki_pages source ON source.id = link.from_page_id
+            JOIN wiki_pages concept ON concept.id = link.to_page_id
+            WHERE link.link_type = 'source_mentions_concept' AND concept.slug = %s
+            """,
+            (slug,),
+        ).fetchall()
+    return sorted(str(row["slug"]) for row in rows)
+
+
+def _related(source: str, target: str) -> dict:
+    return {"source": f"concept:{source}", "target": f"concept:{target}", "relation": "concept_related_to"}
+
+
+def _page_status(world: World, slug: str) -> str:
+    with world.connect() as conn:
+        return str(conn.execute("SELECT status FROM wiki_pages WHERE slug = %s", (slug,)).fetchone()["status"])
+
+
+def _drop_source_link(world: World, slug: str) -> str:
+    page_id = world.page_id(slug)
+    with world.connect() as conn:
+        conn.execute("DELETE FROM wiki_page_links WHERE to_page_id = %s", (page_id,))
+    return page_id
+
+
+def test_lint_deletes_concept_whose_source_document_is_gone(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.ingest("op-b", "doc-b", {"beta": {"evidence": ["B1"], "links": [_related("beta", "alpha")]}})
+    world.mark_linted()
+    world.trash("doc-a")
+    assert "alpha" in world.state()["pages"]
+    alpha = world.page_id("alpha")
+    body_before = world.state()["pages"]["alpha"][2]
+
+    result = world.lint("lint-prune")
+
+    state = world.state()
+    assert "alpha" not in state["pages"]
+    assert _page_status(world, "alpha") == "deleted"
+    assert result["deleted_pages"] == [alpha]
+    assert {"action": "prune_unsourced", "page_id": alpha, "entry_id": None, "slug": "alpha"} in result["entry_decisions"]
+    assert world.contribution("alpha", "lint-prune")["content_action"] == "delete"
+    # 살아 있는 B → A 간선은 A와 함께 사라지고, 근거가 있는 B는 남는다.
+    assert state["links"] == []
+    assert "beta" in state["pages"]
+    assert "[[alpha" not in state["pages"]["beta"][2]
+    assert state["pages"]["beta"][2] == world.ledger_rebuild("beta").markdown
+    assert _related("beta", "alpha") in world.contribution("beta", "lint-prune")["removed_links"]
+    # 지우기 직전 본문은 lint 기록에 스냅샷으로 남는다.
+    assert world.read(f"wiki/{WS}/pages/{alpha}/ops/lint-prune.md") == body_before
+
+
+def test_lint_deletes_concept_and_its_outgoing_link_in_the_same_run(world: World) -> None:
+    # 고아 간선 판정이 먼저 A → C를 지우고, 같은 lint가 A를 지운다. 두 변경이 한 기록에 합쳐져야 한다.
+    world.ingest("op-c", "doc-c", {"gamma": {"evidence": ["C1"]}})
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"], "links": [_related("alpha", "gamma")]}})
+    world.mark_linted()
+    world.trash("doc-a")
+
+    result = world.lint("lint-prune")
+
+    state = world.state()
+    assert "alpha" not in state["pages"]
+    assert "gamma" in state["pages"]
+    assert state["links"] == []
+    assert result["deleted_pages"] == [world.page_id("alpha")]
+    record = world.contribution("alpha", "lint-prune")
+    assert record["content_action"] == "delete"
+    assert [link["target"] for link in record["removed_links"]] == ["concept:gamma"]
+
+
+def test_lint_drops_entry_references_to_deleted_concept(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"entry_changes": [_add("e-a", "A항목", refs=["A1"])]}})
+    world.ingest("op-b", "doc-b", {"beta": {"evidence": ["B1"], "links": [_reference("beta", "alpha", "e-a", "A항목")]}})
+    world.mark_linted()
+    world.trash("doc-a")
+
+    world.lint("lint-prune")
+
+    state = world.state()
+    assert "alpha" not in state["pages"]
+    assert state["references"] == []
+    assert state["links"] == []
+    assert "[[alpha" not in state["pages"]["beta"][2]
+
+
+def test_lint_keeps_concept_that_another_live_document_supports(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.ingest("op-b", "doc-b", {"alpha": {"evidence": ["B1"]}})
+    world.mark_linted()
+    world.trash("doc-a")
+
+    result = world.lint("lint-keep")
+
+    assert "alpha" in world.state()["pages"]
+    assert result["deleted_pages"] == []
+    assert _source_links(world, "alpha") == ["doc-b"]
+
+
+def test_lint_deletes_promoted_concept_whose_lint_evidence_lost_its_document(world: World) -> None:
+    """클러스터 승격 lint 기록은 문서 id가 없어 문서를 지워도 꺼지지 않는다. 재생만으로는 근거가 살아 있어 보인다."""
+    world.ingest("op-c", "doc-c", {"seed": {"evidence": ["C1"]}})
+    with world.connect() as conn:
+        page_id = database._resolve_or_create_wiki_page_id(conn, "user", WS, "concept", "promoted")
+    change = {"page_id": page_id, "slug": "promoted", "title": "Promoted", "definition": "승격 개념",
+              "content_action": "create", "claims": [{"id": "claim-1", "claim": "근거", "refs": ["doc-c:C1"]}]}
+    world.write(f"wiki/{WS}/pages/{page_id}/ops/lint-promote.json",
+                json.dumps(database.lint_contribution("lint-promote", change), ensure_ascii=False))
+    world._record(page_id, "lint-promote", None)
+    changed = [world._rebuild("sync-promote", page_id)]
+    database.apply_restored_wiki_state(WS, changed, {"removed_links": [], "restored_links": []}, True)
+    assert _source_links(world, "promoted") == ["doc-c"]
+    world.mark_linted()
+    world.trash("doc-c")
+
+    result = world.lint("lint-prune")
+
+    assert "promoted" not in world.state()["pages"]
+    assert world.page_id("promoted") in result["deleted_pages"]
+
+
+def test_lint_reconnects_live_source_when_concept_lost_its_source_link(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = _drop_source_link(world, "alpha")
+    with world.connect() as conn:
+        conn.execute("DELETE FROM document_wiki_links WHERE wiki_page_id = %s", (alpha,))
+    before = world.state()["pages"]
+
+    result = world.lint("lint-relink")
+
+    assert result["source_link_repairs"] == [{"page_id": alpha, "slug": "alpha", "document_ids": ["doc-a"]}]
+    assert result["deleted_pages"] == []
+    assert _source_links(world, "alpha") == ["doc-a"]
+    state = world.state()
+    assert state["pages"] == before
+    assert state["documents"] == [("doc-a", "alpha")]
+
+
+def test_lint_deletes_page_without_any_contribution(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = _drop_source_link(world, "alpha")
+    world.ledger = [row for row in world.ledger if row["page_id"] != alpha]
+
+    result = world.lint("lint-empty")
+
+    assert "alpha" not in world.state()["pages"]
+    assert result["deleted_pages"] == [alpha]
+
+
+def test_lint_waits_for_ledger_rows_of_the_previous_lint(world: World) -> None:
+    """지난 lint 결과를 document-svc가 아직 반영하지 않은 페이지는 근거를 알 수 없어 지우지 않는다."""
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    alpha = _drop_source_link(world, "alpha")
+    world.ledger = [row for row in world.ledger if row["page_id"] != alpha]
+    world._run("lint", {
+        "operation_id": "lint-previous",
+        "ledger_contributions": [{"page_id": alpha, "operation_id": "lint-previous"}],
+    })
+
+    result = world.lint("lint-next")
+
+    assert "alpha" in world.state()["pages"]
+    assert result["deleted_pages"] == []
+
+
+def test_lint_keeps_page_whose_contribution_is_broken(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    alpha = _drop_source_link(world, "alpha")
+    world.write(f"wiki/{WS}/pages/{alpha}/ops/op-a.json", "{깨진 기록")
+
+    result = world.lint("lint-broken")
+
+    assert "alpha" in world.state()["pages"]
+    assert result["deleted_pages"] == []
+
+
+def test_dry_run_reports_prune_and_repair_without_writing(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.ingest("op-b", "doc-b", {"beta": {"evidence": ["B1"]}})
+    world.mark_linted()
+    beta = _drop_source_link(world, "beta")
+    world.trash("doc-a")
+    before = world.state()
+
+    result = database.lint_concept_entries("user", WS, None, apply=False)
+
+    assert result["deleted_pages"] == [world.page_id("alpha")]
+    assert result["source_link_repairs"] == [{"page_id": beta, "slug": "beta", "document_ids": ["doc-b"]}]
+    assert world.state() == before
+    assert _source_links(world, "beta") == []
+    assert _page_status(world, "alpha") == "active"
+
+
+def test_restoring_prune_lint_does_not_revive_deleted_document_but_reingest_does(world: World) -> None:
+    world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
+    world.mark_linted()
+    world.trash("doc-a")
+    world.lint("lint-prune")
+
+    # 원문이 삭제된 상태면 lint를 되돌려도 근거가 없으니 페이지는 돌아오지 않는다.
+    result = world.restore_lint("lint-prune")
+    assert world.page_id("alpha") in result["deleted_pages"]
+    assert "alpha" not in world.state()["pages"]
+
+    world.ingest("op-a2", "doc-a", {"alpha": {"evidence": ["A2"]}})
+
+    state = world.state()
+    assert "alpha" in state["pages"]
+    assert "A2" in state["pages"]["alpha"][2]
+    assert _source_links(world, "alpha") == ["doc-a"]

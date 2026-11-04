@@ -66,6 +66,7 @@ class PlacementJudge:
 
 
 def _lint(world: World, monkeypatch, operation_id: str, active: str, judge: PlacementJudge | None = None) -> dict:
+    world.add_source("doc-c")
     world.write(f"wiki/{WS}/clusters/active.md", "# Active Meaning Clusters\n\n" + active)
     monkeypatch.setattr(wiki_maintenance, "jev_concept_judge", lambda: judge)
     monkeypatch.setattr(wiki_maintenance, "embedding_server_model", lambda: judge.model if judge else None)

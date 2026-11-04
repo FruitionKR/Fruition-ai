@@ -48,6 +48,7 @@ from app.modules.wiki_ingestion.infrastructure.lint_operation_artifacts import (
     persist_lint_operation_artifacts,
 )
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    ConceptContributionError,
     load_concept_contributions,
     rebuild_concept_page,
 )
@@ -65,6 +66,7 @@ from app.modules.wiki_ingestion.domain.concept_entry_lint import (
     choose_page_moves,
     move_page_under,
     plan_entry_lint,
+    prune_unsourced_pages,
     retarget_split_relations,
     movable,
 )
@@ -2150,6 +2152,108 @@ def lint_orphan_wiki_links(
     }
 
 
+def _scan_concept_sources(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    previous_ledger: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """개념 페이지를 원문 출처로 가른다. 결과는 (지울 페이지, 원문과 다시 이을 페이지)다.
+
+    출처는 재생 결과의 문서 중 소스 페이지가 살아 있고 삭제 표시가 없는 문서다. 문서 id가 없는 lint 기록은 문서를 지워도
+    꺼지지 않으므로 재생 결과만으로 판단하지 않는다. 소스 → 개념 링크가 있고 꺼진 기여도 없는 페이지는 재생하지 않는다.
+    """
+    rows = conn.execute(
+        """
+        SELECT page.id, page.slug, page.title, page.summary, page.markdown_uri,
+               EXISTS (
+                   SELECT 1 FROM wiki_page_links link
+                   JOIN wiki_pages source ON source.id = link.from_page_id
+                   WHERE link.to_page_id = page.id
+                     AND link.link_type = 'source_mentions_concept'
+                     AND source.status = 'active'
+               ) AS has_source_link
+        FROM wiki_pages page
+        WHERE page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
+        ORDER BY page.id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    page_ids = [str(row["id"]) for row in rows]
+    ledger: dict[str, list[dict[str, Any]]] = {}
+    for item in with_pending_contributions(conn, read_contributions(page_ids, workspace_id), page_ids):
+        ledger.setdefault(str(item.get("page_id")), []).append(item)
+    # 지난 lint 결과가 원장에 아직 오르지 않은 페이지는 근거를 다 알 수 없다. 다음 lint가 본다.
+    unapplied = {
+        str(item["page_id"]) for item in previous_ledger
+        if str(item["operation_id"]) not in {
+            str(row.get("ingest_operation_id")) for row in ledger.get(str(item["page_id"]), [])
+        }
+    }
+    live_documents = {
+        str(row["document_id"])
+        for row in conn.execute(
+            """
+            SELECT link.document_id FROM document_wiki_links link
+            JOIN wiki_pages source ON source.id = link.wiki_page_id
+            WHERE link.workspace_id = %s AND link.relation_type = 'source_of' AND source.status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1 FROM wiki_source_tombstones tombstone
+                  WHERE tombstone.workspace_id = link.workspace_id AND tombstone.document_id = link.document_id
+              )
+            """,
+            (workspace_id,),
+        ).fetchall()
+    }
+    unsourced: dict[str, dict[str, Any]] = {}
+    relink: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        page_id = str(row["id"])
+        contributions = ledger.get(page_id, [])
+        if page_id in unapplied or (row["has_source_link"] and all(item.get("active") for item in contributions)):
+            continue
+        kept = sorted(
+            (item for item in contributions if item.get("active")),
+            key=lambda item: int(item.get("sequence_revision") or 0),
+        )
+        rebuilt = None
+        if kept:
+            try:
+                rebuilt = rebuild_concept_page(load_concept_contributions(
+                    workspace_id=workspace_id,
+                    page_id=page_id,
+                    keep_contributions=[
+                        {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]}
+                        for item in kept
+                    ],
+                    read_text=read_text_object,
+                ))
+            except ConceptContributionError:
+                # 깨진 기록은 근거 없음이 아니다. 지우지 않고 남긴다.
+                logger.warning("[lint 출처 판정 생략] 기록을 재생할 수 없음 page_id=%s", page_id, exc_info=True)
+                continue
+        documents = sorted(live_documents.intersection(rebuilt.source_document_ids)) if rebuilt else []
+        if not documents:
+            links = rebuilt.supported_links if rebuilt else ()
+            unsourced[page_id] = {**row, "page": EntryPage(page_id, str(row["slug"]), str(row["title"]), (), (), links)}
+        elif not row["has_source_link"]:
+            relink[page_id] = {"page_id": page_id, "slug": str(row["slug"]), "document_ids": documents}
+    return unsourced, relink
+
+
+def _relink_concept_sources(conn: psycopg.Connection, workspace_id: str, repairs: list[dict[str, Any]]) -> None:
+    for repair in repairs:
+        for document_id in repair["document_ids"]:
+            conn.execute(
+                """
+                INSERT INTO document_wiki_links (document_id, wiki_page_id, relation_type, confidence, workspace_id, created_at)
+                VALUES (%s, %s, 'extracted_concept', NULL, %s, now())
+                ON CONFLICT (document_id, relation_type, wiki_page_id) DO NOTHING
+                """,
+                (document_id, repair["page_id"], workspace_id),
+            )
+    sync_source_concept_links(conn, workspace_id, concept_page_ids=[repair["page_id"] for repair in repairs])
+
+
 def lint_concept_entries(
     user_id: str,
     workspace_id: str,
@@ -2170,11 +2274,15 @@ def lint_concept_entries(
     바뀐 페이지는 작업 기록에서 정한다. 지난 lint(`pipeline_runs`의 성공한 lint) 시작 뒤 갱신된 개념 페이지와
     지난 lint가 미룬 페이지(`deferred_entry_pages`)다. 복구 작업이 바꾼 페이지도 갱신 시각으로 다음 lint가 본다.
     skip이면 판정 없이 바뀐 페이지를 모두 다음 lint로 미룬다(같은 lint의 승격이 페이지를 바꿨을 때).
+
+    바뀐 페이지와 상관없이 활성 개념 페이지 전체의 원문 출처도 본다. 출처가 없는 페이지는 지우고, 출처가 있는데 소스 → 개념
+    링크가 없는 페이지는 그 원문과 다시 잇는다. 문서 삭제는 개념 페이지를 건드리지 않아 갱신 시각으로는 찾을 수 없다.
     """
     with _connection_scope(connection) as conn:
         last = conn.execute(
             """
-            SELECT created_at, manifest->'task_result'->'deferred_entry_pages' AS deferred
+            SELECT created_at, manifest->'task_result'->'deferred_entry_pages' AS deferred,
+                   manifest->'task_result'->'ledger_contributions' AS ledger_contributions
             FROM pipeline_runs
             WHERE workspace_id = %s
               AND mode = 'lint'
@@ -2198,9 +2306,17 @@ def lint_concept_entries(
             """,
             (workspace_id, since, since, deferred),
         ).fetchall()
-        result: dict[str, Any] = {"entry_decisions": [], "deferred_entry_pages": [], "deleted_pages": []}
-        if skip or not changed_rows:
+        result: dict[str, Any] = {
+            "entry_decisions": [], "deferred_entry_pages": [], "deleted_pages": [], "source_link_repairs": [],
+        }
+        if skip:
             result["deferred_entry_pages"] = sorted(str(row["id"]) for row in changed_rows)
+            return result
+        unsourced, relink = _scan_concept_sources(conn, workspace_id, (last or {}).get("ledger_contributions") or [])
+        result["source_link_repairs"] = list(relink.values())
+        if apply and relink:
+            _relink_concept_sources(conn, workspace_id, result["source_link_repairs"])
+        if not changed_rows and not unsourced:
             return result
         # 지운 페이지 slug도 쓰지 않는다. 그 page_id를 다시 쓰면 옛 lint를 복원할 기록(ops/{작업}.json)을 덮어쓴다.
         taken_slugs = {
@@ -2221,6 +2337,8 @@ def lint_concept_entries(
             ledger = with_pending_contributions(conn, read_contributions(page_ids, workspace_id), page_ids)
             for row in rows:
                 page_id = str(row["id"])
+                if page_id in unsourced:
+                    continue
                 if history:
                     for item in ledger:
                         if str(item.get("page_id")) != page_id or item.get("active"):
@@ -2281,8 +2399,8 @@ def lint_concept_entries(
         # 바뀐 페이지 기여가 가리키지만 살아 있지 않은 집 페이지. 그 참조는 사라진 참조다.
         deleted_refs = frozenset(
             f"concept:{slug}" for slug in missing_targets - {page.slug for page in pages.values()}
-        )
-        if not changed:
+        ) | {item["page"].ref for item in unsourced.values()}
+        if not changed and not unsourced:
             return result
         # 판정은 바뀐 페이지만 하지만, 참조로 이어진 이웃도 읽어야 승격·참조 정리를 할 수 있다.
         neighbor_rows = conn.execute(
@@ -2302,7 +2420,7 @@ def lint_concept_entries(
                     )
               )
             """,
-            (workspace_id, list(pages), list(changed), list(changed)),
+            (workspace_id, list(pages), [*changed, *unsourced], [*changed, *unsourced]),
         ).fetchall()
         if neighbor_rows:
             load(neighbor_rows)
@@ -2341,6 +2459,7 @@ def lint_concept_entries(
             return _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug), slug
 
         plan = plan_entry_lint(pages, changed, new_page, deleted_refs)
+        prune_unsourced_pages(plan, [item["page"] for item in unsourced.values()])
         homes = sorted({
             str(change["split_from"]["page_id"])
             for change in plan.page_changes.values()
@@ -2401,7 +2520,9 @@ def lint_concept_entries(
                 (deleted, workspace_id, deleted),
             ).fetchall()
             load([row for row in rows if str(row["id"]) not in pages])
-            child_refs = {pages[page_id].ref for page_id in deleted}
+            child_refs = {
+                unsourced[page_id]["page"].ref if page_id in unsourced else pages[page_id].ref for page_id in deleted
+            }
             for row in rows:
                 page = pages.get(str(row["id"]))
                 for link in page.links if page else ():
@@ -2425,6 +2546,13 @@ def lint_concept_entries(
     link_changes: dict[str, list[dict[str, Any]]] = {"removed_links": [], "restored_links": []}
     for page_id, change in plan.page_changes.items():
         page = pages.get(page_id)
+        if page_id in unsourced:
+            # 재생으로 다시 그릴 근거가 없다. 지우기 직전 본문을 그대로 기록에 남긴다.
+            change.setdefault("definition", str(unsourced[page_id].get("summary") or ""))
+            page_changes.append({
+                **change, "markdown": read_text_object(str(unsourced[page_id]["markdown_uri"])), "claims": [],
+            })
+            continue
         change.setdefault("definition", summaries.get(page_id, ""))
         own = lint_contribution(str(operation_id), change)
         before = loaded.get(page_id, [])
