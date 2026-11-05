@@ -102,7 +102,8 @@ _SAVE_INTO_DOCUMENT = re.compile(
     rf"{_POINTS_AT_OPEN_DOCUMENT}(?:\s*(?:맨\s*)?(?:앞|끝|뒤|위|아래|밑))?에\s+"
     r"(?:(?!대해|대하여|관해|관하여|따라|맞춰|맞게|새|별도|별개|따로|다른|신규)\S*[^\s는은던한된둔본준쓴힌온긴간에]\s+){0,3}저장"
 )
-# 열린 문서를 가리키는 말이다. "이 문서"는 첨부를 가리킬 때가 많아 세지 않는다.
+# 열린 문서만 가리킬 수 있는 말이다. "이 문서"는 문서가 열려 있으면 그 문서지만(_OPEN_DOCUMENT_NAMED),
+# 열린 문서 정보가 없는 턴에는 유일한 첨부나 보기 권한으로 연 문서를 가리키므로 여기서 세지 않는다.
 _NAMES_OPEN_DOCUMENT = re.compile(
     r"(?:열린|열려\s*있는|열어\s*둔|현재|지금)\s*(?:문서|노트)|\b(?:open|opened|current)\s+(?:document|doc|note)\b",
     re.IGNORECASE,
@@ -121,10 +122,10 @@ _SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
 _SELECTS_DOCUMENT_BY_NUMBER = re.compile(r"\d+\s*번(?!째)")
 
 
-# 열린 문서를 첨부와 나란히 고치라는 말에서 열린 문서를 가리키는 표현이다. "이 문서들"은 고른 문서 전체고, "이 문서 3개"는 수를 세는 말이라 뺀다.
+# 문서가 열려 있을 때 그 문서를 가리키는 표현이다. "이 문서들"은 고른 문서 전체고, "이 문서 3개", "이 문서 둘 다"는 수를 세는 말이라 뺀다.
 _OPEN_DOCUMENT_PHRASE = (
-    r"(?:(?:(?:(?<![가-힣])이|현재|지금|열린|열려\s*있는|열어\s*둔)\s*(?:문서|노트)(?!들|\s*(?:\d|[두세네]\s*개)))"
-    r"|\b(?:open|opened|current)\s+(?:document|doc|note)\b)"
+    r"(?:(?:(?:(?<![가-힣])이|현재|지금|열린|열려\s*있는|열어\s*둔)\s*(?:문서|노트)(?!들|\s*(?:\d|[두세네]\s*개|[둘셋넷]\s*(?:다(?![가-힣])|모두|전부))))"
+    r"|\b(?:this|open|opened|current)\s+(?:document|doc|note)\b)"
 )
 _OPEN_DOCUMENT_NAMED = re.compile(_OPEN_DOCUMENT_PHRASE, re.IGNORECASE)
 _OPEN_DOCUMENT_WITH_ATTACHMENT = re.compile(
@@ -294,14 +295,37 @@ def points_at_one_document(message: str) -> bool:
 def selects_attachment(message: str) -> bool:
     """첨부를 말하거나 순번·전체로 고르면 True다.
 
-    열린 문서를 지목한 문장에서 순번·전체 표현은 그 문서 안의 항목을 세고("열린 문서의 오타를 모두 고쳐 줘"),
-    근거로만 말한 첨부는 고칠 대상이 아니다("첨부 내용대로 열린 문서를 고쳐 줘").
+    문서가 열려 있는 턴에서 부른다. 열린 문서를 지목한 문장에서 순번·전체 표현은 그 문서 안의 항목을 세고("이 문서의 오타를 모두 고쳐 줘"),
+    근거로만 말한 첨부는 고칠 대상이 아니다("첨부 내용대로 이 문서를 고쳐 줘").
     """
     if _SELECTS_DOCUMENT_BY_ORDER.search(message):
         return True
-    if names_open_document(message):
+    if _OPEN_DOCUMENT_NAMED.search(message):
         return names_attachment(_ATTACHMENT_AS_SOURCE.sub(" ", message))
     return names_attachment(message) or _SELECTS_ATTACHMENTS.search(message) is not None
+
+
+def points_at_open_document(message: str) -> bool:
+    """문서가 열려 있을 때 그 문서를 가리키는 말이 있으면 True다. "이 문서", "현재 문서" """
+    return _OPEN_DOCUMENT_NAMED.search(message) is not None
+
+
+def answer_includes_open_document(message: str) -> bool:
+    """문서를 연 첨부 턴의 답변이 열린 문서를 근거로 실어야 하면 True다. "첨부한 이 문서", "이 문서 말고 첨부 문서"는 첨부를 지목한 말이다."""
+    return names_open_document(message) or (
+        points_at_open_document(message)
+        and (not selects_attachment(message) or _OPEN_DOCUMENT_WITH_ATTACHMENT.search(message) is not None)
+    )
+
+
+def uses_only_open_document(message: str, attachment_titles: tuple[str, ...]) -> bool:
+    """열린 문서만 말하고 첨부는 제목·순번·근거로도 말하지 않았으면 True다."""
+    return (
+        points_at_open_document(message)
+        and not names_attachment(message)
+        and not selects_attachment(message)
+        and not any(title and title in message for title in attachment_titles)
+    )
 
 
 def _stated_document_count(message: str) -> int | None:

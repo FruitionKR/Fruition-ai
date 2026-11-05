@@ -3,6 +3,17 @@ import json
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, TraversalPath
 
 
+OPEN_DOCUMENT_POLICY = [
+    "# Open Document Policy",
+    "- Evidence whose source is the document open in the editor is the document the user is looking at. "
+    "`이 문서`, `현재 문서`, `열린 문서`, and `this document` in the question mean that document unless the question names an attached document.",
+    "- Answer a request about that document, including a summary, only from its evidence. "
+    "Use other evidence only for a part the question explicitly asks about or that the document cannot answer.",
+    "- Never present the content of an attached document as content of the open document.",
+    "",
+]
+
+
 class AnswerContextFormatter:
     def __init__(
         self,
@@ -39,6 +50,8 @@ class AnswerContextFormatter:
             )
         lines.extend(self._output_policy(answer_mode))
         lines.extend(self._answer_mode_policy(answer_mode))
+        if any(snippet.reference_is_open_document for snippet in evidence_snippets):
+            lines.extend(OPEN_DOCUMENT_POLICY)
         lines.extend([
             "# Related Pages By Relevance",
         ])
@@ -58,7 +71,11 @@ class AnswerContextFormatter:
         for snippet in evidence_snippets:
             lines.append(f"## Evidence {snippet.rank}")
             if snippet.reference_chunk is not None:
-                lines.append("- source: document attached by the user")
+                lines.append(
+                    "- source: the document open in the editor"
+                    if snippet.reference_is_open_document
+                    else "- source: document attached by the user"
+                )
             if snippet.reference_title:
                 lines.append(f"- document_title: {json.dumps(snippet.reference_title, ensure_ascii=False)}")
             if snippet.entry_path:

@@ -7,6 +7,7 @@ from app.modules.agent.domain.attached_edit_request import (
     lacks_save_or_change_request,
     saves_result_as_new_document,
     saves_result_into_document,
+    uses_only_open_document,
 )
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 
@@ -37,6 +38,18 @@ def saves_open_document_result_into_it(request: AgentTurnRequest) -> bool:
         _only_open_document(request)
         and lacks_attachment_change_request(request.message, None)
         and saves_result_into_document(request.message)
+    )
+
+
+def creates_result_only_from_open_document(request: AgentTurnRequest) -> bool:
+    """문서를 연 첨부 턴에 "이 문서"의 요약·번역을 새 문서로 만드는 요청이다. 첨부를 함께 주면 다른 문서의 내용이 섞인다."""
+    context = request.active_markdown_context
+    return (
+        bool(request.reference_document_ids)
+        and context is not None
+        and bool(context.markdown.strip())
+        and uses_only_open_document(request.message, request.reference_document_titles)
+        and lacks_attachment_change_request(request.message, None)
     )
 
 

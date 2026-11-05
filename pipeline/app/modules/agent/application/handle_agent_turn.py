@@ -34,11 +34,11 @@ from app.modules.agent.domain.attached_document_edits import (
     exclusion_notice,
 )
 from app.modules.agent.domain.attached_edit_request import (
+    answer_includes_open_document,
     attached_edit_instruction,
-    names_attachment,
-    names_open_document,
     answer_to_translation_language_question,
     needs_translation_language,
+    uses_only_open_document,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.domain.folder_lookup import (
@@ -57,6 +57,7 @@ from app.modules.agent.domain.read_only_attachments import route_without_read_on
 from app.modules.agent.domain.reference_documents import (
     ReferenceDocumentUnavailableError,
     MAX_REFERENCE_ANSWER_CHARS,
+    MAX_REFERENCE_EVIDENCE_CHARS,
     SelectedReferenceDocuments,
     clean_reference_title,
     clip_reference_document,
@@ -66,6 +67,7 @@ from app.modules.agent.domain.reference_documents import (
     reference_evidence_snippets,
 )
 from app.modules.agent.domain.task_mode import (
+    creates_result_only_from_open_document,
     is_task_mode,
     saves_open_document_result_as_new,
     summarizes_open_document,
@@ -948,7 +950,7 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         # 첨부를 읽지 못하면 답변 갈래가 아니라 되묻기로 끝나므로 분류를 기록하기 전에 읽는다.
         try:
-            references = self._answer_references(request)
+            references = self._answer_references(request, keeps_attachments=True)
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         # Record the actual branch before retrieval/generation can fail or be interrupted.
@@ -1185,11 +1187,12 @@ class HandleAgentTurnUseCase:
         폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError,
         첨부를 읽을 수 없으면 ReferenceDocumentUnavailableError를 낸다.
         """
+        only_open_document = selected_skill is None and not bare and creates_result_only_from_open_document(request)
         if selected_skill is None and not bare and (
-            saves_open_document_result_as_new(request) or summarizes_open_document(request)
+            saves_open_document_result_as_new(request) or summarizes_open_document(request) or only_open_document
         ):
             _require_translation_language(request)
-        references = self._read_reference_documents(request)
+        references = SelectedReferenceDocuments() if only_open_document else self._read_reference_documents(request)
         reference_context = _with_reference_documents(
             {} if bare else self._resolve_reference_context(request, route), references
         )
@@ -1213,7 +1216,7 @@ class HandleAgentTurnUseCase:
                 for document in sources.documents
             ]
             notice = folder_source_notice(sources)
-        elif selected_skill is None and not bare and saves_open_document_result_as_new(request):
+        elif selected_skill is None and not bare and (saves_open_document_result_as_new(request) or only_open_document):
             # "요약해서 저장해 줘"는 문서를 말하지 않아 active_document면 생성 모델이 무시할 수 있다. 근거 없는 문서가 저장되지 않게 원문으로 싣는다.
             assert request.active_markdown_context is not None
             markdown = _selection_text(request.active_markdown_context) or request.active_markdown_context.markdown
@@ -1343,8 +1346,10 @@ class HandleAgentTurnUseCase:
             raise ReferenceDocumentUnavailableError(REFERENCE_ALL_TOO_LONG_MESSAGE)
         return SelectedReferenceDocuments(documents=tuple(documents), too_long_count=too_long_count)
 
-    def _answer_references(self, request: AgentTurnRequest) -> SelectedReferenceDocuments:
-        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다.
+    def _answer_references(self, request: AgentTurnRequest, *, keeps_attachments: bool = False) -> SelectedReferenceDocuments:
+        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 맨 앞에 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다.
+
+        keeps_attachments: 근거를 구분해 인용하는 질의 답변은 첨부도 뒤에 남긴다. 대화 답변은 받은 글 전체를 옮기므로 첨부를 말했을 때만 싣는다.
 
         첨부 없이 열린 문서의 요약·번역만 시켰으면 열린 문서를 싣는다. 선택 범위가 있으면 편집이 고치던 범위와 같게 그 범위만 싣는다.
         """
@@ -1356,14 +1361,23 @@ class HandleAgentTurnUseCase:
                 documents=(_opened_reference(request, _selection_text(context) or context.markdown),),
                 open_document_id=request.document_id or "",
             )
-        if not (request.reference_document_ids and _has_active_markdown(request) and names_open_document(request.message)):
+        if not (request.reference_document_ids and _has_active_markdown(request) and answer_includes_open_document(request.message)):
             return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         assert request.active_markdown_context is not None
         opened = _opened_reference(request, request.active_markdown_context.markdown)
-        if not names_attachment(request.message):
-            return SelectedReferenceDocuments(documents=(opened,), open_document_id=opened.id)
+        if uses_only_open_document(request.message, request.reference_document_titles):
+            _require_translation_language(request)
+            if not keeps_attachments:
+                return SelectedReferenceDocuments(documents=(opened,), open_document_id=opened.id)
+        attachment_ids = tuple(
+            document_id for document_id in dict.fromkeys(request.reference_document_ids) if document_id != request.document_id
+        )
+        # 열린 문서가 합계를 다 써도 첨부마다 한 조각은 싣는다. 잘리면 첨부가 잘렸다는 안내가 붙는다.
         attached = self._read_reference_documents(
-            request, max_total_chars=max(MAX_REFERENCE_ANSWER_CHARS - len(opened.markdown), 1)
+            replace(request, reference_document_ids=attachment_ids),
+            max_total_chars=max(
+                MAX_REFERENCE_ANSWER_CHARS - len(opened.markdown), MAX_REFERENCE_EVIDENCE_CHARS * len(attachment_ids)
+            ),
         )
         return replace(attached, documents=(opened, *attached.documents), open_document_id=opened.id)
 

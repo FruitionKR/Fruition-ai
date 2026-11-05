@@ -173,6 +173,8 @@ class EvidenceSnippet:
     reference_chunk: int | None = None
     # 첨부 문서의 제목(신뢰하지 않는 데이터, 정리된 한 줄). 구 document-svc는 주지 않는다.
     reference_title: str | None = None
+    # 첨부가 아니라 편집기에 열린 문서에서 온 근거다. 답변 모델이 "이 문서"가 어느 근거인지 구분한다.
+    reference_is_open_document: bool = False
 
 
 @dataclass(frozen=True)
