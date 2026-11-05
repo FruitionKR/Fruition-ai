@@ -395,6 +395,29 @@ def test_task_rollback_after_purge_does_not_restore_body(stack) -> None:
         assert conn.execute("SELECT status FROM ai_task_runs WHERE id = 'ingest-1'").fetchone()["status"] == "cancelled"
 
 
+def test_evidence_citing_the_document_only_in_source_refs_is_blanked_and_other_evidence_stays(stack) -> None:
+    runs, _, connect, _ = stack
+    snippets = [
+        # 여러 문서를 걸친 근거는 대표 id가 다른 문서이거나 비어 있다. 문서별로 나눌 수 없어 함께 비운다.
+        {"source_document_id": "doc-2", "source_refs": [{"source_document_id": "doc-2"}, {"source_document_id": "doc-1"}],
+         "text": BODY, "rank": 1},
+        {"source_document_id": None, "source_refs": [{"source_document_id": "doc-1"}, {"source_document_id": "doc-3"}],
+         "text": BODY, "rank": 2},
+        {"source_document_id": "doc-2", "source_refs": [{"source_document_id": "doc-2"}, {"source_document_id": "doc-3"}],
+         "text": "다른 근거", "rank": 3},
+        {"source_document_id": "doc-1-copy", "source_refs": [{"source_document_id": "doc-1-copy"}], "text": "비슷한 id", "rank": 4},
+    ]
+    _task_run(connect, "query-1", "query", {"run_id": "query-1"}, {"answer": "답변", "evidence_snippets": snippets})
+
+    _purge()
+
+    with connect() as conn:
+        query = conn.execute("SELECT result FROM ai_task_runs WHERE id = 'query-1'").fetchone()["result"]
+    assert query["answer"] == "답변" and BODY not in str(query)
+    assert [item["text"] for item in query["evidence_snippets"]] == ["", "", "다른 근거", "비슷한 id"]
+    assert query["evidence_snippets"][0]["source_refs"] == snippets[0]["source_refs"]
+
+
 def test_query_evidence_text_is_removed_but_answer_and_other_documents_stay(stack) -> None:
     runs, _, connect, _ = stack
     snippets = [{"source_document_id": "doc-1", "text": BODY, "rank": 1},

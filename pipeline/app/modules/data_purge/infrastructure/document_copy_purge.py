@@ -554,16 +554,26 @@ def _blank_row(conn: Any, target: tuple[str, str, str], row_key: Any, stored: st
 
 
 def _blank_source_text(value: Any, document_id: str) -> Any:
-    """source_document_id가 이 문서인 근거의 본문만 비운다. 답변과 다른 문서의 근거는 그대로다."""
+    """이 문서를 가리키는 근거의 본문만 비운다. 답변과 다른 문서의 근거는 그대로다.
+
+    여러 문서를 걸친 근거는 대표 id가 다른 문서이거나 비어 있어 source_refs도 본다. 본문을 문서별로 나눌 수 없어 함께 비운다.
+    """
     if isinstance(value, list):
         return [_blank_source_text(item, document_id) for item in value]
     if not isinstance(value, dict):
         return value
-    own = value.get("source_document_id") == document_id
+    own = value.get("source_document_id") == document_id or _refs_document(value.get("source_refs"), document_id)
     return {
         key: _EVIDENCE_TEXT_KEYS[key] if own and key in _EVIDENCE_TEXT_KEYS else _blank_source_text(item, document_id)
         for key, item in value.items()
     }
+
+
+def _refs_document(source_refs: Any, document_id: str) -> bool:
+    return isinstance(source_refs, list) and any(
+        ref == document_id or (isinstance(ref, dict) and ref.get("source_document_id") == document_id)
+        for ref in source_refs
+    )
 
 
 def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
