@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
+from app.core.pipeline_control import request_deadline
 from app.core import jev_client
 from app.core.jev_client import (
     JEV_MODEL,
@@ -182,6 +183,15 @@ class JevClientTest(unittest.TestCase):
             client.choose(STATE, QUESTIONS)
         self.assertEqual(len(requests), 1)
         jev_client.time.sleep.assert_not_called()
+
+    def test_interactive_timeout_follows_a_nearer_request_deadline(self) -> None:
+        requests: list[httpx.Request] = []
+        client = _client(httpx.ReadTimeout("slow"), requests=requests, deadline_seconds=15.0)
+
+        with request_deadline(2.0), self.assertRaises(JevUnavailable):
+            client.choose(STATE, QUESTIONS)
+
+        self.assertLessEqual(requests[0].extensions["timeout"]["read"], 2.0)
 
     def test_interactive_client_gives_up_when_retry_wait_exceeds_budget(self) -> None:
         requests: list[httpx.Request] = []

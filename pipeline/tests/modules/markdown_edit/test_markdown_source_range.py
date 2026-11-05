@@ -138,7 +138,7 @@ class MarkdownSourceRangeTest(unittest.TestCase):
             markdown="회귀 테스트가 중요하다.",
             target=TARGET,
             edit_goal="style_change",
-            detail=MarkdownEditDetail(requested_formats=("bold",)),
+            detail=MarkdownEditDetail(requested_formats=("inline_style",)),
         )
 
         self.assertIsNone(build_source_range_plan(request))

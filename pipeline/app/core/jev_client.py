@@ -20,7 +20,7 @@ import httpx
 
 from app.core.llm_env import first_env, float_env
 from app.core.llm_prompt import LLM_SECURITY_BOUNDARY, redact_numeric_personal_data
-from app.core.pipeline_control import ensure_task_active
+from app.core.pipeline_control import ensure_task_active, remaining_seconds
 from app.modules.model_usage.infrastructure.usage_ledger import track_call
 
 JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
@@ -32,6 +32,7 @@ JEV_EVIDENCE_ENABLED_ENV = "JEV_EVIDENCE_ENABLED"
 JEV_CONCEPT_MERGE_ENABLED_ENV = "JEV_CONCEPT_MERGE_ENABLED"
 JEV_SKILL_INTENT_ENABLED_ENV = "JEV_SKILL_INTENT_ENABLED"
 JEV_FOLDER_LOOKUP_ENABLED_ENV = "JEV_FOLDER_LOOKUP_ENABLED"
+JEV_EDIT_DETAIL_ENABLED_ENV = "JEV_EDIT_DETAIL_ENABLED"
 _RETRY_STATUSES = {429, 502, 503, 504, 529}
 # 크레딧 소진(402)·키 오류(401/403)는 재시도해도 풀리지 않으므로 일정 시간 Jev 호출을 건너뛴다.
 _BLOCKING_STATUSES = {401, 402, 403}
@@ -156,6 +157,10 @@ class JevClient:
         if self._deadline_seconds is None:
             return None
         remaining = self._deadline_seconds - (time.monotonic() - started)
+        # 요청 마감이 더 가까우면 그 안에 끝내, 대체 경로가 쓸 시간을 남긴다.
+        request_remaining = remaining_seconds()
+        if request_remaining is not None:
+            remaining = min(remaining, request_remaining)
         if remaining <= 0:
             raise JevUnavailable("Jev 응답 예산을 넘었습니다.")
         return remaining

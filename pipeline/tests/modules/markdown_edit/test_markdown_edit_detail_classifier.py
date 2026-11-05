@@ -40,7 +40,7 @@ def request(**overrides: object) -> MarkdownEditRequest:
 class MarkdownEditDetailClassifierTest(unittest.TestCase):
     def test_parses_classified_detail(self) -> None:
         client = FixedJsonClient({
-            "requested_formats": ["table", "table", "bold"],
+            "requested_formats": ["table", "table", "inline_style"],
             "addition_only": True,
             "structure_change": False,
             "target_language": None,
@@ -50,7 +50,7 @@ class MarkdownEditDetailClassifierTest(unittest.TestCase):
 
         self.assertEqual(
             detail,
-            MarkdownEditDetail(requested_formats=("table", "bold"), addition_only=True),
+            MarkdownEditDetail(requested_formats=("table", "inline_style"), addition_only=True),
         )
 
     def test_reads_request_sentence_without_router_edit_goal(self) -> None:
