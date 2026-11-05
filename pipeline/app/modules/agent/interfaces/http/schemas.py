@@ -55,6 +55,7 @@ class ConversationAgentRouteRequest(BaseModel):
     edit_operation: Literal["replace", "insert_after"] | None = None
     edit_destination: Literal["target", "document_end"] | None = None
     selected_skill_id: str | None = Field(default=None, max_length=128)
+    clarified_document_id: str | None = Field(default=None, max_length=128)
 
     def to_domain(self) -> ConversationAgentRoute:
         return ConversationAgentRoute(
@@ -66,6 +67,7 @@ class ConversationAgentRouteRequest(BaseModel):
             edit_operation=self.edit_operation,
             edit_destination=self.edit_destination,
             selected_skill_id=self.selected_skill_id,
+            clarified_document_id=self.clarified_document_id,
         )
 
 
@@ -226,6 +228,8 @@ class AgentTurnRouteResponse(BaseModel):
         "display_unsupported", "policy", "skill_off",
     ] | None = None
     attached_edit_targets: list[int] = Field(default_factory=list)
+    include_active_markdown: bool = False
+    clarified_document_id: str | None = None
 
 
 class SkillCandidateResponse(BaseModel):

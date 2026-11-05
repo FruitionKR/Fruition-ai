@@ -107,6 +107,7 @@ def route_values(route: object) -> dict[str, object]:
     values["required_capabilities"] = sorted(values["required_capabilities"])
     selected = {field: values[field] for field in ROUTE_FIELDS}
     selected["attached_edit_targets"] = list(values["attached_edit_targets"])
+    selected["include_active_markdown"] = values["include_active_markdown"]
     # 다른 되묻기 종류는 평가 대상이 아니어서, 고칠 첨부를 되묻는 경우만 비교한다.
     if values["notice_kind"] == "attachment_target":
         selected["notice_kind"] = "attachment_target"
@@ -119,6 +120,7 @@ def expected_route_values(case: dict[str, Any]) -> list[dict[str, object]]:
         route = dict(raw_route)
         route["required_capabilities"] = sorted(route["required_capabilities"])
         route.setdefault("attached_edit_targets", [])
+        route.setdefault("include_active_markdown", False)
         routes.append(route)
     return routes
 
