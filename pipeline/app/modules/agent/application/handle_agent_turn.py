@@ -18,6 +18,7 @@ from app.modules.agent.domain.entities import (
     AgentTurnRequest,
     AgentTurnResult,
     AgentTurnRoute,
+    ClarifyReason,
     PendingSkillProposal,
     RetrievalSource,
 )
@@ -419,6 +420,7 @@ class HandleAgentTurnUseCase:
                             persist=False,
                         ),
                         message=CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
+                        clarify_reason="markdown_document_required",
                     )
                 target = _skill_edit_target(selected_skill, markdown_context)
                 if target is None:
@@ -526,7 +528,12 @@ class HandleAgentTurnUseCase:
                 message = CLARIFY_INSERT_AFTER_TARGET_MESSAGE
             else:
                 message = CLARIFY_MARKDOWN_TARGET_MESSAGE
-            return AgentTurnResult(action="clarify", route=route, message=message)
+            return AgentTurnResult(
+                action="clarify",
+                route=route,
+                message=message,
+                clarify_reason="markdown_document_required" if message == CLARIFY_MARKDOWN_DOCUMENT_MESSAGE else None,
+            )
 
         if route.action == "reject":
             return AgentTurnResult(
@@ -674,7 +681,9 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         markdown_context = request.active_markdown_context
         if markdown_context is None or not markdown_context.markdown.strip():
-            return _clarify_document_change(route, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
+            return _clarify_document_change(
+                route, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, clarify_reason="markdown_document_required"
+            )
         if _is_ambiguous_auto(route, selected_skill):
             return _clarify_result_mode(route)
         target = _skill_edit_target(selected_skill, markdown_context)
@@ -1135,7 +1144,9 @@ def _markdown_sha256(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
-def _clarify_document_change(route: AgentTurnRoute, message: str) -> AgentTurnResult:
+def _clarify_document_change(
+    route: AgentTurnRoute, message: str, *, clarify_reason: ClarifyReason | None = None
+) -> AgentTurnResult:
     keeps_edit_context = route.document_operation == "edit"
     return AgentTurnResult(
         action="clarify",
@@ -1152,6 +1163,7 @@ def _clarify_document_change(route: AgentTurnRoute, message: str) -> AgentTurnRe
             persist=False,
         ),
         message=message,
+        clarify_reason=clarify_reason,
     )
 
 

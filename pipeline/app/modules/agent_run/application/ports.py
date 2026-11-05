@@ -169,7 +169,10 @@ class AgentPlanGeneratorPort(Protocol):
 
 class PlanReadyNotifierPort(Protocol):
     def notify_plan_ready(self, *, run_id: str, workspace_id: str, user_id: str) -> None:
-        """계획이 승인 대기에 들어갔음을 document-svc에 알린다. 사용자의 자동 승인 설정은 document-svc가 판단한다."""
+        """계획이 승인 대기에 들어갔거나 run이 끝났거나 되묻기로 멈췄음을 document-svc에 알린다.
+
+        자동 승인(승인 대기일 때만)과 사용량 수집은 document-svc가 판단한다.
+        """
         ...
 
 

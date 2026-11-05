@@ -18,6 +18,7 @@ from app.modules.agent.infrastructure.chat_completions_turn_router import (
     route_payload,
 )
 from app.modules.agent.infrastructure.jev_turn_router import route_options
+from app.modules.agent.interfaces.http.responses import _to_response
 from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.application.generate_markdown_document import (
     GenerateMarkdownDocumentUseCase,
@@ -206,6 +207,7 @@ class TaskModeHandleAgentTurnTest(unittest.TestCase):
 
         self.assertEqual(result.action, "clarify")
         self.assertEqual(result.message, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
+        self.assertEqual(result.clarify_reason, "markdown_document_required")
         self.assertEqual(editor.requests, [])
         self.assertEqual(starter.requests, [])
 
@@ -225,6 +227,59 @@ class TaskModeHandleAgentTurnTest(unittest.TestCase):
         result = use_case.execute(task_request("현재 섹션 뒤에 요약을 추가해줘"))
 
         self.assertEqual(result.message, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
+        self.assertEqual(result.clarify_reason, "markdown_document_required")
+
+    def test_skill_workflow_edit_without_active_document_has_reason_code(self) -> None:
+        use_case, _, _, starter, _ = build_use_case(
+            AgentTurnRoute(
+                action="workspace_workflow",
+                confidence=0.9,
+                reason="edit",
+                edit_goal="other",
+                edit_operation="replace",
+                edit_destination="target",
+                document_operation="edit",
+                persist=True,
+                required_capabilities=("document-edit",),
+            )
+        )
+
+        result = use_case.execute(task_request("이 문서를 고쳐서 저장해줘"))
+
+        self.assertEqual(result.action, "clarify")
+        self.assertEqual(result.message, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
+        self.assertEqual(result.clarify_reason, "markdown_document_required")
+        self.assertEqual(starter.requests, [])
+
+    def test_other_clarifications_have_no_reason_code(self) -> None:
+        use_case, _, _, _, _ = build_use_case(
+            AgentTurnRoute(action="chat_answer", confidence=0.9, reason="question", retrieval_source="workspace")
+        )
+
+        result = use_case.execute(task_request())
+
+        self.assertEqual(result.action, "clarify")
+        self.assertIsNone(result.clarify_reason)
+
+    def test_clarify_reason_reaches_the_response_payload_next_to_the_unchanged_message(self) -> None:
+        use_case, _, _, _, _ = build_use_case(
+            AgentTurnRoute(
+                action="markdown_edit",
+                confidence=0.9,
+                reason="edit",
+                edit_goal="shorten",
+                edit_operation="replace",
+                edit_destination="target",
+                document_operation="edit",
+                required_capabilities=("document-edit",),
+            )
+        )
+
+        payload = _to_response(use_case.execute(task_request("이 문서를 짧게 줄여줘"))).model_dump(mode="json")
+
+        self.assertEqual(payload["clarify_reason"], "markdown_document_required")
+        self.assertEqual(payload["message"], CLARIFY_MARKDOWN_DOCUMENT_MESSAGE)
+        self.assertEqual(payload["action"], "clarify")
 
     def test_legacy_mode_still_answers_questions(self) -> None:
         use_case, query, _, _, _ = build_use_case(

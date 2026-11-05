@@ -307,7 +307,9 @@ def test_realtime_drains_last_segment_and_preserves_order(monkeypatch):
         ]
         assert events[-1] == {"type": "finished", "segment_count": 2}
         finals = [e for e in events if e["type"] == "completed"]
-        assert finals[0]["previous_segment_id"] == "item_1"
+        # 공급사 완료 순서와 달라도 발화 순서로 내보낸다.
+        assert [e["segment_id"] for e in finals] == ["item_1", "item_2"]
+        assert finals[1]["previous_segment_id"] == "item_1"
         assert upstream.closed
 
         async def invalid():
@@ -710,3 +712,380 @@ def test_speech_routes_attribute_calls_to_request_id(client, monkeypatch):
             ("req-live", "speech_live_transcription"),
         ]
     ]
+
+
+class _CompletingUpstream:
+    """commit마다 committed·completed를 돌려주는 공급사 가짜. 받은 오디오 길이를 commit 단위로 기록한다."""
+
+    def __init__(self):
+        self.queue = asyncio.Queue()
+        self.appended = 0
+        self.committed_bytes = []
+
+    async def send(self, raw):
+        event = json.loads(raw)
+        if event["type"] == "session.update":
+            await self.queue.put({"type": "session.updated"})
+        elif event["type"] == "input_audio_buffer.append":
+            self.appended += len(base64.b64decode(event["audio"]))
+        elif event["type"] == "input_audio_buffer.commit":
+            # 실제 공급사처럼 100ms 미만 commit은 오류로 끝낸다.
+            if self.appended < 4800:
+                await self.queue.put(
+                    {"type": "error", "error": {"code": "input_audio_buffer_commit_empty"}}
+                )
+                return
+            self.committed_bytes.append(self.appended)
+            self.appended = 0
+            item = f"item_{len(self.committed_bytes)}"
+            await self.queue.put({"type": "input_audio_buffer.committed", "item_id": item})
+            await self.queue.put(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": item,
+                    "transcript": "비밀 전사",
+                }
+            )
+
+    async def recv(self):
+        return json.dumps(await self.queue.get())
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.recv()
+
+
+def _fake_upstream(monkeypatch):
+    upstream = _CompletingUpstream()
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield upstream
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+    return upstream
+
+
+def _run_live(packets, scope=None, keep_open=False):
+    async def audio():
+        for packet in packets:
+            yield packet
+        if keep_open:
+            await asyncio.sleep(1)
+
+    async def run():
+        return [
+            event
+            async for event in openai_speech.OpenAISpeech("fake").transcribe_live(audio())
+        ]
+
+    async def run_in_scope():
+        with scope:
+            return await run()
+
+    return asyncio.run(run_in_scope() if scope else run())
+
+
+@pytest.mark.parametrize(
+    ("tail", "segments", "seconds"),
+    [
+        # 실서버 재현 경계: 프론트 첫 청크 하나(약 85ms)만 남은 채 멈추면 꼬리를 버리고 끝낸다.
+        (4096, 1, [0.1]),
+        (4800, 2, [0.1, 0.1]),
+        (0, 1, [0.1]),
+    ],
+)
+def test_live_finish_handles_tail_by_provider_minimum(monkeypatch, tail, segments, seconds):
+    scope, rows = _ledger_rows(monkeypatch)
+    upstream = _fake_upstream(monkeypatch)
+    packets = [b"\0" * 4800, "commit"] + ([b"\0" * tail] if tail else []) + ["finish"]
+
+    events = _run_live(packets, scope)
+
+    assert events[-1] == {"type": "finished", "segment_count": segments}
+    assert upstream.committed_bytes == [4800] * segments
+    # 버린 꼬리는 전사되지 않으므로 사용량에도 넣지 않는다.
+    assert [row["audio_seconds"] for row in rows.values()] == seconds
+    assert all(row["status"] == "succeeded" for row in rows.values())
+
+
+def test_live_finish_with_only_short_audio_ends_without_segments(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+    upstream = _fake_upstream(monkeypatch)
+
+    events = _run_live([b"\0" * 4096, "finish"], scope)
+
+    assert events[-1] == {"type": "finished", "segment_count": 0}
+    assert upstream.committed_bytes == [] and rows == {}
+
+
+def test_live_short_commit_keeps_audio_for_next_segment(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+    upstream = _fake_upstream(monkeypatch)
+
+    events = _run_live(
+        [b"\0" * 4096, "commit", b"\0" * 4800, "commit", "finish"], scope
+    )
+
+    assert events[-1] == {"type": "finished", "segment_count": 1}
+    # 진행 중 짧은 commit은 공급사에 보내지 않고 음성을 다음 구간에 합친다.
+    assert upstream.committed_bytes == [8896]
+    assert [row["audio_seconds"] for row in rows.values()] == [8896 / 48000]
+
+
+class _ScriptedUpstream:
+    """commit 하나마다 committed와 정해 둔 전사 이벤트를 순서대로 돌려준다."""
+
+    def __init__(self, script):
+        self.queue = asyncio.Queue()
+        self.script = script
+        self.commits = 0
+
+    async def send(self, raw):
+        event = json.loads(raw)
+        if event["type"] == "session.update":
+            await self.queue.put({"type": "session.updated"})
+        elif event["type"] == "input_audio_buffer.commit":
+            self.commits += 1
+            await self.queue.put(
+                {
+                    "type": "input_audio_buffer.committed",
+                    "item_id": f"item_{self.commits}",
+                    "previous_item_id": f"item_{self.commits - 1}" if self.commits > 1 else None,
+                }
+            )
+            for kind, item, text in self.script.get(self.commits, ()):
+                if kind == "delta":
+                    await self.queue.put(
+                        {
+                            "type": "conversation.item.input_audio_transcription.delta",
+                            "item_id": item,
+                            "delta": text,
+                        }
+                    )
+                else:
+                    await self.queue.put(
+                        {
+                            "type": "conversation.item.input_audio_transcription.completed",
+                            "item_id": item,
+                            "transcript": text,
+                        }
+                    )
+
+    async def recv(self):
+        return json.dumps(await self.queue.get())
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.recv()
+
+
+def _run_scripted(monkeypatch, script, commits):
+    upstream = _ScriptedUpstream(script)
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield upstream
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+    packets = [packet for _ in range(commits) for packet in (b"\0" * 4800, "commit")]
+    return [e for e in _run_live(packets + ["finish"]) if e["type"] != "ready"]
+
+
+def _final(item, text):
+    return ("completed", item, text)
+
+
+@pytest.mark.parametrize("empty", ["", "  \n"])
+def test_live_segment_without_text_is_not_announced(monkeypatch, empty):
+    # 실서버 재현: 정확히 100ms 꼬리와 1초 무음 꼬리는 공급사가 빈 전사로 끝낸다.
+    events = _run_scripted(
+        monkeypatch, {2: [_final("item_2", empty), _final("item_1", "첫 구간")]}, 2
+    )
+
+    assert events == [
+        {"type": "committed", "segment_id": "item_1", "previous_segment_id": None},
+        {
+            "type": "completed",
+            "segment_id": "item_1",
+            "previous_segment_id": None,
+            "text": "첫 구간",
+        },
+        {"type": "finished", "segment_count": 1},
+    ]
+
+
+def test_live_segment_after_empty_one_links_to_last_announced(monkeypatch):
+    events = _run_scripted(
+        monkeypatch,
+        {
+            1: [_final("item_1", "첫 구간")],
+            2: [_final("item_2", "")],
+            3: [_final("item_3", "셋째 구간")],
+        },
+        3,
+    )
+
+    assert [e for e in events if e["type"] == "committed"] == [
+        {"type": "committed", "segment_id": "item_1", "previous_segment_id": None},
+        {"type": "committed", "segment_id": "item_3", "previous_segment_id": "item_1"},
+    ]
+    assert events[-1] == {"type": "finished", "segment_count": 2}
+
+
+def test_live_all_empty_segments_finish_without_segments(monkeypatch):
+    events = _run_scripted(monkeypatch, {1: [_final("item_1", "")]}, 1)
+
+    assert events == [{"type": "finished", "segment_count": 0}]
+
+
+def test_live_keeps_commit_order_when_later_segment_finishes_first(monkeypatch):
+    # Document는 committed 도착 순서로 position을 정한다.
+    events = _run_scripted(
+        monkeypatch,
+        {2: [_final("item_2", "둘째"), _final("item_1", "첫째")]},
+        2,
+    )
+
+    assert [(e["type"], e.get("segment_id")) for e in events] == [
+        ("committed", "item_1"),
+        ("completed", "item_1"),
+        ("committed", "item_2"),
+        ("completed", "item_2"),
+        ("finished", None),
+    ]
+
+
+def test_live_delta_with_text_announces_segment_before_completion(monkeypatch):
+    events = _run_scripted(
+        monkeypatch,
+        {1: [("delta", "item_1", " "), ("delta", "item_1", "말"), _final("item_1", "말")]},
+        1,
+    )
+
+    assert [(e["type"], e.get("text")) for e in events] == [
+        ("committed", None),
+        ("delta", " "),
+        ("delta", "말"),
+        ("completed", "말"),
+        ("finished", None),
+    ]
+
+
+def test_live_empty_segment_keeps_usage_row(monkeypatch):
+    scope, rows = _ledger_rows(monkeypatch)
+    upstream = _fake_upstream(monkeypatch)
+
+    original_put = upstream.queue.put
+
+    async def blank(event):
+        if "transcript" in event:
+            event = {**event, "transcript": ""}
+        await original_put(event)
+
+    upstream.queue.put = blank
+    events = _run_live([b"\0" * 4800, "finish"], scope)
+
+    assert events[-1] == {"type": "finished", "segment_count": 0}
+    # 공급사는 빈 전사에도 과금하므로 원장에는 남긴다.
+    assert [row["status"] for row in rows.values()] == ["succeeded"]
+    assert [row["audio_seconds"] for row in rows.values()] == [0.1]
+
+
+def test_live_short_buffer_warning_has_no_audio_or_transcript(monkeypatch, caplog):
+    _fake_upstream(monkeypatch)
+
+    with caplog.at_level("WARNING", logger=openai_speech.__name__):
+        _run_live([b"\x7f\x7f" * 2048, "commit", "finish"])
+
+    assert "bytes=4096" in caplog.text
+    assert "command=commit" in caplog.text and "command=finish" in caplog.text
+    assert "비밀 전사" not in caplog.text
+
+
+def test_live_websocket_short_tail_finishes_normally(client, monkeypatch):
+    http, _ = client
+    _, rows = _ledger_rows(monkeypatch)
+    upstream = _fake_upstream(monkeypatch)
+    monkeypatch.setattr(routes, "get_speech", lambda: openai_speech.OpenAISpeech("fake"))
+
+    with http.websocket_connect(
+        "/speech/transcriptions/live?workspace_id=w&user_id=u", headers=HEADERS
+    ) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(b"\0" * 4800)
+        ws.send_json({"type": "commit"})
+        ws.send_bytes(b"\0" * 4096)
+        ws.send_json({"type": "finish"})
+        received = []
+        while not received or received[-1]["type"] not in {"finished", "error"}:
+            received.append(ws.receive_json())
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+
+    assert received[-1] == {"type": "finished", "segment_count": 1}
+    assert closed.value.code == 1000
+    assert upstream.committed_bytes == [4800]
+    assert [row["audio_seconds"] for row in rows.values()] == [0.1]
+
+
+def test_live_provider_error_logs_code_without_message(monkeypatch, caplog):
+    class Failing(_CompletingUpstream):
+        async def send(self, raw):
+            if json.loads(raw)["type"] == "input_audio_buffer.commit":
+                await self.queue.put(
+                    {
+                        "type": "conversation.item.input_audio_transcription.failed",
+                        "error": {"code": "audio_unintelligible", "message": "비밀 전사"},
+                    }
+                )
+            else:
+                await super().send(raw)
+
+    upstream = Failing()
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield upstream
+
+    monkeypatch.setattr(openai_speech, "connect", connect)
+
+    with caplog.at_level("WARNING", logger=openai_speech.__name__):
+        with pytest.raises(SpeechUnavailableError):
+            _run_live([b"\0" * 4800, "commit"], keep_open=True)
+
+    assert "audio_unintelligible" in caplog.text
+    assert "비밀 전사" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "logged", "hidden"),
+    [
+        (InvalidAudioError("발화는 30초를 넘을 수 없습니다."), "invalid_audio", "발화는 30초", None),
+        (RuntimeError("비밀 전사"), "transcription_failed", "RuntimeError", "비밀 전사"),
+    ],
+)
+def test_live_websocket_failure_is_logged_without_content(
+    client, monkeypatch, caplog, error, code, logged, hidden
+):
+    http, _ = client
+
+    class FakeSpeech:
+        async def transcribe_live(self, packets):
+            yield {"type": "ready"}
+            raise error
+
+    monkeypatch.setattr(routes, "get_speech", lambda: FakeSpeech())
+    with caplog.at_level("WARNING", logger=routes.__name__):
+        with http.websocket_connect(
+            "/speech/transcriptions/live?workspace_id=w&user_id=u", headers=HEADERS
+        ) as ws:
+            assert ws.receive_json()["type"] == "ready"
+            assert ws.receive_json()["code"] == code
+
+    assert logged in caplog.text
+    assert not hidden or hidden not in caplog.text

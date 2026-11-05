@@ -49,6 +49,10 @@ from app.modules.markdown_edit.domain.markdown_target_scope import (
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_detail_classifier import (
     ChatCompletionsMarkdownEditDetailClassifier,
 )
+from app.modules.markdown_edit.infrastructure.jev_markdown_edit_detail_classifier import (
+    JevMarkdownEditDetailClassifier,
+    with_jev_edit_detail,
+)
 from app.modules.markdown_edit.infrastructure.markdown_source_range import (
     MarkdownSourceRangePlan,
     apply_source_range_response,
@@ -90,7 +94,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         context_lines: int = 20,
         event_publisher: QueryEventPublisherPort | None = None,
         schema_prompt_provider: Callable[[str, str | None, str | None], str] | None = None,
-        detail_classifier: ChatCompletionsMarkdownEditDetailClassifier | None = None,
+        detail_classifier: ChatCompletionsMarkdownEditDetailClassifier | JevMarkdownEditDetailClassifier | None = None,
     ) -> None:
         self._event_publisher = event_publisher
         # 없으면 request.detail을 그대로 쓴다(테스트·평가 스크립트가 세부 분류를 직접 넣는 경우).
@@ -523,7 +527,7 @@ def build_markdown_editor(
         context_lines=_int_env("MARKDOWN_EDIT_CONTEXT_LINES", 20),
         schema_prompt_provider=get_active_schema_prompt,
         event_publisher=event_publisher,
-        detail_classifier=ChatCompletionsMarkdownEditDetailClassifier(client),
+        detail_classifier=with_jev_edit_detail(ChatCompletionsMarkdownEditDetailClassifier(client)),
     )
 
 

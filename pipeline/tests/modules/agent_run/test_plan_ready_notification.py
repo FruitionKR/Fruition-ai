@@ -1,4 +1,7 @@
-"""계획이 승인 대기에 들어가면 worker가 document-svc에 알린다. 자동 승인 판단은 document-svc가 한다."""
+"""계획이 승인 대기에 들어가거나 AI 일이 멈추면 worker가 document-svc에 알린다.
+
+자동 승인 판단과 사용량 수집은 document-svc가 한다.
+"""
 
 import json
 from dataclasses import replace
@@ -25,14 +28,15 @@ def _job(job_type: str = "planning") -> AgentJob:
     )
 
 
-def _context(status: str) -> AgentRunContext:
+def _context(status: str, action: str | None = None) -> AgentRunContext:
     context = _executing_context()
-    return replace(context, run=replace(context.run, status=status))
+    run = replace(context.run, status=status, action=action or context.run.action)
+    return replace(context, run=run)
 
 
-def _worker(status: str, notifier: MagicMock | None) -> tuple[AgentWorker, MagicMock]:
+def _worker(status: str, notifier: MagicMock | None, action: str | None = None) -> tuple[AgentWorker, MagicMock]:
     repository = MagicMock()
-    repository.load_context.return_value = _context(status)
+    repository.load_context.return_value = _context(status, action)
     worker = AgentWorker(repository, MagicMock(), MagicMock(), MagicMock(), plan_ready_notifier=notifier)
     return worker, repository
 
@@ -50,15 +54,83 @@ def test_planning_job_that_ends_awaiting_approval_notifies_document_service() ->
     )
 
 
-@pytest.mark.parametrize("status", ["clarification_required", "failed", "executing"])
-def test_no_notification_when_plan_is_not_awaiting_approval(status: str) -> None:
+# document-svc AUTONOMOUS_TERMINAL과 같은 집합이다. cancel_requested·rolling_back은 곧 cancelled가 되므로 뺀다.
+TERMINAL_STATUSES = ["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "rollback_failed"]
+
+
+@pytest.mark.parametrize("status", [*TERMINAL_STATUSES, "clarification_required"])
+@pytest.mark.parametrize("job_type", ["planning", "execution", "verification", "rollback"])
+def test_job_that_leaves_run_stopped_notifies_once_for_usage_collection(job_type: str, status: str) -> None:
+    notifier = MagicMock()
+    worker, repository = _worker(status, notifier)
+
+    with patch.object(worker, "_run_job"):
+        worker.process(_job(job_type))
+
+    repository.complete.assert_called_once()
+    notifier.notify_plan_ready.assert_called_once_with(
+        run_id="run-1", workspace_id="workspace-1", user_id="user-1"
+    )
+
+
+@pytest.mark.parametrize("status", ["queued", "planning", "executing", "verifying", "cancel_requested", "rolling_back"])
+@pytest.mark.parametrize("job_type", ["planning", "execution"])
+def test_no_notification_while_run_can_still_call_models(job_type: str, status: str) -> None:
     notifier = MagicMock()
     worker, _ = _worker(status, notifier)
 
     with patch.object(worker, "_run_job"):
-        worker.process(_job())
+        worker.process(_job(job_type))
 
     notifier.notify_plan_ready.assert_not_called()
+
+
+def test_job_failure_that_closed_run_notifies_without_changing_job_result() -> None:
+    notifier = MagicMock()
+    notifier.notify_plan_ready.side_effect = RuntimeError("document-svc down")
+    worker, repository = _worker("failed", notifier)
+
+    with patch.object(worker, "_run_job", side_effect=ValueError("boom")):
+        worker.process(_job())
+
+    repository.fail.assert_called_once()
+    repository.complete.assert_not_called()
+    notifier.notify_plan_ready.assert_called_once()
+
+
+def test_job_failure_that_will_retry_does_not_notify() -> None:
+    notifier = MagicMock()
+    worker, repository = _worker("planning", notifier)
+
+    with patch.object(worker, "_run_job", side_effect=ValueError("boom")):
+        worker.process(_job())
+
+    repository.fail.assert_called_once()
+    notifier.notify_plan_ready.assert_not_called()
+
+
+def test_markdown_turn_recovery_does_not_notify() -> None:
+    # 턴 사용량은 Kafka 결과·취소 흐름이 수집한다. document-svc의 AgentRun 조회 대상도 아니다.
+    notifier = MagicMock()
+    worker, _ = _worker("cancelled", notifier, action="markdown_turn")
+
+    with patch.object(worker, "_run_job"):
+        worker.process(_job("rollback"))
+
+    notifier.notify_plan_ready.assert_not_called()
+
+
+def test_notification_failure_on_stopped_run_keeps_job_completed_and_does_not_retry() -> None:
+    notifier = MagicMock()
+    notifier.notify_plan_ready.side_effect = RuntimeError("document-svc down")
+    worker, repository = _worker("clarification_required", notifier)
+
+    with patch.object(worker, "_run_job"):
+        worker.process(_job())
+
+    repository.complete.assert_called_once()
+    repository.fail.assert_not_called()
+    notifier.notify_plan_ready.assert_called_once()
 
 
 def test_execution_and_failed_jobs_do_not_notify() -> None:

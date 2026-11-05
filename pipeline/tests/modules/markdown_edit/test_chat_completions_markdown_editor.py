@@ -1290,7 +1290,7 @@ class ChatCompletionsMarkdownEditorTest(unittest.TestCase):
         self.assertEqual(len(client.calls), 2)
         self.assertEqual(client.calls[0][0], "system")
         retry_payload = json.loads(client.calls[1][1])
-        self.assertIn("numbered list items must start directly", retry_payload["contract_failures"][0])
+        self.assertIn("numbered list must contain items", retry_payload["contract_failures"][0])
         self.assertIn("previous output failed trusted application validation", client.calls[1][0])
         self.assertEqual(retry_payload["previous_replacement_markdown"], "- 1. 설치\n- 2. 테스트")
 

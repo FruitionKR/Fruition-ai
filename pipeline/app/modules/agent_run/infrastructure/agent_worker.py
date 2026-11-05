@@ -51,6 +51,11 @@ _CONTENT_CHECK_MAX_DOCUMENT_CHARS = 50_000
 _TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "cancel_requested", "rolling_back", "rollback_failed"}
 )
+# AI가 더 모델을 부르지 않는 상태. 앞의 일곱 개는 document-svc의 AUTONOMOUS_TERMINAL과 같고, 되묻기는 사용자 답을
+# 기다리는 동안 수집이 밀리지 않게 넣는다. cancel_requested·rolling_back은 곧 cancelled가 되므로 뺀다.
+_USAGE_COLLECT_RUN_STATUSES = frozenset(
+    {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "rollback_failed", "clarification_required"}
+)
 class _ToolBudgetExhausted(Exception):
     """재시도 도중 tool 호출 예산이 소진되었음을 알리는 내부 신호.
     execute 단계가 이를 잡아 request_clarification 경로로 처리한다."""
@@ -117,29 +122,39 @@ class AgentWorker:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
         # 실행 잠금을 풀고 job을 끝낸 뒤 알린다. 승인 대기 interrupt가 checkpoint에 남은 뒤라야
-        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있다.
-        if completed and job.job_type == "planning":
-            self._notify_plan_ready(job.run_id)
+        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있고, 이 job의 모델 호출이 원장에서 끝난 뒤라야
+        # document-svc가 그 호출까지 수집한다.
+        self._notify_document_service(job, plan_finished=completed and job.job_type == "planning")
 
-    def _notify_plan_ready(self, run_id: str) -> None:
-        """계획이 승인 대기에 들어갔으면 document-svc에 알려 사용자의 자동 승인 설정을 적용하게 한다.
+    def _notify_document_service(self, job: AgentJob, *, plan_finished: bool) -> None:
+        """계획이 승인 대기에 들어갔거나 run이 멈췄으면 document-svc의 plan-ready를 부른다.
 
-        승인 여부는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 정한다. 알림이 실패해도 계획은 승인 대기로
-        남아 사용자가 직접 승인할 수 있고(화면 조회 때 document-svc가 다시 판단한다), job 결과는 바꾸지 않는다.
+        승인 대기에서는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 자동 승인을 정한다. 알림이 실패해도 계획은
+        승인 대기로 남아 사용자가 직접 승인할 수 있다(화면 조회 때 document-svc가 다시 판단한다).
+
+        끝난 상태·되묻기에서도 같은 호출을 쓴다. 이름과 달리 plan-ready는 사용량 수집을 대기열에 넣고 run을 다시 조회해,
+        자동 승인은 awaiting_approval에서만 판단하고 끝난 run은 닫는 범용 신호다. 화면을 닫은 작업도 일일 대사까지
+        밀리지 않게 하려고 새 내부 API를 늘리지 않고 재사용한다. document-svc 쪽은 같은 run을 여러 번 알려도 청구가
+        호출 단위로 한 번만 쌓인다. 알림은 job마다 한 번만 시도하고, 실패하면 일일 대사에 맡기며 job 결과는 바꾸지 않는다.
         """
         if self._plan_ready_notifier is None:
             return
         try:
-            run = self._repository.load_context(run_id).run
-            if run.status != "awaiting_approval":
+            run = self._repository.load_context(job.run_id).run
+            # markdown_turn 복구는 AgentRun이 아니다. 턴 사용량은 Kafka 결과와 취소 흐름이 수집한다.
+            if run.action == "markdown_turn":
+                return
+            if run.status not in _USAGE_COLLECT_RUN_STATUSES and not (
+                plan_finished and run.status == "awaiting_approval"
+            ):
                 return
             self._plan_ready_notifier.notify_plan_ready(
                 run_id=run.id, workspace_id=run.workspace_id, user_id=run.user_id
             )
         except Exception as exc:
             logger.warning(
-                "Agent 계획 승인 대기 알림 실패(수동 승인으로 남김): run_id=%s type=%s detail=%s",
-                run_id,
+                "Agent run 상태 알림 실패(승인 대기는 수동 승인, 사용량은 일일 대사로 남김): run_id=%s type=%s detail=%s",
+                job.run_id,
                 type(exc).__name__,
                 _failure_detail(exc),
             )
