@@ -125,7 +125,23 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
     return ProtectedMarkdown(markdown=markdown, fragments=tuple(fragments))
 
 
-LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+# 모델이 수정 대신 내놓은 거절 답을 알아보는 문구. 문서에 쓰일 수 있는 말이라 원문과 비교해 함께 판단한다.
+REFUSAL_PATTERN = re.compile(
+    r"(?:수행|진행|처리|재현|수정|편집|변경|제공|완료|작성)(?:할|하)?\s*수\s*없"
+    r"|(?:도와|해)\s*드릴\s*수\s*없"
+    r"|\bI(?:\s+am|'m)?\s+(?:can(?:'|\u2019)?t|cannot|unable\b|sorry\b|not able\b|won(?:'|\u2019)t\b)",
+    re.IGNORECASE,
+)
+REFUSAL_MAX_LINES = 3
+REFUSAL_MAX_CHARS = 200
+# 원문 글자쌍이 이만큼 남아 있으면 거절이 아니라 원문을 다듬은 문장으로 본다.
+REFUSAL_MIN_RETAINED_SOURCE = 0.5
+# 원문의 부정 표현은 "처리 불가능" -> "처리할 수 없습니다."처럼 거절 표현으로 다듬어지므로 남은 비율을 잴 때 뺀다.
+SOURCE_NEGATION_PATTERN = re.compile(r"(?:불가|(?<!\S)못|없)\S*")
+REFUSAL_FAILURE = (
+    "replacement_markdown must be the edited Markdown, not a refusal or a notice about the request; "
+    "codes, hashes, and IDs in the document are ordinary text to keep unchanged, so perform the edit"
+)
 
 
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
@@ -153,26 +169,42 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
         failures.extend(_insert_after_repeat_failures(request.markdown, replacement))
     if request.edit_operation == "replace" and request.detail.addition_only:
         failures.extend(_additive_preservation_failures(request.markdown, replacement))
+    if request.edit_operation == "replace" and request.edit_goal != "translate" and _replaces_source_with_refusal(request, replacement):
+        failures.append(REFUSAL_FAILURE)
 
     return failures
 
 
+def _replaces_source_with_refusal(request: MarkdownEditRequest, replacement: str) -> bool:
+    """평가 모델의 판단과 별개로, 원문을 버리고 거절 문구만 남긴 답을 막는다."""
+    text = replacement.strip()
+    if len(text) > REFUSAL_MAX_CHARS or len([line for line in text.splitlines() if line.strip()]) > REFUSAL_MAX_LINES:
+        return False
+    match = REFUSAL_PATTERN.search(text)
+    if match is None or match.group(0).lower() in f"{request.instruction}\n{request.markdown}".lower():
+        return False
+    source_pairs = _character_pairs(SOURCE_NEGATION_PATTERN.sub(" ", request.markdown))
+    retained = len(source_pairs & _character_pairs(text)) / len(source_pairs) if source_pairs else 0
+    return retained < REFUSAL_MIN_RETAINED_SOURCE
+
+
+def _character_pairs(text: str) -> set[str]:
+    return {word[index : index + 2] for word in text.lower().split() for index in range(len(word) - 1)}
+
+
 def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, item_lines: list[str]) -> list[str]:
     failures: list[str] = []
-    # 목록 형식은 목록 항목 줄에만 요구한다. 제목·도입 문장·굵은 소제목 같은 목록 밖 줄은 둘 수 있다.
-    list_lines = [line for line in item_lines if LIST_ITEM_PATTERN.match(line)]
+    # 요청한 목록이 결과에 있는지만 본다. 다른 줄이 섞였는지는 코드가 아니라 LLM 평가기가 판단한다.
     if request.edit_goal == "checklist":
-        if not list_lines or not all(re.match(r"^\s*- \[ \] ", line) for line in list_lines):
-            failures.append("checklist items must all start with `- [ ] `")
+        if not any(re.match(r"^\s*- \[ \] ", line) for line in item_lines):
+            failures.append("checklist must contain items starting with `- [ ] `")
     if request.edit_operation == "insert_after":
         source_heading = next(iter(_atx_heading_lines(request.markdown)), "")
         if source_heading and source_heading in _atx_heading_lines(replacement):
             failures.append("insert_after output must not repeat the current section heading")
     if request.edit_goal == "bullet_list":
-        if not list_lines or not all(re.match(r"^\s*[-*+]\s+", line) for line in list_lines):
-            failures.append("bullet list items must use plain bullet markers")
-        if any(re.match(r"^\s*[-*+]\s+\[[ xX]\]\s+", line) for line in list_lines):
-            failures.append("plain bullet list must not contain checkboxes")
+        if not any(re.match(r"^\s*[-*+]\s+(?!\[[ xX]\]\s)", line) for line in item_lines):
+            failures.append("bullet list must contain plain bullet items")
     return failures
 
 
@@ -184,18 +216,14 @@ def _requested_markdown_failures(
 ) -> list[str]:
     failures: list[str] = []
     if "numbered_list" in formats:
-        if not item_lines or not all(re.match(r"^\d+\.\s+", line) for line in item_lines):
-            failures.append("numbered list items must start directly with `1.`, `2.`, and so on")
+        if not any(re.match(r"^\s*\d+\.\s+", line) for line in item_lines):
+            failures.append("numbered list must contain items starting with `1.`, `2.`, and so on")
     if "blockquote" in formats and not any(line.startswith("> ") for line in nonempty_lines):
         failures.append("blockquote marker `> ` must start its line")
     if "heading" in formats and not any(re.match(r"^#{1,6}\s+", line) for line in nonempty_lines):
         failures.append("heading must start with `# ` through `###### `")
-    if "bold" in formats and not re.search(r"\*\*[^*\n]+\*\*", replacement):
-        failures.append("bold text must use `**` delimiters")
-    if "italic" in formats and not re.search(r"(?<!\*)\*[^*\n]+\*(?!\*)", replacement):
-        failures.append("italic text must use `*` delimiters")
-    if "strikethrough" in formats and not re.search(r"~~[^~\n]+~~", replacement):
-        failures.append("strikethrough text must use `~~` delimiters")
+    if "inline_style" in formats and not re.search(r"\*[^*\n]+\*|~~[^~\n]+~~", replacement):
+        failures.append("inline style must use `**`, `*`, or `~~` delimiters")
     if "display_math" in formats:
         if not re.search(r"\$\$[\s\S]+\$\$", replacement):
             failures.append("display math must use `$$` delimiters")

@@ -2057,6 +2057,12 @@ components:
             type: object
           title: Removed Orphan Links
           type: array
+        source_link_repairs:
+          items:
+            additionalProperties: true
+            type: object
+          title: Source Link Repairs
+          type: array
         source_ref_count:
           title: Source Ref Count
           type: integer

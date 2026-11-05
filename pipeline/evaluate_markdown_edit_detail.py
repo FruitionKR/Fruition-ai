@@ -1,18 +1,24 @@
-"""편집 세부 분류기 평가. 실제 모델을 호출해 evals/markdown_edit_detail.jsonl의 정답과 비교한다."""
+"""편집 세부 분류기 평가. 실제 모델을 호출해 evals/markdown_edit_detail.jsonl의 정답과 비교한다.
+
+`--jev`면 운영과 같이 Jev로 분류한다. Jev가 실패한 요청은 운영처럼 LLM으로 넘어가며 그 횟수를 `jev_fallback_calls`로 센다.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
+from app.core.jev_client import JEV_EDIT_DETAIL_ENABLED_ENV
 from app.core.llm_env import SUPPORTED_LLM_PROVIDERS
-from app.modules.markdown_edit.domain.entities import MarkdownEditRequest, MarkdownEditTarget
+from app.modules.markdown_edit.domain.entities import MarkdownEditDetail, MarkdownEditRequest, MarkdownEditTarget
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_detail_classifier import (
     ChatCompletionsMarkdownEditDetailClassifier,
 )
 from app.modules.markdown_edit.infrastructure.chat_completions_markdown_editor import build_markdown_editor
+from app.modules.markdown_edit.infrastructure.jev_markdown_edit_detail_classifier import JevMarkdownEditDetailClassifier
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "evals" / "markdown_edit_detail.jsonl"
 FIELDS = ("requested_formats", "addition_only", "structure_change", "target_language")
@@ -29,7 +35,20 @@ def normalized(detail: dict[str, object]) -> dict[str, object]:
     return {**detail, "requested_formats": sorted(detail["requested_formats"])}  # type: ignore[arg-type]
 
 
-def evaluate_cases(classifier: ChatCompletionsMarkdownEditDetailClassifier, cases: list[dict[str, object]]) -> dict[str, object]:
+class CountingClassifier:
+    def __init__(self, classifier: ChatCompletionsMarkdownEditDetailClassifier) -> None:
+        self._classifier = classifier
+        self.calls = 0
+
+    def classify(self, request: MarkdownEditRequest) -> MarkdownEditDetail:
+        self.calls += 1
+        return self._classifier.classify(request)
+
+
+def evaluate_cases(
+    classifier: ChatCompletionsMarkdownEditDetailClassifier | JevMarkdownEditDetailClassifier,
+    cases: list[dict[str, object]],
+) -> dict[str, object]:
     results = []
     for case in cases:
         actual = normalized(asdict(classifier.classify(MarkdownEditRequest(
@@ -60,9 +79,20 @@ def main() -> int:
     parser.add_argument("--provider", choices=SUPPORTED_LLM_PROVIDERS, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--jev", action="store_true", help="세부 분류를 Jev로 한다. TYPESAFE_API_KEY가 필요하다.")
     args = parser.parse_args()
+    os.environ[JEV_EDIT_DETAIL_ENABLED_ENV] = "true" if args.jev else "false"
     editor = build_markdown_editor(provider=args.provider, model=args.model)
-    report = evaluate_cases(editor._detail_classifier, load_cases(args.dataset))  # type: ignore[attr-defined]
+    classifier = editor._detail_classifier  # type: ignore[attr-defined]
+    fallback = None
+    if args.jev:
+        # 키가 없으면 조용히 LLM으로 돌아 끔과 같은 값을 켬 결과로 잘못 보고하게 된다.
+        if not isinstance(classifier, JevMarkdownEditDetailClassifier):
+            parser.error("Jev를 쓸 수 없습니다. TYPESAFE_API_KEY를 설정하세요.")
+        fallback = classifier._fallback = CountingClassifier(classifier._fallback)  # type: ignore[assignment]
+    report = evaluate_cases(classifier, load_cases(args.dataset))
+    if fallback is not None:
+        report["summary"]["jev_fallback_calls"] = fallback.calls  # type: ignore[index]
     print(json.dumps(report, ensure_ascii=False, indent=2))
     summary = report["summary"]
     return int(summary["correct"] != summary["total"])  # type: ignore[index]

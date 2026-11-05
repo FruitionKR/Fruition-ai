@@ -627,8 +627,9 @@ curl -X POST "$PIPELINE/wiki/lint-restore-runs" \
 자식·부모 중 관련인 쪽으로 옮기고, Jev를 쓸 수 없으면 옮기지 않는다(ADR 0042 결정 6). 바뀐 페이지와 그 가까이의 페이지는
 `part_of` 판정(Jev, 꺼져 있으면 이 lint의 `provider`·`model`)으로 다른 페이지나 그 하위 항목 아래 하위 항목으로 통째로 옮긴다(ADR 0042
 페이지 이동, dry run은 판정하지 않는다). 응답의 `entry_decisions`는 판정(`action`·`page_id`·`entry_id`, 하지 못했으면 `skipped_reason`.
-페이지 이동은 `action: "move"`와 `target_page_id`·`parent_entry_id`),
-`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `deleted_pages`는 부모로 합쳐 지운 자식 페이지와 다른 페이지로 옮겨 지운 페이지다. 그 페이지에는 이 lint의
+페이지 이동은 `action: "move"`와 `target_page_id`·`parent_entry_id`, 출처 없는 페이지 삭제는 `action: "prune_unsourced"`와 `slug`),
+`deferred_entry_pages`는 다음 lint가 다시 볼 페이지, `source_link_repairs`(`page_id`·`slug`·`document_ids`)는 근거가 있는데 소스 → 개념 링크가 없어 원문과 다시 이은 페이지다. dry run은 잇지 않고 대상만 돌려준다.
+`deleted_pages`는 부모로 합쳐 지운 자식 페이지, 다른 페이지로 옮겨 지운 페이지, 원문에서 출처를 찾을 수 있는 근거가 없어 지운 페이지다. 그 페이지에는 이 lint의
 재생 가능한 삭제 기록(`content_action: "delete"`)이 남고, 그 기록은 `changed_pages`와 `ledger_contributions`에 함께 실린다
 (document-svc는 `changed_pages`에 없는 페이지의 원장 행을 받지 않는다). 삭제 기록은 그때까지의 기록을 모두 지운 것과 같아,
 재생이 삭제 기록에서 끝나면 페이지가 없다. `ledger_contributions`(`page_id`·`operation_id`·`document_id`·`contribution_key`·

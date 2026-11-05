@@ -43,6 +43,7 @@ python review_markdown_edit_results.py --results /tmp/markdown-edit-paired.json 
 
 ```bash
 python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna
+python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna --jev  # Jev 켬. TYPESAFE_API_KEY 필요, 대체 횟수를 jev_fallback_calls로 출력
 ```
 
 ## Jev 켬/끔 평가

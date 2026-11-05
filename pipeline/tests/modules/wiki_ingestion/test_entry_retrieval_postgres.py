@@ -17,6 +17,7 @@ from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # n
 
 
 def _deployment(world: World) -> None:
+    world.auto_source = False
     world.ingest("op-x", "doc-x", {
         "deployment": {"title": "Deployment", "entry_changes": [
             _add("e-rollout", "Rollout", refs=["B0001"]),
