@@ -56,6 +56,10 @@ def _client(
 
 
 class BuildJevClientTest(unittest.TestCase):
+    def test_key_alone_turns_every_feature_on(self) -> None:
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "key"}, clear=True):
+            self.assertIsInstance(build_jev_client("JEV_ROUTING_ENABLED"), JevClient)
+
     def test_returns_none_when_feature_is_off(self) -> None:
         with patch.dict("os.environ", {"JEV_ROUTING_ENABLED": "false", "TYPESAFE_API_KEY": "key"}):
             self.assertIsNone(build_jev_client("JEV_ROUTING_ENABLED"))

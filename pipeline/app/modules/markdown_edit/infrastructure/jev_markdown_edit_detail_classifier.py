@@ -65,7 +65,7 @@ def with_jev_edit_detail(
     classifier: ChatCompletionsMarkdownEditDetailClassifier,
 ) -> ChatCompletionsMarkdownEditDetailClassifier | JevMarkdownEditDetailClassifier:
     """API 키가 있으면 Jev를 먼저 쓴다. `JEV_EDIT_DETAIL_ENABLED=false`이거나 키가 없으면 기존 LLM 분류를 그대로 쓴다."""
-    client = build_jev_client(JEV_EDIT_DETAIL_ENABLED_ENV, interactive=True, default_enabled=True)
+    client = build_jev_client(JEV_EDIT_DETAIL_ENABLED_ENV, interactive=True)
     if client is None:
         return classifier
     return JevMarkdownEditDetailClassifier(

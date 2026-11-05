@@ -46,14 +46,14 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
   - 정의가 없는 개념은 보내지 않는다.
   - 병합 대상이 다시 병합되는 연쇄는 버린다.
   - missing hint가 있으면 기존 LLM 결과의 `hint_resolutions`만 쓴다.
-- **Skill 의도 분류(추가):** Skill을 만들 때 지원 여부·Skill 종류·참고 방식·원문 필요 여부를 고른다. 설정은 `JEV_SKILL_INTENT_ENABLED`(기본 `false`)이고 대체 경로는 기존 LLM 분류(`prompts/skill_intent_classifier.system.md`)다. Skill 본문 작성은 계속 LLM이 한다.
+- **Skill 의도 분류(추가):** Skill을 만들 때 지원 여부·Skill 종류·참고 방식·원문 필요 여부를 고른다. 설정은 `JEV_SKILL_INTENT_ENABLED`이고 대체 경로는 기존 LLM 분류(`prompts/skill_intent_classifier.system.md`)다. Skill 본문 작성은 계속 LLM이 한다.
   - 선택지는 분류 결과 계약(`author_skill._intent_result`)을 통과하는 조합이다. 참고 문서가 없으면 21개, 1개면 48개, 2개 이상이면 40개다(고정 양식은 참고 문서가 정확히 1개일 때만 연다). 원문 필요 여부는 규칙(`inferred_requires_source`)으로 정해지지 않는 `document-create`일 때만 true를 둔다. `template`은 규칙이 정해 분류값을 쓰지 않는다. 라우팅과 같이 고정 무작위 순서로 섞고 응답 예산은 15초다.
   - 개발 중 실측(2026-10-27, 문장마다 1회): 프롬프트 예시 12문장 LLM(Claude Haiku 4.5) 12/12·Jev 12/12, 예시 밖 5문장 LLM 5/5·Jev 4/5. Jev 오답은 표 변환 Skill에 `template`을 더한 건이다.
-- **폴더 지목(추가):** 작업 탭 폴더 내용 조회(`folder_lookup`)에서 메시지가 지목한 폴더를 고른다. 설정은 `JEV_FOLDER_LOOKUP_ENABLED`(기본 `false`)이고 대체 경로는 LLM 판단(`prompts/agent_folder_lookup.system.md`)이다.
+- **폴더 지목(추가):** 작업 탭 폴더 내용 조회(`folder_lookup`)에서 메시지가 지목한 폴더를 고른다. 설정은 `JEV_FOLDER_LOOKUP_ENABLED`이고 대체 경로는 LLM 판단(`prompts/agent_folder_lookup.system.md`)이다.
   - 선택지는 폴더 경로마다 하나, 이름이 같은 폴더가 여러 곳이면 그 이름 전부를 뜻하는 묶음 하나, `지목 없음`이다. Jev는 하나만 고르므로 같은 이름을 가릴 단서가 없으면 묶음을 골라 되묻게 한다. 라우팅과 같이 고정 무작위 순서로 섞는다.
   - 선택지가 255개를 넘으면 LLM 판단을 쓴다. 응답 예산은 라우팅과 같은 15초이고, 요청 마감이 더 가까우면 그 안에 끝낸다(대화형 Jev 호출 공통).
   - 개발 중 12문장 실측(2026-10-27, 문장마다 1회): Jev 11/12, LLM(Claude Haiku 4.5) 12/12. Jev 오답은 `최상위 회의록 폴더`에서 묶음을 고른 건이다.
-- **편집 세부 분류(추가):** 라우터가 편집으로 고른 요청의 `requested_formats`·`addition_only`·`structure_change`·`target_language`를 고른다(ADR-0043). 설정은 `JEV_EDIT_DETAIL_ENABLED`(기본 `true`, 다른 Jev 설정과 달리 키가 있으면 켜진다)이고 대체 경로는 기존 LLM 분류(`prompts/markdown_edit_detail.system.md`)다.
+- **편집 세부 분류(추가):** 라우터가 편집으로 고른 요청의 `requested_formats`·`addition_only`·`structure_change`·`target_language`를 고른다(ADR-0043). 설정은 `JEV_EDIT_DETAIL_ENABLED`이고 대체 경로는 기존 LLM 분류(`prompts/markdown_edit_detail.system.md`)다.
   - Jev는 질문마다 하나만 고른다. 결과의 주 형식 하나를 형식 9개 + `없음` + 글머리표·체크리스트 자리에서 고른다. 글머리표·체크리스트는 라우터 목표가 맡으므로 형식으로 넘기지 않는다. `addition_only`·`structure_change`는 예/아니오, 번역 언어는 `ko`·`en`·`없음`에서 고른다(번역 검사가 구분하는 값이 이 둘뿐이다). 모두 4개 질문을 한 요청으로 보낸다.
   - 선택지 설명에 LLM 프롬프트의 정의를 그대로 둔다. "true for this request"처럼 뜻 없는 선택지로는 링크·이미지 변경을 구조 변경으로 잡지 못했다.
   - 판정 규칙은 LLM 프롬프트에서 JSON 출력 형식 절을 뺀 것이고 요청 state에 한 번만 둔다. 입력은 LLM 분류와 같은 요청 문장·대화 요약·Skill 지침이다. 응답 예산은 라우팅과 같은 15초이고, 요청 마감이 더 가까우면 그 안에 끝낸다(대화형 Jev 호출 공통).
@@ -67,7 +67,7 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
 
 ## Consequences
 - 평가와 달리 운영 요청에는 숫자 개인정보 마스킹과 LLM 보안 경계를 항상 적용한다(개념 병합 평가는 보안 경계 없이 측정했다).
-- 기본값이 꺼짐이라 배포해도 동작은 바뀌지 않는다. 키를 Secrets Manager에 넣고 설정을 켜면 해당 경로만 Jev를 쓴다.
+- 모든 경로의 설정 기본값은 켜짐이다(2026-11-05). 키가 있으면 Jev를 쓰고, 오류가 있는 경로만 `false`로 끈다. 처음에는 꺼짐이 기본이었다.
 - 라우팅의 Jev route는 설명 대신 고정된 `reason`을 남긴다.
 - 근거 선택은 관련 페이지 밖의 workspace 근거도 고를 수 있다. 질문마다 workspace unit을 모두 읽어 점수를 매긴다. 저장 벡터가 아직 없는 unit은 질문 시점에 임베딩하지 않고 dense 점수를 0으로 둔다(lexical 점수는 하이브리드가 전체 후보 기준으로 따로 넣는다). 벡터가 없는 unit만 BM25로 대신하면 그 안에서만 최댓값 정규화돼 관련성과 상관없이 1.0이 나오고 BM25가 이중으로 들어간다.
 - 개념 후보에 임베딩 점수가 들어가 표기가 전혀 다른 동의어(한영 번역 등)도 후보에 든다. 개념 하나에 후보 수만큼 질문을 보내므로 요청 수·비용이 이전(질문 하나)보다 크다. 후보 100개면 요청 약 3개, 약 1.5만 토큰이다(짧은 정의 기준 오프라인 추정. 보안 경계를 질문마다 붙이던 때는 약 3.9만 토큰).
