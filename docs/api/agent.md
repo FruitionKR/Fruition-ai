@@ -145,7 +145,7 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 | `agent_run_artifacts`(수정안·미리 보기·`undo-*`·이 문서를 만든 `create_document`)와 객체 | 키 단위로 객체를 지우고 행을 지운다. 같은 run의 다른 문서는 건드리지 않는다 |
 | `agent_plan_operations` | `apply_document_edit`·`create_document`의 `reason`을 안내 문구로 바꾸고, `pending`이면 `skipped`(`document_purged`)로 둔다 |
 | `agent_runs.result`(이 문서의 `markdown_turn`) | `edit`·`generated_markdown`을 뺀다 |
-| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서인 항목의 `text`·`expected_claims`만 비운다 |
+| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서이거나 `source_refs`에 이 문서가 있는 항목의 `text`·`expected_claims`만 비운다. 여러 문서를 걸친 근거는 나눌 수 없어 함께 비운다 |
 | `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
 | `pipeline_runs.manifest`(이 문서의 run. post_ingest는 `document_id`가 없어 같은 id의 `ai_task_runs.command`로 찾는다) | `{"scrubbed": true}`로 바꾼다 |
 | `ai_task_changes` | 이 문서·소스 페이지·이 문서 run의 변경 기록을 지운다(소스 페이지·소스 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다. 다른 문서 run의 `pipeline_runs`·`document_quality_reviews` 기록은 이 문서의 근거만 비운다 |
