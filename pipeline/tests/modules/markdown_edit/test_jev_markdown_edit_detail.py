@@ -172,9 +172,14 @@ class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
 
 
 class WithJevEditDetailTest(unittest.TestCase):
+    def test_key_alone_turns_jev_on_by_default(self) -> None:
+        llm = ChatCompletionsMarkdownEditDetailClassifier(object(), "system")  # type: ignore[arg-type]
+        with patch.dict(os.environ, {JEV_API_KEY_ENV: "key"}, clear=True):
+            self.assertIsInstance(with_jev_edit_detail(llm), JevMarkdownEditDetailClassifier)
+
     def test_off_or_without_key_keeps_llm_classifier(self) -> None:
         llm = ChatCompletionsMarkdownEditDetailClassifier(object(), "system")  # type: ignore[arg-type]
-        for env in ({}, {JEV_EDIT_DETAIL_ENABLED_ENV: "true"}, {JEV_API_KEY_ENV: "key"}):
+        for env in ({}, {JEV_EDIT_DETAIL_ENABLED_ENV: "true"}, {JEV_API_KEY_ENV: "key", JEV_EDIT_DETAIL_ENABLED_ENV: "false"}):
             with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
                 self.assertIs(with_jev_edit_detail(llm), llm)
 

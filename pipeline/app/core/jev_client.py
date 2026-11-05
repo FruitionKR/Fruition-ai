@@ -51,11 +51,11 @@ class JevUnavailable(RuntimeError):
 
 
 def build_jev_client(feature_env: str, *, interactive: bool = False) -> JevClient | None:
-    """기능 설정이 켜져 있고 API 키가 있으면 클라이언트를 만든다.
+    """API 키가 있으면 클라이언트를 만든다. 기능 설정은 기본으로 켜져 있고, 오류가 있을 때 false로 끈다.
 
     `interactive`면 호출 전체를 `INTERACTIVE_DEADLINE_SECONDS` 안에 끝내고, 타임아웃은 재시도하지 않는다.
     """
-    if os.environ.get(feature_env, "false").strip().lower() not in _TRUE_VALUES:
+    if os.environ.get(feature_env, "true").strip().lower() not in _TRUE_VALUES:
         return None
     api_key = first_env((JEV_API_KEY_ENV,), strip=True)
     if not api_key:
