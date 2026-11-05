@@ -104,6 +104,7 @@ def _plan_with(worker_reader: MagicMock, hierarchy: list[dict[str, object]], pla
     )
     repository.next_plan_version.return_value = 1
     plans, gateway, generator = MagicMock(), MagicMock(), MagicMock()
+    plans.load_document_edit_artifacts.return_value = ()
     generator.generate.return_value = plan
     worker = AgentWorker(repository, plans, gateway, generator, folder_content_reader=worker_reader)
     with (

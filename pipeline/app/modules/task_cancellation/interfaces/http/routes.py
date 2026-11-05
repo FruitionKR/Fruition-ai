@@ -19,11 +19,16 @@ def cancel_task(run_id: str, request: CancelTaskRequest):
                 ("run_id", run_id), ("workspace_id", request.workspace_id), ("user_id", request.user_id),
             )):
                 raise ValueError("Cancellation command identity mismatch.")
+            # document가 영구 삭제한 문서의 본문을 command에서 지웠다. 해시가 달라져 등록·대조할 수 없고, 끝난 실행만 지우므로 이미 등록돼 있다.
+            purged = request.command.get("document_purged") is True
             if request.command.get("kind") == "agent":
-                register_cancelled_turn(request.command)
+                if not purged:
+                    register_cancelled_turn(request.command)
                 run = PostgresAgentRunRepository().cancel(request.workspace_id, request.user_id, run_id)
                 return {"id": run.id, "status": run.status, "error_code": run.error_code}
-            if request.command.get("kind") == "skill_test_run":
+            if purged:
+                pass
+            elif request.command.get("kind") == "skill_test_run":
                 # 테스트 실행은 저장한 것이 없어 되돌릴 변경이 없다. 실행과 같은 신원 command로 맞춰 등록한다
                 # (document는 본문 대신 해시를 담아 보낸다).
                 journal.register(skill_test_run_command(run_id, request.workspace_id, request.user_id))
@@ -33,6 +38,9 @@ def cancel_task(run_id: str, request: CancelTaskRequest):
         journal.rollback_pending()
         return journal.status(run_id, request.workspace_id, request.user_id)
     except KeyError as exc:
+        # 등록을 건너뛴 취소가 404면 document가 일시 오류로 보고 계속 재시도한다.
+        if request.command is not None and request.command.get("document_purged") is True:
+            raise HTTPException(409, "Task not found.") from exc
         raise HTTPException(404, "Task not found.") from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

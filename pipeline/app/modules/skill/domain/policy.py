@@ -27,6 +27,10 @@ READ_TOOLS: frozenset[SkillTool] = frozenset(
         "get_document_content",
     }
 )
+# 참조 문서 상한. Skill 작성과 Agent turn 첨부 문서가 같은 값을 쓴다.
+MAX_REFERENCE_COUNT = 3
+MAX_REFERENCE_CHARS = 40_000
+MAX_TOTAL_REFERENCE_CHARS = 80_000
 FOLDER_MUTATION_TOOLS: frozenset[SkillTool] = frozenset(
     {"create_folder", "rename_folder", "move_folder", "move_document", "rename_document"}
 )

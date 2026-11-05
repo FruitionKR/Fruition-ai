@@ -1,7 +1,10 @@
 from app.modules.query.application.answer_context_formatter import AnswerContextFormatter
 from app.modules.query.application.evidence_selector import EvidenceSelector
 from app.modules.query.application.ports import EmbeddingSearchPort, EvidenceSelectorPort, TextSearchPort
+from dataclasses import replace
+
 from app.modules.query.domain.entities import (
+    EvidenceSnippet,
     GraphContext,
     OutputLanguage,
     QueryContext,
@@ -57,13 +60,15 @@ class BuildQueryContextUseCase:
         output_language: OutputLanguage | None = None,
         response_length: ResponseLength | None = None,
         allow_web_search: bool | None = None,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryContext:
-        evidence_snippets = self._evidence_selector.select(
+        selected = self._evidence_selector.select(
             evidence_question or question,
             related_pages,
             embedding_units_by_page_id or {},
             workspace_id=workspace_id,
         )
+        evidence_snippets = _with_pinned_evidence(pinned_evidence, selected)
         return QueryContext(
             question=question,
             graph_context=graph_context,
@@ -83,4 +88,15 @@ class BuildQueryContextUseCase:
             output_language=output_language,
             response_length=response_length,
             allow_web_search=allow_web_search,
+            pinned_evidence=pinned_evidence,
         )
+
+
+def _with_pinned_evidence(
+    pinned: tuple[EvidenceSnippet, ...],
+    selected: list[EvidenceSnippet],
+) -> list[EvidenceSnippet]:
+    """고정 근거를 앞에 두고 인용 번호(rank)를 1부터 다시 매긴다."""
+    if not pinned:
+        return selected
+    return [replace(snippet, rank=rank) for rank, snippet in enumerate((*pinned, *selected), start=1)]

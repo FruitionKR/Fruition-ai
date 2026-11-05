@@ -19,6 +19,7 @@ from app.modules.agent_run.interfaces.http.schemas import (
     AgentArtifactResolveResponse,
     AgentArtifactResponse,
     AgentRunActorRequest,
+    AgentRunEditPreviewsResponse,
     AgentRunResponse,
     AgentToolExecuteAuthorizationRequest,
     AgentToolReadAuthorizationRequest,
@@ -144,6 +145,19 @@ def get_agent_run(
     if run is None:
         raise HTTPException(status_code=404, detail="AgentRun not found.")
     return AgentRunResponse.from_domain(run)
+
+
+@router.get("/{run_id}/edit-previews", response_model=AgentRunEditPreviewsResponse)
+def get_agent_run_edit_previews(
+    run_id: str,
+    workspace_id: str,
+    user_id: str,
+    repository: AgentRunManagementRepositoryPort = Depends(get_agent_run_repository),
+) -> dict[str, object]:
+    previews = repository.get_edit_previews(workspace_id, user_id, run_id)
+    if previews is None:
+        raise HTTPException(status_code=404, detail="AgentRun not found.")
+    return previews
 
 
 @router.post("/{run_id}/approve", response_model=AgentRunResponse)

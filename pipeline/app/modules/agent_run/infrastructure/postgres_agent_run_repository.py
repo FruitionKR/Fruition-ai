@@ -13,16 +13,31 @@ from app.modules.agent_run.application.ports import (
     AgentApprovalRepositoryPort,
     AgentRunRepositoryPort,
 )
-from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
-from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.entities import (
+    MAX_ARTIFACT_BYTES,
+    AgentRun,
+    DocumentEditArtifact,
+    StartAgentRunArtifact,
+)
+from app.modules.agent_run.domain.plan import (
+    DOCUMENT_PURGED_ERROR_CODE,
+    NOT_SELECTED_ERROR_CODE,
+    AgentPlan,
+    AgentPlanOperation,
+)
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
+    is_missing_object_error,
     read_text_object,
     write_text_object,
 )
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+
+
+ARTIFACT_UNAVAILABLE_MESSAGE = "Agent plan content expired and must be requested again."
+DOCUMENT_PURGED_MESSAGE = "Agent plan target document was permanently deleted."
 
 
 def agent_command_hash(command: dict[str, Any]) -> str:
@@ -54,10 +69,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         self,
         run: AgentRun,
         job_id: str,
-        artifact: StartAgentRunArtifact | None = None,
+        artifacts: tuple[StartAgentRunArtifact, ...] = (),
     ) -> AgentRun:
-        object_key = _artifact_object_key(run.id, artifact.id) if artifact is not None else ""
-        object_written = False
+        written_keys: list[str] = []
         try:
             with database.connect_ai() as conn:
                 if self._parent_run_id is not None:
@@ -73,7 +87,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     # 하위 run 생성과 참조를 함께 커밋하여 취소·재전달 경합을 막는다.
                     conn.execute("UPDATE agent_runs SET result = %s, updated_at = now() WHERE id = %s",
                                  (Json({"run_id": run.id}), self._parent_run_id))
-                if artifact is not None:
+                for artifact in artifacts:
                     _validate_artifact_metadata(
                         artifact.purpose,
                         artifact.document_id,
@@ -81,8 +95,14 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         artifact.target,
                     )
                     _validate_content_hash(artifact.markdown, artifact.content_hash)
+                    object_key = _artifact_object_key(run.id, artifact.id)
                     write_text_object(object_key, artifact.markdown)
-                    object_written = True
+                    written_keys.append(object_key)
+                    if artifact.preview_json is not None:
+                        _validate_size(artifact.preview_json)
+                        preview_key = _preview_object_key(run.id, artifact.id)
+                        write_text_object(preview_key, artifact.preview_json, "application/json; charset=utf-8")
+                        written_keys.append(preview_key)
                 row = conn.execute(
                     """
                     INSERT INTO agent_runs (
@@ -104,14 +124,16 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         run.rule_summary,
                     ),
                 ).fetchone()
-                if artifact is not None:
+                for position, artifact in enumerate(artifacts):
+                    # 한 트랜잭션의 now()는 같으므로 created_at에 순서를 담아 계획이 첨부 순서를 따르게 한다.
                     conn.execute(
                         """
                         INSERT INTO agent_run_artifacts (
                             id, run_id, workspace_id, user_id, content_hash, purpose, object_key,
-                            document_id, base_version, target, expires_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                  now() + interval '1 day')
+                            document_id, base_version, target, display_name, summary, preview_object_key,
+                            created_at, expires_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                  now() + %s * interval '1 microsecond', now() + interval '1 day')
                         """,
                         (
                             artifact.id,
@@ -120,10 +142,14 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                             run.user_id,
                             artifact.content_hash,
                             artifact.purpose,
-                            object_key,
+                            _artifact_object_key(run.id, artifact.id),
                             artifact.document_id,
                             artifact.base_version,
                             Json(artifact.target) if artifact.target is not None else None,
+                            artifact.display_name,
+                            artifact.summary,
+                            _preview_object_key(run.id, artifact.id) if artifact.preview_json is not None else None,
+                            position,
                         ),
                     )
                 conn.execute(
@@ -134,10 +160,75 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     (job_id, run.id),
                 )
         except Exception:
-            if object_written:
-                delete_object(object_key)
+            for written_key in written_keys:
+                delete_object(written_key)
             raise
         return _row_to_run(row)
+
+    def load_document_edit_artifacts(self, run_id: str) -> tuple[DocumentEditArtifact, ...]:
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT *, expires_at IS NOT NULL AND expires_at <= now() AS expired
+                FROM agent_run_artifacts
+                WHERE run_id = %s AND preview_object_key IS NOT NULL
+                ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(
+            DocumentEditArtifact(
+                id=row["id"],
+                content_hash=row["content_hash"],
+                document_id=row["document_id"],
+                base_version=row["base_version"],
+                target=row["target"],
+                summary=row["summary"] or "",
+                expired=row["expired"],
+            )
+            for row in rows
+        )
+
+    def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
+        with database.connect_ai() as conn:
+            # 수정안은 run과 같은 트랜잭션에서 만들어 만료 시각이 run 생성 + 1일이다. 행이 지워진 뒤에는 이 값으로 답한다.
+            run = conn.execute(
+                """
+                SELECT current_plan_id, LEAST(created_at + interval '1 day', now()) AS removed_expires_at
+                FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s
+                """,
+                (run_id, workspace_id, user_id),
+            ).fetchone()
+            if run is None:
+                return None
+            rows = conn.execute(
+                """
+                SELECT operation.id AS operation_id, operation.base_version, artifact.id AS artifact_id,
+                       artifact.document_id, artifact.display_name, artifact.summary, artifact.preview_object_key,
+                       artifact.expires_at,
+                       artifact.expires_at IS NOT NULL AND artifact.expires_at <= now() AS expired
+                FROM agent_plan_operations operation
+                LEFT JOIN agent_run_artifacts artifact
+                  ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+                WHERE operation.plan_id = %s AND operation.tool_name = 'apply_document_edit'
+                  AND operation.error_code IS DISTINCT FROM %s
+                  AND (artifact.id IS NULL OR artifact.preview_object_key IS NOT NULL)
+                ORDER BY operation.sequence
+                """,
+                (run_id, run["current_plan_id"], DOCUMENT_PURGED_ERROR_CODE),
+            ).fetchall()
+        # 객체가 남아 있으면 만료 뒤에도 내용을 돌려준다. 화면은 expires_at이 지났는지로 수락을 막으며 이유를 보여 주므로,
+        # 정리로 지워진 수정안도 null이 아닌 지난 시각으로 답한다. null이면 만료가 아니라 수락이 열린다.
+        previews = [_edit_preview_item(row) for row in rows]
+        expiries = [
+            row["expires_at"] if row["artifact_id"] else run["removed_expires_at"]
+            for row in rows
+            if row["expires_at"] is not None or not row["artifact_id"]
+        ]
+        return {
+            "items": [preview for preview in previews if preview is not None],
+            "expires_at": min(expiries, default=None),
+        }
 
     def get_for_user(self, workspace_id: str, user_id: str, run_id: str) -> AgentRun | None:
         with database.connect_ai() as conn:
@@ -493,6 +584,10 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 or current_plan["operation_hash"] != plan.operation_hash
             ):
                 raise ValueError("Agent plan changed and must be reviewed again.")
+            if _has_unavailable_artifact(conn, run.id, plan.id, selected_operation_ids, ignore_purged=True):
+                raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
+            if _only_purged_operations_selected(conn, plan.id, selected_operation_ids):
+                raise ValueError(DOCUMENT_PURGED_MESSAGE)
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
@@ -600,6 +695,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             if run is None or run["status"] not in {"awaiting_approval", "clarification_required"}:
                 raise ValueError("AgentRun cannot be revised in its current state.")
             if run["current_plan_id"]:
+                # 수정안 없이 다시 계획하면 첨부 수정 경로를 벗어나 모델이 다른 계획을 세운다. 다시 요청하게 막는다.
+                if _has_unavailable_artifact(conn, run_id, run["current_plan_id"]):
+                    raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
                 conn.execute(
                     "UPDATE agent_plans SET status = 'superseded' WHERE id = %s",
                     (run["current_plan_id"],),
@@ -622,6 +720,83 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 (job_id, run_id),
             )
         return _row_to_run(updated)
+
+
+def _edit_preview_item(row: dict[str, Any]) -> dict[str, object] | None:
+    """미리 보기 한 건. 수정안이 정리됐으면(행 없음, 또는 만료된 행의 객체만 먼저 지워짐) None이다."""
+    if row["artifact_id"] is None:
+        return None
+    try:
+        preview = json.loads(read_text_object(row["preview_object_key"]))
+    except Exception as exc:
+        if row["expired"] and is_missing_object_error(exc):
+            return None
+        raise
+    return {
+        "operation_id": row["operation_id"],
+        "document_id": row["document_id"],
+        "display_name": row["display_name"] or "",
+        "base_version": row["base_version"],
+        "summary": row["summary"] or "",
+        **preview,
+    }
+
+
+def _has_unavailable_artifact(
+    conn: Any,
+    run_id: str,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None = None,
+    *,
+    ignore_purged: bool = False,
+) -> bool:
+    """계획의 작업이 쓰는 artifact가 만료됐거나 정리됐는지 본다. operation_ids가 있으면 그 작업만 본다.
+
+    호출자가 run 행을 잠근 상태에서 부른다. 정리 작업도 run 행을 잠그므로, 이 확인을 통과한 승인과 정리가 겹치지 않는다.
+    ignore_purged: 영구 삭제한 문서의 작업은 이미 건너뛰게 표시돼 있어 승인할 때는 나머지 문서를 막지 않는다.
+    """
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_plan_operations operation
+        LEFT JOIN agent_run_artifacts artifact
+          ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+        WHERE operation.plan_id = %s
+          AND jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
+          AND (%s::text[] IS NULL OR operation.id = ANY(%s::text[]))
+          AND (NOT %s OR operation.error_code IS DISTINCT FROM %s)
+          AND (artifact.id IS NULL OR artifact.expires_at <= now())
+        LIMIT 1
+        """,
+        (
+            run_id,
+            plan_id,
+            list(operation_ids) if operation_ids is not None else None,
+            list(operation_ids) if operation_ids is not None else None,
+            ignore_purged,
+            DOCUMENT_PURGED_ERROR_CODE,
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def _only_purged_operations_selected(
+    conn: Any,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None,
+) -> bool:
+    """고른 작업이 모두 영구 삭제한 문서의 것이면 실행할 것이 없다. 호출자가 run 행을 잠근 상태에서 부른다."""
+    rows = conn.execute(
+        """
+        SELECT status, error_code FROM agent_plan_operations
+        WHERE plan_id = %s AND (%s::text[] IS NULL OR id = ANY(%s::text[]))
+        """,
+        (plan_id, list(operation_ids) if operation_ids is not None else None,
+         list(operation_ids) if operation_ids is not None else None),
+    ).fetchall()
+    return bool(rows) and all(
+        row["status"] == "skipped" and row["error_code"] == DOCUMENT_PURGED_ERROR_CODE for row in rows
+    )
 
 
 def _row_to_run(row: dict[str, Any]) -> AgentRun:
@@ -726,15 +901,27 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _run_object_prefix(run_id: str) -> str:
+    return f"agent-runs/{hashlib.sha256(run_id.encode('utf-8')).hexdigest()}/"
+
+
 def _artifact_object_key(run_id: str, artifact_id: str) -> str:
-    scope = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     suffix = hashlib.sha256(f"{run_id}:{artifact_id}".encode("utf-8")).hexdigest()
-    return f"agent-runs/{scope}/artifacts/{suffix}.md"
+    return f"{_run_object_prefix(run_id)}artifacts/{suffix}.md"
+
+
+def _preview_object_key(run_id: str, artifact_id: str) -> str:
+    """파기가 run 접두사로 지우므로 artifact와 같은 접두사 아래에 둔다(postgres_purge._sweep_artifacts)."""
+    return _artifact_object_key(run_id, artifact_id).removesuffix(".md") + ".preview.json"
+
+
+def _validate_size(text: str) -> None:
+    if len(text.encode("utf-8")) > MAX_ARTIFACT_BYTES:
+        raise ValueError("Agent artifact Markdown is too large.")
 
 
 def _validate_content_hash(markdown: str, content_hash: str) -> None:
-    if len(markdown.encode("utf-8")) > 5 * 1024 * 1024:
-        raise ValueError("Agent artifact Markdown is too large.")
+    _validate_size(markdown)
     expected = f"sha256:{hashlib.sha256(markdown.encode('utf-8')).hexdigest()}"
     if content_hash != expected:
         raise ValueError("Agent artifact content hash does not match its content.")

@@ -29,8 +29,14 @@ from app.modules.agent_run.domain.entities import (
     AgentJob,
     AgentRunContext,
     ContentArtifactReference,
+    DocumentEditArtifact,
 )
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    AgentPlan,
+    AgentPlanIntentClarificationRequired,
+    AgentPlanOperation,
+    build_agent_plan,
+)
 from app.modules.agent_run.domain.content_duplicates import (
     ContentReview,
     content_review_summary,
@@ -50,6 +56,11 @@ _CONTENT_CHECK_MAX_DOCUMENTS_PER_FOLDER = 50
 _CONTENT_CHECK_MAX_DOCUMENT_CHARS = 50_000
 _TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "cancel_requested", "rolling_back", "rollback_failed"}
+)
+# AI가 더 모델을 부르지 않는 상태. 앞의 일곱 개는 document-svc의 AUTONOMOUS_TERMINAL과 같고, 되묻기는 사용자 답을
+# 기다리는 동안 수집이 밀리지 않게 넣는다. cancel_requested·rolling_back은 곧 cancelled가 되므로 뺀다.
+_USAGE_COLLECT_RUN_STATUSES = frozenset(
+    {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "rollback_failed", "clarification_required"}
 )
 class _ToolBudgetExhausted(Exception):
     """재시도 도중 tool 호출 예산이 소진되었음을 알리는 내부 신호.
@@ -117,29 +128,39 @@ class AgentWorker:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
         # 실행 잠금을 풀고 job을 끝낸 뒤 알린다. 승인 대기 interrupt가 checkpoint에 남은 뒤라야
-        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있다.
-        if completed and job.job_type == "planning":
-            self._notify_plan_ready(job.run_id)
+        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있고, 이 job의 모델 호출이 원장에서 끝난 뒤라야
+        # document-svc가 그 호출까지 수집한다.
+        self._notify_document_service(job, plan_finished=completed and job.job_type == "planning")
 
-    def _notify_plan_ready(self, run_id: str) -> None:
-        """계획이 승인 대기에 들어갔으면 document-svc에 알려 사용자의 자동 승인 설정을 적용하게 한다.
+    def _notify_document_service(self, job: AgentJob, *, plan_finished: bool) -> None:
+        """계획이 승인 대기에 들어갔거나 run이 멈췄으면 document-svc의 plan-ready를 부른다.
 
-        승인 여부는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 정한다. 알림이 실패해도 계획은 승인 대기로
-        남아 사용자가 직접 승인할 수 있고(화면 조회 때 document-svc가 다시 판단한다), job 결과는 바꾸지 않는다.
+        승인 대기에서는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 자동 승인을 정한다. 알림이 실패해도 계획은
+        승인 대기로 남아 사용자가 직접 승인할 수 있다(화면 조회 때 document-svc가 다시 판단한다).
+
+        끝난 상태·되묻기에서도 같은 호출을 쓴다. 이름과 달리 plan-ready는 사용량 수집을 대기열에 넣고 run을 다시 조회해,
+        자동 승인은 awaiting_approval에서만 판단하고 끝난 run은 닫는 범용 신호다. 화면을 닫은 작업도 일일 대사까지
+        밀리지 않게 하려고 새 내부 API를 늘리지 않고 재사용한다. document-svc 쪽은 같은 run을 여러 번 알려도 청구가
+        호출 단위로 한 번만 쌓인다. 알림은 job마다 한 번만 시도하고, 실패하면 일일 대사에 맡기며 job 결과는 바꾸지 않는다.
         """
         if self._plan_ready_notifier is None:
             return
         try:
-            run = self._repository.load_context(run_id).run
-            if run.status != "awaiting_approval":
+            run = self._repository.load_context(job.run_id).run
+            # markdown_turn 복구는 AgentRun이 아니다. 턴 사용량은 Kafka 결과와 취소 흐름이 수집한다.
+            if run.action == "markdown_turn":
+                return
+            if run.status not in _USAGE_COLLECT_RUN_STATUSES and not (
+                plan_finished and run.status == "awaiting_approval"
+            ):
                 return
             self._plan_ready_notifier.notify_plan_ready(
                 run_id=run.id, workspace_id=run.workspace_id, user_id=run.user_id
             )
         except Exception as exc:
             logger.warning(
-                "Agent 계획 승인 대기 알림 실패(수동 승인으로 남김): run_id=%s type=%s detail=%s",
-                run_id,
+                "Agent run 상태 알림 실패(승인 대기는 수동 승인, 사용량은 일일 대사로 남김): run_id=%s type=%s detail=%s",
+                job.run_id,
                 type(exc).__name__,
                 _failure_detail(exc),
             )
@@ -292,8 +313,6 @@ class AgentWorker:
         self._plan_run(job.run_id)
 
     def _plan_run(self, run_id: str) -> str | None:
-        if self._plan_generator is None:
-            raise ValueError("Agent planning requires a plan generator.")
         context = self._repository.load_context(run_id)
         if context.run.status not in {"queued", "planning", "clarification_required"}:
             return
@@ -303,6 +322,14 @@ class AgentWorker:
             "planning",
         ):
             raise ValueError("AgentRun cannot enter planning.")
+        # 첨부 문서 수정은 turn에서 만든 수정안이 곧 계획이다. 트리와 모델이 필요 없다.
+        if context.run.action == "workspace_workflow":
+            edit_artifacts = self._run_repository.load_document_edit_artifacts(run_id)
+            if edit_artifacts:
+                self._save_document_edit_plan(context, edit_artifacts)
+                return None
+        if self._plan_generator is None:
+            raise ValueError("Agent planning requires a plan generator.")
         hierarchy = scoped_hierarchy(self._inspect_hierarchy(context), context.run.target_folder_id)
         content_review = self._review_document_contents(context, hierarchy)
         content_artifacts = self._load_content_artifacts(context)
@@ -343,6 +370,47 @@ class AgentWorker:
                 ),
             )
         self._run_repository.save_plan(run_id, reviewed)
+
+    def _save_document_edit_plan(
+        self,
+        context: AgentRunContext,
+        artifacts: tuple[DocumentEditArtifact, ...],
+    ) -> None:
+        if any(artifact.expired for artifact in artifacts):
+            raise ValueError("Document edit artifact expired.")
+        if context.run.skill_version_id is not None and "apply_document_edit" not in context.allowed_tools:
+            raise ValueError("Agent plan contains tools not allowed by the selected Skill.")
+        operations = tuple(
+            AgentPlanOperation(
+                id=str(uuid4()),
+                sequence=sequence,
+                tool_name="apply_document_edit",
+                target_type="document",
+                target_id=artifact.document_id,
+                base_version=artifact.base_version,
+                source_parent_id=None,
+                destination_parent_id=None,
+                arguments={
+                    "document_id": artifact.document_id,
+                    "base_version": artifact.base_version,
+                    "target": artifact.target,
+                    "content_artifact_id": artifact.id,
+                    "content_hash": artifact.content_hash,
+                },
+                reason=artifact.summary,
+            )
+            for sequence, artifact in enumerate(artifacts, start=1)
+        )
+        self._run_repository.save_plan(
+            context.run.id,
+            build_agent_plan(
+                str(uuid4()),
+                context.run.id,
+                self._repository.next_plan_version(context.run.id),
+                f"아직 바꾸지 않았습니다. 승인하면 문서 {len(operations)}개를 수정합니다.",
+                operations,
+            ),
+        )
 
     def _review_document_contents(
         self,
@@ -620,7 +688,19 @@ class AgentWorker:
                 raise _ToolBudgetExhausted()
             if self._active_execution_context(context.run.id) is None:
                 return None
-            if not self._rollback.prepare(context, plan, operation, arguments):
+            # 스냅샷 실패는 요청을 보내기 전이다. 전방 실행 기록을 남기지 않아 롤백이 실행하지 않은 단계로 건너뛴다.
+            try:
+                if not self._rollback.prepare(context, plan, operation, arguments):
+                    return None
+            except ToolGatewayError as exc:
+                if exc.retryable and attempt < 3:
+                    continue
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), _tool_error_code(exc))
+                return None
+            except (ValueError, KeyError, TypeError):
+                if operation.tool_name != "apply_document_edit":
+                    raise
+                self._repository.mark_operation(operation.id, ("running",), "failed", "rollback_snapshot_invalid")
                 return None
             self._repository.save_tool_execution(
                 run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
@@ -654,10 +734,9 @@ class AgentWorker:
                 self._repository.mark_operation(operation.id, ("running",), "succeeded")
                 return response
             except ToolGatewayError as exc:
-                error_code = f"tool_http_{exc.status_code or 'unavailable'}"
+                error_code = _tool_error_code(exc)
                 if exc.retryable and attempt < 3:
                     continue
-                status = "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
                 self._repository.save_tool_execution(
                     run_id=context.run.id,
                     plan_id=plan.id,
@@ -669,7 +748,7 @@ class AgentWorker:
                     response_metadata={},
                     error_code=error_code,
                 )
-                self._repository.mark_operation(operation.id, ("running",), status, error_code)
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), error_code)
                 return None
         return None
 
@@ -719,14 +798,20 @@ class AgentWorker:
             current = self._read_tool(context, "get_document_content", {"document_id": target_id}, budgeted=False)
             expected_version = response.get("current_version")
             expected_hash = response.get("content_hash")
-            return (
-                isinstance(expected_version, int)
-                and not isinstance(expected_version, bool)
-                and isinstance(expected_hash, str)
-                and bool(expected_hash)
-                and current.get("edit_revision") == expected_version
-                and current.get("content_hash") == expected_hash
-            )
+            current_version = current.get("edit_revision")
+            if (
+                not _is_revision(expected_version)
+                or not _is_revision(current_version)
+                or not isinstance(expected_hash, str)
+                or not expected_hash
+            ):
+                return False
+            # revision이 저장값보다 크면 저장 뒤 다른 쪽이 고친 것이므로 이 저장은 성공했다. 지금 본문이 이 저장본이라는 뜻은 아니다.
+            # 전제: 에이전트 저장은 저널(ai_task_changes)에 남지 않아 작업 취소 undo로 그 값 아래로 내려가지 않는다.
+            # undo는 revision을 이전 값으로 되돌리므로, document가 에이전트 저장을 저널에 남기도록 바꾸면 이 판단은 깨진다.
+            if current_version != expected_version:
+                return current_version > expected_version
+            return current.get("content_hash") == expected_hash
         if operation.target_type == "document" and operation.tool_name == "rename_document":
             current = self._read_tool(context, "get_document_metadata", {"document_id": target_id}, budgeted=False)
             return _response_name(current) == _response_name(response)
@@ -818,6 +903,14 @@ def scoped_hierarchy(
     return scoped
 
 
+def _tool_error_code(exc: ToolGatewayError) -> str:
+    return f"tool_http_{exc.status_code or 'unavailable'}"
+
+
+def _failed_status(exc: ToolGatewayError) -> str:
+    return "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
+
+
 def _route_job_event(state: AgentRunGraphState) -> str:
     event = state.get("event")
     if event not in {"planning", "execution", "verification"}:
@@ -871,6 +964,10 @@ def _resolve_operation_references(
     if isinstance(value, list):
         return [_resolve_operation_references(item, results) for item in value]
     return value
+
+
+def _is_revision(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _response_name(response: dict[str, object]) -> object | None:

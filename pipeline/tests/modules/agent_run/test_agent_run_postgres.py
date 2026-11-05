@@ -277,3 +277,171 @@ def test_revise_gives_the_new_plan_version_a_fresh_tool_budget(repositories) -> 
     runs.revise("ws", "user", run.id, "다시 정리", "planning-job-2")
 
     assert jobs.remaining_tool_calls(run.id) == 40
+
+
+def _edit_artifact(index: int) -> "StartAgentRunArtifact":
+    from app.modules.agent_run.domain.edit_preview import build_edit_preview
+    from app.modules.agent_run.domain.entities import StartAgentRunArtifact
+    import hashlib, json
+
+    markdown = f"문서 {index} 수정"
+    return StartAgentRunArtifact(
+        id=f"zz-artifact-{9 - index}",  # id 정렬과 첨부 순서가 다르다.
+        content_hash="sha256:" + hashlib.sha256(markdown.encode()).hexdigest(),
+        markdown=markdown,
+        purpose="apply_document_edit",
+        document_id=f"doc-{index}",
+        base_version=index + 1,
+        target={"type": "whole_document", "start_line": 1, "end_line": 1},
+        display_name=f"제목 {index}",
+        summary=f"요약 {index}",
+        preview_json=json.dumps(build_edit_preview(f"문서 {index}", markdown), ensure_ascii=False),
+    )
+
+
+def _workflow_run() -> AgentRun:
+    return AgentRun(
+        id="edit-run", workspace_id="ws", user_id="user", action="workspace_workflow", skill_version_id=None,
+        status="queued", request_summary="첨부를 고쳐줘",
+    )
+
+
+@pytest.fixture
+def storage(monkeypatch) -> dict[str, str]:
+    from app.modules.agent_run.infrastructure import postgres_agent_run_repository as module
+
+    objects: dict[str, str] = {}
+    monkeypatch.setattr(module, "write_text_object", lambda key, text, *args, **kwargs: objects.__setitem__(key, text))
+    monkeypatch.setattr(module, "read_text_object", lambda key: objects[key])
+    monkeypatch.setattr(module, "delete_object", lambda key: objects.pop(key, None))
+    return objects
+
+
+def _plan_for(runs, artifacts) -> None:
+    operations = tuple(
+        AgentPlanOperation(
+            id=f"op-{sequence}", sequence=sequence, tool_name="apply_document_edit", target_type="document",
+            target_id=artifact.document_id, base_version=artifact.base_version, source_parent_id=None,
+            destination_parent_id=None,
+            arguments={"document_id": artifact.document_id, "base_version": artifact.base_version,
+                       "target": artifact.target, "content_artifact_id": artifact.id,
+                       "content_hash": artifact.content_hash},
+            reason=artifact.summary,
+        )
+        for sequence, artifact in enumerate(artifacts, start=1)
+    )
+    runs.save_plan("edit-run", build_agent_plan("edit-plan", "edit-run", 1, "요약", operations))
+
+
+def test_document_edit_artifacts_keep_attachment_order_and_preview_columns(repositories, storage) -> None:
+    runs, _, connect = repositories
+    created = tuple(_edit_artifact(index) for index in (1, 2, 3))
+
+    runs.create_with_planning_job(_workflow_run(), "edit-job", created)
+
+    loaded = runs.load_document_edit_artifacts("edit-run")
+    assert [artifact.document_id for artifact in loaded] == ["doc-1", "doc-2", "doc-3"]
+    assert (loaded[0].summary, loaded[0].base_version, loaded[0].expired) == ("요약 1", 2, False)
+    assert len(storage) == 6
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT display_name, preview_object_key, expires_at > now() + interval '23 hours' AS day "
+            "FROM agent_run_artifacts WHERE document_id = 'doc-2'"
+        ).fetchone()
+    assert row["display_name"] == "제목 2" and row["preview_object_key"].startswith("agent-runs/") and row["day"]
+
+
+def test_artifacts_without_preview_are_not_document_edit_artifacts(repositories, storage) -> None:
+    runs, _, _ = repositories
+
+    runs.create_with_planning_job(_workflow_run(), "edit-job", (replace(_edit_artifact(1), preview_json=None),))
+
+    assert runs.load_document_edit_artifacts("edit-run") == ()
+
+
+def test_failed_run_creation_removes_every_written_object(repositories, storage, monkeypatch) -> None:
+    runs, _, _ = repositories
+    broken = replace(_edit_artifact(2), content_hash="sha256:" + "0" * 64)
+
+    with pytest.raises(ValueError):
+        runs.create_with_planning_job(_workflow_run(), "edit-job", (_edit_artifact(1), broken))
+
+    assert storage == {}
+
+
+def test_edit_previews_follow_plan_order_and_actor(repositories, storage) -> None:
+    runs, _, connect = repositories
+    created = (_edit_artifact(1), _edit_artifact(2))
+    runs.create_with_planning_job(_workflow_run(), "edit-job", created)
+    assert runs.get_edit_previews("ws", "user", "edit-run") == {"items": [], "expires_at": None}
+    _plan_for(runs, created)
+
+    previews = runs.get_edit_previews("ws", "user", "edit-run")
+
+    assert [item["operation_id"] for item in previews["items"]] == ["op-1", "op-2"]
+    first = previews["items"][0]
+    assert (first["document_id"], first["display_name"], first["base_version"], first["summary"]) == (
+        "doc-1", "제목 1", 2, "요약 1",
+    )
+    assert (first["added_lines"], first["removed_lines"]) == (1, 1)
+    assert previews["expires_at"] is not None
+    assert runs.get_edit_previews("ws", "other", "edit-run") is None
+    assert runs.get_edit_previews("other", "user", "edit-run") is None
+    assert runs.get_edit_previews("ws", "user", "missing") is None
+
+
+def test_expired_previews_stay_readable_with_past_expiry_but_artifacts_report_expired(repositories, storage) -> None:
+    runs, _, connect = repositories
+    created = (_edit_artifact(1),)
+    runs.create_with_planning_job(_workflow_run(), "edit-job", created)
+    _plan_for(runs, created)
+    with connect() as conn:
+        conn.execute("UPDATE agent_run_artifacts SET expires_at = now() - interval '1 hour'")
+
+    previews = runs.get_edit_previews("ws", "user", "edit-run")
+
+    assert len(previews["items"]) == 1
+    assert previews["expires_at"] is not None
+    assert runs.load_document_edit_artifacts("edit-run")[0].expired is True
+    assert runs.list_artifacts("ws", "user", "edit-run") == []
+
+
+def test_other_artifact_readers_do_not_expose_preview_columns(repositories, storage) -> None:
+    runs, _, _ = repositories
+    runs.create_with_planning_job(_workflow_run(), "edit-job", (_edit_artifact(1),))
+
+    listed = runs.list_artifacts("ws", "user", "edit-run")
+
+    assert set(listed[0]) == {"id", "content_hash", "purpose", "document_id", "base_version", "target"}
+
+
+def test_one_conflict_makes_the_run_conflicted_and_failure_makes_it_partial(repositories, storage) -> None:
+    runs, jobs, connect = repositories
+    created = (_edit_artifact(1), _edit_artifact(2))
+    runs.create_with_planning_job(_workflow_run(), "edit-job", created)
+    _plan_for(runs, created)
+
+    def finish(*statuses: str) -> str:
+        with connect() as conn:
+            conn.execute("UPDATE agent_runs SET status = 'verifying' WHERE id = 'edit-run'")
+            for index, status in enumerate(statuses, start=1):
+                conn.execute("UPDATE agent_plan_operations SET status = %s WHERE id = %s", (status, f"op-{index}"))
+        jobs.finish_run_from_operations("edit-run")
+        with connect() as conn:
+            return conn.execute("SELECT status FROM agent_runs WHERE id = 'edit-run'").fetchone()["status"]
+
+    assert finish("succeeded", "failed") == "partial_failed"
+    assert finish("succeeded", "forbidden") == "partial_failed"
+    assert finish("failed", "failed") == "failed"
+    assert finish("succeeded", "conflicted") == "conflicted"
+
+
+def test_rollback_skips_operation_whose_snapshot_read_failed(repositories, storage) -> None:
+    runs, jobs, connect = repositories
+    created = (_edit_artifact(1),)
+    runs.create_with_planning_job(_workflow_run(), "edit-job", created)
+    _plan_for(runs, created)
+    with connect() as conn:
+        conn.execute("UPDATE agent_plan_operations SET status = 'failed', error_code = 'tool_http_404' WHERE id = 'op-1'")
+
+    assert jobs.load_undo_records("edit-run") == []

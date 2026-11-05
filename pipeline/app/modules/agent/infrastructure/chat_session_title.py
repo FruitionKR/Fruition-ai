@@ -5,9 +5,12 @@ from app.core.llm_env import api_key_from_env
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import ChatClientConfig, ChatCompletionsJsonClient
 
 
-def generate_chat_session_title(command: dict[str, Any], result: dict[str, Any]) -> str | None:
-    """첫 문답만 요약한다. 호출자는 답변 전송 후에 실행해 응답 표시를 지연시키지 않는다."""
+def _first_turn(command: dict[str, Any], result: dict[str, Any]) -> tuple[str, str] | None:
+    """제목을 만들 첫 문답이면 질문과 답변을, 아니면 None을 돌려준다."""
     if command.get("kind") not in {"agent", "query"} or not command.get("session_id"):
+        return None
+    # document가 제목이 이미 있다고 알린 세션이다. 구 document는 키가 없고, 잘못된 타입도 없는 것으로 본다.
+    if command.get("session_title_needed") is False:
         return None
     context = command.get("conversation_context") or command
     if context.get("recent_messages") or context.get("recent_conversation_summary"):
@@ -16,6 +19,19 @@ def generate_chat_session_title(command: dict[str, Any], result: dict[str, Any])
     answer = (result.get("chat") or {}).get("answer") or result.get("answer") or result.get("message")
     if not question or not answer:
         return None
+    return question, answer
+
+
+def needs_chat_session_title(command: dict[str, Any], result: dict[str, Any]) -> bool:
+    return _first_turn(command, result) is not None
+
+
+def generate_chat_session_title(command: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """첫 문답만 요약한다. 호출자는 답변 전송 후에 실행해 응답 표시를 지연시키지 않는다."""
+    turn = _first_turn(command, result)
+    if turn is None:
+        return None
+    question, answer = turn
     client = ChatCompletionsJsonClient(ChatClientConfig(
         api_key=api_key_from_env(provider=command["provider"]),
         provider=command["provider"], model=command["model"],

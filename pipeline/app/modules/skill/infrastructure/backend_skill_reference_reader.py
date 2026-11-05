@@ -25,17 +25,19 @@ class BackendSkillReferenceReader:
         workspace_id: str,
         user_id: str,
         document_id: str,
+        max_chars: int | None = None,
     ) -> SkillAuthoringReference:
+        """max_chars를 주면 document-svc가 앞에서 그만큼 잘라 준다. 안 주면(Skill 작성) 상한을 넘을 때 413이다."""
+        body: dict[str, object] = {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "document_id": document_id,
+        }
+        if max_chars is not None:
+            body["max_chars"] = max_chars
         request = Request(
             self._base_url + "/internal/agent/skill-authoring/references/read",
-            data=json.dumps(
-                {
-                    "workspace_id": workspace_id,
-                    "user_id": user_id,
-                    "document_id": document_id,
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "X-Agent-Service-Token": self._service_token,
@@ -56,17 +58,33 @@ class BackendSkillReferenceReader:
         if not isinstance(value, dict):
             raise RuntimeError("Skill reference service response is invalid.")
         document_role = value.get("document_role")
+        source_blocks: tuple[tuple[str, str], ...] = ()
         if document_role == "EDITABLE":
             markdown = value.get("markdown")
             if not isinstance(markdown, str):
                 raise RuntimeError("Skill reference service response is invalid.")
         elif document_role == "ORIGINAL":
-            markdown = "\n\n".join(block["text"] for block in list_source_blocks(document_id))
+            source_blocks = tuple((block["block_id"], block["text"]) for block in list_source_blocks(document_id))
+            markdown = "\n\n".join(text for _, text in source_blocks)
             if not markdown.strip():
                 raise SkillRequestRejectedError("invalid_reference", "Reference document is not accessible.")
         else:
             raise RuntimeError("Skill reference service response is invalid.")
-        return SkillAuthoringReference(id=document_id, name="", markdown=markdown)
+        return SkillAuthoringReference(
+            id=document_id,
+            # 구 document-svc는 주지 않는다. Skill 작성은 이름을 쓰지 않는다.
+            name=value["display_name"] if isinstance(value.get("display_name"), str) else "",
+            markdown=markdown,
+            source_blocks=source_blocks,
+            truncated=value.get("truncated") is True,
+            edit_revision=_edit_revision(value.get("edit_revision")),
+            can_edit=value.get("can_edit") is True,
+        )
+
+
+def _edit_revision(value: object) -> int | None:
+    """편집 revision은 1부터 시작한다. 그 밖의 값은 구 document-svc처럼 없는 것으로 다룬다."""
+    return value if type(value) is int and value >= 1 else None
 
 
 def build_skill_reference_reader() -> BackendSkillReferenceReader:

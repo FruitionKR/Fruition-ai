@@ -9,7 +9,7 @@
 {"id": "heading-added", "message": "각 문단 앞에 알맞은 소제목을 달아줘", "expected": {"requested_formats": ["heading"], "addition_only": true, "structure_change": true, "target_language": null}, "acceptable": [{"requested_formats": ["heading"], "addition_only": false, "structure_change": true, "target_language": null}]}
 {"id": "numbered-steps", "message": "설치 과정을 순서가 보이게 번호를 매겨서 정리해줘", "expected": {"requested_formats": ["numbered_list"], "addition_only": false, "structure_change": true, "target_language": null}}
 {"id": "order-word-not-list", "message": "문단 순서는 그대로 두고 맞춤법만 고쳐줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
-{"id": "bold-keyword", "message": "핵심 용어인 회귀 테스트를 굵게 강조해줘", "expected": {"requested_formats": ["bold"], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "bold-keyword", "message": "핵심 용어인 회귀 테스트를 굵게 강조해줘", "expected": {"requested_formats": ["inline_style"], "addition_only": false, "structure_change": false, "target_language": null}}
 {"id": "bold-mentioned-removed", "message": "굵은 글씨가 너무 많으니 강조를 전부 빼줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
 {"id": "quote-the-sentence", "message": "교수님 발언 부분을 인용 블록으로 바꿔줘", "expected": {"requested_formats": ["blockquote"], "addition_only": false, "structure_change": true, "target_language": null}}
 {"id": "equation-display", "message": "본문 속 손실 함수 식을 별도 줄의 수식 블록으로 빼줘", "expected": {"requested_formats": ["display_math"], "addition_only": false, "structure_change": true, "target_language": null}}
@@ -23,3 +23,6 @@
 {"id": "translate-ko", "message": "Please translate this paragraph into Korean.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": "ko"}}
 {"id": "english-word-not-translation", "message": "영어 약어는 그대로 두고 문장만 매끄럽게 다듬어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
 {"id": "merge-broken-bullets", "message": "문장이 줄마다 끊겨서 불릿이 쪼개져 있어. 원래 문장대로 합쳐서 정리해줘.", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "replace-instead-of", "message": "'없음.' 대신 적어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "replace-in-place-of-text", "message": "'미정' 자리에 다음 주 금요일이라고 적어줘", "expected": {"requested_formats": [], "addition_only": false, "structure_change": false, "target_language": null}}
+{"id": "mention-instead-but-adds", "message": "회의 대신 통화로 진행했다는 문장을 끝에 덧붙여줘", "expected": {"requested_formats": [], "addition_only": true, "structure_change": false, "target_language": null}}

@@ -5,6 +5,7 @@ from app.modules.agent_run.domain.entities import (
     AgentJob,
     AgentRun,
     AgentRunContext,
+    DocumentEditArtifact,
     StartAgentRunArtifact,
     ContentArtifactReference,
     StartAgentRunRequest,
@@ -24,7 +25,7 @@ class AgentRunRepositoryPort(Protocol):
         self,
         run: AgentRun,
         job_id: str,
-        artifact: StartAgentRunArtifact | None = None,
+        artifacts: tuple[StartAgentRunArtifact, ...] = (),
     ) -> AgentRun:
         ...
 
@@ -80,6 +81,10 @@ class AgentRunManagementRepositoryPort(AgentApprovalRepositoryPort, Protocol):
         instruction: str,
         job_id: str,
     ) -> AgentRun:
+        ...
+
+    def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
+        """현재 계획의 문서별 변경 미리 보기. 요청자의 run이 아니면 None이다."""
         ...
 
 
@@ -148,6 +153,10 @@ class AgentPlanRepositoryPort(Protocol):
     def save_plan(self, run_id: str, plan: AgentPlan) -> None:
         ...
 
+    def load_document_edit_artifacts(self, run_id: str) -> tuple[DocumentEditArtifact, ...]:
+        """미리 보기가 있는 artifact를 첨부 순서대로 돌려준다. 만료된 것도 포함한다."""
+        ...
+
 
 class AgentPlanGeneratorPort(Protocol):
     def generate(
@@ -169,7 +178,10 @@ class AgentPlanGeneratorPort(Protocol):
 
 class PlanReadyNotifierPort(Protocol):
     def notify_plan_ready(self, *, run_id: str, workspace_id: str, user_id: str) -> None:
-        """계획이 승인 대기에 들어갔음을 document-svc에 알린다. 사용자의 자동 승인 설정은 document-svc가 판단한다."""
+        """계획이 승인 대기에 들어갔거나 run이 끝났거나 되묻기로 멈췄음을 document-svc에 알린다.
+
+        자동 승인(승인 대기일 때만)과 사용량 수집은 document-svc가 판단한다.
+        """
         ...
 
 

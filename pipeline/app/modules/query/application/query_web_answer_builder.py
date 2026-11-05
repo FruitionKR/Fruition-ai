@@ -8,6 +8,7 @@ from app.modules.query.application.query_answer_assembler import QueryAnswerAsse
 from app.modules.query.application.query_event import publish_query_event
 from app.modules.query.application.retrieval_summary import build_retrieval_summary
 from app.modules.query.domain.entities import (
+    EvidenceSnippet,
     GraphContext,
     OutputLanguage,
     QueryAnswer,
@@ -44,6 +45,7 @@ class QueryWebAnswerBuilder:
         output_language: OutputLanguage | None = None,
         response_length: ResponseLength | None = None,
         web_search_telemetry: WebSearchTelemetry | None = None,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer | None:
         web_search_telemetry = web_search_telemetry or WebSearchTelemetry(requested=True)
         web_results = self._search_web(
@@ -68,6 +70,7 @@ class QueryWebAnswerBuilder:
             output_language=output_language,
             response_length=response_length,
             allow_web_search=True,
+            pinned_evidence=pinned_evidence,
         )
         answer, evidence_snippets = self._query_answer_assembler.generate_supported_answer(query_context)
         self._publish(
@@ -133,6 +136,7 @@ class QueryWebAnswerBuilder:
             output_language=query_context.output_language,
             response_length=query_context.response_length,
             allow_web_search=query_context.allow_web_search,
+            pinned_evidence=query_context.pinned_evidence,
         )
         answer, evidence_snippets = self._query_answer_assembler.generate_supported_answer(augmented_context)
         self._publish(

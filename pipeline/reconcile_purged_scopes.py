@@ -23,6 +23,7 @@ _WORKSPACE_SOURCES = (
     ("wiki_pages", "workspace_id", "created_at"), ("wiki_schemas", "workspace_id", "created_at"),
     ("document_derived_state", "workspace_id", "updated_at"), ("document_wiki_links", "workspace_id", "created_at"),
     ("wiki_source_tombstones", "workspace_id", "deleted_at"), ("pipeline_runs", "workspace_id", "created_at"),
+    ("ai_document_purges", "workspace_id", "requested_at"),
 )
 _USER_SOURCES = (
     ("ai_task_runs", "user_id", "created_at"), ("agent_runs", "user_id", "created_at"),
