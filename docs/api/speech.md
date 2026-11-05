@@ -73,19 +73,26 @@ HTTP middleware와 별도로 WebSocket handshake에서도 토큰과 workspace �
    프레임은 짝수 bytes, 최대 48,000 bytes(1초)다. WebM 파일 조각은 이 형식이 아니다.
 3. 발화 경계에서 `{"type":"commit"}`을 보낸다. 구간은 100ms 이상, 30초 이하다.
    회의에서도 호출자가 주기적으로 commit하여 확정 전사를 저장한다. 자동 VAD는 사용하지 않는다.
+   버퍼가 100ms(4,800 bytes) 미만인 commit은 공급사에 보내지 않고 경고 로그만 남기며,
+   그 음성은 다음 구간에 합쳐진다.
 4. 종료 시 `{"type":"finish"}`를 보낸다. 남은 음성을 commit하고 미완료 전사가 모두
    끝난 뒤 `finished`를 반환한다. 그 전에 연결을 닫으면 마지막 발화가 손실될 수 있다.
+   남은 음성이 100ms 미만이면 공급사가 commit을 거절하므로 그 꼬리를 버리고 정상 종료한다.
+   버린 구간은 전사되지 않고 사용량(`audio_seconds`)에도 넣지 않는다.
 
 | 서버 이벤트 | 의미 |
 |---|---|
 | ready | 모델 설정 완료, sample_rate=24000 |
-| committed | segment_id와 previous_segment_id로 발화 순서 제공 |
+| committed | 글이 확인된 구간의 segment_id와 previous_segment_id로 발화 순서 제공 |
 | delta | segment_id의 미확정 text, 화면 표시용 |
 | completed | segment_id의 확정 text와 previous_segment_id, 미확정 문장을 교체 |
 | finished | 전체 확정 완료, segment_count 제공 |
 | error | 전사 중단, 확정 구간은 유지하고 재시도 |
 
-완료 이벤트 도착 순서는 발화 순서와 다를 수 있다. segment_id로 중복을 제거하고
+`committed`는 발화 순서대로 온다. 첫 글(`delta` 또는 `completed`)이 도착해야 보내므로 공급사 commit보다
+늦을 수 있고, 앞 구간의 글 유무가 정해질 때까지 뒤 구간은 기다린다. 공급사가 빈 전사로 끝낸 구간(짧은 꼬리·무음)은
+어떤 이벤트도 보내지 않고 `segment_count`에 넣지 않는다. 사용량(`audio_seconds`)에는 남는다.
+`completed` 도착 순서는 발화 순서와 다를 수 있다. segment_id로 중복을 제거하고
 previous_segment_id로 순서를 맞춘다. 재연결한 세션 간 순서는 호출 서비스가 관리한다.
 모델은 `gpt-live-transcribe`다. 화자·실명 식별, 단어별 시간 정보는 제공하지 않는다.
 
@@ -325,7 +332,7 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 ### `POST /speech/transcriptions`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/speech/SpeechTranscriptionClient.java`:43-53 (공개 `POST /api/workspaces/{workspace_id}/speech/transcriptions` 중계, `app.speech.transcription-endpoint`, `deadline_seconds=100`). 회의 녹음 파일은 이 route를 쓰지 않고 `src/main/java/fruition/core/meeting/MeetingTranscriptionService.java`:62-64가 [`meeting_transcription` command](#회의-녹음-전사)로 보낸다.
-- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:60), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
+- 아웃바운드 호출: OpenAI `POST https://api.openai.com/v1/audio/transcriptions`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:64), 권한 확인은 access-svc `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}`(`pipeline/app/modules/skill/infrastructure/workspace_authorization.py`:19, `ACCESS_INTERNAL_BASE_URL`).
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — 호출하는 화면이 없다.
 
 ### `POST /speech/synthesis`
@@ -337,7 +344,7 @@ Fruition-frontend 전체에서 `/api/meetings`·`meeting-notes`·`/speech` 호�
 ### `WS /speech/transcriptions/live`
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/meeting/MeetingLiveHandler.java`:201-206. JDK `HttpClient.newWebSocketBuilder`로 `app.speech.live-endpoint`에 `X-Internal-Token`을 붙여 접속하고, 사용자 쪽은 `/api/meetings/{meetingId}/live`로 받는다.
-- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:197), access-svc 권한 확인.
+- 아웃바운드 호출: OpenAI realtime `wss://api.openai.com/v1/realtime?intent=transcription`(`pipeline/app/modules/speech/infrastructure/openai_speech.py`:201), access-svc 권한 확인.
 - 미연동 표시: 서비스 간 연결됨. **프런트엔드 미연동** — WebSocket을 여는 코드가 없다.
 
 ### Kafka `ai.maintenance.command` `kind: meeting_notes`

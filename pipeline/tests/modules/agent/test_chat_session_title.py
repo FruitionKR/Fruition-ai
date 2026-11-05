@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
+from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title, needs_chat_session_title
 
 
 class ChatSessionTitleTest(unittest.TestCase):
@@ -21,3 +21,21 @@ class ChatSessionTitleTest(unittest.TestCase):
             for invalid in (None, "", "새 채팅", "가" * 31):
                 client.return_value.complete_json.return_value = {"title": invalid}
                 self.assertIsNone(generate_chat_session_title(command, {"answer": "답변"}))
+
+    def test_needs_title_matches_when_generation_calls_the_model(self):
+        first = {"kind": "agent", "session_id": "session", "provider": "openai", "model": "m", "message": "질문"}
+        self.assertTrue(needs_chat_session_title(first, {"message": "답변"}))
+        self.assertTrue(needs_chat_session_title({**first, "kind": "query", "question": "질문", "message": None}, {"answer": "답변"}))
+        cases = [
+            ({**first, "kind": "ingest"}, {"message": "답변"}),
+            ({**first, "session_id": None}, {"message": "답변"}),
+            ({**first, "conversation_context": {"recent_messages": [{"role": "user", "content": "전"}]}}, {"message": "답변"}),
+            ({**first, "conversation_context": {"recent_conversation_summary": "요약"}}, {"message": "답변"}),
+            ({**first, "message": ""}, {"message": "답변"}),
+            (first, {}),
+        ]
+        with patch("app.modules.agent.infrastructure.chat_session_title.ChatCompletionsJsonClient") as client:
+            for command, result in cases:
+                self.assertFalse(needs_chat_session_title(command, result))
+                self.assertIsNone(generate_chat_session_title(command, result))
+            client.assert_not_called()

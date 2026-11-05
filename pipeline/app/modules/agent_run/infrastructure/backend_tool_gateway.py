@@ -64,7 +64,7 @@ class BackendToolGateway:
         )
 
     def notify_plan_ready(self, *, run_id: str, workspace_id: str, user_id: str) -> None:
-        """승인 대기 계획을 알린다. document-svc가 사용자의 자동 승인 설정·대상 권한을 보고 승인할지 정한다."""
+        """document-svc의 plan-ready를 부른다. 승인 대기면 자동 승인을 판단하고, 어느 상태든 사용량을 수집한다."""
         self._call(
             f"/internal/agent/runs/{quote(run_id, safe='')}/plan-ready",
             {"workspace_id": workspace_id, "user_id": user_id},
