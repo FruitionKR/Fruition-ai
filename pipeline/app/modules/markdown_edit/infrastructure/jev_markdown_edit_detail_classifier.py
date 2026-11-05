@@ -1,7 +1,7 @@
 """편집 세부 분류를 Jev가 고른다. 쓸 수 없으면 기존 LLM 분류로 처리한다.
 
 Jev는 질문마다 선택지 하나만 고른다. 형식 조합은 512개라 선택지 한도(255)를 넘고, 형식마다 예/아니오로 물으면
-다른 형식과 견주지 못해 "수식 블록"에 코드 블록까지 고르는 일이 반복됐다. 그래서 주 형식과 둘째 형식을 각각 하나씩 고른다.
+다른 형식과 견주지 못해 "수식 블록"에 코드 블록까지 고르는 일이 반복됐다. 그래서 결과의 주 형식 하나만 고른다.
 선택지 설명에는 LLM 프롬프트의 정의를 그대로 쓴다. 질문을 한 요청으로 보내고, 판정 규칙은 state에 한 번만 둔다.
 """
 
@@ -25,7 +25,6 @@ FORMAT_NONE = "none"
 # 글머리표·체크리스트는 라우터 목표가 맡아 형식 값이 없다. 이 자리가 없으면 가장 비슷한 번호 목록을 고른다.
 FORMAT_OTHER_LIST = "other_list"
 FIRST_FORMAT_QUESTION = "first_form"
-SECOND_FORMAT_QUESTION = "second_form"
 FORMAT_DEFINITIONS = {
     "meeting_notes": "rewrite the target into meeting notes with discussion, decision, and next-step sections",
     "table": "present the result as a Markdown table",
@@ -113,14 +112,6 @@ def _questions(state: str) -> dict[str, dict[str, Any]]:
                 **{name: f"The request asks the result to {text}" for name, text in FORMAT_DEFINITIONS.items()},
             },
         },
-        SECOND_FORMAT_QUESTION: {
-            "type": "choice",
-            "instructions": "A second, different Markdown form the request separately asks for, if any. Use none when there is only one.",
-            "criteria": {
-                FORMAT_NONE: "The request does not separately ask for a second form",
-                **{name: f"The request separately asks the result to also {text}" for name, text in FORMAT_DEFINITIONS.items()},
-            },
-        },
         ADDITION_ONLY_QUESTION: {
             "type": "choice",
             "instructions": "Is this an addition-only request?",
@@ -141,10 +132,10 @@ def _questions(state: str) -> dict[str, dict[str, Any]]:
 
 def _detail(answers: dict[str, dict[str, Any]]) -> MarkdownEditDetail:
     language = answers[LANGUAGE_QUESTION]["choice"]
-    # ponytail: 형식은 요청당 2개까지 받는다. 3개 이상을 요구하는 요청이 평가에 나오면 질문을 늘린다.
-    chosen = {answers[FIRST_FORMAT_QUESTION]["choice"], answers[SECOND_FORMAT_QUESTION]["choice"]}
+    # ponytail: 형식은 요청당 1개만 고른다. 나머지 형식은 편집 모델과 평가기가 요청 문장으로 본다. 복수 요청이 흔하면 다시 본다.
+    chosen = answers[FIRST_FORMAT_QUESTION]["choice"]
     return MarkdownEditDetail(
-        requested_formats=tuple(edit_format for edit_format in EDIT_FORMATS if edit_format in chosen),
+        requested_formats=(chosen,) if chosen in EDIT_FORMATS else (),
         addition_only=answers[ADDITION_ONLY_QUESTION]["choice"] == "yes",
         structure_change=answers[STRUCTURE_CHANGE_QUESTION]["choice"] == "yes",
         target_language=None if language == LANGUAGE_NONE else language,

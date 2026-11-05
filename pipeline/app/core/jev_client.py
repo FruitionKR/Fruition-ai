@@ -20,7 +20,7 @@ import httpx
 
 from app.core.llm_env import first_env, float_env
 from app.core.llm_prompt import LLM_SECURITY_BOUNDARY, redact_numeric_personal_data
-from app.core.pipeline_control import ensure_task_active
+from app.core.pipeline_control import ensure_task_active, remaining_seconds
 from app.modules.model_usage.infrastructure.usage_ledger import track_call
 
 JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
@@ -157,6 +157,10 @@ class JevClient:
         if self._deadline_seconds is None:
             return None
         remaining = self._deadline_seconds - (time.monotonic() - started)
+        # 요청 마감이 더 가까우면 그 안에 끝내, 대체 경로가 쓸 시간을 남긴다.
+        request_remaining = remaining_seconds()
+        if request_remaining is not None:
+            remaining = min(remaining, request_remaining)
         if remaining <= 0:
             raise JevUnavailable("Jev 응답 예산을 넘었습니다.")
         return remaining

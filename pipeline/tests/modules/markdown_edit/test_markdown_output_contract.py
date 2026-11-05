@@ -18,10 +18,10 @@ RUNBOOK = "# 배포 런북\n\n## 배포 전 확인\n테스트를 통과했는지
 class MarkdownOutputContractTest(unittest.TestCase):
     def test_whole_document_list_conversion_keeps_source_headings(self) -> None:
         cases = {
-            "checklist": ("이 문서를 목록으로 바꿔줘", "- [ ] ", "checklist items must all start with `- [ ] `"),
-            "bullet_list": ("이 문서를 목록으로 바꿔줘", "- ", "bullet list items must use plain bullet markers"),
+            "checklist": ("이 문서를 목록으로 바꿔줘", "- [ ] ", "checklist must contain items starting with `- [ ] `"),
+            "bullet_list": ("이 문서를 목록으로 바꿔줘", "- ", "bullet list must contain plain bullet items"),
             "convert_format": (
-                "이 문서를 번호 목록으로 바꿔줘", "1. ", "numbered list items must start directly with `1.`, `2.`, and so on",
+                "이 문서를 번호 목록으로 바꿔줘", "1. ", "numbered list must contain items starting with `1.`, `2.`, and so on",
             ),
         }
         for goal, (instruction, marker, failure) in cases.items():
@@ -50,10 +50,22 @@ class MarkdownOutputContractTest(unittest.TestCase):
                 converted = f"## 배포 점검\n\n배포 전에 아래를 확인한다.\n\n**배포 전**\n\n{marker}테스트 통과\n{marker}승인 확인"
                 failures = validate_markdown_output(request, converted)
 
-                self.assertFalse([f for f in failures if "list items" in f or "checklist items" in f])
-                # 목록 항목 가운데 형식이 다른 항목이 있으면 여전히 막는다.
+                self.assertFalse([f for f in failures if "must contain" in f])
+                # 요청한 목록이 있으면 다른 항목이 섞여도 코드는 막지 않는다. 그 판단은 LLM 평가기가 한다.
                 mixed = validate_markdown_output(request, converted + f"\n{wrong_marker}롤백 준비")
-                self.assertTrue([f for f in mixed if "list items" in f or "checklist items" in f])
+                self.assertFalse([f for f in mixed if "must contain" in f])
+                # 요청한 목록이 하나도 없으면 막는다.
+                absent = validate_markdown_output(request, f"배포 점검\n{wrong_marker}롤백 준비")
+                self.assertTrue([f for f in absent if "must contain" in f])
+
+    def test_numbered_list_only_needs_to_be_present(self) -> None:
+        request = MarkdownEditRequest(
+            instruction="절차를 번호 목록으로 바꿔줘", markdown=RUNBOOK, target=TARGET, edit_goal="convert_format",
+            detail=MarkdownEditDetail(requested_formats=("numbered_list",)),
+        )
+
+        self.assertFalse([f for f in validate_markdown_output(request, "아래 순서로 한다.\n\n1. 설치\n2. 테스트") if "must contain" in f])
+        self.assertTrue([f for f in validate_markdown_output(request, "설치하고 테스트한다.") if "must contain" in f])
 
     def test_translation_protects_code_but_not_links_or_tables(self) -> None:
         source = "설치는 `pip install fruition`으로 한다.\n\n```sql\nSELECT 1;\n```\n\n[설치 안내](/docs/install) 참고"
@@ -500,7 +512,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
 
         self.assertEqual(validate_markdown_output(numbered_request, "1. 설치\n2. 테스트"), [])
         self.assertIn(
-            "numbered list items must start directly with `1.`, `2.`, and so on",
+            "numbered list must contain items starting with `1.`, `2.`, and so on",
             validate_markdown_output(numbered_request, "- 1. 설치\n- 2. 테스트"),
         )
         self.assertEqual(validate_markdown_output(math_request, "$$\nE = mc^2\n$$"), [])

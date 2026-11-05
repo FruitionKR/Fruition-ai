@@ -21,7 +21,6 @@ from app.modules.markdown_edit.infrastructure.jev_markdown_edit_detail_classifie
     FORMAT_OTHER_LIST,
     LANGUAGE_NONE,
     LANGUAGE_QUESTION,
-    SECOND_FORMAT_QUESTION,
     STRUCTURE_CHANGE_QUESTION,
     JevMarkdownEditDetailClassifier,
     jev_edit_detail_rule,
@@ -50,7 +49,6 @@ class FakeFallback:
 
 def answers(
     first: str = FORMAT_NONE,
-    second: str = FORMAT_NONE,
     *,
     addition_only: bool = False,
     structure_change: bool = False,
@@ -58,7 +56,6 @@ def answers(
 ) -> dict[str, dict[str, str]]:
     return {
         FIRST_FORMAT_QUESTION: {"choice": first},
-        SECOND_FORMAT_QUESTION: {"choice": second},
         ADDITION_ONLY_QUESTION: {"choice": "yes" if addition_only else "no"},
         STRUCTURE_CHANGE_QUESTION: {"choice": "yes" if structure_change else "no"},
         LANGUAGE_QUESTION: {"choice": language},
@@ -82,26 +79,18 @@ def classifier(jev: object, fallback: object | None = None) -> JevMarkdownEditDe
 
 
 class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
-    def test_two_formats_and_every_field_come_from_one_request(self) -> None:
-        jev = FakeJev(answers("table", "inline_style", structure_change=True, language="en"))
+    def test_one_format_and_every_field_come_from_one_request(self) -> None:
+        jev = FakeJev(answers("table", structure_change=True, language="en"))
 
         detail = classifier(jev).classify(REQUEST)
 
         self.assertEqual(detail, MarkdownEditDetail(
-            requested_formats=("table", "inline_style"), addition_only=False, structure_change=True, target_language="en",
+            requested_formats=("table",), addition_only=False, structure_change=True, target_language="en",
         ))
         self.assertEqual(len(jev.calls), 1)
         self.assertEqual(
             set(jev.calls[0][1]),
-            {
-                FIRST_FORMAT_QUESTION, SECOND_FORMAT_QUESTION,
-                ADDITION_ONLY_QUESTION, STRUCTURE_CHANGE_QUESTION, LANGUAGE_QUESTION,
-            },
-        )
-
-    def test_same_format_twice_counts_once(self) -> None:
-        self.assertEqual(
-            classifier(FakeJev(answers("table", "table"))).classify(REQUEST).requested_formats, ("table",),
+            {FIRST_FORMAT_QUESTION, ADDITION_ONLY_QUESTION, STRUCTURE_CHANGE_QUESTION, LANGUAGE_QUESTION},
         )
 
     def test_every_format_can_be_chosen_and_criteria_carry_its_definition(self) -> None:
@@ -111,11 +100,10 @@ class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
 
         classifier(jev).classify(REQUEST)
 
-        for question in (FIRST_FORMAT_QUESTION, SECOND_FORMAT_QUESTION):
-            criteria = jev.calls[0][1][question]["criteria"]
-            self.assertLessEqual({FORMAT_NONE, *EDIT_FORMATS}, set(criteria))
-            for edit_format in EDIT_FORMATS:
-                self.assertIn(FORMAT_DEFINITIONS[edit_format], criteria[edit_format])
+        criteria = jev.calls[0][1][FIRST_FORMAT_QUESTION]["criteria"]
+        self.assertEqual(set(criteria), {FORMAT_NONE, FORMAT_OTHER_LIST, *EDIT_FORMATS})
+        for edit_format in EDIT_FORMATS:
+            self.assertIn(FORMAT_DEFINITIONS[edit_format], criteria[edit_format])
 
     def test_no_selection_means_no_detail(self) -> None:
         self.assertEqual(classifier(FakeJev(answers())).classify(REQUEST), MarkdownEditDetail())
