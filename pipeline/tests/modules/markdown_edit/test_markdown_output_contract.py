@@ -449,13 +449,12 @@ class MarkdownOutputContractTest(unittest.TestCase):
             markdown="릴리스 정책. 회귀 테스트. 문서 미리보기. 수동 배포.",
             target=TARGET,
             edit_goal="style_change",
-            detail=MarkdownEditDetail(requested_formats=("heading", "bold", "italic", "strikethrough")),
+            detail=MarkdownEditDetail(requested_formats=("heading", "inline_style")),
         )
 
-        failures = validate_markdown_output(request, "# 릴리스 정책\n회귀 테스트, 문서 미리보기, ~~수동 배포~~")
+        failures = validate_markdown_output(request, "# 릴리스 정책\n회귀 테스트, 문서 미리보기, 수동 배포")
 
-        self.assertIn("bold text must use `**` delimiters", failures)
-        self.assertIn("italic text must use `*` delimiters", failures)
+        self.assertIn("inline style must use `**`, `*`, or `~~` delimiters", failures)
 
     def test_allows_sentence_only_selection_when_title_must_be_preserved(self) -> None:
         request = MarkdownEditRequest(
@@ -586,7 +585,7 @@ class MarkdownOutputContractTest(unittest.TestCase):
                 request = MarkdownEditRequest(
                     instruction=instruction, markdown="회귀 테스트를 한다.",
                     target=TARGET, edit_goal="convert_format",
-                    detail=MarkdownEditDetail(requested_formats=("heading", "bold")),
+                    detail=MarkdownEditDetail(requested_formats=("heading", "inline_style")),
                 )
                 self.assertEqual(validate_markdown_output(request, "# 릴리스\n\n**회귀 테스트**를 한다."), [])
 

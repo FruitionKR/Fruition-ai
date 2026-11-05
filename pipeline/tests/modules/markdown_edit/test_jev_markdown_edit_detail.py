@@ -18,8 +18,8 @@ from app.modules.markdown_edit.infrastructure.jev_markdown_edit_detail_classifie
     FIRST_FORMAT_QUESTION,
     FORMAT_DEFINITIONS,
     FORMAT_NONE,
+    FORMAT_OTHER_LIST,
     LANGUAGE_NONE,
-    LANGUAGE_OTHER,
     LANGUAGE_QUESTION,
     SECOND_FORMAT_QUESTION,
     STRUCTURE_CHANGE_QUESTION,
@@ -83,12 +83,12 @@ def classifier(jev: object, fallback: object | None = None) -> JevMarkdownEditDe
 
 class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
     def test_two_formats_and_every_field_come_from_one_request(self) -> None:
-        jev = FakeJev(answers("table", "bold", structure_change=True, language="en"))
+        jev = FakeJev(answers("table", "inline_style", structure_change=True, language="en"))
 
         detail = classifier(jev).classify(REQUEST)
 
         self.assertEqual(detail, MarkdownEditDetail(
-            requested_formats=("table", "bold"), addition_only=False, structure_change=True, target_language="en",
+            requested_formats=("table", "inline_style"), addition_only=False, structure_change=True, target_language="en",
         ))
         self.assertEqual(len(jev.calls), 1)
         self.assertEqual(
@@ -113,7 +113,7 @@ class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
 
         for question in (FIRST_FORMAT_QUESTION, SECOND_FORMAT_QUESTION):
             criteria = jev.calls[0][1][question]["criteria"]
-            self.assertEqual(set(criteria), {FORMAT_NONE, *EDIT_FORMATS})
+            self.assertLessEqual({FORMAT_NONE, *EDIT_FORMATS}, set(criteria))
             for edit_format in EDIT_FORMATS:
                 self.assertIn(FORMAT_DEFINITIONS[edit_format], criteria[edit_format])
 
@@ -144,14 +144,11 @@ class JevMarkdownEditDetailClassifierTest(unittest.TestCase):
 
         self.assertEqual(rule, "Intro. Keep this.\n\ntarget_language: rule.")
 
-    def test_unlisted_language_goes_to_llm(self) -> None:
-        # 선택지에 없는 언어를 비슷한 언어나 번역 아님으로 고르지 않고 LLM이 ISO 코드를 쓰게 한다.
-        fallback = FakeFallback()
+    def test_bullet_or_checklist_choice_means_no_requested_format(self) -> None:
+        # 라우터 목표가 맡는 목록이라 형식으로 넘기지 않는다. 번호 목록으로 고르면 체크리스트 검사와 충돌한다.
+        detail = classifier(FakeJev(answers(FORMAT_OTHER_LIST))).classify(REQUEST)
 
-        detail = classifier(FakeJev(answers(language=LANGUAGE_OTHER)), fallback).classify(REQUEST)
-
-        self.assertEqual(detail, FALLBACK_DETAIL)
-        self.assertEqual(fallback.calls, 1)
+        self.assertEqual(detail, MarkdownEditDetail())
 
     def test_jev_failure_goes_to_llm(self) -> None:
         fallback = FakeFallback()

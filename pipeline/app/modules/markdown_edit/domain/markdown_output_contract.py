@@ -190,12 +190,8 @@ def _requested_markdown_failures(
         failures.append("blockquote marker `> ` must start its line")
     if "heading" in formats and not any(re.match(r"^#{1,6}\s+", line) for line in nonempty_lines):
         failures.append("heading must start with `# ` through `###### `")
-    if "bold" in formats and not re.search(r"\*\*[^*\n]+\*\*", replacement):
-        failures.append("bold text must use `**` delimiters")
-    if "italic" in formats and not re.search(r"(?<!\*)\*[^*\n]+\*(?!\*)", replacement):
-        failures.append("italic text must use `*` delimiters")
-    if "strikethrough" in formats and not re.search(r"~~[^~\n]+~~", replacement):
-        failures.append("strikethrough text must use `~~` delimiters")
+    if "inline_style" in formats and not re.search(r"\*[^*\n]+\*|~~[^~\n]+~~", replacement):
+        failures.append("inline style must use `**`, `*`, or `~~` delimiters")
     if "display_math" in formats:
         if not re.search(r"\$\$[\s\S]+\$\$", replacement):
             failures.append("display math must use `$$` delimiters")

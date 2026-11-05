@@ -1,6 +1,6 @@
 """편집 세부 분류를 Jev가 고른다. 쓸 수 없으면 기존 LLM 분류로 처리한다.
 
-Jev는 질문마다 선택지 하나만 고른다. 형식 조합은 2,048개라 선택지 한도(255)를 넘고, 형식마다 예/아니오로 물으면
+Jev는 질문마다 선택지 하나만 고른다. 형식 조합은 512개라 선택지 한도(255)를 넘고, 형식마다 예/아니오로 물으면
 다른 형식과 견주지 못해 "수식 블록"에 코드 블록까지 고르는 일이 반복됐다. 그래서 주 형식과 둘째 형식을 각각 하나씩 고른다.
 선택지 설명에는 LLM 프롬프트의 정의를 그대로 쓴다. 질문을 한 요청으로 보내고, 판정 규칙은 state에 한 번만 둔다.
 """
@@ -22,6 +22,8 @@ from app.modules.markdown_edit.infrastructure.chat_completions_markdown_edit_det
 )
 
 FORMAT_NONE = "none"
+# 글머리표·체크리스트는 라우터 목표가 맡아 형식 값이 없다. 이 자리가 없으면 가장 비슷한 번호 목록을 고른다.
+FORMAT_OTHER_LIST = "other_list"
 FIRST_FORMAT_QUESTION = "first_form"
 SECOND_FORMAT_QUESTION = "second_form"
 FORMAT_DEFINITIONS = {
@@ -30,9 +32,7 @@ FORMAT_DEFINITIONS = {
     "numbered_list": "present items as an ordered, numbered list",
     "blockquote": "put text in a blockquote",
     "heading": "add or change a Markdown heading",
-    "bold": "apply bold inline style to some text",
-    "italic": "apply italic inline style to some text",
-    "strikethrough": "apply strikethrough inline style to some text",
+    "inline_style": "apply bold, italic, or strikethrough to some text",
     "display_math": "write an equation as display math",
     "mermaid": "draw a Mermaid diagram",
     "code_block": "put content in a fenced code block",
@@ -53,18 +53,11 @@ STRUCTURE_CHANGE_CRITERIA = {
 }
 LANGUAGE_QUESTION = "target_language"
 LANGUAGE_NONE = "none"
-LANGUAGE_OTHER = "other"
-# Jev는 코드를 쓰지 않고 고르기만 해서 목록이 필요하다. 목록 밖 언어는 other로 받아 LLM이 코드를 쓰게 한다.
+# 번역 검사가 구분하는 값은 ko·en뿐이고, 그 밖의 언어와 번역 아님은 같은 경로다(markdown_source_range._required_segment_ids).
 LANGUAGE_CRITERIA = {
-    "ko": "Korean (ko)",
-    "en": "English (en)",
-    "ja": "Japanese (ja)",
-    "zh": "Chinese (zh)",
-    "es": "Spanish (es)",
-    "fr": "French (fr)",
-    "de": "German (de)",
-    LANGUAGE_NONE: "Null: not a translation, or the target language is not stated",
-    LANGUAGE_OTHER: "A translation into a stated language that is not listed here",
+    "ko": "A translation into Korean (ko)",
+    "en": "A translation into English (en)",
+    LANGUAGE_NONE: "Not a translation, the target language is not stated, or the target is another language",
 }
 logger = logging.getLogger(__name__)
 
@@ -114,6 +107,7 @@ def _questions(state: str) -> dict[str, dict[str, Any]]:
             "type": "choice",
             "instructions": "The main Markdown form the edited result must take.",
             "criteria": {
+                FORMAT_OTHER_LIST: "The request asks for a bullet list or checklist, which are not listed as separate forms",
                 FORMAT_NONE: "No specific Markdown form is required; "
                 "a form named only as a source, reference, or something to preserve does not count",
                 **{name: f"The request asks the result to {text}" for name, text in FORMAT_DEFINITIONS.items()},
@@ -147,8 +141,6 @@ def _questions(state: str) -> dict[str, dict[str, Any]]:
 
 def _detail(answers: dict[str, dict[str, Any]]) -> MarkdownEditDetail:
     language = answers[LANGUAGE_QUESTION]["choice"]
-    if language == LANGUAGE_OTHER:
-        raise JevUnavailable("선택지에 없는 번역 언어입니다.")
     # ponytail: 형식은 요청당 2개까지 받는다. 3개 이상을 요구하는 요청이 평가에 나오면 질문을 늘린다.
     chosen = {answers[FIRST_FORMAT_QUESTION]["choice"], answers[SECOND_FORMAT_QUESTION]["choice"]}
     return MarkdownEditDetail(
