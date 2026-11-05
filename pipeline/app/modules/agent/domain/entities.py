@@ -121,6 +121,8 @@ class AgentTurnRequest:
     mode: AgentTurnMode | None = None
     # 작업 대상 폴더(document-svc가 검증한 폴더 UUID). 폴더 정리 범위·새 문서 위치. None이면 루트·전체다.
     folder_id: str | None = None
+    # 편집 문맥 없이 보기 권한으로 연 문서(document-svc가 확인한 id). 첨부에 있으면 "이 문서"는 그 문서다. 구 document-svc는 보내지 않는다.
+    read_only_document_id: str | None = None
 
 
 @dataclass(frozen=True)

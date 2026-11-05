@@ -151,6 +151,8 @@ class AgentTurnRequestBody(BaseModel):
     mode: Literal["task"] | None = None
     # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. 생략하면 루트·워크스페이스 전체다.
     folder_id: str | None = Field(default=None, min_length=1, max_length=64)
+    # 편집 문맥 없이 보기 권한으로 연 문서. document-svc가 확인한 값이다. 구 document-svc는 보내지 않는다.
+    read_only_document_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_skill_selection(self) -> Self:
@@ -193,6 +195,7 @@ class AgentTurnRequestBody(BaseModel):
             reference_document_ids=tuple(self.reference_document_ids),
             mode=self.mode,
             folder_id=self.folder_id,
+            read_only_document_id=self.read_only_document_id,
         )
 
 
