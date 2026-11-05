@@ -129,6 +129,9 @@ ApprovedBy = Literal["user", "auto:user-setting"]
 
 
 # 부분 승인에서 고르지 않은 작업의 상태 코드. 실패가 아니므로 run 결과 판정에서 뺀다.
+# 문서를 영구 삭제해 실행하거나 되돌릴 수 없는 작업·run의 코드. document-svc가 사용자 문구로 바꾼다.
+DOCUMENT_PURGED_ERROR_CODE = "document_purged"
+ROLLBACK_DOCUMENT_PURGED = "rollback_document_purged"
 NOT_SELECTED_ERROR_CODE = "not_selected"
 # 한 번에 부분 승인할 수 있는 작업 수 상한(계약: operation_ids 1~20개).
 MAX_SELECTED_OPERATIONS = 20

@@ -43,6 +43,7 @@ python review_markdown_edit_results.py --results /tmp/markdown-edit-paired.json 
 
 ```bash
 python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna
+python evaluate_markdown_edit_detail.py --provider openai --model gpt-6-luna --jev  # Jev 켬. TYPESAFE_API_KEY 필요, 대체 횟수를 jev_fallback_calls로 출력
 ```
 
 ## Jev 켬/끔 평가
@@ -70,6 +71,40 @@ Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행�
 ## 모델 사용량 원장 적용
 
 분리 AI 저장소의 `pipeline/`에서 migration 권한의 `AI_DB_MIGRATION_URL`을 주입하고 `python -m app.modules.wiki_ingestion.infrastructure.migrate_ai_schema`를 실행한다. 멱등 DDL이 `ai_model_usage`와 인덱스를 생성한다. 기존 runtime의 ai_runtime 권한에 INSERT/UPDATE/SELECT가 포함되어야 한다. `AI_DB_CONVERTER_ROLE`(예: `ai_converter`)을 함께 주입하면 같은 트랜잭션에서 converter 전용 role의 테이블 단위 UPDATE를 회수한 뒤 `ai_model_usage` INSERT, `finish_call`이 SET하는 컬럼의 UPDATE, `id`·`status`·`finished_at` 컬럼 SELECT를 부여한다. 비우면 부여를 건너뛰고 경고를 남기며, role이 없으면 적용이 실패한다. role은 platform `init-db-isolation.sh`로 먼저 만든다. 그 뒤 새 pipeline API·worker 이미지를 적용한다. 사용량 원장은 작업 취소 복구 대상이 아니며 이전 호출은 소급 기록하지 않는다.
+
+## 영구 삭제가 쓰는 작업 기록 인덱스
+
+`idx_ai_task_runs_workspace_status`와 `idx_ai_task_runs_command_document`는 `db/ai_schema.sql`에 없다. 그 파일은 한 트랜잭션이고 `ai_task_runs`의 `ALTER TABLE`이 ACCESS EXCLUSIVE를 커밋까지 쥐어, 안에서 인덱스를 만들면 빌드 내내 작업 기록이 멈춘다. `migrate_ai_schema`가 스키마를 커밋한 뒤 autocommit 연결에서 `CREATE INDEX CONCURRENTLY`로 만든다. 평소 배포에서 사람이 할 일은 없다.
+
+- 인덱스가 없어도 영구 삭제는 `ai_task_runs`를 순차로 훑어 그대로 동작한다. 느려질 뿐이다.
+- 기동 경로(`ensure_ai_schema`, `AI_DB_MIGRATION_URL`을 주입한 Compose·kind)는 인덱스를 만들지 않는다. 필요하면 `migrate_ai_schema`를 실행한다.
+- 스키마 적용과 인덱스 빌드는 advisory lock(`732004150`)으로 겹치지 않는다. 빌드 중에 스키마를 적용하는 인스턴스는 표가 아니라 이 잠금에서 기다려 다른 읽기·쓰기를 막지 않는다. 이 잠금은 이 변경 이후 이미지에만 있다.
+- 시간 제한은 인덱스마다 180초(잠금 대기 30초)다. AWS migration Job의 600초 deadline을 넘기지 않으려는 값이다. 넘기면 Job을 실패시키지 않고 `ai_db 인덱스 미생성` 줄을 출력한 뒤 끝나고, 다음 `migrate_ai_schema`가 잔해를 지우고 다시 만든다.
+
+`ai-migration` Job 로그에 `ai_db 인덱스 미생성`이 있거나 아래 확인 결과가 두 행이 아니면, 표가 커서 시간 제한 안에 끝나지 않는 경우이므로 다음을 수행한다.
+
+1. **이 수동 절차는 public schema fingerprint를 바꾼다.** 직전 성공 release로의 자동 rollback과 같은 SHA 재시도가 막히므로 다음 배포 직전에, 또는 복구 검토를 감수할 수 있을 때 수행한다. 다음 배포의 Job은 이미 있는 인덱스를 건너뛰고 새 fingerprint를 기록한다.
+2. 부하가 낮을 때, 진행 중인 스키마 적용이 없는지 확인하고 migration 계정(표 소유자)으로 접속한다. 트랜잭션 안에서 실행할 수 없으므로 `BEGIN` 없이 한 문장씩 실행한다.
+
+   ```sql
+   SET lock_timeout = '30s';
+   SET statement_timeout = 0;
+   SELECT pg_advisory_lock(732004150);
+   DROP INDEX CONCURRENTLY IF EXISTS idx_ai_task_runs_workspace_status;  -- 아래 확인에서 indisvalid=false이거나 없을 때만
+   CREATE INDEX CONCURRENTLY idx_ai_task_runs_workspace_status ON ai_task_runs (workspace_id, status);
+   DROP INDEX CONCURRENTLY IF EXISTS idx_ai_task_runs_command_document;  -- 위와 같다
+   CREATE INDEX CONCURRENTLY idx_ai_task_runs_command_document ON ai_task_runs ((command->>'document_id')) WHERE command->>'document_id' IS NOT NULL;
+   SELECT pg_advisory_unlock(732004150);
+   ```
+
+3. 두 행 모두 `indisvalid = true`인지 확인한다.
+
+   ```sql
+   SELECT indexrelid::regclass, indisvalid FROM pg_index
+   WHERE indexrelid::regclass::text IN ('idx_ai_task_runs_workspace_status', 'idx_ai_task_runs_command_document');
+   ```
+
+`lock_timeout` 오류로 실패하면 긴 트랜잭션이 끝나기를 기다린다. `pg_stat_activity`에서 찾을 수 있고, 실패한 빌드는 `indisvalid = false`로 남으므로 다시 지우고 만든다.
 
 ## 과거 파기 누락분 정리
 

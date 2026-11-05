@@ -19,7 +19,12 @@ from app.modules.agent_run.domain.entities import (
     DocumentEditArtifact,
     StartAgentRunArtifact,
 )
-from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    DOCUMENT_PURGED_ERROR_CODE,
+    NOT_SELECTED_ERROR_CODE,
+    AgentPlan,
+    AgentPlanOperation,
+)
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
     is_missing_object_error,
@@ -32,6 +37,7 @@ from app.modules.wiki_ingestion.infrastructure import (
 
 
 ARTIFACT_UNAVAILABLE_MESSAGE = "Agent plan content expired and must be requested again."
+DOCUMENT_PURGED_MESSAGE = "Agent plan target document was permanently deleted."
 
 
 def agent_command_hash(command: dict[str, Any]) -> str:
@@ -205,10 +211,11 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 LEFT JOIN agent_run_artifacts artifact
                   ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
                 WHERE operation.plan_id = %s AND operation.tool_name = 'apply_document_edit'
+                  AND operation.error_code IS DISTINCT FROM %s
                   AND (artifact.id IS NULL OR artifact.preview_object_key IS NOT NULL)
                 ORDER BY operation.sequence
                 """,
-                (run_id, run["current_plan_id"]),
+                (run_id, run["current_plan_id"], DOCUMENT_PURGED_ERROR_CODE),
             ).fetchall()
         # 객체가 남아 있으면 만료 뒤에도 내용을 돌려준다. 화면은 expires_at이 지났는지로 수락을 막으며 이유를 보여 주므로,
         # 정리로 지워진 수정안도 null이 아닌 지난 시각으로 답한다. null이면 만료가 아니라 수락이 열린다.
@@ -577,8 +584,10 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 or current_plan["operation_hash"] != plan.operation_hash
             ):
                 raise ValueError("Agent plan changed and must be reviewed again.")
-            if _has_unavailable_artifact(conn, run.id, plan.id, selected_operation_ids):
+            if _has_unavailable_artifact(conn, run.id, plan.id, selected_operation_ids, ignore_purged=True):
                 raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
+            if _only_purged_operations_selected(conn, plan.id, selected_operation_ids):
+                raise ValueError(DOCUMENT_PURGED_MESSAGE)
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
@@ -738,10 +747,13 @@ def _has_unavailable_artifact(
     run_id: str,
     plan_id: str,
     operation_ids: tuple[str, ...] | None = None,
+    *,
+    ignore_purged: bool = False,
 ) -> bool:
     """계획의 작업이 쓰는 artifact가 만료됐거나 정리됐는지 본다. operation_ids가 있으면 그 작업만 본다.
 
     호출자가 run 행을 잠근 상태에서 부른다. 정리 작업도 run 행을 잠그므로, 이 확인을 통과한 승인과 정리가 겹치지 않는다.
+    ignore_purged: 영구 삭제한 문서의 작업은 이미 건너뛰게 표시돼 있어 승인할 때는 나머지 문서를 막지 않는다.
     """
     row = conn.execute(
         """
@@ -752,6 +764,7 @@ def _has_unavailable_artifact(
         WHERE operation.plan_id = %s
           AND jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
           AND (%s::text[] IS NULL OR operation.id = ANY(%s::text[]))
+          AND (NOT %s OR operation.error_code IS DISTINCT FROM %s)
           AND (artifact.id IS NULL OR artifact.expires_at <= now())
         LIMIT 1
         """,
@@ -760,9 +773,30 @@ def _has_unavailable_artifact(
             plan_id,
             list(operation_ids) if operation_ids is not None else None,
             list(operation_ids) if operation_ids is not None else None,
+            ignore_purged,
+            DOCUMENT_PURGED_ERROR_CODE,
         ),
     ).fetchone()
     return row is not None
+
+
+def _only_purged_operations_selected(
+    conn: Any,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None,
+) -> bool:
+    """고른 작업이 모두 영구 삭제한 문서의 것이면 실행할 것이 없다. 호출자가 run 행을 잠근 상태에서 부른다."""
+    rows = conn.execute(
+        """
+        SELECT status, error_code FROM agent_plan_operations
+        WHERE plan_id = %s AND (%s::text[] IS NULL OR id = ANY(%s::text[]))
+        """,
+        (plan_id, list(operation_ids) if operation_ids is not None else None,
+         list(operation_ids) if operation_ids is not None else None),
+    ).fetchall()
+    return bool(rows) and all(
+        row["status"] == "skipped" and row["error_code"] == DOCUMENT_PURGED_ERROR_CODE for row in rows
+    )
 
 
 def _row_to_run(row: dict[str, Any]) -> AgentRun:
