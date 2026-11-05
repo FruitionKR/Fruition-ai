@@ -10,7 +10,8 @@ ingest 실행은 HTTP로 받지 않는다. Backend가 Kafka `ai.ingest.command`(
 `GET /pipeline/runs/{run_id}`만 상태 확인용 내부 HTTP로 사용한다.
 
 `ai.ingest.command`에는 편입 외에 문서 단위 bookkeeping command가 있다. 둘 다 작업 journal·크레딧 예약·LLM 호출 없이 처리하고,
-파기한 워크스페이스면 `ScopePurgedError`로 폐기한다. 결과 event는 각각 `document_cleanup`, `document_rename` kind이며 document는 처리하지 않고 건너뛴다.
+파기한 워크스페이스면 `ScopePurgedError`로 폐기한다. 결과 event는 각각 `document_cleanup`, `document_rename`, `document_purge` kind이며 document는 처리하지 않고 건너뛴다. 형식이 맞지 않는 command와 이 worker가 모르는 kind는 실패 event를 내고 offset을 넘겨 파티션을 막지 않는다.
+- `document_purged`: `{run_id, kind, document_id, workspace_id}`. 문서를 영구 삭제했을 때 온다(휴지통 이동에는 오지 않는다). AI에 남은 본문 복사본을 지운다. 지우는 범위와 재시도는 [agent.md](agent.md#document-purge)를 본다. 객체 삭제가 실패해도 예외를 올리지 않아 offset이 멈추지 않는다. 결과 event `payload.source_page_ids`로 이 문서의 소스 페이지를 알린다(document가 그 페이지의 버전 본문을 지운다).
 - `document_deleted`: `{run_id, kind, document_id, workspace_id}`. 문서 파생 Wiki 데이터를 정리한다.
 - `document_renamed`: `{run_id, kind, document_id, workspace_id, title}`. `title`은 새 표시 이름(파일명에서 확장자를 뗀 이름)이며 비어 있으면 폐기한다.
   해당 문서의 소스 페이지 제목(`wiki_pages.title`)만 바꾼다. 본문·개념 페이지는 그대로이고, 임베딩 텍스트에 들어간 옛 제목은 다음 편입 때 새 제목으로 다시 만든다.

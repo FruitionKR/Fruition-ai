@@ -105,7 +105,7 @@ class WikiPageRestorePort(Protocol):
         restore_to_operation_id: str,
         workspace_id: str,
         source_page: SourceSnapshotRestoreCommand,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any] | None: ...
 
     def calculate_lint_action_changes(
         self,

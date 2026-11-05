@@ -676,6 +676,8 @@ CREATE TABLE IF NOT EXISTS ai_task_runs (
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS command jsonb;
 ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_ai_task_runs_parent ON ai_task_runs(parent_run_id);
+-- 문서 영구 삭제가 쓰는 이 표의 인덱스는 여기 두지 않는다. 이 파일은 한 트랜잭션이고 위 ALTER TABLE의 ACCESS EXCLUSIVE를 끝까지 쥐어,
+-- 큰 표를 훑는 동안 작업 기록이 멈춘다. migrate_ai_schema가 커밋 뒤에 CONCURRENTLY로 만든다(ONLINE_INDEXES).
 -- 후보 비교용 파생 벡터. 원문을 보관하지 않고 작업 삭제 시 함께 정리한다.
 CREATE TABLE IF NOT EXISTS concept_embedding_cache (
     workspace_id text NOT NULL,
@@ -764,6 +766,21 @@ CREATE TABLE IF NOT EXISTS ai_purged_scopes (
     purged_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (scope_type, scope_id)
 );
+
+-- 영구 삭제한 문서. document_purged를 받으면 먼저 남기고, 본문 복사본을 다 지우면 finished_at을 채운다.
+-- finished_at이 비어 있으면 agent worker가 다시 시도한다. 식별자만 담는다.
+-- last_attempt_at은 재시도 순서, last_scan_at은 빠짐없이 지운 마지막 시각으로 어느 run을 기다릴지 정한다.
+CREATE TABLE IF NOT EXISTS ai_document_purges (
+    workspace_id varchar(255) NOT NULL,
+    document_id varchar(255) NOT NULL,
+    requested_at timestamptz NOT NULL DEFAULT now(),
+    last_attempt_at timestamptz,
+    finished_at timestamptz,
+    PRIMARY KEY (workspace_id, document_id)
+);
+ALTER TABLE ai_document_purges ADD COLUMN IF NOT EXISTS last_scan_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_ai_document_purges_pending
+    ON ai_document_purges (last_attempt_at NULLS FIRST, requested_at) WHERE finished_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS ai_model_usage (
     id uuid PRIMARY KEY,

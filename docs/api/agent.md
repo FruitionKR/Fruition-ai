@@ -116,6 +116,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | 다른 사람이 편집 중 | `failed`(재시도 없음) | `tool_http_423` |
 | 권한 회수 | `forbidden` | `tool_http_403` |
 | 문서 삭제 | `failed` | `tool_http_404` |
+| 승인 전에 문서를 영구 삭제 | `skipped` | `document_purged` |
 | 실행 전 스냅샷이 맞지 않음 | `failed` | `rollback_snapshot_invalid` |
 
 run 상태는 `finish_run_from_operations`가 정한다. 겹침이 하나라도 있으면 다른 문서가 성공했어도 `conflicted`이고, 그 밖의 실패가 섞이면 `partial_failed`, 전부 실패면 `failed`다. 롤백 스냅샷은 `apply_document_edit`의 버전을 비교하지 않는다. 비교하면 계획 뒤 변경이 document-svc 병합에 닿지 못한다. 스냅샷을 읽지 못한 작업은 요청을 보내지 않았으므로 롤백에서 건너뛴다.
@@ -128,7 +129,39 @@ run 상태는 `finish_run_from_operations`가 정한다. 겹침이 하나라도 
 - 여러 worker가 겹쳐도 `FOR UPDATE SKIP LOCKED`로 한 번만 처리한다. 승인·`revise`와는 run 행 잠금으로 겹치지 않는다. 진행 중인 승인이 있으면 그 run을 건너뛰고, 정리가 먼저면 승인은 기다렸다가 `409`를 받는다.
 - 객체 삭제에 실패하면 행을 남겨 다음 주기에 다시 시도한다. 없는 객체는 성공으로 본다. 한 주기에 3건 실패하면 저장소 장애로 보고 그 주기를 끝낸다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 객체도 행도 건드리지 않고 오류 로그를 남긴다.
 - 버킷은 버전 관리 중이라 삭제는 현재 버전을 지우는 것이다. 이전 버전은 S3 lifecycle(flatform ADR 0023)로 30일 뒤 사라진다.
-- 문서 삭제는 수정안을 따로 지우지 않는다. 휴지통 이동(`document_deleted`)은 위키 파생 데이터만 지우고, 휴지통 영구 삭제는 AI를 부르지 않는다. 문서를 지워도 수정안은 이 정리 주기까지 남는다.
+- 휴지통 이동(`document_deleted`)은 복구할 수 있어 수정안을 지우지 않는다. 문서를 영구 삭제하면 아래 절차로 바로 지운다.
+
+<a id="document-purge"></a>
+#### 문서 영구 삭제(`document_purged`)
+
+document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션에서 outbox로 보낸다. ingest worker가 처리하고 run·plan·operation·실행 행은 이력으로 남긴 채 본문이 든 값만 지운다. 워크스페이스 파기는 이 command 없이 `purge_workspace`가 통째로 지운다.
+
+| 대상 | 처리 |
+|---|---|
+| `agent_tool_executions`의 되돌리기 스냅샷(`undo:*`) | `response_metadata`를 `{"document_purged": true}`로 바꾼다 |
+| `agent_tool_executions`의 실행 결과 | `id`·`document_id`·`current_version`만 남긴다 |
+| `agent_run_artifacts`(수정안·미리 보기·`undo-*`·이 문서를 만든 `create_document`)와 객체 | 키 단위로 객체를 지우고 행을 지운다. 같은 run의 다른 문서는 건드리지 않는다 |
+| `agent_plan_operations` | `apply_document_edit`·`create_document`의 `reason`을 안내 문구로 바꾸고, `pending`이면 `skipped`(`document_purged`)로 둔다 |
+| `agent_runs.result`(이 문서의 `markdown_turn`) | `edit`·`generated_markdown`을 뺀다 |
+| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서인 항목의 `text`·`expected_claims`만 비운다 |
+| `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
+| `pipeline_runs.manifest`(이 문서의 run. post_ingest는 `document_id`가 없어 같은 id의 `ai_task_runs.command`로 찾는다) | `{"scrubbed": true}`로 바꾼다 |
+| `ai_task_changes` | 이 문서·소스 페이지·이 문서 run의 변경 기록을 지운다(소스 페이지·소스 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다. 다른 문서 run의 `pipeline_runs`·`document_quality_reviews` 기록은 이 문서의 근거만 비운다 |
+| `wiki/{ws}/clusters/active.md`·`archived.md`, `wiki/{ws}/logs/*.md`와 그 객체 변경 기록 | 이 문서를 인용한 근거 줄과 이 문서의 편입 항목만 뺀다. 근거가 없어진 클러스터는 지우고, 다른 문서가 남은 클러스터의 대표명·승격 사유는 남긴다. 변경 기록에도 같은 변환을 적용해 작업 취소의 대조가 맞고 본문이 되살아나지 않는다. 개념 잠금을 5초 안에 못 잡으면 다음 주기로 넘긴다 |
+| `pipeline_runs.manifest` | `{"scrubbed": true}`로 바꾼다 |
+| 소스 페이지 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`), `wiki_pages.summary`·`markdown_uri` | 객체를 지우고 요약은 빈 값, `markdown_uri`는 NULL로 둔다. 행은 `deleted`로 남긴다. 위키 조회·그래프·임베딩은 활성 페이지만 읽고, 로그 되돌리기는 이 페이지를 건너뛰고 개념 페이지를 복구한다 |
+| `source_blocks`·`source_block_snapshots`·`document_quality_reviews`·`document_derived_state` | 행을 지운다 |
+
+- core_db의 소스 페이지 버전 본문은 document가 지운다. core_db에는 페이지 종류가 없어 document만으로는 소스 페이지를 가릴 수 없으므로, AI가 결과 event(`document_purge`)의 `payload.source_page_ids`로 알린다.
+- 남기는 것: 사용자 메시지(`request_summary`), AI 답변, 여러 문서 파생(개념 페이지·개념 기여, 클러스터), Skill 본문, `ai_model_usage`.
+- 취소 API(`/internal/ai/tasks/{run_id}/cancel`)는 document가 본문을 지운 command(`document_purged: true`)를 받으면 해시 대조와 등록을 건너뛴다. 실행이 없으면 `409`다.
+- `document_deleted`가 처리되지 못해 소스 페이지가 아직 활성이면 같은 정리를 먼저 돌린다. 개념 잠금 시간 초과는 실패로 기록하고 다음 주기에 다시 시도한다.
+- 스캔 뒤에 결과를 쓸 수 있는 run이 있으면 끝내지 않고 다음 주기에 다시 훑는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를 읽으므로 문서 id로 좁히지 않는다. 위키를 읽지 않는 `convert_batch`·`meeting_notes`·`meeting_transcription`은 기다리지 않는다. 요청 뒤 하루가 지나면 기다리지 않고 그 시도의 스캔으로 끝내며(그때 아직 도는 run은 경고 로그에 건수를 남긴다), 그 뒤 이 run들이 쓰는 근거는 AI DB에 남을 수 있다. document의 `scrubOrphans`는 core_db만 정리해 이 값을 지우지 않는다.
+- `ai_document_purges`에 요청을 먼저 커밋한다. 객체 삭제나 다른 처리가 실패해도 offset은 넘어가고, `finished_at`이 빈 행을 agent worker가 1시간마다 오래 못 본 것부터 다시 시도한다(한 주기 20건, 3건 실패하면 그 주기 종료). 재전달해도 결과가 같다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 지우지 않고 오류 로그를 남기며 대기로 둔다. 로그에는 건수와 id만 남긴다.
+- 지운 뒤 승인: 나머지 문서는 그대로 승인·실행하고 run은 `partial_failed`로 끝난다. 실행할 작업이 영구 삭제 문서뿐이면 `409`다. `revise`도 수정안이 없어 `409`이고, 미리 보기는 나머지 문서만 돌려준다.
+- 지운 뒤 되돌리기: 그 문서 단계는 document-svc를 부르지 않고 건너뛰고 나머지 문서는 되돌린다. 끝에 run은 `rollback_failed`(`rollback_document_purged`)로 닫히고 `finished_at`을 채운다. 다시 요청해도 결과가 같고, 다른 `rollback_failed`와 달리 90일 정리 대상이다. 상위 `markdown_turn`도 같은 코드를 받는다.
+
+배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다. `last_scan_at` 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) 영구 삭제 처리가 실패한다. 같은 명령이 `ai_task_runs`의 인덱스를 `CONCURRENTLY`로 만들고, 못 만들어도 삭제는 동작한다([절차](../script.md#영구-삭제가-쓰는-작업-기록-인덱스)).
 
 배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 
@@ -571,7 +604,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 상위 `markdown_turn`과 하위 run의 연결은 하위 생성과 같은 DB 트랜잭션에서 `result.run_id`에 기록합니다. 상위 취소는 이미 완료된 하위 작업도 복구 대상으로 삼으며, 하위가 `cancelled`가 된 뒤 상위 취소를 완료합니다. 실행 중인 상위 턴의 늦은 결과는 외부에 발행하지 않습니다.
 
-상태는 `cancel_requested` → `rolling_back` → `cancelled`로 진행합니다. 실제 결과를 확인할 수 없거나 다른 사용자의 후속 변경과 충돌하거나 복구 도구가 실패하면 `rollback_failed`와 `error_code`를 남깁니다. 도구의 429·5xx 응답처럼 재시도할 수 있는 오류는 바로 확정하지 않고 job backoff(5초 간격, 최대 3회)로 다시 시도하며, 소진한 뒤에 `rollback_failed`로 닫습니다. 재요청하면 기존 복구 기록과 멱등키로 재시도합니다. 내용·이름·위치·순서를 복원하며 버전과 감사 기록은 이전 숫자로 되감지 않습니다.
+영구 삭제한 문서의 단계는 건너뛰고 끝에 `rollback_failed`(`rollback_document_purged`)를 남깁니다. 상태는 `cancel_requested` → `rolling_back` → `cancelled`로 진행합니다. 실제 결과를 확인할 수 없거나 다른 사용자의 후속 변경과 충돌하거나 복구 도구가 실패하면 `rollback_failed`와 `error_code`를 남깁니다. 도구의 429·5xx 응답처럼 재시도할 수 있는 오류는 바로 확정하지 않고 job backoff(5초 간격, 최대 3회)로 다시 시도하며, 소진한 뒤에 `rollback_failed`로 닫습니다. 재요청하면 기존 복구 기록과 멱등키로 재시도합니다. 내용·이름·위치·순서를 복원하며 버전과 감사 기록은 이전 숫자로 되감지 않습니다.
 
 Backend는 `delete_folder(require_empty=true)`로 빈 폴더를 잠금 상태에서 확인해 삭제하고, `delete_document`는 일반 문서 삭제와 같게 문서를 휴지통으로 옮기고 파생 Wiki 정리는 `document_deleted` command로 비동기 처리합니다. AI는 정리 완료를 기다리거나 확인하지 않습니다. Query·수집·변환·Skill 게시 등 공개 AI 기능의 전체 취소는 [공통 작업 취소 API](tasks.md)를 사용합니다. 이 내부 Agent API만 직접 호출하면 core DB의 채팅·업무 변경까지 복구하지 않습니다.
 

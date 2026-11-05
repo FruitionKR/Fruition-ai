@@ -18,6 +18,8 @@ from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
 )
 from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
+from app.modules.data_purge.infrastructure.document_copy_purge import purge_pending_documents
+from app.modules.data_purge.infrastructure.postgres_purge import delete_run_objects
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 
@@ -25,6 +27,12 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 _CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
+# 90일 run 정리. 객체를 지우느라 job이 밀리지 않게 한 번에 묶어 지우고, 꽉 차면 곧 다시 돈다.
+_EXPIRED_RUN_BATCH_SIZE = 100
+_EXPIRED_RUN_BACKLOG_INTERVAL_SECONDS = 60
+_EXPIRED_RUN_MAX_STORAGE_FAILURES = 3
+# 영구 삭제 문서의 객체 재시도 주기.
+_DOCUMENT_PURGE_RETRY_INTERVAL_SECONDS = 60 * 60
 # 마지막 시도 중 죽은 job(lease만 남음)을 닫는 주기. lease가 90초라 그보다 자주 볼 필요는 없다.
 _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS = 60
 # 만료된 수정안 정리. 한 배치가 꽉 차면 밀린 것이 더 있다고 보고 곧 다시 돈다.
@@ -95,12 +103,26 @@ def _cleanup_expired_runs_if_due(
 ) -> float:
     if now < next_cleanup_at:
         return next_cleanup_at
-    run_ids = repository.list_expired_run_ids()
+    run_ids = repository.list_expired_run_ids(limit=_EXPIRED_RUN_BATCH_SIZE)
+    removable: list[str] = []
+    failures = 0
     for run_id in run_ids:
+        # 행을 먼저 지우면 객체 접두사를 다시 계산할 run id를 잃는다. 실패한 run은 행을 남겨 다음 주기에 다시 시도한다.
+        try:
+            delete_run_objects(run_id)
+        except Exception as exc:
+            failures += 1
+            logger.warning("만료된 AgentRun 객체 삭제 실패: run_id=%s type=%s", run_id, type(exc).__name__)
+            if failures >= _EXPIRED_RUN_MAX_STORAGE_FAILURES:
+                break
+            continue
+        removable.append(run_id)
+    for run_id in removable:
         checkpointer.delete_thread(run_id)
-    deleted_count = repository.delete_expired_runs(run_ids)
-    logger.info("Deleted %s expired AgentRun records.", deleted_count)
-    return now + _CLEANUP_INTERVAL_SECONDS
+    deleted_count = repository.delete_expired_runs(tuple(removable))
+    logger.info("Deleted %s expired AgentRun records. object_failures=%s", deleted_count, failures)
+    backlog = len(removable) >= _EXPIRED_RUN_BATCH_SIZE
+    return now + (_EXPIRED_RUN_BACKLOG_INTERVAL_SECONDS if backlog else _CLEANUP_INTERVAL_SECONDS)
 
 
 def _fail_exhausted_leases_if_due(
@@ -129,6 +151,15 @@ def _delete_expired_artifacts_if_due(grace_seconds: float, next_cleanup_at: floa
         )
     backlog = result.deleted >= ARTIFACT_CLEANUP_BATCH_SIZE
     return now + (_ARTIFACT_CLEANUP_BACKLOG_INTERVAL_SECONDS if backlog else _ARTIFACT_CLEANUP_INTERVAL_SECONDS)
+
+
+def _retry_document_purges_if_due(next_retry_at: float, now: float) -> float:
+    if now < next_retry_at:
+        return next_retry_at
+    result = purge_pending_documents()
+    if result.finished or result.pending:
+        logger.info("영구 삭제 문서 재시도: finished=%s pending=%s", result.finished, result.pending)
+    return now + _DOCUMENT_PURGE_RETRY_INTERVAL_SECONDS
 
 
 def _build_folder_content_reader() -> BackendFolderSourceReader:
@@ -164,6 +195,7 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
         next_cleanup_at = 0.0
         next_sweep_at = 0.0
         next_artifact_cleanup_at = 0.0
+        next_document_purge_retry_at = 0.0
         while not shutdown.requested:
             next_cleanup_at = _cleanup_expired_runs_if_due(
                 repository,
@@ -175,6 +207,10 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
             next_artifact_cleanup_at = _delete_expired_artifacts_if_due(
                 artifact_grace_seconds,
                 next_artifact_cleanup_at,
+                time.monotonic(),
+            )
+            next_document_purge_retry_at = _retry_document_purges_if_due(
+                next_document_purge_retry_at,
                 time.monotonic(),
             )
             job = repository.claim_next(worker_id)

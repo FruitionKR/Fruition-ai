@@ -31,14 +31,14 @@ class RestoreWikiPagesUseCase:
             if command.source_page.page_id not in deleted_pages:
                 deleted_pages.append(command.source_page.page_id)
         else:
-            changed_pages.append(
-                self._page_restore.restore_source_page(
-                    command.operation_id,
-                    command.restore_to_operation_id,
-                    command.workspace_id,
-                    command.source_page,
-                )
+            source_page = self._page_restore.restore_source_page(
+                command.operation_id,
+                command.restore_to_operation_id,
+                command.workspace_id,
+                command.source_page,
             )
+            if source_page is not None:
+                changed_pages.append(source_page)
         rebuilt_pages, replay_deleted = self._rebuild_pages(command)
         changed_pages.extend(rebuilt_pages)
         deleted_pages.extend(page_id for page_id in replay_deleted if page_id not in deleted_pages)
