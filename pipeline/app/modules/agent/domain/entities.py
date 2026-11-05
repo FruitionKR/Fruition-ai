@@ -40,17 +40,18 @@ SkillMode = Literal["auto", "explicit", "off"]
 RetrievalSource = Literal["none", "workspace", "web"]
 DocumentOperation = Literal["none", "create", "edit"]
 # 작업 탭 요청. None이면 기존(채팅 겸용) 동작이다.
-AgentTurnMode = Literal["task"]
+# 턴을 보낸 탭. task는 문서 수정·생성·정리, chat은 문서를 근거로 한 질문이다.
+AgentTurnMode = Literal["task", "chat"]
 # 사용자에게 무엇을 알릴지. clarify는 되묻기 종류, reject는 거절 이유, 문서 작업은 Skill이 꺼져 있다는 안내다.
 NoticeKind = Literal[
-    "chat_tab", "details", "web_disabled", "attachment_target", "sensitive_data", "unsupported",
+    "chat_tab", "task_tab", "details", "web_disabled", "attachment_target", "sensitive_data", "unsupported",
     "display_unsupported", "policy", "skill_off",
 ]
 # 되묻기 이유 코드. message 문구가 바뀌어도 화면이 이 값으로 갈래를 정한다.
 # markdown_document_required: 요청에 편집할 Markdown 문맥이 없다. 문서를 안 열었거나 편집 문맥을 못 보낸 경우다.
 # attachment_target_required: 첨부 중 어느 문서를 고칠지 알 수 없다. 화면은 첨부 칩을 유지한다.
-ClarifyReason = Literal["markdown_document_required", "attachment_target_required"]
-CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "details", "web_disabled", "attachment_target"})
+ClarifyReason = Literal["markdown_document_required", "attachment_target_required", "chat_tab_question", "chat_tab_notice"]
+CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "task_tab", "details", "web_disabled", "attachment_target"})
 REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "display_unsupported", "policy"})
 @dataclass(frozen=True)
 class SkillCandidate:
