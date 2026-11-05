@@ -50,7 +50,7 @@ NoticeKind = Literal[
 # 되묻기 이유 코드. message 문구가 바뀌어도 화면이 이 값으로 갈래를 정한다.
 # markdown_document_required: 요청에 편집할 Markdown 문맥이 없다. 문서를 안 열었거나 편집 문맥을 못 보낸 경우다.
 # attachment_target_required: 첨부 중 어느 문서를 고칠지 알 수 없다. 화면은 첨부 칩을 유지한다.
-ClarifyReason = Literal["markdown_document_required", "attachment_target_required", "chat_tab_question"]
+ClarifyReason = Literal["markdown_document_required", "attachment_target_required", "chat_tab_question", "chat_tab_notice"]
 CLARIFY_NOTICE_KINDS = frozenset({"chat_tab", "task_tab", "details", "web_disabled", "attachment_target"})
 REJECT_NOTICE_KINDS = frozenset({"sensitive_data", "unsupported", "display_unsupported", "policy"})
 @dataclass(frozen=True)

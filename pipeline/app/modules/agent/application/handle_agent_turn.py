@@ -281,7 +281,7 @@ class HandleAgentTurnUseCase:
             request = replace(request, skill_mode="off", skill_id=None)
         request = _with_translation_language_answer(request)
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
-        result = _with_clarified_document(_with_skill_off_notice(self._execute(request)), request)
+        result = _with_chat_tab_notice(_with_clarified_document(_with_skill_off_notice(self._execute(request)), request), request)
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
@@ -1681,6 +1681,13 @@ def _require_translation_language(request: AgentTurnRequest) -> None:
     assert context is not None
     if needs_translation_language(request.message, _selection_text(context) or context.markdown):
         raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+
+
+def _with_chat_tab_notice(result: AgentTurnResult, request: AgentTurnRequest) -> AgentTurnResult:
+    """채팅 탭의 되묻기·안내에 코드를 남긴다. 메시지에 탭 정보가 없어 새 브라우저가 이 코드로 세션을 채팅으로 분류한다."""
+    if not is_chat_mode(request) or result.action != "clarify" or result.clarify_reason is not None:
+        return result
+    return replace(result, clarify_reason="chat_tab_notice")
 
 
 def _clarify_reason(message: str) -> ClarifyReason | None:
