@@ -147,8 +147,8 @@ class AgentTurnRequestBody(BaseModel):
     reference_document_ids: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]] = Field(
         default_factory=list, max_length=MAX_REFERENCE_COUNT
     )
-    # 작업 탭에서 보낸 턴이면 "task". 생략하면 기존 동작이다.
-    mode: Literal["task"] | None = None
+    # 작업 탭에서 보낸 턴이면 "task", 채팅 탭의 문서 질문이면 "chat". 생략하면 기존 동작이다.
+    mode: Literal["task", "chat"] | None = None
     # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. 생략하면 루트·워크스페이스 전체다.
     folder_id: str | None = Field(default=None, min_length=1, max_length=64)
 
@@ -224,7 +224,7 @@ class AgentTurnRouteResponse(BaseModel):
         Literal["document-create", "document-edit", "folder-organize", "template"]
     ] = Field(default_factory=list)
     notice_kind: Literal[
-        "chat_tab", "details", "web_disabled", "attachment_target", "sensitive_data", "unsupported",
+        "chat_tab", "task_tab", "details", "web_disabled", "attachment_target", "sensitive_data", "unsupported",
         "display_unsupported", "policy", "skill_off",
     ] | None = None
     attached_edit_targets: list[int] = Field(default_factory=list)
@@ -280,7 +280,7 @@ class AgentTurnResponse(BaseModel):
     updated_conversation_summary: str | None = None
     message: str | None = None
     # action=clarify의 기계용 이유 코드. message 문구로 갈래를 정하지 않게 한다. 코드가 없는 되묻기는 null이다.
-    clarify_reason: Literal["markdown_document_required", "attachment_target_required"] | None = None
+    clarify_reason: Literal["markdown_document_required", "attachment_target_required", "chat_tab_question"] | None = None
     chat: QueryResponse | None = None
     edit: MarkdownEditOperationResponse | None = None
     source_markdown_sha256: str | None = None
