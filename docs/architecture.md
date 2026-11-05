@@ -31,7 +31,7 @@ Query·Agent·maintenance worker는 `AI_TASK_CONCURRENCY`(기본 1)건을 한 �
 
 ## 선택적 Jev 판단
 
-Agent 라우팅, Query 근거 선택, ingest 개념 병합(후속 편입의 핵심 개념-클러스터 판정과 lint 승격 개념 판정 포함, [ADR-0037](adr/0037-meaning-cluster-promotion.md). 하위 항목 배정과 lint 페이지 이동의 `part_of` 쌍 판정과 같은 하위 항목 찾기도 같은 설정을 따르며, 꺼져 있으면 이름 규칙만 쓴다. 같은 하위 항목 찾기는 저장된 `sub_entry` 벡터로 후보 10개만 묻고 임베딩 서버를 쓸 수 없으면 이름 일치만 본다, [ADR-0042](adr/0042-hierarchical-concept-pages.md)), Skill 의도 분류, 폴더 내용 조회의 폴더 지목, AI 편집의 세부 분류([ADR-0043](adr/0043-edit-detail-classification.md))는 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`·`JEV_SKILL_INTENT_ENABLED`·`JEV_FOLDER_LOOKUP_ENABLED`·`JEV_EDIT_DETAIL_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.
+Agent 라우팅, Query 근거 선택, ingest 개념 병합(후속 편입의 핵심 개념-클러스터 판정과 lint 승격 개념 판정 포함, [ADR-0037](adr/0037-meaning-cluster-promotion.md). 하위 항목 배정과 lint 페이지 이동의 `part_of` 쌍 판정과 같은 하위 항목 찾기도 같은 설정을 따르며, 꺼져 있으면 이름 규칙만 쓴다. 같은 하위 항목 찾기는 저장된 `sub_entry` 벡터로 후보 10개만 묻고 임베딩 서버를 쓸 수 없으면 이름 일치만 본다, [ADR-0042](adr/0042-hierarchical-concept-pages.md)), Skill 의도 분류, 폴더 내용 조회의 폴더 지목, AI 편집의 세부 분류([ADR-0043](adr/0043-edit-detail-classification.md))는 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`·`JEV_SKILL_INTENT_ENABLED`·`JEV_FOLDER_LOOKUP_ENABLED`·`JEV_EDIT_DETAIL_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 편집 세부 분류만 설정 기본값이 켜짐이라 키가 있으면 쓴다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.
 
 ## 모델 사용량 책임
 

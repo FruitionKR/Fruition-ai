@@ -53,7 +53,7 @@ TypeSafe Jev(`jev-1.13.0`)는 이미 추린 선택지 중 하나를 고르는 ch
   - 선택지는 폴더 경로마다 하나, 이름이 같은 폴더가 여러 곳이면 그 이름 전부를 뜻하는 묶음 하나, `지목 없음`이다. Jev는 하나만 고르므로 같은 이름을 가릴 단서가 없으면 묶음을 골라 되묻게 한다. 라우팅과 같이 고정 무작위 순서로 섞는다.
   - 선택지가 255개를 넘으면 LLM 판단을 쓴다. 응답 예산은 라우팅과 같은 15초이고, 요청 마감이 더 가까우면 그 안에 끝낸다(대화형 Jev 호출 공통).
   - 개발 중 12문장 실측(2026-10-27, 문장마다 1회): Jev 11/12, LLM(Claude Haiku 4.5) 12/12. Jev 오답은 `최상위 회의록 폴더`에서 묶음을 고른 건이다.
-- **편집 세부 분류(추가):** 라우터가 편집으로 고른 요청의 `requested_formats`·`addition_only`·`structure_change`·`target_language`를 고른다(ADR-0043). 설정은 `JEV_EDIT_DETAIL_ENABLED`(기본 `false`)이고 대체 경로는 기존 LLM 분류(`prompts/markdown_edit_detail.system.md`)다.
+- **편집 세부 분류(추가):** 라우터가 편집으로 고른 요청의 `requested_formats`·`addition_only`·`structure_change`·`target_language`를 고른다(ADR-0043). 설정은 `JEV_EDIT_DETAIL_ENABLED`(기본 `true`, 다른 Jev 설정과 달리 키가 있으면 켜진다)이고 대체 경로는 기존 LLM 분류(`prompts/markdown_edit_detail.system.md`)다.
   - Jev는 질문마다 하나만 고른다. 결과의 주 형식 하나를 형식 9개 + `없음` + 글머리표·체크리스트 자리에서 고른다. 글머리표·체크리스트는 라우터 목표가 맡으므로 형식으로 넘기지 않는다. `addition_only`·`structure_change`는 예/아니오, 번역 언어는 `ko`·`en`·`없음`에서 고른다(번역 검사가 구분하는 값이 이 둘뿐이다). 모두 4개 질문을 한 요청으로 보낸다.
   - 선택지 설명에 LLM 프롬프트의 정의를 그대로 둔다. "true for this request"처럼 뜻 없는 선택지로는 링크·이미지 변경을 구조 변경으로 잡지 못했다.
   - 판정 규칙은 LLM 프롬프트에서 JSON 출력 형식 절을 뺀 것이고 요청 state에 한 번만 둔다. 입력은 LLM 분류와 같은 요청 문장·대화 요약·Skill 지침이다. 응답 예산은 라우팅과 같은 15초이고, 요청 마감이 더 가까우면 그 안에 끝낸다(대화형 Jev 호출 공통).
