@@ -52,6 +52,9 @@ class RollbackAgentRunUseCase:
                 if record["forward_status"] is None:
                     if record["id"] is not None:
                         self._repository.complete_undo(record["id"], {})
+                    else:
+                        # 복구 기록을 남기기 전에 취소돼 running으로 멈춘 단계다.
+                        self._repository.mark_operation(record["operation_id"], ("running",), "cancelled")
                     continue
                 if (record["forward_status"] == "failed" and record.get("forward_attempt") == 1
                         and record.get("forward_error_code") in {"tool_http_400", "tool_http_401", "tool_http_403", "tool_http_404", "tool_http_409", "tool_http_422"}):
