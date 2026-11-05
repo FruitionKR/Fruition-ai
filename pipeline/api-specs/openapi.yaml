@@ -202,6 +202,64 @@ components:
       - purpose
       title: AgentArtifactResponse
       type: object
+    AgentDocumentEditHunkResponse:
+      properties:
+        after_start:
+          title: After Start
+          type: integer
+        before_start:
+          title: Before Start
+          type: integer
+        lines:
+          items:
+            $ref: '#/components/schemas/MarkdownDiffLineResponse'
+          title: Lines
+          type: array
+      required:
+      - before_start
+      - after_start
+      - lines
+      title: AgentDocumentEditHunkResponse
+      type: object
+    AgentDocumentEditPreviewResponse:
+      properties:
+        added_lines:
+          title: Added Lines
+          type: integer
+        base_version:
+          title: Base Version
+          type: integer
+        display_name:
+          title: Display Name
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+        hunks:
+          items:
+            $ref: '#/components/schemas/AgentDocumentEditHunkResponse'
+          title: Hunks
+          type: array
+        operation_id:
+          title: Operation Id
+          type: string
+        removed_lines:
+          title: Removed Lines
+          type: integer
+        summary:
+          title: Summary
+          type: string
+      required:
+      - operation_id
+      - document_id
+      - display_name
+      - base_version
+      - summary
+      - added_lines
+      - removed_lines
+      - hunks
+      title: AgentDocumentEditPreviewResponse
+      type: object
     AgentPlanOperationResponse:
       properties:
         arguments:
@@ -344,6 +402,23 @@ components:
       - workspace_id
       - user_id
       title: AgentRunActorRequest
+      type: object
+    AgentRunEditPreviewsResponse:
+      properties:
+        expires_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Expires At
+        items:
+          items:
+            $ref: '#/components/schemas/AgentDocumentEditPreviewResponse'
+          title: Items
+          type: array
+      required:
+      - items
+      title: AgentRunEditPreviewsResponse
       type: object
     AgentRunResponse:
       properties:
@@ -706,6 +781,23 @@ components:
       - result
       - error_code
       title: MarkdownAgentRunStatusResponse
+      type: object
+    MarkdownDiffLineResponse:
+      properties:
+        text:
+          title: Text
+          type: string
+        type:
+          enum:
+          - context
+          - delete
+          - insert
+          title: Type
+          type: string
+      required:
+      - type
+      - text
+      title: MarkdownDiffLineResponse
       type: object
     ModelUsage:
       properties:
@@ -2313,6 +2405,52 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Cancel Agent Run
+      tags:
+      - agent-runs
+  /agent/runs/{run_id}/edit-previews:
+    get:
+      operationId: get_agent_run_edit_previews_agent_runs__run_id__edit_previews_get
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRunEditPreviewsResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Agent Run Edit Previews
       tags:
       - agent-runs
   /agent/runs/{run_id}/reject:

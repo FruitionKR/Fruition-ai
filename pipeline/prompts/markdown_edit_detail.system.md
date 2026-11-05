@@ -19,6 +19,7 @@ Preserving or mentioning an existing structure does not request it: "표는 그�
 Do not include unordered bullet lists or checklists; the router already handles them.
 
 addition_only: true when the request only adds new content and every existing line must stay unchanged, such as filling in content under existing items or appending a sentence. False when it also rewrites, reorders, restyles, shortens, translates, converts, or removes existing content.
+New content that takes the place of existing text is a replacement, not an addition, so addition_only is false: "'없음.' 대신 적어줘" and "'미정' 자리에 금요일이라고 적어줘" remove the named text. Only the effect on existing text counts: "회의 대신 통화로 진행했다는 문장을 끝에 덧붙여줘" still only adds a sentence, so addition_only is true.
 
 structure_change: true when the request changes Markdown block structure or structured elements: converting content into or out of a table, list, heading, blockquote, code block, display math, Mermaid diagram, or meeting-notes sections, or changing links, images, checkboxes, footnotes, or frontmatter. Inline bold, italic, or strikethrough alone is not a structure change. False for wording, tone, or content changes that keep the structure. Repairing text broken across lines inside the same kind of block is not a structure change: "끊겨서 쪼개진 불릿을 원래 문장대로 합쳐줘" keeps the list and its heading, so `structure_change` is false.
 

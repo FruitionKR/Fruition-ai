@@ -5,6 +5,7 @@ from app.modules.agent_run.domain.entities import (
     AgentJob,
     AgentRun,
     AgentRunContext,
+    DocumentEditArtifact,
     StartAgentRunArtifact,
     ContentArtifactReference,
     StartAgentRunRequest,
@@ -24,7 +25,7 @@ class AgentRunRepositoryPort(Protocol):
         self,
         run: AgentRun,
         job_id: str,
-        artifact: StartAgentRunArtifact | None = None,
+        artifacts: tuple[StartAgentRunArtifact, ...] = (),
     ) -> AgentRun:
         ...
 
@@ -80,6 +81,10 @@ class AgentRunManagementRepositoryPort(AgentApprovalRepositoryPort, Protocol):
         instruction: str,
         job_id: str,
     ) -> AgentRun:
+        ...
+
+    def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
+        """현재 계획의 문서별 변경 미리 보기. 요청자의 run이 아니면 None이다."""
         ...
 
 
@@ -146,6 +151,10 @@ class AgentPlanRepositoryPort(Protocol):
         ...
 
     def save_plan(self, run_id: str, plan: AgentPlan) -> None:
+        ...
+
+    def load_document_edit_artifacts(self, run_id: str) -> tuple[DocumentEditArtifact, ...]:
+        """미리 보기가 있는 artifact를 첨부 순서대로 돌려준다. 만료된 것도 포함한다."""
         ...
 
 

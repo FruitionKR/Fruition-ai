@@ -38,6 +38,9 @@ from app.modules.skill.application.select_skill import SelectSkillUseCase
 from app.modules.skill.infrastructure.postgres_skill_repository import (
     PostgresSkillRepository,
 )
+from app.modules.skill.infrastructure.backend_skill_reference_reader import (
+    build_skill_reference_reader,
+)
 from app.modules.skill.interfaces.http.dependencies import (
     get_author_skill_use_case,
     get_propose_skill_draft_use_case,
@@ -91,6 +94,7 @@ def build_handle_agent_turn_use_case(
             provider=provider, model=model
         ),
         folder_source_reader=build_folder_source_reader() if feature_enabled else None,
+        reference_reader=build_skill_reference_reader(),
         task_clarifier=build_task_clarifier(provider=provider, model=model),
         folder_tree_reader=build_folder_tree_reader(),
         folder_reference_resolver=with_jev_folder_lookup(build_folder_reference_resolver(provider=provider, model=model)),

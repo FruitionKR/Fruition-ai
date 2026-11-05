@@ -25,6 +25,9 @@ from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
     DOCUMENT_SKILL_CAPABILITIES,
+    MAX_REFERENCE_CHARS,
+    MAX_REFERENCE_COUNT,
+    MAX_TOTAL_REFERENCE_CHARS,
     RESULT_MODE_CAPABILITIES,
     canonical_allowed_tools,
     can_create_document,
@@ -48,9 +51,6 @@ from app.modules.skill.domain.safety import (
 
 
 MAX_INSTRUCTION_CHARS = 4_000
-MAX_REFERENCE_COUNT = 3
-MAX_REFERENCE_CHARS = 40_000
-MAX_TOTAL_REFERENCE_CHARS = 80_000
 MAX_DESCRIPTION_CHARS = 500
 MAX_INSTRUCTIONS_CHARS = 30_000
 MAX_INSTRUCTIONS_LINES = 500

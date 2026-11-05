@@ -64,7 +64,8 @@ class QueryAnswerEvaluator(QueryEvaluatorPort):
                     ],
                     "text": snippet.text,
                 }
-                for snippet in context.evidence_snippets[:8]
+                # 첨부 문서 조각은 짧게 나뉘어 있어 답변이 쓴 조각을 8개로 자르면 근거가 빠져 보인다.
+                for snippet in context.evidence_snippets[:8 + len(context.pinned_evidence)]
             ],
         }
         raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))

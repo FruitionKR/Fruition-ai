@@ -76,4 +76,5 @@ class SkillReferenceReaderPort(Protocol):
         workspace_id: str,
         user_id: str,
         document_id: str,
+        max_chars: int | None = None,
     ) -> SkillAuthoringReference: ...

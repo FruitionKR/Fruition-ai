@@ -39,6 +39,19 @@ def test_active_markdown_case_has_document_target_for_direct_verification() -> N
     assert request_from_case(case).document_id == "evaluation-document"
 
 
+def test_task_mode_attachment_cases_reach_the_router_as_task_turns() -> None:
+    cases = {case["id"]: case for case in load_cases(DEFAULT_DATASET)}
+
+    summary = request_from_case(cases["task-attachment-summary"])
+    new_document = cases["task-attachment-summary-new-document"]
+
+    assert summary.mode == "task"
+    assert summary.reference_document_ids
+    assert cases["task-attachment-summary"]["expected"]["action"] == "chat_answer"
+    assert new_document["expected"]["action"] == "markdown_create"
+    assert request_from_case(cases["attachment-question"]).mode is None
+
+
 def test_reports_semantic_misroute_separately_from_turn_failure(tmp_path: Path) -> None:
     dataset = tmp_path / "routes.jsonl"
     dataset.write_text(

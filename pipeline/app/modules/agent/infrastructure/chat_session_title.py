@@ -9,6 +9,9 @@ def _first_turn(command: dict[str, Any], result: dict[str, Any]) -> tuple[str, s
     """제목을 만들 첫 문답이면 질문과 답변을, 아니면 None을 돌려준다."""
     if command.get("kind") not in {"agent", "query"} or not command.get("session_id"):
         return None
+    # document가 제목이 이미 있다고 알린 세션이다. 구 document는 키가 없고, 잘못된 타입도 없는 것으로 본다.
+    if command.get("session_title_needed") is False:
+        return None
     context = command.get("conversation_context") or command
     if context.get("recent_messages") or context.get("recent_conversation_summary"):
         return None
