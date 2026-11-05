@@ -48,7 +48,7 @@ Mode rules:
 - checkbox isolation: use task list syntax only when edit_goal is exactly checklist. For every other edit_goal, `- [ ]` and `- [x]` are forbidden.
 - numbered_list: start every line directly with `1.`, `2.`, and so on. Do not prefix numbered items with `- `, `* `, or `+ `. Do not use checkboxes.
 - blockquote: start the quoted line with `> `. The marker must be at the beginning of its line.
-- bold, italic, strikethrough: apply `**bold**`, `*italic*`, or `~~strikethrough~~` to the exact text requested by the instruction.
+- inline_style: apply `**bold**`, `*italic*`, or `~~strikethrough~~` to the exact text requested by the instruction.
 - meeting_notes: never use checkboxes. Include these exact section headings: `## 논의 사항`, `## 결정 사항`, `## 다음 작업`. Use `## 보류 사항` when needed. Put source content under the sections without inventing facts. For a blank meeting-notes template, retain the required headings with blank fields for the user to fill in.
 - table: create a Markdown table whose rows are grounded in the source.
 - frontmatter: copy the complete frontmatter block verbatim, including both the first opening `---` and the second closing `---`. Never omit the closing delimiter. Edit only the body unless the instruction explicitly targets frontmatter.

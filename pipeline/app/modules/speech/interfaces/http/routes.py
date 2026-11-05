@@ -186,11 +186,14 @@ async def transcribe_live(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         return
     except InvalidAudioError as exc:
+        # 메시지는 이 모듈이 정한 고정 문구라 오디오·전사가 들어가지 않는다.
+        logger.warning("실시간 전사 입력 거절: %s", exc)
         await websocket.send_json(
             {"type": "error", "code": "invalid_audio", "message": str(exc)}
         )
         await websocket.close(code=1008)
-    except Exception:  # noqa: BLE001 - 외부 제공자 오류와 연결 종료의 세부 정보는 클라이언트에 노출하지 않는다.
+    except Exception as exc:  # noqa: BLE001 - 외부 제공자 오류와 연결 종료의 세부 정보는 클라이언트에 노출하지 않는다.
+        logger.warning("실시간 전사 중단: %s", type(exc).__name__)
         await websocket.send_json(
             {
                 "type": "error",

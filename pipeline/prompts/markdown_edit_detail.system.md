@@ -10,7 +10,7 @@ requested_formats: every Markdown form the edited result must take. Use an empty
 - `numbered_list`: present items as an ordered, numbered list.
 - `blockquote`: put text in a blockquote.
 - `heading`: add or change a Markdown heading.
-- `bold`, `italic`, `strikethrough`: apply that inline style to some text.
+- `inline_style`: apply bold, italic, or strikethrough to some text.
 - `display_math`: write an equation as display math.
 - `mermaid`: draw a Mermaid diagram.
 - `code_block`: put content in a fenced code block.
@@ -27,7 +27,7 @@ target_language: for a translation request, the ISO 639-1 code of the language t
 
 Required JSON schema:
 {
-  "requested_formats": ["meeting_notes | table | numbered_list | blockquote | heading | bold | italic | strikethrough | display_math | mermaid | code_block"],
+  "requested_formats": ["meeting_notes | table | numbered_list | blockquote | heading | inline_style | display_math | mermaid | code_block"],
   "addition_only": false,
   "structure_change": false,
   "target_language": null

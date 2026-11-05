@@ -26,14 +26,10 @@ class ChatCompletionsMarkdownEditDetailClassifier:
         self._system_prompt = system_prompt or DEFAULT_MARKDOWN_EDIT_DETAIL_PROMPT.read_text(encoding="utf-8")
 
     def classify(self, request: MarkdownEditRequest) -> MarkdownEditDetail:
-        payload = {
-            "instruction": request.instruction,
-            "conversation_summary": request.conversation_summary,
-            # Skill만 실행하는 요청은 문장에 결과 형식이 없고 Skill 지침에 있다.
-            "skill_instructions": request.skill_instructions or "",
-        }
         try:
-            raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
+            raw = self._client.complete_json(
+                self._system_prompt, json.dumps(edit_detail_payload(request), ensure_ascii=False, indent=2)
+            )
             return parse_edit_detail(raw)
         except PipelineRunCancelledError:
             # 취소·시한 초과는 RuntimeError 하위 클래스라 아래에서 삼키지 않도록 먼저 올린다.
@@ -43,6 +39,15 @@ class ChatCompletionsMarkdownEditDetailClassifier:
             # 편집 자체는 막지 않는다.
             logger.warning("[편집 세부 분류 실패] %s", exc)
             return MarkdownEditDetail()
+
+
+def edit_detail_payload(request: MarkdownEditRequest) -> dict[str, object]:
+    return {
+        "instruction": request.instruction,
+        "conversation_summary": request.conversation_summary,
+        # Skill만 실행하는 요청은 문장에 결과 형식이 없고 Skill 지침에 있다.
+        "skill_instructions": request.skill_instructions or "",
+    }
 
 
 def parse_edit_detail(raw: object) -> MarkdownEditDetail:

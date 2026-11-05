@@ -1,0 +1,36 @@
+{"id":"create-summary-new","message":"지금 활성 문서를 요약해서 새문서로 만들어줘","action":["markdown_create"]}
+{"id":"create-summary-new-and-translate","message":"지금 활성 문서를 요약하고 영어로 번역해서 새문서로 만들어줘","action":["markdown_create"]}
+{"id":"create-summary-keep-original","message":"원본은 그대로 두고 이 문서 요약본을 하나 더 만들어줘","action":["markdown_create"]}
+{"id":"create-summary-separately","message":"열린 문서 핵심만 뽑아서 별도 문서로 빼줘","action":["markdown_create"]}
+{"id":"create-table-new","message":"이 문서 내용을 표로 정리해서 새 문서로 만들어줘","action":["markdown_create"]}
+{"id":"create-checklist-new","message":"이 문서를 보고 할 일 체크리스트를 새 문서로 뽑아줘","action":["markdown_create"]}
+{"id":"create-copy-rewrite","message":"이 문서 사본 만들어서 말투를 존댓말로 바꿔줘","action":["markdown_create"]}
+{"id":"create-copy-shorten","message":"복사본을 하나 떠서 거기에 절반 길이로 줄여줘","action":["markdown_create"]}
+{"id":"create-japanese-version","message":"이 문서 일본어판도 따로 있었으면 해","action":["markdown_create"]}
+{"id":"create-english-version-keep","message":"한국어 원문은 놔두고 영문판을 새로 만들어줘","action":["markdown_create"]}
+{"id":"create-slides-and-faq","message":"활성 문서로 발표 대본이랑 FAQ를 담은 새 문서를 써줘","action":["markdown_create"]}
+{"id":"create-memo-from-doc","message":"이 문서 기준으로 팀 공지문 초안을 새로 작성해줘","action":["markdown_create"]}
+{"id":"create-summary-then-keep-title","message":"제목은 같게 하고 내용만 요약한 다른 문서를 만들어줘","action":["markdown_create"]}
+{"id":"create-new-file-question-form","message":"이 문서를 한 장짜리 요약본으로 새로 만들 수 있어?","action":["markdown_create"]}
+{"id":"edit-summary-in-place","message":"이 문서 전체를 세 문단으로 요약해줘","action":["markdown_edit"]}
+{"id":"edit-summary-top","message":"활성 문서 맨 위에 세 줄 요약을 넣어줘","action":["markdown_edit"]}
+{"id":"edit-translate-in-place","message":"이 문서를 영어로 번역해줘","action":["markdown_edit"]}
+{"id":"edit-translate-and-shorten","message":"이 문단을 영어로 옮기고 절반으로 줄여줘","action":["markdown_edit"]}
+{"id":"edit-table-in-place","message":"이 내용을 표로 바꿔줘","action":["markdown_edit"]}
+{"id":"edit-table-wish","message":"이 부분은 표로 정리되어 있으면 좋겠어","action":["markdown_edit","clarify"]}
+{"id":"edit-table-see","message":"본문 내용을 표 형태로 보고 싶어","action":["markdown_edit","clarify"]}
+{"id":"edit-table-add-column","message":"표에 담당자 열을 추가하고 마감일 순으로 정렬해줘","action":["markdown_edit"]}
+{"id":"edit-table-header-align","message":"표 머리글을 굵게 하고 숫자 열은 오른쪽 정렬해줘","action":["markdown_edit"]}
+{"id":"edit-checklist-in-place","message":"이 절차를 체크리스트로 바꾸고 제목은 유지해줘","action":["markdown_edit"]}
+{"id":"edit-rewrite-and-title","message":"제목을 고치고 마지막 문단은 존댓말로 다듬어줘","action":["markdown_edit"]}
+{"id":"edit-append-summary","message":"문서 끝에 요약 섹션을 추가해줘","action":["markdown_edit"]}
+{"id":"edit-chart-to-table","message":"이 목록을 표로 만들고 합계 행을 넣어줘","action":["markdown_edit"]}
+{"id":"edit-copy-word-mentioned","message":"복사본 만드는 방법 설명한 문단만 짧게 줄여줘","action":["markdown_edit"]}
+{"id":"edit-new-word-mentioned","message":"새 문서 작성 규칙 섹션의 오타를 고쳐줘","action":["markdown_edit"]}
+{"id":"edit-version-word-mentioned","message":"영어 버전 출시 일정 부분을 다음 달로 고쳐줘","action":["markdown_edit"]}
+{"id":"display-table-width","message":"표 너비를 더 넓게 해줘","action":["reject"]}
+{"id":"display-column-width","message":"첫 번째 열 폭 좀 늘려줘","action":["reject"]}
+{"id":"display-font","message":"본문 글꼴을 바꾸고 글자 크기도 키워줘","action":["reject"]}
+{"id":"display-text-color","message":"제목 글자 색을 파란색으로 해줘","action":["reject"]}
+{"id":"display-line-height","message":"줄 간격을 넓히고 표는 페이지 가운데로 옮겨줘","action":["reject"]}
+{"id":"display-can-i","message":"표 너비를 바꿀 수 있어?","action":["reject"]}

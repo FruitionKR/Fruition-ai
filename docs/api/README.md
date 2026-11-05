@@ -88,7 +88,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}`, `POST /internal/agent/runs/{run_id}/plan-ready`(승인 대기·종료·되묻기 알림) | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:28,52,69 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
-| OpenAI | `/v1/audio/transcriptions`, `wss://.../v1/realtime?model=gpt-realtime-2.1-mini`(합성), `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:60,100,197 |
+| OpenAI | `/v1/audio/transcriptions`, `wss://.../v1/realtime?model=gpt-realtime-2.1-mini`(합성), `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:64,104,201 |
 | OpenAI · Gemini · Claude | ChatCompletions / Responses / messages | `app/modules/wiki_generation/infrastructure/chat_completions_llm.py`, `app/modules/document_restoration/infrastructure/selective_repair_with_provider.py`:56,57-58,60 |
 | Tavily | `POST https://api.tavily.com/search` | `app/modules/query/infrastructure/web_search.py`:14,73 |
 
