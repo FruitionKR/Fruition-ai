@@ -268,6 +268,8 @@ class AgentTurnResponse(BaseModel):
     route: AgentTurnRouteResponse
     updated_conversation_summary: str | None = None
     message: str | None = None
+    # action=clarify의 기계용 이유 코드. message 문구로 갈래를 정하지 않게 한다. 코드가 없는 되묻기는 null이다.
+    clarify_reason: Literal["markdown_document_required"] | None = None
     chat: QueryResponse | None = None
     edit: MarkdownEditOperationResponse | None = None
     source_markdown_sha256: str | None = None

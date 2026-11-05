@@ -27,7 +27,13 @@ from psycopg.types.json import Json
 from pydantic import ValidationError
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection, resolve_workspace_llm_selection
-from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
+from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title, needs_chat_session_title
+from app.modules.model_usage.infrastructure.usage_ledger import (
+    release_reserved_call,
+    reserved_call,
+    start_call,
+    usage_scope,
+)
 from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
@@ -1219,11 +1225,47 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         return False
 
 
-async def _publish_session_title(producer, command: dict[str, Any], result: dict[str, Any]) -> None:
+def _reserve_session_title_call(command: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """제목을 만들 문답이면 제목 호출의 원장 행을 결과 발행 전에 연다. 모델은 부르지 않는다.
+
+    제목 호출은 답변을 늦추지 않으려고 발행 뒤에 시작하고, document-svc는 결과를 받으면 run_id로 원장을 읽어 대기열에서
+    지운다. 그때 행이 없으면 제목 호출은 일일 대사까지 빠진다. started 행이 있으면 document-svc가 끝날 때까지 다시 수집한다.
+    여는 데 실패해도 답변 발행을 막지 않는다.
+    """
     try:
-        from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+        if not needs_chat_session_title(command, result):
+            return None
+        provider, model = resolve_llm_selection(command["provider"], command["model"])
         with usage_scope({**command, "kind": "session_title"}):
-            title = await asyncio.to_thread(generate_chat_session_title, command, result)
+            return start_call(provider, model)
+    except Exception as exc:
+        logger.warning("채팅 제목 원장 예약 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+        return None
+
+
+async def _release_session_title_call(command: dict[str, Any], call_id: str | None) -> None:
+    if call_id is None:
+        return
+    try:
+        await asyncio.to_thread(release_reserved_call, call_id)
+    except Exception as exc:
+        # 남은 started 행은 원장 조회가 1시간 뒤 abandoned로 닫는다.
+        logger.warning("채팅 제목 원장 예약 해제 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+
+
+async def _publish_session_title(
+    producer, command: dict[str, Any], result: dict[str, Any], reserved: str | None = None
+) -> None:
+    try:
+        try:
+            with usage_scope({**command, "kind": "session_title"}), reserved_call(reserved):
+                title = await asyncio.to_thread(generate_chat_session_title, command, result)
+        except asyncio.CancelledError:
+            # 스레드는 계속 돌아 행을 직접 닫는다. 지우면 그 호출의 청구가 사라진다.
+            reserved = None
+            raise
+        finally:
+            await _release_session_title_call(command, reserved)
         if title:
             await producer.send_and_wait(
                 RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),
@@ -1449,13 +1491,19 @@ async def consume() -> None:
                 error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )
+        # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
+        wants_title = event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
+            and not isinstance(result, ReplayedResult)
+        title_call = await asyncio.to_thread(_reserve_session_title_call, command, result) if wants_title else None
         # 발행이 끝난 뒤에만 완료로 표시해 커밋 대상이 되게 한다.
-        await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
-        if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
-                and not isinstance(result, ReplayedResult):
-            # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
+        try:
+            await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
+        except BaseException:
+            await _release_session_title_call(command, title_call)
+            raise
+        if wants_title:
             # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
-            task = asyncio.create_task(_publish_session_title(producer, command, result))
+            task = asyncio.create_task(_publish_session_title(producer, command, result, title_call))
             title_tasks.add(task)
             task.add_done_callback(title_tasks.discard)
         return True
