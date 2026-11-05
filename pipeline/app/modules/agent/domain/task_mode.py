@@ -1,4 +1,4 @@
-"""작업 탭(mode=task) 턴의 route 규칙."""
+"""탭별 route 규칙. 작업 탭(mode=task)은 문서를 고치고 만들고 정리하며, 채팅 탭(mode=chat)은 문서를 근거로 답한다."""
 
 from dataclasses import replace
 
@@ -9,14 +9,20 @@ from app.modules.agent.domain.attached_edit_request import (
     saves_result_into_document,
     uses_only_open_document,
 )
-from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
+from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute, NoticeKind
 
-# 첨부 없는 작업 탭에서는 답변 갈래를 고를 수 없다. 질문은 clarify로 채팅 탭을 안내한다.
+# 작업 탭에서는 답변 갈래를 고를 수 없다. 질문은 첨부가 있어도 clarify로 채팅 탭을 안내한다.
 TASK_MODE_EXCLUDED_ACTIONS = frozenset({"chat_answer", "conversation_reply"})
+# 채팅 탭에서 실행할 수 있는 갈래. 나머지는 원문이나 워크스페이스를 바꾸므로 작업 탭을 안내한다.
+CHAT_MODE_ACTIONS = frozenset({"chat_answer", "conversation_reply", "reject"})
 
 
 def is_task_mode(request: AgentTurnRequest) -> bool:
     return request.mode == "task"
+
+
+def is_chat_mode(request: AgentTurnRequest) -> bool:
+    return request.mode == "chat"
 
 
 def summarizes_open_document(request: AgentTurnRequest) -> bool:
@@ -59,37 +65,39 @@ def _only_open_document(request: AgentTurnRequest) -> bool:
 
 
 def task_mode_allows_action(request: AgentTurnRequest, action: str) -> bool:
-    """첨부 UI는 작업 탭에만 있으므로, 첨부가 있는 턴은 답변 갈래로 첨부를 근거로 답한다.
-
-    열린 문서의 요약·번역도 답변 갈래다. 채팅 탭은 위키 질의만 보내 열린 문서로 답할 수 없다.
-    """
-    return (
-        not is_task_mode(request)
-        or bool(request.reference_document_ids)
-        or summarizes_open_document(request)
-        or action not in TASK_MODE_EXCLUDED_ACTIONS
-    )
+    return not is_task_mode(request) or action not in TASK_MODE_EXCLUDED_ACTIONS
 
 
 def task_mode_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
-    """작업 탭 규칙을 적용한다. 어떤 라우터가 골랐든 결과가 같도록 애플리케이션에서 정한다.
+    """탭 규칙을 적용한다. 어떤 라우터가 골랐든 결과가 같도록 애플리케이션에서 정한다.
 
-    - 첨부 없음: 답변 갈래는 다시 묻지 않고 채팅 탭 안내용 clarify로 바꾼다. 질문을 작업으로 억지로
+    - 작업 탭: 답변 갈래는 첨부와 열린 문서가 있어도 채팅 탭 안내용 clarify로 바꾼다. 질문을 작업으로 억지로
       바꾸면 의도하지 않은 편집·저장이 생기므로, 안내만 하고 끝낸다.
-    - 첨부 있음: 채팅 탭 안내 clarify는 질문이라는 판단이므로 첨부를 근거로 답하는 chat_answer로 바꾼다.
-      첨부는 작업 탭에서만 고를 수 있어 채팅 탭 안내로는 답을 얻을 수 없다.
-    - 첨부 없이 열린 문서의 요약·번역만 시킴: 첨부가 있을 때와 같게 열린 문서를 근거로 답한다.
+    - 채팅 탭: 답변과 거절만 실행한다. 나머지는 실행하지 않고 작업 탭을 안내한다.
     """
-    if not is_task_mode(request):
+    if is_chat_mode(request):
+        return _chat_mode_route(route)
+    if not is_task_mode(request) or route.action not in TASK_MODE_EXCLUDED_ACTIONS:
         return route
-    if request.reference_document_ids or summarizes_open_document(request):
-        return _attachment_answer_route(route) if _is_chat_tab_clarify(route) else route
-    if route.action not in TASK_MODE_EXCLUDED_ACTIONS:
+    return _notice_route(route, "chat_tab", route.reason or "question in task mode")
+
+
+def _chat_mode_route(route: AgentTurnRoute) -> AgentTurnRoute:
+    if route.action in CHAT_MODE_ACTIONS:
         return route
+    if _is_notice_clarify(route) and route.notice_kind == "web_disabled":
+        return route
+    # 채팅 탭 안내나 자세히 묻는 clarify는 이미 채팅 탭에 있으므로 질문으로 받아 답한다.
+    if _is_notice_clarify(route) and route.notice_kind in {"chat_tab", "details", None}:
+        return replace(route, action="chat_answer", retrieval_source="workspace", notice_kind=None)
+    return _notice_route(route, "task_tab", route.reason or "change request in chat mode")
+
+
+def _notice_route(route: AgentTurnRoute, notice_kind: NoticeKind, reason: str) -> AgentTurnRoute:
     return replace(
         route,
         action="clarify",
-        reason=route.reason or "question in task mode",
+        reason=reason,
         edit_goal=None,
         edit_operation=None,
         edit_destination=None,
@@ -99,20 +107,16 @@ def task_mode_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTu
         document_operation="none",
         persist=False,
         required_capabilities=(),
-        notice_kind="chat_tab",
+        attached_edit_targets=(),
+        include_active_markdown=False,
+        notice_kind=notice_kind,
     )
 
 
-def _is_chat_tab_clarify(route: AgentTurnRoute) -> bool:
-    # 작업 탭에서 안내 종류가 없는 문서 무관 clarify도 채팅 탭 문구로 끝난다.
+def _is_notice_clarify(route: AgentTurnRoute) -> bool:
     return (
         route.action == "clarify"
         and route.document_operation == "none"
         and route.edit_goal is None
         and not route.skill_candidates
-        and route.notice_kind in {"chat_tab", None}
     )
-
-
-def _attachment_answer_route(route: AgentTurnRoute) -> AgentTurnRoute:
-    return replace(route, action="chat_answer", retrieval_source="workspace", notice_kind=None)

@@ -1316,6 +1316,25 @@ def test_agent_command_passes_target_folder_to_request_body() -> None:
     assert without_folder.execute.call_args.args[0].folder_id is None
 
 
+def test_agent_command_carries_the_confirmed_read_only_document() -> None:
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "이 문서 고쳐 줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+        "mode": "task",
+    }
+
+    opened = _run_agent_command({**command, "read_only_document_id": "doc-1"})
+    without_key = _run_agent_command(command)
+
+    assert opened.execute.call_args.args[0].read_only_document_id == "doc-1"
+    assert without_key.execute.call_args.args[0].read_only_document_id is None
+
+
 def test_agent_command_rejects_auto_skill_id() -> None:
     command = {
         "run_id": "agent_0123456789abcdef0123456789abcdef",
