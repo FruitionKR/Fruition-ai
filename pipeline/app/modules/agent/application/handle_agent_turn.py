@@ -1,8 +1,11 @@
 import hashlib
+import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import replace
 
+from app.core.pipeline_control import PipelineRunCancelledError, ensure_task_active
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
@@ -22,6 +25,21 @@ from app.modules.agent.domain.entities import (
     PendingSkillProposal,
     RetrievalSource,
 )
+from app.modules.agent.domain.attached_document_edits import (
+    ALL_FORBIDDEN_MESSAGE,
+    ExcludedAttachment,
+    ExclusionReason,
+    OPEN_DOCUMENT_TITLE,
+    attachment_target_message,
+    exclusion_notice,
+)
+from app.modules.agent.domain.attached_edit_request import (
+    answer_includes_open_document,
+    attached_edit_instruction,
+    answer_to_translation_language_question,
+    needs_translation_language,
+    uses_only_open_document,
+)
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.domain.folder_lookup import (
     FolderLookupUnavailableError,
@@ -35,12 +53,33 @@ from app.modules.agent.domain.folder_sources import (
     folder_source_notice,
     select_folder_sources,
 )
-from app.modules.agent.domain.task_mode import is_task_mode, task_mode_route
+from app.modules.agent.domain.read_only_attachments import route_without_read_only_targets
+from app.modules.agent.domain.reference_documents import (
+    ReferenceDocumentUnavailableError,
+    MAX_REFERENCE_ANSWER_CHARS,
+    MAX_REFERENCE_EVIDENCE_CHARS,
+    SelectedReferenceDocuments,
+    clean_reference_title,
+    clip_reference_document,
+    reference_char_limit,
+    reference_document_notice,
+    reference_documents_context,
+    reference_evidence_snippets,
+)
+from app.modules.agent.domain.task_mode import (
+    creates_result_only_from_open_document,
+    is_task_mode,
+    saves_open_document_result_as_new,
+    summarizes_open_document,
+    task_mode_route,
+)
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
     AgentRunStarterPort,
 )
+from app.modules.agent_run.domain.edit_preview import build_edit_preview
 from app.modules.agent_run.domain.entities import (
+    MAX_ARTIFACT_BYTES,
     StartAgentRunContent,
     StartAgentRunRequest,
 )
@@ -68,8 +107,9 @@ from app.modules.query.application.conversation_context_resolver import (
 )
 from app.modules.query.application.ports import ConversationSummarizerPort, QueryEventPublisherPort
 from app.modules.query.application.query_event import publish_query_event
-from app.modules.query.domain.entities import ConversationContext, QueryAnswer
+from app.modules.query.domain.entities import ConversationContext, EvidenceSnippet, GeneratedAnswer, QueryAnswer
 from app.modules.skill.application.author_skill import AuthorSkillUseCase
+from app.modules.skill.application.ports import SkillReferenceReaderPort
 from app.modules.skill.application.propose_skill_draft import ProposeSkillDraftUseCase
 from app.modules.skill.application.select_skill import (
     PreparedSkillSelection,
@@ -78,8 +118,13 @@ from app.modules.skill.application.select_skill import (
 from app.modules.skill.domain.entities import (
     Skill,
     SkillAuthoringProposal,
+    SkillAuthoringReference,
     SkillAuthoringResult,
     SkillScopeType,
+)
+from app.modules.skill.domain.exceptions import (
+    ReferenceDocumentTooLargeError,
+    SkillRequestRejectedError,
 )
 from app.modules.skill.domain.instruction_placeholders import (
     EDIT_PAYLOAD_DOCUMENT_REFERENCE,
@@ -88,15 +133,32 @@ from app.modules.skill.domain.instruction_placeholders import (
     REFERENCE_CONTEXT_FOLDER_REFERENCE,
     render_skill_instructions,
 )
-from app.modules.skill.domain.policy import validate_skill_name
+from app.modules.skill.domain.policy import MAX_TOTAL_REFERENCE_CHARS, validate_skill_name
 from app.modules.skill.domain.safety import inspect_skill_instructions
+
+logger = logging.getLogger(__name__)
 
 CLARIFY_MARKDOWN_TARGET_MESSAGE = "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요."
 CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."
+# 편집 버전을 주지 않는 구 document-svc에서만 쓴다. 이 경우에만 첨부를 열지 않고는 고칠 수 없다.
+CLARIFY_REFERENCE_EDIT_MESSAGE = "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
+# 열린 문서 없이 첨부를 근거로 문서를 고치라는 요청일 때의 안내다. 첨부는 열지 않아도 고칠 수 있다.
+CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE = (
+    "어느 문서를 고칠지 알 수 없어요. 첨부한 문서를 고치려면 \"첨부한 문서를 고쳐 줘\"처럼 말해 주시고, "
+    "다른 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
+)
+REFERENCE_NOT_ACCESSIBLE_MESSAGE = (
+    "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. 첨부를 확인한 뒤 다시 요청해 주세요."
+)
+REFERENCE_READ_FAILED_MESSAGE = "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+REFERENCE_ALL_TOO_LONG_MESSAGE = (
+    "첨부한 문서가 너무 길어 읽지 못했어요. 문서를 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+)
 CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
     "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
+_DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE})
 CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
 CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
 REJECT_MESSAGES = {
@@ -139,6 +201,13 @@ ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
     "열린 문서가 길어 초안에 참고하지 않았어요. "
     "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
 )
+CLARIFY_TRANSLATION_LANGUAGE_MESSAGE = (
+    "어떤 언어로 번역할까요? '영어로 번역해 줘'처럼 언어를 함께 적어 다시 요청해 주세요. 원문은 그대로예요."
+)
+SUMMARY_SAVE_TOO_LONG_MESSAGE = (
+    f"열린 문서가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 새 문서를 만들지 않았어요. "
+    "원문은 그대로예요. 저장할 부분을 선택하거나 위키에 올린 뒤 다시 요청해 주세요."
+)
 CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
 NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
 BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
@@ -175,8 +244,10 @@ class HandleAgentTurnUseCase:
         folder_reference_resolver: FolderReferenceResolverPort | None = None,
         on_chat_answer: Callable[[], None] | None = None,
         task_clarifier: TaskClarifierPort | None = None,
+        reference_reader: SkillReferenceReaderPort | None = None,
     ) -> None:
         self._task_clarifier = task_clarifier
+        self._reference_reader = reference_reader
         self._on_chat_answer = on_chat_answer
         self._event_publisher = event_publisher
         self._router = router
@@ -199,8 +270,9 @@ class HandleAgentTurnUseCase:
         if not request.message.strip():
             raise ValueError("message is required.")
 
+        request = _with_translation_language_answer(request)
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
-        result = _with_skill_off_notice(self._execute(request))
+        result = _with_clarified_document(_with_skill_off_notice(self._execute(request)), request)
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
@@ -217,11 +289,12 @@ class HandleAgentTurnUseCase:
         request = selection.request
         if selection.explicit_skill_id is not None and not request.message.strip():
             return self._execute_bare_skill_command(request, selection.skills[0])
-        routed = self._router.route(request)
+        request = self._with_reference_titles(request)
+        routed = route_without_read_only_targets(self._router.route(request), request)
         resolved = selection.resolve_route(
             _create_skill_route(routed, _routed_skill(selection, routed))
         )
-        # 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
+        # 첨부 없는 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
         route = task_mode_route(resolved.route, request)
         selected_skill = resolved.skill
         action_message = {
@@ -255,6 +328,8 @@ class HandleAgentTurnUseCase:
                     document_operation="none",
                     persist=False,
                     required_capabilities=(),
+                    attached_edit_targets=(),
+                    include_active_markdown=False,
                 ),
                 message=CLARIFY_INCOMPATIBLE_SKILL_MESSAGE,
             )
@@ -367,6 +442,8 @@ class HandleAgentTurnUseCase:
                 raise AgentConfigurationError("Workspace workflow requires workspace_id and user_id.")
             if inspect_skill_instructions(request.message):
                 return _reject_unsafe_workspace_mutation(route)
+            if route.action == "workspace_workflow" and route.attached_edit_targets:
+                return self._execute_attached_document_edits(request, route, selected_skill)
             preview = _latest_markdown_preview(request)
             preview_action, preview_run_id = preview or (None, None)
             reuses_edit_preview = (
@@ -399,7 +476,7 @@ class HandleAgentTurnUseCase:
                 if creation_markdown is None:
                     try:
                         create_request, source_notice = self._markdown_create_request(request, route, selected_skill)
-                    except FolderSourceUnavailableError as exc:
+                    except (FolderSourceUnavailableError, ReferenceDocumentUnavailableError) as exc:
                         return _clarify_document_change(route, str(exc))
                     creation_markdown = self._markdown_create_use_case.execute(create_request).document.markdown
                 content = StartAgentRunContent(markdown=creation_markdown)
@@ -419,7 +496,7 @@ class HandleAgentTurnUseCase:
                             retrieval_source="none",
                             persist=False,
                         ),
-                        message=CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
+                        message=_clarify_document_message(request),
                         clarify_reason="markdown_document_required",
                     )
                 target = _skill_edit_target(selected_skill, markdown_context)
@@ -441,7 +518,14 @@ class HandleAgentTurnUseCase:
                     # 이미 만든 미리보기를 저장할 때는 LLM을 부르지 않으므로 크기 상한을 보지 않는다.
                     if _edit_scope_too_long(markdown_context.markdown, target):
                         return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
-                    reference_context = self._resolve_reference_context(request, route)
+                    try:
+                        references = self._read_reference_documents(request)
+                    except ReferenceDocumentUnavailableError as exc:
+                        return _clarify_document_change(route, str(exc))
+                    source_notice = reference_document_notice(references)
+                    reference_context = _with_reference_documents(
+                        self._resolve_reference_context(request, route), references
+                    )
                     edit = self._markdown_edit_use_case.execute(
                         MarkdownEditRequest(
                             instruction=request.message,
@@ -510,6 +594,13 @@ class HandleAgentTurnUseCase:
             return self._execute_folder_lookup(request, route)
 
         if route.action == "clarify":
+            if route.notice_kind == "attachment_target":
+                return AgentTurnResult(
+                    action="clarify",
+                    route=route,
+                    message=attachment_target_message(request.reference_document_titles, request.reference_document_editable),
+                    clarify_reason="attachment_target_required",
+                )
             if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
                 message = (
                     self._task_clarifier.ask(request, route)
@@ -521,7 +612,7 @@ class HandleAgentTurnUseCase:
             elif is_task_mode(request) and route.edit_goal is None:
                 message = CLARIFY_TASK_MODE_QUESTION_MESSAGE
             elif is_task_mode(request) and not _has_active_markdown(request):
-                message = CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+                message = _clarify_document_message(request)
             elif route.edit_goal == "template_transform":
                 message = DEFERRED_TEMPLATE_MESSAGE
             elif route.edit_operation == "insert_after":
@@ -532,7 +623,7 @@ class HandleAgentTurnUseCase:
                 action="clarify",
                 route=route,
                 message=message,
-                clarify_reason="markdown_document_required" if message == CLARIFY_MARKDOWN_DOCUMENT_MESSAGE else None,
+                clarify_reason="markdown_document_required" if message in _DOCUMENT_REQUIRED_MESSAGES else None,
             )
 
         if route.action == "reject":
@@ -546,6 +637,217 @@ class HandleAgentTurnUseCase:
             return self._execute_conversation_reply(request, route)
 
         return self._execute_chat_answer(request, route)
+
+    def _execute_attached_document_edits(
+        self,
+        request: AgentTurnRequest,
+        route: AgentTurnRoute,
+        selected_skill: Skill | None,
+    ) -> AgentTurnResult:
+        """고를 첨부(와 열린 문서)를 읽어 문서별 수정안을 차례로 만들고 run을 시작한다. 고칠 수 없는 문서는 빼고 결과에 알린다.
+
+        열린 문서도 편집기 사본이 아니라 서버 본문과 그 revision으로 고친다. 그래야 다른 문서와 똑같이 병합·겹침 판정을 받는다.
+        """
+        if self._agent_run_starter is None or self._reference_reader is None:
+            raise AgentConfigurationError("Attached document edits require a run starter and a reference reader.")
+        assert request.workspace_id and request.user_id
+        document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+        target_ids = tuple(document_ids[number - 1] for number in route.attached_edit_targets)
+        unsaved: tuple[ExcludedAttachment, ...] = ()
+        if route.include_active_markdown:
+            if request.document_id is None:
+                unsaved = (ExcludedAttachment(OPEN_DOCUMENT_TITLE, "unsaved"),)
+            else:
+                target_ids = tuple(dict.fromkeys((request.document_id, *target_ids)))
+        try:
+            documents, excluded = self._read_attached_edit_targets(request, document_ids, target_ids)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        if any(_needs_newer_document_service(document) for document in documents):
+            return _clarify_document_change(
+                route, CLARIFY_REFERENCE_EDIT_MESSAGE, clarify_reason="markdown_document_required"
+            )
+        excluded = (*unsaved, *excluded)
+        if not documents:
+            return _clarify_document_change(route, _nothing_to_edit_message(excluded))
+        if any(
+            _skill_edit_target(selected_skill, ActiveMarkdownContext(markdown=document.markdown)) is None
+            for document in documents
+        ):
+            return _clarify_document_change(route, CLARIFY_SKILL_SELECTION_MESSAGE)
+        evidence_ids = tuple(document_id for document_id in document_ids if document_id not in target_ids)
+        try:
+            evidence = self._read_reference_documents(replace(request, reference_document_ids=evidence_ids))
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        reference_context = _with_reference_documents(self._resolve_reference_context(request, route), evidence)
+        contents, generation_excluded = self._generate_attached_edits(
+            request, route, selected_skill, documents, reference_context, total=len(target_ids)
+        )
+        excluded = (*excluded, *generation_excluded)
+        if not contents:
+            return _clarify_document_change(route, _nothing_to_edit_message(excluded))
+        version = selected_skill.enabled_version if selected_skill is not None else None
+        run_id, run_status = self._agent_run_starter.start(
+            StartAgentRunRequest(
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                instruction=request.message,
+                provider=request.provider,
+                model=request.model,
+                action="workspace_workflow",
+                skill_version_id=version.id if version is not None else None,
+                contents=contents,
+                rule_summary=version.description if version is not None else None,
+            )
+        )
+        notice = _with_notice(exclusion_notice(excluded), reference_document_notice(evidence))
+        return AgentTurnResult(
+            action="workspace_workflow",
+            route=route,
+            run_id=run_id,
+            run_status=run_status,
+            message=f"{WORKFLOW_DEFAULT_MESSAGE}\n\n{notice}" if notice else None,
+        )
+
+    def _read_attached_edit_targets(
+        self,
+        request: AgentTurnRequest,
+        document_ids: tuple[str, ...],
+        target_ids: tuple[str, ...],
+    ) -> tuple[tuple[SkillAuthoringReference, ...], tuple[ExcludedAttachment, ...]]:
+        """고칠 첨부를 상한 없이 읽는다. 잘린 본문으로는 문서 전체를 저장할 수 없다."""
+        assert self._reference_reader is not None and request.workspace_id and request.user_id
+        titles = dict(zip(document_ids, request.reference_document_titles))
+        if request.document_id is not None:
+            titles.setdefault(request.document_id, request.active_document_title or OPEN_DOCUMENT_TITLE)
+        publish_query_event(self._event_publisher, "agent.reading_sources", "고칠 문서를 읽고 있어요.")
+        documents: list[SkillAuthoringReference] = []
+        excluded: list[ExcludedAttachment] = []
+        for document_id in target_ids:
+            title = titles.get(document_id, "")
+            try:
+                document = self._reference_reader.read(
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    document_id=document_id,
+                )
+            except ReferenceDocumentTooLargeError:
+                excluded.append(ExcludedAttachment(title, "too_long"))
+                continue
+            except SkillRequestRejectedError:
+                excluded.append(ExcludedAttachment(title, "forbidden"))
+                continue
+            except PipelineRunCancelledError:
+                raise
+            except RuntimeError as exc:
+                raise ReferenceDocumentUnavailableError(REFERENCE_READ_FAILED_MESSAGE) from exc
+            named = replace(document, name=clean_reference_title(document.name) or title)
+            reason = _attached_edit_exclusion(named)
+            if reason is None:
+                documents.append(named)
+            else:
+                excluded.append(ExcludedAttachment(named.name, reason))
+        return tuple(documents), tuple(excluded)
+
+    def _generate_attached_edits(
+        self,
+        request: AgentTurnRequest,
+        route: AgentTurnRoute,
+        selected_skill: Skill | None,
+        documents: tuple[SkillAuthoringReference, ...],
+        reference_context: dict[str, object],
+        *,
+        total: int,
+    ) -> tuple[tuple[StartAgentRunContent, ...], tuple[ExcludedAttachment, ...]]:
+        """문서마다 차례로 수정안을 만든다. 일부가 실패하면 나머지를 살리고, 전부 실패하면 턴을 실패시킨다."""
+        contents: list[StartAgentRunContent] = []
+        excluded: list[ExcludedAttachment] = []
+        first_failure: Exception | None = None
+        for position, document in enumerate(documents, start=1):
+            ensure_task_active()
+            publish_query_event(
+                self._event_publisher,
+                "agent.generating",
+                f"문서 {position}/{len(documents)}의 수정안을 작성하고 있어요.",
+            )
+            try:
+                instruction = attached_edit_instruction(request.message, position=position, total=total)
+                outcome = self._attached_edit_content(
+                    request, route, selected_skill, document, reference_context, instruction
+                )
+            except PipelineRunCancelledError:
+                raise
+            except (ValueError, RuntimeError) as exc:
+                # 예외 문장에는 모델 출력이 섞일 수 있어 종류만 남긴다.
+                logger.warning(
+                    "첨부 문서 수정안 생성 실패: document_id=%s type=%s", document.id, type(exc).__name__
+                )
+                first_failure = first_failure or exc
+                outcome = "failed"
+            if isinstance(outcome, StartAgentRunContent):
+                contents.append(outcome)
+            else:
+                excluded.append(ExcludedAttachment(document.name, outcome))
+        if first_failure is not None and not contents:
+            raise first_failure
+        return tuple(contents), tuple(excluded)
+
+    def _attached_edit_content(
+        self,
+        request: AgentTurnRequest,
+        route: AgentTurnRoute,
+        selected_skill: Skill | None,
+        document: SkillAuthoringReference,
+        reference_context: dict[str, object],
+        instruction: str,
+    ) -> StartAgentRunContent | ExclusionReason:
+        context = ActiveMarkdownContext(markdown=document.markdown)
+        target = _skill_edit_target(selected_skill, context)
+        assert target is not None  # 호출 전에 확인했다.
+        edit = self._markdown_edit_use_case.execute(
+            MarkdownEditRequest(
+                instruction=instruction,
+                markdown=document.markdown,
+                target=target,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                conversation_summary=_conversation_context_text(request),
+                reference_context=reference_context,
+                edit_goal=route.edit_goal,
+                edit_operation=route.edit_operation or "replace",
+                edit_destination=route.edit_destination or "target",
+                skill_instructions=_skill_instructions(
+                    selected_skill,
+                    # 열린 문서의 선택 범위가 이 문서의 Skill 지침에 들어가지 않게 한다.
+                    replace(request, active_markdown_context=context),
+                    document_in_payload=True,
+                    edit_target=_payload_target(route, target),
+                ),
+                output_language=request.output_language,
+            )
+        ).edit
+        edited = apply_markdown_edit(document.markdown, edit)
+        if not edit.changed or edited == document.markdown:
+            return "unchanged"
+        preview_json = json.dumps(build_edit_preview(document.markdown, edited), ensure_ascii=False)
+        if max(len(edited.encode("utf-8")), len(preview_json.encode("utf-8"))) > MAX_ARTIFACT_BYTES:
+            return "too_long"
+        actual_target = edit.actual_target
+        return StartAgentRunContent(
+            markdown=edited,
+            purpose="apply_document_edit",
+            document_id=document.id,
+            base_version=document.edit_revision,
+            target={
+                "type": actual_target.type,
+                "start_line": actual_target.start_line,
+                "end_line": actual_target.end_line,
+            },
+            display_name=document.name,
+            summary=edit.summary,
+            preview_json=preview_json,
+        )
 
     def _execute_folder_lookup(self, request: AgentTurnRequest, route: AgentTurnRoute) -> AgentTurnResult:
         if (
@@ -619,6 +921,7 @@ class HandleAgentTurnUseCase:
         self,
         request: AgentTurnRequest,
         retrieval_source: str,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer:
         allow_web_search = retrieval_source == "web"
         query_kwargs: dict[str, object] = {
@@ -631,6 +934,8 @@ class HandleAgentTurnUseCase:
         if request.response_length is not None:
             query_kwargs["response_length"] = request.response_length
         query_kwargs["allow_web_search"] = allow_web_search
+        if pinned_evidence:
+            query_kwargs["pinned_evidence"] = pinned_evidence
         query_use_case = (
             self._web_search_query_use_case_factory()
             if allow_web_search is True and self._web_search_query_use_case_factory is not None
@@ -643,15 +948,24 @@ class HandleAgentTurnUseCase:
         request: AgentTurnRequest,
         route: AgentTurnRoute,
     ) -> AgentTurnResult:
+        # 첨부를 읽지 못하면 답변 갈래가 아니라 되묻기로 끝나므로 분류를 기록하기 전에 읽는다.
+        try:
+            references = self._answer_references(request, keeps_attachments=True)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
         # Record the actual branch before retrieval/generation can fail or be interrupted.
         if self._on_chat_answer is not None:
             self._on_chat_answer()
         return AgentTurnResult(
             action="chat_answer",
             route=route,
-            query_answer=self._answer_query(
-                request,
-                route.retrieval_source,
+            query_answer=_with_answer_notice(
+                self._answer_query(
+                    request,
+                    route.retrieval_source,
+                    reference_evidence_snippets(references),
+                ),
+                reference_document_notice(references),
             ),
         )
 
@@ -662,7 +976,14 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         if self._conversation_replier is None:
             raise AgentConfigurationError("Conversation reply is not configured.")
-        message = self._conversation_replier.reply(request)
+        try:
+            references = self._answer_references(request)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        message = _with_notice(
+            self._conversation_replier.reply(_with_reply_references(request, references)),
+            reference_document_notice(references),
+        )
         return AgentTurnResult(
             action="conversation_reply",
             route=_non_mutating_route(
@@ -682,7 +1003,7 @@ class HandleAgentTurnUseCase:
         markdown_context = request.active_markdown_context
         if markdown_context is None or not markdown_context.markdown.strip():
             return _clarify_document_change(
-                route, CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, clarify_reason="markdown_document_required"
+                route, _clarify_document_message(request), clarify_reason="markdown_document_required"
             )
         if _is_ambiguous_auto(route, selected_skill):
             return _clarify_result_mode(route)
@@ -696,7 +1017,11 @@ class HandleAgentTurnUseCase:
             )
         if _edit_scope_too_long(markdown_context.markdown, target):
             return _clarify_document_change(route, CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE)
-        reference_context = self._resolve_reference_context(request, route)
+        try:
+            references = self._read_reference_documents(request)
+        except ReferenceDocumentUnavailableError as exc:
+            return _clarify_document_change(route, str(exc))
+        reference_context = _with_reference_documents(self._resolve_reference_context(request, route), references)
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
         result = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
@@ -717,11 +1042,13 @@ class HandleAgentTurnUseCase:
             )
         )
         resolved_route = _resolved_edit_route(route, result.edit)
+        notice = reference_document_notice(references)
+        notice_text = f"\n\n{notice}" if notice else ""
         return AgentTurnResult(
             action="markdown_edit",
             route=resolved_route,
             edit=result.edit,
-            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
+            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}{notice_text}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
             source_markdown_sha256=_markdown_sha256(markdown_context.markdown),
         )
 
@@ -826,7 +1153,7 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         try:
             create_request, source_notice = self._markdown_create_request(request, route, selected_skill, bare=bare)
-        except FolderSourceUnavailableError as exc:
+        except (FolderSourceUnavailableError, ReferenceDocumentUnavailableError) as exc:
             return _clarify_document_change(route, str(exc))
         publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
         result = self._markdown_create_use_case.execute(create_request)
@@ -855,9 +1182,20 @@ class HandleAgentTurnUseCase:
         열린 문서가 MAX_ACTIVE_DOCUMENT_CHARS를 넘으면 싣지 않고 위키를 거치라고 안내한다.
         `/slug`만 보낸 실행(bare)은 앞선 대화를 원문처럼 섞지 않도록 대화 맥락을 싣지 않는다.
 
-        폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError를 낸다.
+        사용자가 첨부한 문서는 어느 경우든 reference_documents로 싣는다.
+
+        폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError,
+        첨부를 읽을 수 없으면 ReferenceDocumentUnavailableError를 낸다.
         """
-        reference_context = {} if bare else self._resolve_reference_context(request, route)
+        only_open_document = selected_skill is None and not bare and creates_result_only_from_open_document(request)
+        if selected_skill is None and not bare and (
+            saves_open_document_result_as_new(request) or summarizes_open_document(request) or only_open_document
+        ):
+            _require_translation_language(request)
+        references = SelectedReferenceDocuments() if only_open_document else self._read_reference_documents(request)
+        reference_context = _with_reference_documents(
+            {} if bare else self._resolve_reference_context(request, route), references
+        )
         source = _create_source(request, selected_skill)
         notice = None
         if source == "document":
@@ -878,6 +1216,13 @@ class HandleAgentTurnUseCase:
                 for document in sources.documents
             ]
             notice = folder_source_notice(sources)
+        elif selected_skill is None and not bare and (saves_open_document_result_as_new(request) or only_open_document):
+            # "요약해서 저장해 줘"는 문서를 말하지 않아 active_document면 생성 모델이 무시할 수 있다. 근거 없는 문서가 저장되지 않게 원문으로 싣는다.
+            assert request.active_markdown_context is not None
+            markdown = _selection_text(request.active_markdown_context) or request.active_markdown_context.markdown
+            if len(markdown) > MAX_ACTIVE_DOCUMENT_CHARS:
+                raise ReferenceDocumentUnavailableError(SUMMARY_SAVE_TOO_LONG_MESSAGE)
+            reference_context["source_document"] = {"document_id": request.document_id, "markdown": markdown}
         elif selected_skill is None and not bare and _has_active_markdown(request):
             assert request.active_markdown_context is not None
             markdown = request.active_markdown_context.markdown
@@ -885,6 +1230,7 @@ class HandleAgentTurnUseCase:
                 reference_context["active_document"] = {"document_id": request.document_id, "markdown": markdown}
             else:
                 notice = ACTIVE_DOCUMENT_TOO_LONG_NOTICE
+        notice = _with_notice(notice, reference_document_notice(references))
         return (
             MarkdownCreateRequest(
                 instruction=request.message,
@@ -920,6 +1266,120 @@ class HandleAgentTurnUseCase:
         if not sources.documents:
             raise FolderSourceUnavailableError(EMPTY_FOLDER_SOURCE_MESSAGE)
         return sources
+
+    def _with_reference_titles(self, request: AgentTurnRequest) -> AgentTurnRequest:
+        """라우터가 첨부를 제목으로 구분하도록 제목만 읽는다. 읽지 못한 문서는 빈 제목으로 순번을 유지한다."""
+        document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+        if not document_ids or self._reference_reader is None or not request.workspace_id or not request.user_id:
+            return request
+        attachments = tuple(self._read_reference_title(request, document_id) for document_id in document_ids)
+        return replace(
+            request,
+            reference_document_titles=tuple(title for title, _ in attachments),
+            reference_document_editable=tuple(editable for _, editable in attachments),
+            active_document_title=(
+                self._read_reference_title(request, request.document_id)[0]
+                if request.document_id is not None and _has_active_markdown(request)
+                else ""
+            ),
+        )
+
+    def _read_reference_title(self, request: AgentTurnRequest, document_id: str) -> tuple[str, bool]:
+        """제목과 편집 가능 여부. 읽지 못하면 편집 가능 여부를 모르므로 True로 두고 본문을 읽는 단계에 맡긴다."""
+        assert self._reference_reader is not None and request.workspace_id and request.user_id
+        try:
+            document = self._reference_reader.read(
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                document_id=document_id,
+                max_chars=1,
+            )
+        except PipelineRunCancelledError:
+            raise
+        # 읽기 실패의 안내는 실제로 본문을 읽는 단계가 정한다.
+        except (ReferenceDocumentTooLargeError, SkillRequestRejectedError, RuntimeError):
+            return "", True
+        return clean_reference_title(document.name), not _is_read_only(document)
+
+    def _read_reference_documents(
+        self,
+        request: AgentTurnRequest,
+        *,
+        max_total_chars: int = MAX_TOTAL_REFERENCE_CHARS,
+    ) -> SelectedReferenceDocuments:
+        """사용자가 첨부한 문서를 읽는다. 첨부가 없으면 아무것도 읽지 않는다.
+
+        한 문서라도 읽을 수 없거나 전부 길어 쓸 내용이 없으면 ReferenceDocumentUnavailableError를 낸다.
+        호출자는 모델을 부르지 않고 이 문장으로 되묻는다. 첨부 없이 진행하면 근거 없는 결과가 나올 수 있다.
+        """
+        document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+        if not document_ids:
+            return SelectedReferenceDocuments()
+        if self._reference_reader is None or not request.workspace_id or not request.user_id:
+            raise AgentConfigurationError("Reference documents require workspace_id, user_id, and a reader.")
+        publish_query_event(self._event_publisher, "agent.reading_sources", "첨부한 문서를 읽고 있어요.")
+        documents = []
+        too_long_count = 0
+        remaining_chars = max_total_chars
+        for index, document_id in enumerate(document_ids):
+            limit = reference_char_limit(remaining_chars, len(document_ids) - index)
+            try:
+                document = self._reference_reader.read(
+                    workspace_id=request.workspace_id,
+                    user_id=request.user_id,
+                    document_id=document_id,
+                    max_chars=limit,
+                )
+            except ReferenceDocumentTooLargeError:
+                too_long_count += 1
+                continue
+            except SkillRequestRejectedError as exc:
+                raise ReferenceDocumentUnavailableError(REFERENCE_NOT_ACCESSIBLE_MESSAGE) from exc
+            except RuntimeError as exc:
+                raise ReferenceDocumentUnavailableError(REFERENCE_READ_FAILED_MESSAGE) from exc
+            if not document.markdown.strip():
+                raise ReferenceDocumentUnavailableError(REFERENCE_NOT_ACCESSIBLE_MESSAGE)
+            clipped = clip_reference_document(replace(document, name=clean_reference_title(document.name)), limit)
+            documents.append(clipped)
+            remaining_chars -= len(clipped.markdown)
+        if not documents:
+            raise ReferenceDocumentUnavailableError(REFERENCE_ALL_TOO_LONG_MESSAGE)
+        return SelectedReferenceDocuments(documents=tuple(documents), too_long_count=too_long_count)
+
+    def _answer_references(self, request: AgentTurnRequest, *, keeps_attachments: bool = False) -> SelectedReferenceDocuments:
+        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 맨 앞에 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다.
+
+        keeps_attachments: 근거를 구분해 인용하는 질의 답변은 첨부도 뒤에 남긴다. 대화 답변은 받은 글 전체를 옮기므로 첨부를 말했을 때만 싣는다.
+
+        첨부 없이 열린 문서의 요약·번역만 시켰으면 열린 문서를 싣는다. 선택 범위가 있으면 편집이 고치던 범위와 같게 그 범위만 싣는다.
+        """
+        if summarizes_open_document(request):
+            context = request.active_markdown_context
+            assert context is not None
+            _require_translation_language(request)
+            return SelectedReferenceDocuments(
+                documents=(_opened_reference(request, _selection_text(context) or context.markdown),),
+                open_document_id=request.document_id or "",
+            )
+        if not (request.reference_document_ids and _has_active_markdown(request) and answer_includes_open_document(request.message)):
+            return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
+        assert request.active_markdown_context is not None
+        opened = _opened_reference(request, request.active_markdown_context.markdown)
+        if uses_only_open_document(request.message, request.reference_document_titles):
+            _require_translation_language(request)
+            if not keeps_attachments:
+                return SelectedReferenceDocuments(documents=(opened,), open_document_id=opened.id)
+        attachment_ids = tuple(
+            document_id for document_id in dict.fromkeys(request.reference_document_ids) if document_id != request.document_id
+        )
+        # 열린 문서가 합계를 다 써도 첨부마다 한 조각은 싣는다. 잘리면 첨부가 잘렸다는 안내가 붙는다.
+        attached = self._read_reference_documents(
+            replace(request, reference_document_ids=attachment_ids),
+            max_total_chars=max(
+                MAX_REFERENCE_ANSWER_CHARS - len(opened.markdown), MAX_REFERENCE_EVIDENCE_CHARS * len(attachment_ids)
+            ),
+        )
+        return replace(attached, documents=(opened, *attached.documents), open_document_id=opened.id)
 
     def _resolve_reference_context(
         self,
@@ -1035,6 +1495,36 @@ class HandleAgentTurnUseCase:
         return PreparedSkillSelection(request=request, skills=())
 
 
+def _needs_newer_document_service(document: SkillAuthoringReference) -> bool:
+    """편집 문서인데 revision이 없다. 원본 문서에는 원래 없으므로(source_blocks) 편집 불가로 따로 다룬다."""
+    return not document.source_blocks and document.edit_revision is None
+
+
+def _is_read_only(document: SkillAuthoringReference) -> bool:
+    return not _needs_newer_document_service(document) and (bool(document.source_blocks) or not document.can_edit)
+
+
+def _attached_edit_exclusion(document: SkillAuthoringReference) -> ExclusionReason | None:
+    if _needs_newer_document_service(document):
+        return None
+    if _is_read_only(document):
+        return "forbidden"
+    if not document.markdown.strip():
+        return "empty"
+    if len(document.markdown) > MAX_ACTIVE_DOCUMENT_CHARS:
+        return "too_long"
+    return None
+
+
+def _nothing_to_edit_message(excluded: tuple[ExcludedAttachment, ...]) -> str:
+    reasons = {item.reason for item in excluded}
+    if reasons == {"forbidden"}:
+        return ALL_FORBIDDEN_MESSAGE
+    if reasons == {"unchanged"}:
+        return NO_CHANGES_MESSAGE
+    return exclusion_notice(excluded) or NO_CHANGES_MESSAGE
+
+
 def _resolved_edit_route(
     route: AgentTurnRoute,
     edit: MarkdownEditOperation,
@@ -1144,6 +1634,90 @@ def _markdown_sha256(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
+def _with_notice(text: str | None, notice: str | None) -> str | None:
+    if not text or not notice:
+        return text or notice
+    return f"{text}\n\n{notice}"
+
+
+def _with_answer_notice(answer: QueryAnswer, notice: str | None) -> QueryAnswer:
+    if notice is None:
+        return answer
+    return replace(answer, answer=GeneratedAnswer(content=f"{answer.answer.content}\n\n{notice}"))
+
+
+def _with_reference_documents(
+    reference_context: dict[str, object],
+    references: SelectedReferenceDocuments,
+) -> dict[str, object]:
+    if not references.documents:
+        return reference_context
+    return {**reference_context, "reference_documents": reference_documents_context(references)}
+
+
+def _require_translation_language(request: AgentTurnRequest) -> None:
+    """언어 없는 번역은 원문과 같은 글이 되므로 모델을 부르지 않고 되묻는다. 호출자가 이 예외를 clarify로 끝낸다."""
+    context = request.active_markdown_context
+    assert context is not None
+    if needs_translation_language(request.message, _selection_text(context) or context.markdown):
+        raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
+
+
+def _with_clarified_document(result: AgentTurnResult, request: AgentTurnRequest) -> AgentTurnResult:
+    """언어를 되물을 때 열려 있던 문서를 route에 남긴다. 다음 턴이 같은 문서일 때만 답을 앞선 요청에 잇는다."""
+    if result.action != "clarify" or CLARIFY_TRANSLATION_LANGUAGE_MESSAGE not in (result.message or ""):
+        return result
+    return replace(result, route=replace(result.route, clarified_document_id=request.document_id))
+
+
+def _with_translation_language_answer(request: AgentTurnRequest) -> AgentTurnRequest:
+    """직전 턴이 번역 언어를 되물었고 언어로 답했으면 앞선 요청을 이어 간다. "번역해서 저장해 줘"의 답은 새 문서가 된다.
+
+    되물은 문서가 지금 문서와 같을 때만 잇는다. 사이에 문서를 바꿨거나 되물은 문서를 모르면 다른 문서에 적용될 수 있어 잇지 않는다.
+    """
+    recent = request.conversation_context.recent_messages if request.conversation_context else ()
+    if len(recent) < 2:
+        return request
+    asked_request, question = recent[-2:]
+    if (
+        asked_request.role != "user"
+        or question.role != "assistant"
+        or CLARIFY_TRANSLATION_LANGUAGE_MESSAGE not in question.content
+        or question.agent_route is None
+        or question.agent_route.clarified_document_id is None
+        or question.agent_route.clarified_document_id != request.document_id
+    ):
+        return request
+    message = answer_to_translation_language_question(request.message, asked_request.content)
+    return replace(request, message=message) if message else request
+
+
+def _opened_reference(request: AgentTurnRequest, markdown: str) -> SkillAuthoringReference:
+    return clip_reference_document(
+        SkillAuthoringReference(id=request.document_id or "", name="", markdown=markdown),
+        MAX_REFERENCE_ANSWER_CHARS,
+    )
+
+
+def _with_reply_references(request: AgentTurnRequest, references: SelectedReferenceDocuments) -> AgentTurnRequest:
+    """대화 답변은 대화 문맥의 reference_context를 payload로 쓰므로 첨부도 거기에 넣는다."""
+    if not references.documents:
+        return request
+    conversation = request.conversation_context or AgentConversationContext()
+    return replace(
+        request,
+        conversation_context=replace(
+            conversation,
+            reference_context=_with_reference_documents(conversation.reference_context, references),
+        ),
+    )
+
+
+def _clarify_document_message(request: AgentTurnRequest) -> str:
+    """고칠 문서가 없을 때의 안내. 첨부가 있으면 첨부를 고치는 방법도 알려 준다."""
+    return CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE if request.reference_document_ids else CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+
+
 def _clarify_document_change(
     route: AgentTurnRoute, message: str, *, clarify_reason: ClarifyReason | None = None
 ) -> AgentTurnResult:
@@ -1161,6 +1735,8 @@ def _clarify_document_change(
             edit_operation=route.edit_operation if keeps_edit_context else None,
             edit_destination=route.edit_destination if keeps_edit_context else None,
             persist=False,
+            attached_edit_targets=(),
+            include_active_markdown=False,
         ),
         message=message,
         clarify_reason=clarify_reason,
@@ -1244,6 +1820,8 @@ def _reject_unsafe_workspace_mutation(route: AgentTurnRoute) -> AgentTurnResult:
             retrieval_source="none",
             document_operation="none",
             persist=False,
+            attached_edit_targets=(),
+            include_active_markdown=False,
         ),
         message="보안상 위험한 지시나 민감정보를 Workspace에 추가하는 요청은 처리할 수 없습니다.",
     )
@@ -1428,6 +2006,8 @@ def _create_skill_route(route: AgentTurnRoute, skill: Skill | None) -> AgentTurn
         "document_operation": "create",
         "required_capabilities": ("document-create",),
         "selected_skill_id": skill.id,
+        "attached_edit_targets": (),
+        "include_active_markdown": False,
     }
     if route.action == "workspace_workflow" and route.document_operation == "edit":
         return replace(route, **create_fields)

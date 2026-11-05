@@ -568,6 +568,12 @@ CREATE TABLE IF NOT EXISTS agent_run_artifacts (
 
 ALTER TABLE agent_run_artifacts
     ADD COLUMN IF NOT EXISTS object_key text;
+ALTER TABLE agent_run_artifacts
+    ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE agent_run_artifacts
+    ADD COLUMN IF NOT EXISTS summary text;
+ALTER TABLE agent_run_artifacts
+    ADD COLUMN IF NOT EXISTS preview_object_key text;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_personal_command
     ON skills (owner_user_id, command) WHERE scope_type = 'personal';

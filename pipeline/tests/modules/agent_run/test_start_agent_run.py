@@ -71,7 +71,7 @@ class StartAgentRunTest(unittest.TestCase):
         self.assertTrue(run_id)
         self.assertEqual(status, "queued")
         self.assertIsNotNone(repository.arguments)
-        artifact = repository.arguments[2]  # type: ignore[index]
+        artifact = repository.arguments[2][0]  # type: ignore[index]
         self.assertTrue(getattr(artifact, "id"))
         self.assertEqual(
             getattr(artifact, "content_hash"),
@@ -102,7 +102,7 @@ class StartAgentRunTest(unittest.TestCase):
             )
         )
 
-        artifact = repository.arguments[2]  # type: ignore[index,union-attr]
+        artifact = repository.arguments[2][0]  # type: ignore[index,union-attr]
         self.assertEqual(getattr(artifact, "purpose"), "apply_document_edit")
         self.assertEqual(getattr(artifact, "document_id"), "document-1")
         self.assertEqual(getattr(artifact, "base_version"), 3)

@@ -355,7 +355,12 @@ class AgentWorkerTest(unittest.TestCase):
 
         for content, expected in (
             ({"edit_revision": 2, "content_hash": "sha256:abc"}, True),
+            ({"edit_revision": 2, "content_hash": "sha256:other"}, False),
+            # 저장 뒤 다른 사람이 고치면 revision이 올라가고 해시도 달라진다. 저장은 실제로 일어났다.
+            ({"edit_revision": 3, "content_hash": "sha256:other"}, True),
             ({"edit_revision": 1, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": True, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": "3", "content_hash": "sha256:abc"}, False),
             ({"content_hash": "sha256:abc"}, False),
         ):
             with self.subTest(content=content):
@@ -813,6 +818,7 @@ class AgentWorkerTest(unittest.TestCase):
                     patch.object(agent_worker, "build_plan_generator", return_value=plan_generator) as plan_builder,
                     patch.object(agent_worker, "AgentWorker", return_value=worker) as worker_factory,
                     patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+                    patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
                     patch.object(agent_worker.time, "monotonic", return_value=1),
                 ):
                     database_module.connect_ai.return_value = connection_context
@@ -852,6 +858,7 @@ class AgentWorkerTest(unittest.TestCase):
             patch.object(agent_worker, "build_plan_generator"),
             patch.object(agent_worker, "AgentWorker", return_value=worker),
             patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+            patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
             patch.object(agent_worker.time, "monotonic", return_value=1),
         ):
             database_module.connect_ai.return_value = connection_context

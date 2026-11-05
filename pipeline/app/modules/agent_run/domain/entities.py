@@ -3,6 +3,9 @@ from datetime import datetime
 from typing import Literal
 
 
+# artifact 본문과 미리 보기 객체 하나의 상한.
+MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
+
 AgentRunStatus = Literal[
     "queued",
     "planning",
@@ -29,6 +32,10 @@ class StartAgentRunContent:
     document_id: str | None = None
     base_version: int | None = None
     target: dict[str, object] | None = None
+    # 첨부 문서 수정만 채운다. preview_json이 있으면 worker가 LLM 없이 이 내용으로 계획을 만든다.
+    display_name: str | None = None
+    summary: str | None = None
+    preview_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,8 @@ class StartAgentRunRequest:
     provider: str | None = None
     model: str | None = None
     content: StartAgentRunContent | None = None
+    # 첨부 문서 수정처럼 문서가 여럿인 run. 순서가 계획의 작업 순서다.
+    contents: tuple[StartAgentRunContent, ...] = ()
     # 작업 대상 폴더. 폴더 정리 범위이자 새 문서를 둘 위치다. None이면 워크스페이스 전체·루트다.
     target_folder_id: str | None = None
     # 선택한 Skill의 규칙 요약(Skill 설명). 승인 화면에 그대로 보여 준다. Skill 없이 실행하면 None이다.
@@ -56,6 +65,9 @@ class StartAgentRunArtifact:
     document_id: str | None = None
     base_version: int | None = None
     target: dict[str, object] | None = None
+    display_name: str | None = None
+    summary: str | None = None
+    preview_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,19 @@ class AgentRunContext:
     run: AgentRun
     skill_instructions: str | None
     allowed_tools: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DocumentEditArtifact:
+    """turn에서 미리 만든 문서 수정안. 결정적 계획의 입력이다."""
+
+    id: str
+    content_hash: str
+    document_id: str
+    base_version: int
+    target: dict[str, object]
+    summary: str
+    expired: bool
 
 
 @dataclass(frozen=True)

@@ -1274,6 +1274,27 @@ def test_agent_command_without_mode_keeps_legacy_mode() -> None:
     assert use_case.execute.call_args.args[0].mode is None
 
 
+def test_agent_command_passes_reference_documents_to_request_body() -> None:
+    """document-svc는 검증한 첨부 문서 id를 싣는다. 구 document-svc는 키가 없고, null이어도 첨부 없음이다."""
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "첨부 문서를 요약해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+
+    attached = _run_agent_command({**command, "reference_document_ids": ["doc-1", "doc-2"]})
+
+    assert attached.execute.call_args.args[0].reference_document_ids == ("doc-1", "doc-2")
+    assert _run_agent_command(command).execute.call_args.args[0].reference_document_ids == ()
+    for empty in ([], None):
+        request = _run_agent_command({**command, "reference_document_ids": empty}).execute.call_args.args[0]
+        assert request.reference_document_ids == ()
+
+
 def test_agent_command_passes_target_folder_to_request_body() -> None:
     """document-svc는 작업 대상 폴더를 folder_id로 싣고, 지정하지 않으면 키를 싣지 않는다."""
     command = {
@@ -2029,6 +2050,51 @@ def test_reservation_is_skipped_when_no_title_is_needed() -> None:
     with patch.object(task_worker, "start_call") as start_call:
         assert task_worker._reserve_session_title_call(command, {"answer": "답변"}) is None
     start_call.assert_not_called()
+
+
+_TITLE_TURNS = [
+    ({"kind": "agent", "message": "질문"}, {"message": "답변"}),
+    ({"kind": "query", "question": "질문"}, {"answer": "답변"}),
+]
+
+
+def _run_title_flow(fields: dict, result: dict) -> tuple:
+    """실제 판단으로 원장 예약과 제목 발행을 돌린다. 모델·원장 쓰기만 막는다."""
+    command = {"run_id": "r", "workspace_id": "w", "user_id": "u", "session_id": "s",
+               "provider": "openai", "model": "m", **fields}
+    title_module = "app.modules.agent.infrastructure.chat_session_title"
+    producer = SimpleNamespace(send_and_wait=AsyncMock())
+    with patch.object(task_worker, "start_call", return_value="call-1") as start_call, \
+            patch.object(task_worker, "release_reserved_call") as release, \
+            patch.object(task_worker, "resolve_llm_selection", return_value=("openai", "m")), \
+            patch(f"{title_module}.api_key_from_env", return_value="unused"), \
+            patch(f"{title_module}.ChatCompletionsJsonClient") as client:
+        client.return_value.complete_json.return_value = {"title": "제목"}
+        reserved = task_worker._reserve_session_title_call(command, result)
+        asyncio.run(task_worker._publish_session_title(producer, command, result, reserved))
+    return start_call, client, producer, release
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+def test_title_not_needed_skips_reservation_model_call_and_event(fields, result) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, "session_title_needed": False}, result)
+
+    start_call.assert_not_called()
+    client.assert_not_called()
+    producer.send_and_wait.assert_not_awaited()
+    release.assert_not_called()
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+@pytest.mark.parametrize("flag", [{}, {"session_title_needed": True}, {"session_title_needed": None},
+                                  {"session_title_needed": "false"}, {"session_title_needed": 0}])
+def test_title_flow_stays_when_flag_is_true_missing_or_invalid(fields, result, flag) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, **flag}, result)
+
+    start_call.assert_called_once()
+    client.return_value.complete_json.assert_called_once()
+    producer.send_and_wait.assert_awaited_once()
+    release.assert_called_once_with("call-1")
 
 
 def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):

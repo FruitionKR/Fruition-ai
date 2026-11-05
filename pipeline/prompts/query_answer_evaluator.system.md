@@ -11,6 +11,8 @@ Inputs include:
 - related_pages: retrieved internal Wiki pages and optional web pages.
 - evidence_snippets: evidence snippets that were actually used in the returned answer.
 
+evidence_snippets may include chunks of documents the user attached to the question. They count as internal evidence, the same as retrieved Wiki evidence.
+
 Routes:
 - internal_supported: the answer is sufficiently supported by retrieved Wiki evidence.
 - revise_answer: the returned answer contains an unsupported claim, misaligned citation, or another correctable defect that must be fixed before return; the correction may be an evidence-limitation response.

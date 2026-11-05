@@ -57,6 +57,9 @@ from app.modules.query.domain.entities import (
 )
 from app.modules.query.domain.value_objects import Question
 
+# 위키에서 시작점을 못 찾았지만 첨부 문서를 근거로 답한 질의의 stop_reason.
+REFERENCE_DOCUMENTS_STOP_REASON = "reference_documents"
+
 
 @dataclass(frozen=True)
 class _ScoredWikiCandidates:
@@ -179,6 +182,7 @@ class AnswerQueryUseCase:
         output_language: OutputLanguage | None = None,
         response_length: ResponseLength | None = None,
         allow_web_search: bool | None = None,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer:
         updated_summary = update_conversation_summary(
             conversation_context,
@@ -193,6 +197,7 @@ class AnswerQueryUseCase:
             output_language=output_language,
             response_length=response_length,
             allow_web_search=allow_web_search,
+            pinned_evidence=pinned_evidence,
         )
         return replace(result, updated_conversation_summary=updated_summary)
 
@@ -249,6 +254,7 @@ class AnswerQueryUseCase:
         output_language: OutputLanguage | None = None,
         response_length: ResponseLength | None = None,
         allow_web_search: bool | None = None,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer:
         event_publisher = event_publisher or self._event_publisher
         query = Question(question)
@@ -277,7 +283,8 @@ class AnswerQueryUseCase:
         )
 
         web_search_allowed = allow_web_search is not False
-        low_internal_relevance = self._should_use_web_fallback(
+        # 첨부 문서가 있으면 위키 관련도가 낮아도 근거가 있다. 위키 점수로 답변을 버리지 않는다.
+        low_internal_relevance = not pinned_evidence and self._should_use_web_fallback(
             candidates.source_scores,
             candidates.concept_scores,
         )
@@ -309,11 +316,18 @@ class AnswerQueryUseCase:
             output_language=output_language,
             response_length=response_length,
             allow_web_search=allow_web_search,
+            pinned_evidence=pinned_evidence,
+        )
+        # 위키에서 시작점을 못 찾아도 첨부 문서로 답할 수 있으므로 "근거 없음" 답변으로 바꾸지 않는다.
+        internal_stop_reason = (
+            REFERENCE_DOCUMENTS_STOP_REASON
+            if pinned_evidence and internal_context.stop_reason == "no_relevant_seed"
+            else internal_context.stop_reason
         )
         answer, evidence_snippets, evaluated_context, query_evaluation = self._query_evaluator_graph.run(
             question=query.normalized,
             query_context=internal_context.query_context,
-            stop_reason=internal_context.stop_reason,
+            stop_reason=internal_stop_reason,
             event_publisher=event_publisher,
         )
         if query_evaluation is None and low_internal_relevance:
@@ -336,6 +350,7 @@ class AnswerQueryUseCase:
                     output_language,
                     response_length,
                     web_search_telemetry,
+                    pinned_evidence,
                 )
                 if fallback_answer is not None:
                     return fallback_answer
@@ -359,7 +374,7 @@ class AnswerQueryUseCase:
             query_evaluation,
             answer,
             evidence_snippets,
-            internal_context.stop_reason,
+            internal_stop_reason,
             output_language,
             query.normalized,
         )
@@ -400,6 +415,7 @@ class AnswerQueryUseCase:
         allow_web_search: bool | None,
         candidates: _ScoredWikiCandidates,
         event_publisher: QueryEventPublisherPort | None,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> _InternalQueryContext:
         retrieval_graph = self._build_internal_retrieval_graph(
             candidates,
@@ -441,15 +457,17 @@ class AnswerQueryUseCase:
             output_language=output_language,
             response_length=response_length,
             allow_web_search=allow_web_search,
+            pinned_evidence=pinned_evidence,
         )
         related_page_ids = {item.page.id for item in related_pages}
         top_concept_score = max(candidates.concept_scores.values(), default=0.0)
+        has_wiki_evidence = len(query_context.evidence_snippets) > len(pinned_evidence)
         fallback_score_floor = (
             0.0
-            if not query_context.evidence_snippets
+            if not has_wiki_evidence
             else max(0.0, top_concept_score - 0.15)
         )
-        if not query_context.evidence_snippets or any(
+        if not has_wiki_evidence or any(
             page.id not in related_page_ids
             and candidates.concept_scores.get(page.id, 0.0) >= fallback_score_floor
             for page in candidates.concept_pages
@@ -507,6 +525,7 @@ class AnswerQueryUseCase:
                         output_language=output_language,
                         response_length=response_length,
                         allow_web_search=allow_web_search,
+                        pinned_evidence=pinned_evidence,
                     )
         self._publish(
             event_publisher,
@@ -810,6 +829,7 @@ class AnswerQueryUseCase:
         output_language: OutputLanguage | None,
         response_length: ResponseLength | None,
         web_search_telemetry: WebSearchTelemetry,
+        pinned_evidence: tuple[EvidenceSnippet, ...] = (),
     ) -> QueryAnswer | None:
         if self._query_web_answer_builder is None:
             return None
@@ -820,6 +840,7 @@ class AnswerQueryUseCase:
             output_language=output_language,
             response_length=response_length,
             web_search_telemetry=web_search_telemetry,
+            pinned_evidence=pinned_evidence,
         )
 
     def _answer_from_internal_web_augmented(

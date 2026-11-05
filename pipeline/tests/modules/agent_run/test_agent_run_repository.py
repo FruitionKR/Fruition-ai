@@ -104,6 +104,8 @@ class AgentRunRepositoryTest(unittest.TestCase):
             current_plan_id="plan-1",
             clarification_question="어떤 문서를 정리할지 알려 주세요.",
         )
+        artifact_check_result = MagicMock()
+        artifact_check_result.fetchone.return_value = None
         supersede_result = MagicMock()
         update_result = MagicMock()
         update_result.fetchone.return_value = _run_row(
@@ -115,6 +117,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
         insert_result = MagicMock()
         connection.execute.side_effect = [
             locked_result,
+            artifact_check_result,
             supersede_result,
             update_result,
             insert_result,
@@ -131,12 +134,12 @@ class AgentRunRepositoryTest(unittest.TestCase):
                 "job-1",
             )
 
-        update_query = connection.execute.call_args_list[2].args[0]
+        update_query = connection.execute.call_args_list[3].args[0]
         self.assertIn("error_code = NULL", update_query)
         self.assertIn("clarification_question = NULL", update_query)
         self.assertIsNone(run.error_code)
         self.assertIsNone(run.clarification_question)
-        self.assertEqual(connection.execute.call_args_list[2].args[1], (instruction, "run-1"))
+        self.assertEqual(connection.execute.call_args_list[3].args[1], (instruction, "run-1"))
 
     def test_row_maps_clarification_question(self) -> None:
         row = _run_row(
@@ -369,7 +372,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
                 "app.modules.agent_run.infrastructure.postgres_agent_run_repository.write_text_object"
             ) as write_text,
         ):
-            PostgresAgentRunRepository().create_with_planning_job(run, "job-1", artifact)
+            PostgresAgentRunRepository().create_with_planning_job(run, "job-1", (artifact,))
 
         write_text.assert_called_once()
         self.assertEqual(connection.execute.call_count, 3)
@@ -414,7 +417,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
             ) as delete_object,
         ):
             with self.assertRaisesRegex(RuntimeError, "db failure"):
-                PostgresAgentRunRepository().create_with_planning_job(run, "job-1", artifact)
+                PostgresAgentRunRepository().create_with_planning_job(run, "job-1", (artifact,))
 
         delete_object.assert_called_once_with(write_text.call_args.args[0])
 
@@ -455,7 +458,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
                 "app.modules.agent_run.infrastructure.postgres_agent_run_repository.write_text_object"
             ),
         ):
-            PostgresAgentRunRepository().create_with_planning_job(run, "job-1", artifact)
+            PostgresAgentRunRepository().create_with_planning_job(run, "job-1", (artifact,))
 
         parameters = connection.execute.call_args_list[1].args[1]
         self.assertEqual(parameters[5], "apply_document_edit")
