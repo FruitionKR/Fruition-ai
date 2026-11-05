@@ -55,6 +55,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 제목: 응답에 선택 필드 `display_name`이 있으면 줄바꿈·제어 문자를 정리해 한 줄(최대 200자)로 만들어 `reference_documents[].title`과 답변 근거의 `document_title`에 싣는다. 구 document-svc처럼 없으면 싣지 않는다. 제목도 신뢰하지 않는 데이터다.
 - 라우터는 `reference_documents.count`와 `titles`만 받는다(본문·id 없음). 라우팅 전에 문서마다 `max_chars=1`로 읽어 제목을 정리한다. 읽지 못한 문서는 빈 제목으로 두어 순번을 유지하고, 실패 안내는 본문을 읽는 단계가 정한다. Jev에는 보내지 않고 첨부 턴은 LLM 라우터가 처리한다.
 
+`ai.agent.command`의 선택 키 `read_only_document_id`는 편집 문맥 없이 보기 권한으로 연 문서로, document-svc가 확인한 값이다. 그 문서가 첨부에 있으면 "이 문서"·"현재 문서"는 그 문서를 가리킨다. 라우터가 다른 첨부를 골라도 고치지 않고 권한 안내(`ALL_FORBIDDEN_MESSAGE`)로 끝낸다. 다른 첨부의 제목을 말했거나 첨부·순번으로 고른 요청은 그대로 그 첨부를 고친다. 키가 없거나(구 document-svc) 그 문서가 첨부에 없으면("현재 문서" 칩을 뺀 턴) 기존과 같다.
+
 | 갈래 | 첨부 사용 |
 |---|---|
 | `chat_answer`(작업 탭 포함) | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
@@ -146,7 +148,7 @@ document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션�
 | `agent_run_artifacts`(수정안·미리 보기·`undo-*`·이 문서를 만든 `create_document`)와 객체 | 키 단위로 객체를 지우고 행을 지운다. 같은 run의 다른 문서는 건드리지 않는다 |
 | `agent_plan_operations` | `apply_document_edit`·`create_document`의 `reason`을 안내 문구로 바꾸고, `pending`이면 `skipped`(`document_purged`)로 둔다 |
 | `agent_runs.result`(이 문서의 `markdown_turn`) | `edit`·`generated_markdown`을 뺀다 |
-| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서인 항목의 `text`·`expected_claims`만 비운다 |
+| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서이거나 `source_refs`에 이 문서가 있는 항목의 `text`·`expected_claims`만 비운다. 여러 문서를 걸친 근거는 나눌 수 없어 함께 비운다 |
 | `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
 | `pipeline_runs.manifest`(이 문서의 run. post_ingest는 `document_id`가 없어 같은 id의 `ai_task_runs.command`로 찾는다) | `{"scrubbed": true}`로 바꾼다 |
 | `ai_task_changes` | 이 문서·소스 페이지·이 문서 run의 변경 기록을 지운다(소스 페이지·소스 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다. 다른 문서 run의 `pipeline_runs`·`document_quality_reviews` 기록은 이 문서의 근거만 비운다 |

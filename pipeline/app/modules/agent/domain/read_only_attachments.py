@@ -6,6 +6,7 @@ from app.modules.agent.domain.attached_edit_request import (
     lacks_attachment_change_request,
     names_open_document,
     points_at_one_document,
+    points_at_open_document,
     selects_attachment,
 )
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
@@ -20,15 +21,16 @@ def route_without_read_only_targets(route: AgentTurnRoute, request: AgentTurnReq
     모델이 편집 가능한 첨부까지 함께 골랐으면 그대로 두어, 고치고 나서 뺀 문서를 알린다.
     """
     flags = request.reference_document_editable
-    read_only = tuple(number for number, editable in enumerate(flags, start=1) if not editable)
+    open_number = _open_read_only_number(request)
+    read_only = tuple(number for number, editable in enumerate(flags, start=1) if not editable or number == open_number)
     if not read_only:
         return route
-    editable = tuple(number for number, can_edit in enumerate(flags, start=1) if can_edit)
+    editable = tuple(number for number, can_edit in enumerate(flags, start=1) if can_edit and number != open_number)
     targets = route.attached_edit_targets
     if not targets and not _asks_for_an_unchosen_edit(route, request):
         return route
-    if _means_open_read_only_document(request, editable):
-        return _edit_route(route, read_only)
+    if _means_open_read_only_document(request, editable, open_number):
+        return _edit_route(route, (open_number,) if open_number else read_only)
     if set(targets) & set(editable):
         return route
     if not editable:
@@ -54,14 +56,26 @@ def _asks_for_an_unchosen_edit(route: AgentTurnRoute, request: AgentTurnRequest)
     )
 
 
-def _means_open_read_only_document(request: AgentTurnRequest, editable: tuple[int, ...]) -> bool:
-    """편집 문맥 없이 "열린 문서"라고 했으면 보기 권한으로 연 문서뿐이다. 다른 첨부를 고치면 말하지 않은 문서가 바뀐다."""
+def _means_open_read_only_document(request: AgentTurnRequest, editable: tuple[int, ...], open_number: int | None) -> bool:
+    """편집 문맥 없이 "열린 문서"라고 했으면 보기 권한으로 연 문서뿐이다. 다른 첨부를 고치면 말하지 않은 문서가 바뀐다.
+
+    "이 문서"는 유일한 첨부를 가리킬 수도 있어, 연 문서가 어느 첨부인지 document-svc가 알려 준 턴에만 그 문서로 읽는다.
+    """
+    names_it = names_open_document(request.message) or (open_number is not None and points_at_open_document(request.message))
     return (
         not _has_open_markdown(request)
-        and names_open_document(request.message)
+        and names_it
         and not selects_attachment(request.message)
         and not any(_title(request, number) and _title(request, number) in request.message for number in editable)
     )
+
+
+def _open_read_only_number(request: AgentTurnRequest) -> int | None:
+    """보기 권한으로 연 문서의 첨부 순번. "현재 문서" 칩을 빼 첨부에 없으면 None이다."""
+    document_ids = tuple(dict.fromkeys(request.reference_document_ids))
+    if request.read_only_document_id not in document_ids:
+        return None
+    return document_ids.index(request.read_only_document_id) + 1
 
 
 def _title(request: AgentTurnRequest, number: int) -> str:
