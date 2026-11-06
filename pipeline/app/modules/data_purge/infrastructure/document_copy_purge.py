@@ -80,6 +80,38 @@ _TASK_KINDS_WITHOUT_DOCUMENT_TEXT = ["convert_batch", "meeting_notes", "meeting_
 _ACTIVE_RUN_MAX_AGE = "1 day"
 
 
+# 이 문서의 본문이 든 작업 기록. 백필 dry-run도 같은 조건으로 센다(reconcile_purged_documents.py).
+_JOURNAL_CHANGE_TARGETS = (
+    """FROM ai_task_changes vector
+    WHERE vector.run_id = ANY(%(workspace_runs)s)
+      AND vector.table_name = 'wiki_embedding_vectors'
+      AND vector.row_key->>'id' IN (
+          SELECT COALESCE(unit.after_value, unit.before_value)->>'embedding_vector_id'
+          FROM ai_task_changes unit
+          WHERE unit.run_id = ANY(%(workspace_runs)s) AND unit.table_name = 'wiki_embedding_units'
+            AND COALESCE(unit.after_value, unit.before_value)->>'source_document_id' = %(doc)s
+      )""",
+    """FROM ai_task_changes change
+    WHERE change.run_id = ANY(%(workspace_runs)s)
+      AND (
+          change.row_key->>'document_id' = %(doc)s
+          OR change.before_value->>'document_id' = %(doc)s
+          OR change.after_value->>'document_id' = %(doc)s
+          OR change.before_value->>'source_document_id' = %(doc)s
+          OR change.after_value->>'source_document_id' = %(doc)s
+          OR (change.table_name = 'wiki_pages' AND change.row_key->>'id' = ANY(%(pages)s))
+          OR change.row_key->>'page_id' = ANY(%(pages)s)
+          OR (change.table_name = 'pipeline_runs' AND change.row_key->>'id' = ANY(%(runs)s))
+          OR (change.table_name = '__object__' AND change.row_key->>'key' = %(source_key)s)
+          OR (change.table_name = '__object__'
+              AND split_part(change.row_key->>'key', '/', 1) = 'wiki'
+              AND split_part(change.row_key->>'key', '/', 2) = %(ws)s
+              AND split_part(change.row_key->>'key', '/', 3) = 'pages'
+              AND split_part(change.row_key->>'key', '/', 4) = ANY(%(pages)s))
+      )""",
+)
+
+
 @dataclass(frozen=True)
 class DocumentCopyPurge:
     deleted_artifacts: int = 0
@@ -581,50 +613,17 @@ def _delete_journal_changes(conn: Any, params: dict[str, str]) -> int:
 
     지운 행은 작업 취소가 되돌리지 않으므로 본문이 되살아나지 않는다. 개념 페이지는 여러 문서의 파생이라 남긴다.
     """
-    query = {
+    query = _journal_change_params(conn, params)
+    return sum(conn.execute(f"DELETE {target}", query).rowcount for target in _JOURNAL_CHANGE_TARGETS)
+
+
+def _journal_change_params(conn: Any, params: dict[str, Any]) -> dict[str, Any]:
+    return {
         **params,
         "pages": _source_page_ids(conn, params["ws"], params["doc"]),
         "source_key": f"wiki/{params['ws']}/sources/{params['doc']}.md",
         "workspace_runs": _workspace_run_ids(conn, params["ws"]),
     }
-    deleted = conn.execute(
-        """
-        DELETE FROM ai_task_changes vector
-        WHERE vector.run_id = ANY(%(workspace_runs)s)
-          AND vector.table_name = 'wiki_embedding_vectors'
-          AND vector.row_key->>'id' IN (
-              SELECT COALESCE(unit.after_value, unit.before_value)->>'embedding_vector_id'
-              FROM ai_task_changes unit
-              WHERE unit.run_id = ANY(%(workspace_runs)s) AND unit.table_name = 'wiki_embedding_units'
-                AND COALESCE(unit.after_value, unit.before_value)->>'source_document_id' = %(doc)s
-          )
-        """,
-        query,
-    ).rowcount
-    deleted += conn.execute(
-        """
-        DELETE FROM ai_task_changes change
-        WHERE change.run_id = ANY(%(workspace_runs)s)
-          AND (
-              change.row_key->>'document_id' = %(doc)s
-              OR change.before_value->>'document_id' = %(doc)s
-              OR change.after_value->>'document_id' = %(doc)s
-              OR change.before_value->>'source_document_id' = %(doc)s
-              OR change.after_value->>'source_document_id' = %(doc)s
-              OR (change.table_name = 'wiki_pages' AND change.row_key->>'id' = ANY(%(pages)s))
-              OR change.row_key->>'page_id' = ANY(%(pages)s)
-              OR (change.table_name = 'pipeline_runs' AND change.row_key->>'id' = ANY(%(runs)s))
-              OR (change.table_name = '__object__' AND change.row_key->>'key' = %(source_key)s)
-              OR (change.table_name = '__object__'
-                  AND split_part(change.row_key->>'key', '/', 1) = 'wiki'
-                  AND split_part(change.row_key->>'key', '/', 2) = %(ws)s
-                  AND split_part(change.row_key->>'key', '/', 3) = 'pages'
-                  AND split_part(change.row_key->>'key', '/', 4) = ANY(%(pages)s))
-          )
-        """,
-        query,
-    ).rowcount
-    return deleted
 
 
 def _delete_artifacts(workspace_id: str, document_id: str) -> DocumentCopyPurge:

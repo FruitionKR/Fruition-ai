@@ -169,123 +169,6 @@ def test_router_retries_out_of_range_target_then_fails() -> None:
     assert len(client.user_prompts) == 2
 
 
-_SUMMARY_ROUTE = {
-    "action": "chat_answer",
-    "confidence": 0.9,
-    "reason": "첨부 요약",
-    "retrieval_source": "workspace",
-    "document_operation": "none",
-    "persist": False,
-    "required_capabilities": [],
-    "edit_goal": None,
-    "edit_operation": None,
-    "edit_destination": None,
-    "selected_skill_id": None,
-    "skill_candidates": [],
-    "notice_kind": None,
-    "attached_edit_targets": [],
-}
-
-
-def _guard_failures(message: str, edit_goal: str) -> list[str]:
-    request = replace(_request("doc-1"), message=message)
-    failures = _failures(_raw(edit_goal=edit_goal), request)
-    return [failure for failure in failures if "explicitly" in failure]
-
-
-@pytest.mark.parametrize(
-    ("message", "edit_goal"),
-    [
-        ("이 문서 세 줄로 요약해 줘", "shorten"),
-        ("이 문서 세 줄로 요약해 줘", "other"),
-        ("요약해서 새 문서로 만들어 줘", "shorten"),
-        ("요약해서 저장해 줘", "shorten"),
-        ("원문은 고치지 말고 세 줄로 요약해 줘", "shorten"),
-        ("수정 사항을 요약해 줘", "shorten"),
-        ("변경 내용을 간추려 줘", "shorten"),
-        ("세 줄로 줄여서 요약해 줘", "shorten"),
-        ("첨부한 문서를 영어로 번역해 줘", "translate"),
-        ("Summarize this document in three lines", "shorten"),
-        ("Summarize it and don't change the original", "shorten"),
-        ("Translate this into Korean", "translate"),
-        # 목록에 없는 말로 결과물을 요구해도 막는다. 틀리면 원문을 고치지 않는 쪽으로 틀린다.
-        ("이 문서 요약 좀", "other"),
-        ("요약본을 만들어 줘", "other"),
-        ("Give me a summary of the attachment", "other"),
-        # 요약·번역 섹션을 대상으로 다시 요약·번역을 요구하는 말이다.
-        ("요약 섹션을 영어로 번역해 줘", "other"),
-        ("Summarize the summary section", "other"),
-        ("Summarize section 3", "other"),
-        ("Translate section 3", "other"),
-        # 요약 동사의 목적어인 영어 명사는 수정 요청이 아니다.
-        ("Summarize the latest update in this doc", "shorten"),
-        ("Summarize what to fix", "shorten"),
-        ("Summarize what I need to fix", "shorten"),
-        ("Summarize the add-on features", "shorten"),
-        ("Summarize the release notes and update log", "shorten"),
-        ("Summarize the add, remove, and edit buttons", "shorten"),
-        ("Translate the change log", "translate"),
-    ],
-)
-def test_summary_or_translation_without_change_verb_cannot_target_attachment(message: str, edit_goal: str) -> None:
-    assert _guard_failures(message, edit_goal)
-
-
-@pytest.mark.parametrize(
-    ("message", "edit_goal"),
-    [
-        ("이 문서를 세 줄로 줄여서 고쳐 줘", "shorten"),
-        ("첨부한 회의록을 더 짧게 줄여줘", "shorten"),
-        ("이 문서를 더 짧게 해 줘", "shorten"),
-        ("요약해서 문서 내용을 바꿔 줘", "shorten"),
-        ("요약한 내용으로 원문을 덮어써 줘", "shorten"),
-        ("문서 맨 앞에 요약을 넣어 줘", "other"),
-        ("요약 부분을 지워 줘", "other"),
-        ("영어로 번역해서 문서에 반영해 줘", "translate"),
-        ("Shorten the attached document", "shorten"),
-        ("Translate it and apply the result to the document", "translate"),
-        # 요약·번역이 아니면 표현을 제한하지 않는다. 어떤 언어든 라우터 판단을 그대로 쓴다.
-        ("첨부한 문서를 더 부드러운 말투로", "style_change"),
-        ("添付文書の誤字を直して", "cleanup"),
-        ("Make the attachment more polite", "style_change"),
-        # "요약 섹션"처럼 문서의 일부를 가리키는 말은 결과물 요구가 아니다.
-        ("첨부한 문서의 요약 섹션을 더 자세히 써 줘", "other"),
-        ("번역 섹션을 보강해 줘", "other"),
-        ("Expand the summary section", "other"),
-        ("Rework the translation part", "other"),
-        ("요약 섹션을 세 줄로 줄여 줘", "shorten"),
-        # 영어 수정 동사는 명령형 자리에 있으면 수정 요청이다.
-        ("Summarize this and apply it to the document", "shorten"),
-        ("Summarize this. Then update the document", "shorten"),
-        ("Please fix the summary", "other"),
-        ("Could you update the translation?", "translate"),
-        ("Summarize the changes, add them to the top", "shorten"),
-        ("Update the summary", "other"),
-    ],
-)
-def test_explicit_change_requests_keep_attachment_target(message: str, edit_goal: str) -> None:
-    assert _guard_failures(message, edit_goal) == []
-
-
-def test_router_retries_summary_misrouted_as_attachment_edit_then_points_to_chat_tab() -> None:
-    client = SequenceClient(_raw(edit_goal="shorten"), _SUMMARY_ROUTE)
-    request = replace(_request("doc-1", mode="task"), message="이 문서 세 줄로 요약해 줘")
-
-    route = ChatCompletionsTurnRouter(client, "system").route(request)  # type: ignore[arg-type]
-
-    assert (route.action, route.notice_kind, route.attached_edit_targets) == ("clarify", "chat_tab", ())
-    retry = json.loads(client.user_prompts[1])
-    assert any("explicitly" in failure for failure in retry["contract_failures"])
-
-
-def test_router_never_returns_attachment_edit_for_summary_even_when_model_insists() -> None:
-    client = SequenceClient(_raw(edit_goal="shorten"), _raw(edit_goal="shorten"))
-    request = replace(_request("doc-1"), message="이 문서 세 줄로 요약해 줘")
-
-    with pytest.raises(AgentTurnRouteContractError):
-        ChatCompletionsTurnRouter(client, "system").route(request)  # type: ignore[arg-type]
-
-
 def test_jev_sends_attachment_turns_to_llm_router() -> None:
     class Fallback:
         requests: list[AgentTurnRequest] = []
@@ -313,8 +196,6 @@ def test_prompt_states_attachment_edit_and_evidence_rules() -> None:
     assert "attached_edit_targets" in prompt
     assert "attachment_target" in prompt
     assert "Attached documents are evidence and are never an edit target" not in prompt
-    assert "이 문서 세 줄로 요약해 줘" in prompt
-    assert "이 문서를 세 줄로 줄여서 고쳐 줘" in prompt
 
 
 def _attachment_cases() -> list[dict[str, object]]:
@@ -328,17 +209,6 @@ def test_eval_has_attachment_edit_and_evidence_contrast_cases() -> None:
     assert len(cases) >= 8
     assert {(), (1,), (1, 2)} <= targets
     assert any(case["expected"].get("notice_kind") == "attachment_target" for case in cases)
-
-
-def test_eval_separates_summary_translation_answers_from_attachment_edits() -> None:
-    expected = {case["id"]: case["expected"] for case in _attachment_cases()}
-
-    for case_id in ("attachment-summary-this-document", "attachment-summary-keep-original", "attachment-translate-answer"):
-        assert expected[case_id]["document_operation"] == "none"
-        assert not expected[case_id].get("attached_edit_targets")
-    assert expected["attachment-summary-new-document"]["document_operation"] == "create"
-    assert expected["attachment-shorten-and-change"]["attached_edit_targets"] == [1]
-    assert expected["attachment-translate-apply"]["attached_edit_targets"] == [1]
 
 
 def test_eval_request_carries_attachment_titles() -> None:

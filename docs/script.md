@@ -128,3 +128,49 @@ access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이�
    AI 테이블에서 가장 이르게 나타난 시각이 `--exported-at`보다 1시간 넘게 앞선 ID만 `to_purge_*`에 오른다. export 뒤에 생긴 ID와 시각 근거가 없는 ID는 `skipped_*`에 사유와 함께 남고 파기하지 않는다.
 
 3. `to_purge_workspaces`·`to_purge_users`(ID별 최초 확인 시각)가 의도한 목록인지 확인한 뒤 `--apply`를 붙여 실행한다.
+
+## 영구 삭제 기능 전에 지운 문서의 복사본 정리
+
+영구 삭제 기능(`document_purged`) 전에 core에서 지운 문서는 AI에 복사본이 남아 있다. 일회성 스크립트 `pipeline/reconcile_purged_documents.py`가 core에 없는 문서를 휴지통 표시(`wiki_source_tombstones`)로 찾아 기존 `purge_document`를 호출한다.
+
+`purge_document`는 `ai_document_purges` 요청 행을 먼저 커밋하고 한 번 시도한다. 진행 중 run, 잠금 실패, 저장소 실패로 끝내지 못한 문서는 agent worker가 1시간마다 다시 시도한다. 그래서 스크립트가 끝나도 `finished_at`이 빈 행이 남을 수 있다.
+
+1. core DB에서 **현재 존재하는** 문서 id를 내보내고 시각을 기록한다. 휴지통 문서는 행이 있어 포함되고 대상에서 빠진다.
+
+   ```sql
+   SELECT now();  -- 내보낸 시각. --exported-at에 시간대 포함 ISO-8601로 쓴다. 24시간이 지난 목록은 거부한다.
+   SELECT count(*) FROM documents;  -- --min-documents에 쓴다.
+   \copy (SELECT id FROM documents) TO 'document_ids.txt'
+   ```
+
+2. `pipeline/`에서 AI DB(`AI_DATABASE_URL`)와 S3 환경변수를 주입하고 읽기 전용 dry-run을 한다. 출력은 표별 건수뿐이다. id가 필요하면 `--ids-out`으로 권한 600 파일에 받는다.
+
+   ```bash
+   python reconcile_purged_documents.py --document-ids-file document_ids.txt \
+     --exported-at 2026-11-07T11:00:00+00:00 --min-documents <core 건수> --ids-out targets.tsv
+   ```
+
+   빈 파일, `--min-documents`보다 적은 목록, 활성 소스 페이지의 절반도 담지 못한 목록은 거부한다. 휴지통 표시가 `--exported-at`보다 `--min-age-hours`(기본 24시간) 넘게 앞선 문서만 `targets`에 오른다.
+
+   | 출력 | 뜻 |
+   |---|---|
+   | `targets`, `workspaces` | 지울 문서 수와 워크스페이스 수 |
+   | `skipped` | 뺀 문서 수. `exists_in_core`(슬러그가 같은 문서 포함), `workspace_purged`, `already_finished`, `other_workspace`, `too_recent` |
+   | `estimated` | 표별 예상 행 수와 S3 객체 수 |
+   | `storage_estimate_errors` | S3를 읽지 못해 S3 예상치에서 빠진 문서 수 |
+   | `missing_without_tombstone_not_targeted` | 휴지통 표시 없이 사라진 문서 수. 이 스크립트는 지우지 않는다 |
+
+3. 건수를 확인한 뒤 dry-run의 `targets`를 `--expected-count`로 주고 실행한다. 다르면 아무것도 하지 않는다.
+
+   ```bash
+   python reconcile_purged_documents.py --document-ids-file document_ids.txt \
+     --exported-at 2026-11-07T11:00:00+00:00 --min-documents <core 건수> --apply --expected-count <targets>
+   ```
+
+4. `outcomes`를 확인한다. `finished`가 아닌 문서는 worker가 잇는다. 다시 실행하면 끝난 문서는 `already_finished`로 빠진다.
+
+   ```sql
+   SELECT count(*) FILTER (WHERE finished_at IS NULL) AS pending, count(*) AS total FROM ai_document_purges;
+   ```
+
+지워지면 되돌릴 수 없다. core의 `wiki_page_versions` 본문은 `document_purge` 결과 event로 지우는데, 이 스크립트는 그 event를 보내지 않아 그대로 남는다.
