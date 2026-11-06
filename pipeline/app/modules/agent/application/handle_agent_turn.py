@@ -36,7 +36,6 @@ from app.modules.agent.domain.attached_edit_request import (
     attached_edit_instruction,
     names_attachment,
     names_open_document,
-    answer_to_translation_language_question,
     needs_translation_language,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
@@ -266,7 +265,6 @@ class HandleAgentTurnUseCase:
         if not request.message.strip():
             raise ValueError("message is required.")
 
-        request = _with_translation_language_answer(request)
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
         result = _with_skill_off_notice(self._execute(request))
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
@@ -1622,22 +1620,6 @@ def _require_translation_language(request: AgentTurnRequest) -> None:
     assert context is not None
     if needs_translation_language(request.message, _selection_text(context) or context.markdown):
         raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
-
-
-def _with_translation_language_answer(request: AgentTurnRequest) -> AgentTurnRequest:
-    """직전 턴이 번역 언어를 되물었고 언어로 답했으면 앞선 요청을 이어 간다. "번역해서 저장해 줘"의 답은 새 문서가 된다."""
-    recent = request.conversation_context.recent_messages if request.conversation_context else ()
-    if len(recent) < 2:
-        return request
-    asked_request, question = recent[-2:]
-    if (
-        asked_request.role != "user"
-        or question.role != "assistant"
-        or CLARIFY_TRANSLATION_LANGUAGE_MESSAGE not in question.content
-    ):
-        return request
-    message = answer_to_translation_language_question(request.message, asked_request.content)
-    return replace(request, message=message) if message else request
 
 
 def _opened_reference(request: AgentTurnRequest, markdown: str) -> SkillAuthoringReference:

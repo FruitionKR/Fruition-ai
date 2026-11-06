@@ -18,7 +18,6 @@ from app.modules.agent.application.ports import AgentTurnRouterPort
 from app.modules.agent.domain.attached_edit_request import (
     lacks_attachment_change_request,
     lacks_save_or_change_request,
-    saves_result_into_document,
     selects_attachment,
 )
 from app.modules.agent.domain.entities import (
@@ -316,14 +315,8 @@ def repair_result_save_to_new_document(route: AgentTurnRoute, request: AgentTurn
         return route
     if route.document_operation == "create" and route.selected_skill_id:
         return route
-    # 저장하라는 말은 분명하므로 내용을 되묻지 않는다. "요약본 문서에 저장해 줘"에 모델이 되묻는 route를 내기도 한다.
-    is_needless_clarify = (
-        route.action == "clarify"
-        and route.document_operation == "none"
-        and not route.skill_candidates
-        and route.notice_kind in {"chat_tab", "details", None}
-    )
-    if route.action not in {"markdown_edit", "workspace_workflow", "chat_answer", "conversation_reply"} and not is_needless_clarify:
+    is_chat_tab_clarify = route.action == "clarify" and route.notice_kind == "chat_tab"
+    if route.action not in {"markdown_edit", "workspace_workflow", "chat_answer", "conversation_reply"} and not is_chat_tab_clarify:
         return route
     return replace(
         route,
@@ -589,9 +582,7 @@ def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnReques
             "saving a summary or translation of the open document leaves it untouched: use markdown_create with "
             "document_operation create unless the message says to change the document or save into it"
         ]
-    if _translates_without_pointing_at_it(route, request) or (
-        route.action == "markdown_edit" and summarizes_open_document(request)
-    ):
+    if route.action == "markdown_edit" and summarizes_open_document(request):
         return [
             "editing the open document requires the message to explicitly ask to change it; a summary or "
             "translation without that is chat_answer with retrieval_source workspace or conversation_reply, "
@@ -607,16 +598,6 @@ def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnReques
             "conversation_reply; a request to change it without a save clause is markdown_edit with persist false"
         ]
     return []
-
-
-def _translates_without_pointing_at_it(route: AgentTurnRoute, request: AgentTurnRequest) -> bool:
-    """"영어로", "영어로 저장해 줘"는 번역이라는 말이 없어 문장 검사를 비켜 가므로 모델이 고른 편집 목표로 막는다."""
-    return (
-        route.edit_goal == "translate"
-        and "folder-organize" not in route.required_capabilities
-        and lacks_attachment_change_request(request.message, route.edit_goal)
-        and not saves_result_into_document(request.message)
-    )
 
 
 def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:

@@ -83,15 +83,11 @@ _SHORTEN_REQUEST = re.compile(
 
 # 저장하라는 말이다. 첨부 없이 열린 문서만 있는 턴의 "요약해서 저장해 줘"는 원문을 두고 새 문서로 저장한다.
 _SAVE_REQUEST = re.compile(r"저장|\bsave\b", re.IGNORECASE)
-# 저장할 곳으로 열린 문서를 가리킨 표현이다("이 문서에 요약해서 저장해 줘"). 가리키는 말이 없으면("문서에 저장해 줘", "별도 문서에 저장해 줘") 열린 문서를
-# 지목한 게 아니므로 라우터 프롬프트의 "저장할 곳을 말하지 않은 저장"과 같게 새 문서로 만든다. 놓쳐도 원문을 고치지 않는 쪽으로 틀린다.
-# 사이의 말이 수식하는 어미로 끝나거나("이 문서에 있는 내용을"), 내용을 가리키거나("이 문서에 대해"), 다른 곳을 말하면("이 문서에 요약해서 따로") 저장할 곳이 아니다.
-_POINTS_AT_OPEN_DOCUMENT = (
-    r"(?:(?:(?<![가-힣])이|현재|지금|열린|열려\s*있는|열어\s*둔)\s*(?:문서|노트)|원문|원본|여기)"
-)
+# 저장할 곳으로 열린 문서를 말한 표현이다("이 문서에 요약해서 저장해 줘"). 사이의 말이 수식하는 어미로 끝나면 저장할 곳이 아니라
+# 내용을 가리키는 말이다("이 문서에 있는 내용을 요약해서 저장해 줘"). 놓쳐도 원문을 고치지 않고 새 문서로 만드는 쪽으로 틀린다.
 _SAVE_INTO_DOCUMENT = re.compile(
-    rf"{_POINTS_AT_OPEN_DOCUMENT}(?:\s*(?:맨\s*)?(?:앞|끝|뒤|위|아래|밑))?에\s+"
-    r"(?:(?!대해|대하여|관해|관하여|따라|맞춰|맞게|새|별도|별개|따로|다른|신규)\S*[^\s는은던한된둔본준쓴힌온긴간에]\s+){0,3}저장"
+    r"(?<!새\s)(?<!새)(?<!다른\s)(?:문서|노트|원문|원본|여기)(?:\s*(?:맨\s*)?(?:앞|끝|뒤|위|아래|밑))?에\s+"
+    r"(?:\S*[^\s는은던한된둔본준쓴힌온긴간]\s+){0,3}저장"
 )
 # 열린 문서를 가리키는 말이다. "이 문서"는 첨부를 가리킬 때가 많아 세지 않는다.
 _NAMES_OPEN_DOCUMENT = re.compile(
@@ -111,35 +107,12 @@ _SELECTS_ATTACHMENTS = re.compile(r"둘\s*다|모두|전부|각각|\d+\s*개|번
 _SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
 
 
-# 번역을 시키는 말이다. 뒤에 다른 명사가 붙거나("번역 용어집") 수식하는 어미로 끝나면("번역하는 방법", "번역된 부분") 시키는 말이 아니다.
-_TRANSLATION_REQUEST = re.compile(
-    r"번역\s*(?:본|문서|결과|버전)?\s*(?:을|를|으로|로)?\s*"
-    r"(?:해(?!\s*(?:둔|놓은|놨|뒀))|하(?:고|여|자|세|십|시[오겠죠]|라(?!는|고))|좀|부탁|시켜|돌려|만들|저장|작성|보여|줘|주세|(?:한\s*)?(?:후|뒤|다음)"
-    r"|(?:이?요)?\s*(?:[.!?,~…]|$))"
-    r"|\btranslate\b|\btranslation\s*(?:please|of\b|[.!?]*\s*$)",
-    re.IGNORECASE | re.MULTILINE,
-)
+_TRANSLATION_WORD = re.compile(r"번역|translat", re.IGNORECASE)
 _SUMMARY_WORD = re.compile(r"요약|summar|tl;?dr", re.IGNORECASE)
-# 뜻이 여럿인 말("일어난", "불어난", "독어")은 넣지 않는다. 그런 언어는 아래 조사 붙은 꼴로 센다.
-_LANGUAGE_NAME = (
-    r"(?:영어|영문|한국어|한글|일본어|중국어|프랑스어|독일어|스페인어|포르투갈어|이탈리아어|러시아어|베트남어|태국어|아랍어|힌디어"
-    r"|인도네시아어|네덜란드어|튀르키예어|터키어|폴란드어|우크라이나어|라틴어"
-    r"|(?<![a-z])(?:english|korean|japanese|chinese|french|german|spanish|portuguese|italian|russian|vietnamese|thai|arabic"
-    r"|hindi|indonesian|dutch|turkish|polish|ukrainian|latin)(?![a-z]))"
-)
-# 번역할 언어를 말한 표현이다. 언어 이름 뒤에 무엇이 와도 세되("영어 버전으로", "영어판으로", "English로"), 이름이 번역할 원본을 가리키면("영어 문서를 번역해 줘") 세지 않는다.
-# 목록에 없는 언어는 꼴로 본다("스와힐리어로", "일어 번역", "영문으로", "into Swahili"). 놓치면 언어를 한 번 더 묻는 쪽으로 틀린다.
-# "논문 번역"처럼 문서를 가리키는 말을 세지 않으려고 "문"은 "으로"가 붙을 때만 센다.
+# 번역할 언어를 말한 표현이다. "영어로", "영문으로", "일본어 번역", "into English". 언어 이름은 끝이 없어 꼴로 본다.
+# 놓치면 언어를 한 번 더 묻는 쪽으로 틀린다. "논문 번역"처럼 문서를 가리키는 말을 세지 않으려고 "문"은 "으로"가 붙을 때만 센다.
 _STATES_LANGUAGE = re.compile(
-    rf"{_LANGUAGE_NAME}(?!\s*(?:문서|논문|파일|자료|원문|원본|본문|글|메일|기사|책)(?!으?로))"
-    r"|\S+(?:어|말|글)\s*(?:로|으로|번역)|\S+문\s*으로|\b(?:to|into|in)\s+[a-z]+",
-    re.IGNORECASE,
-)
-# 언어를 되물은 뒤의 답이다. 언어와 그 말을 맺는 어미뿐이어야 한다. "영어 공부법 알려 줘"나 "됐어"는 답이 아니라 새 요청이다.
-_LANGUAGE_ANSWER = re.compile(
-    rf"\s*(?:(?:네|응|음|그럼)[,\s]+)?(?:(?:into|to|in)\s+)?"
-    rf"(?P<language>{_LANGUAGE_NAME}(?:\s*(?:버전|판|문))?(?:으로|로)?|[가-힣]+(?:어|말|글)(?:으로|로)|[가-힣]+문으로)"
-    r"(?:\s*(?:번역|바꿔|옮겨|저장|해|줘|주세요|좀|부탁|드려요|드립니다|합니다|할게요|요|이요|입니다|please|translate|[.!~,]))*\s*",
+    r"\S+(?:어|말|글)\s*(?:로|으로|번역)|\S+문\s*으로|\b(?:to|into|in)\s+[a-z]+",
     re.IGNORECASE,
 )
 
@@ -200,23 +173,11 @@ def needs_translation_language(message: str, source_markdown: str) -> bool:
     """
     stated = _NEGATED_VERB.sub(" ", _SECTION_NAMED_AFTER_RESULT.sub(" ", message))
     return (
-        _TRANSLATION_REQUEST.search(stated) is not None
+        _TRANSLATION_WORD.search(stated) is not None
         and _SUMMARY_WORD.search(stated) is None
         and _STATES_LANGUAGE.search(stated) is None
         and any("가" <= character <= "힣" for character in source_markdown)
     )
-
-
-def answer_to_translation_language_question(answer: str, asked_request: str) -> str | None:
-    """언어를 되물은 뒤의 답이면 앞선 요청에 그 언어를 붙여 돌려준다. 답이 아니면 None이다.
-
-    "영어로"만 보면 저장하라는 말도 번역하라는 말도 없어 어떤 검사도 타지 않는다. 앞선 요청으로 되돌려야 같은 안전장치를 탄다.
-    "영어로 바꿔 줘"도 되물은 언어의 답이라 원문을 고치는 말로 받지 않는다. 열린 문서를 가리키거나 저장을 다시 말했으면 그 말이 온전한 새 요청이다.
-    """
-    matched = _LANGUAGE_ANSWER.fullmatch(answer)
-    if matched is None:
-        return None
-    return f"{matched.group('language')} {asked_request}"
 
 
 def names_open_document(message: str) -> bool:
