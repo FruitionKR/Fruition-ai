@@ -29,7 +29,6 @@ from app.modules.agent.domain.attached_document_edits import (
     ALL_FORBIDDEN_MESSAGE,
     ExcludedAttachment,
     ExclusionReason,
-    OPEN_DOCUMENT_TITLE,
     attachment_target_message,
     exclusion_notice,
 )
@@ -326,7 +325,6 @@ class HandleAgentTurnUseCase:
                     persist=False,
                     required_capabilities=(),
                     attached_edit_targets=(),
-                    include_active_markdown=False,
                 ),
                 message=CLARIFY_INCOMPATIBLE_SKILL_MESSAGE,
             )
@@ -641,21 +639,12 @@ class HandleAgentTurnUseCase:
         route: AgentTurnRoute,
         selected_skill: Skill | None,
     ) -> AgentTurnResult:
-        """고를 첨부(와 열린 문서)를 읽어 문서별 수정안을 차례로 만들고 run을 시작한다. 고칠 수 없는 문서는 빼고 결과에 알린다.
-
-        열린 문서도 편집기 사본이 아니라 서버 본문과 그 revision으로 고친다. 그래야 다른 문서와 똑같이 병합·겹침 판정을 받는다.
-        """
+        """고를 첨부를 읽어 문서별 수정안을 차례로 만들고 run을 시작한다. 고칠 수 없는 문서는 빼고 결과에 알린다."""
         if self._agent_run_starter is None or self._reference_reader is None:
             raise AgentConfigurationError("Attached document edits require a run starter and a reference reader.")
         assert request.workspace_id and request.user_id
         document_ids = tuple(dict.fromkeys(request.reference_document_ids))
         target_ids = tuple(document_ids[number - 1] for number in route.attached_edit_targets)
-        unsaved: tuple[ExcludedAttachment, ...] = ()
-        if route.include_active_markdown:
-            if request.document_id is None:
-                unsaved = (ExcludedAttachment(OPEN_DOCUMENT_TITLE, "unsaved"),)
-            else:
-                target_ids = tuple(dict.fromkeys((request.document_id, *target_ids)))
         try:
             documents, excluded = self._read_attached_edit_targets(request, document_ids, target_ids)
         except ReferenceDocumentUnavailableError as exc:
@@ -664,7 +653,6 @@ class HandleAgentTurnUseCase:
             return _clarify_document_change(
                 route, CLARIFY_REFERENCE_EDIT_MESSAGE, clarify_reason="markdown_document_required"
             )
-        excluded = (*unsaved, *excluded)
         if not documents:
             return _clarify_document_change(route, _nothing_to_edit_message(excluded))
         if any(
@@ -679,7 +667,7 @@ class HandleAgentTurnUseCase:
             return _clarify_document_change(route, str(exc))
         reference_context = _with_reference_documents(self._resolve_reference_context(request, route), evidence)
         contents, generation_excluded = self._generate_attached_edits(
-            request, route, selected_skill, documents, reference_context, total=len(target_ids)
+            request, route, selected_skill, documents, reference_context
         )
         excluded = (*excluded, *generation_excluded)
         if not contents:
@@ -716,8 +704,6 @@ class HandleAgentTurnUseCase:
         """고칠 첨부를 상한 없이 읽는다. 잘린 본문으로는 문서 전체를 저장할 수 없다."""
         assert self._reference_reader is not None and request.workspace_id and request.user_id
         titles = dict(zip(document_ids, request.reference_document_titles))
-        if request.document_id is not None:
-            titles.setdefault(request.document_id, request.active_document_title or OPEN_DOCUMENT_TITLE)
         publish_query_event(self._event_publisher, "agent.reading_sources", "고칠 문서를 읽고 있어요.")
         documents: list[SkillAuthoringReference] = []
         excluded: list[ExcludedAttachment] = []
@@ -754,8 +740,6 @@ class HandleAgentTurnUseCase:
         selected_skill: Skill | None,
         documents: tuple[SkillAuthoringReference, ...],
         reference_context: dict[str, object],
-        *,
-        total: int,
     ) -> tuple[tuple[StartAgentRunContent, ...], tuple[ExcludedAttachment, ...]]:
         """문서마다 차례로 수정안을 만든다. 일부가 실패하면 나머지를 살리고, 전부 실패하면 턴을 실패시킨다."""
         contents: list[StartAgentRunContent] = []
@@ -769,7 +753,9 @@ class HandleAgentTurnUseCase:
                 f"문서 {position}/{len(documents)}의 수정안을 작성하고 있어요.",
             )
             try:
-                instruction = attached_edit_instruction(request.message, position=position, total=total)
+                instruction = attached_edit_instruction(
+                    request.message, position=position, total=len(route.attached_edit_targets)
+                )
                 outcome = self._attached_edit_content(
                     request, route, selected_skill, document, reference_context, instruction
                 )
@@ -1273,11 +1259,6 @@ class HandleAgentTurnUseCase:
             reference_document_titles=tuple(
                 self._read_reference_title(request, document_id) for document_id in document_ids
             ),
-            active_document_title=(
-                self._read_reference_title(request, request.document_id)
-                if request.document_id is not None and _has_active_markdown(request)
-                else ""
-            ),
         )
 
     def _read_reference_title(self, request: AgentTurnRequest, document_id: str) -> str:
@@ -1703,7 +1684,6 @@ def _clarify_document_change(
             edit_destination=route.edit_destination if keeps_edit_context else None,
             persist=False,
             attached_edit_targets=(),
-            include_active_markdown=False,
         ),
         message=message,
         clarify_reason=clarify_reason,
@@ -1788,7 +1768,6 @@ def _reject_unsafe_workspace_mutation(route: AgentTurnRoute) -> AgentTurnResult:
             document_operation="none",
             persist=False,
             attached_edit_targets=(),
-            include_active_markdown=False,
         ),
         message="보안상 위험한 지시나 민감정보를 Workspace에 추가하는 요청은 처리할 수 없습니다.",
     )
@@ -1974,7 +1953,6 @@ def _create_skill_route(route: AgentTurnRoute, skill: Skill | None) -> AgentTurn
         "required_capabilities": ("document-create",),
         "selected_skill_id": skill.id,
         "attached_edit_targets": (),
-        "include_active_markdown": False,
     }
     if route.action == "workspace_workflow" and route.document_operation == "edit":
         return replace(route, **create_fields)

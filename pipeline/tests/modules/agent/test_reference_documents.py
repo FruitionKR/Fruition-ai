@@ -133,8 +133,7 @@ class FakeReferenceReader:
 
     def read(self, **kwargs: object) -> SkillAuthoringReference:
         (self.title_calls if kwargs.get("max_chars") == 1 else self.calls).append(kwargs)
-        # 없는 문서는 실제 document-svc처럼 거절한다(열린 문서 제목 읽기).
-        response = self.responses.get(str(kwargs["document_id"]), SkillRequestRejectedError("invalid_reference", "없는 문서"))
+        response = self.responses[str(kwargs["document_id"])]
         if isinstance(response, Exception):
             raise response
         return response

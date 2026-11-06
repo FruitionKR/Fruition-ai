@@ -109,8 +109,6 @@ class AgentTurnRequest:
     reference_document_ids: tuple[str, ...] = ()
     # 중복을 뺀 첨부와 같은 순서의 제목. 라우터 입력으로만 쓴다. 읽지 못한 문서는 빈 문자열이다.
     reference_document_titles: tuple[str, ...] = ()
-    # 첨부 턴에 열린 문서의 제목. 라우터 입력으로만 쓴다. 읽지 못했으면 빈 문자열이다.
-    active_document_title: str = ""
     output_language: OutputLanguage | None = None
     response_length: ResponseLength | None = None
     allow_web_search: bool | None = None
@@ -138,8 +136,6 @@ class AgentTurnRoute:
     notice_kind: NoticeKind | None = None
     # 고칠 첨부의 1부터 시작하는 순번. 비어 있으면 첨부는 근거다.
     attached_edit_targets: tuple[int, ...] = ()
-    # 첨부와 함께 열린 문서도 고친다. attached_edit_targets가 있을 때만 쓴다.
-    include_active_markdown: bool = False
 
 
 @dataclass(frozen=True)

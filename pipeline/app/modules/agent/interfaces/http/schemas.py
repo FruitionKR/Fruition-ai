@@ -226,7 +226,6 @@ class AgentTurnRouteResponse(BaseModel):
         "display_unsupported", "policy", "skill_off",
     ] | None = None
     attached_edit_targets: list[int] = Field(default_factory=list)
-    include_active_markdown: bool = False
 
 
 class SkillCandidateResponse(BaseModel):

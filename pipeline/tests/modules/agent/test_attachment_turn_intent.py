@@ -171,7 +171,10 @@ def test_request_not_naming_attachment_cannot_target_it_while_document_is_open(m
     [
         "첨부한 문서를 현재 문서 형식으로 고쳐 줘",
         "회의록을 현재 문서 형식으로 고쳐 줘",
+        "둘 다 오타를 고쳐 줘",
+        "3개 모두 오타를 고쳐 줘",
         "첫 번째 문서의 오타를 고쳐 줘",
+        "Fix the typos in both documents",
     ],
 )
 def test_request_naming_attachment_too_keeps_attachment_target(message: str) -> None:
@@ -275,28 +278,10 @@ def test_counting_words_about_open_document_do_not_select_attachment(message: st
 
 
 @pytest.mark.parametrize(
-    ("message", "attachment_ids"),
-    [
-        ("둘 다 오타를 고쳐 줘", ("doc-1",)),
-        ("3개 모두 오타를 고쳐 줘", ("doc-1",)),
-        ("Fix the typos in both documents", ("doc-1",)),
-        ("첨부 내용대로 열린 문서와 첨부 문서를 모두 고쳐 줘", ("doc-1",)),
-        ("열린 문서와 첨부한 문서를 고쳐 줘", ("doc-1",)),
-        ("각각에서 오타를 고쳐 줘", ("doc-1", "doc-2", "doc-3")),
-    ],
-)
-def test_request_including_open_document_needs_its_flag(message: str, attachment_ids: tuple[str, ...]) -> None:
-    request = _request(message, *attachment_ids, reference_document_titles=("회의록",))
-    attachments_only = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
-
-    assert any("include_active_markdown" in failure for failure in _failures(attachments_only, request))
-    assert _failures({**attachments_only, "include_active_markdown": True}, request) == []
-
-
-@pytest.mark.parametrize(
     "message",
     [
         "3개 모두 고쳐 줘",
+        "각각에서 오타를 고쳐 줘",
         "첨부한 문서 모두 고쳐 줘",
         "둘 다 수정해 줘",
         "두 번째 문서를 고쳐 줘",
@@ -423,7 +408,9 @@ def test_attachment_only_as_source_does_not_select_it_when_open_document_named(m
     [
         "첨부 문서를 고쳐 줘",
         "첨부 내용대로 고쳐 줘",
+        "첨부 내용대로 열린 문서와 첨부 문서를 모두 고쳐 줘",
         "첨부한 문서를 열린 문서 기준으로 고쳐 줘",
+        "열린 문서와 첨부한 문서를 고쳐 줘",
         "회의록 내용대로 열린 문서를 고쳐 줘",
     ],
 )

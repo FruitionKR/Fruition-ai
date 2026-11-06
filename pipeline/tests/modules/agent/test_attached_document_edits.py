@@ -77,8 +77,7 @@ class Reader:
     def read(self, **kwargs: object) -> SkillAuthoringReference:
         if kwargs.get("max_chars") != 1:
             self.body_calls.append(kwargs)
-        # 없는 문서는 실제 document-svc처럼 거절한다(열린 문서 제목 읽기).
-        document = self.documents.get(str(kwargs["document_id"]), SkillRequestRejectedError("invalid_reference", "없는 문서"))
+        document = self.documents[str(kwargs["document_id"])]
         if isinstance(document, Exception):
             raise document
         return document

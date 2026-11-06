@@ -16,13 +16,10 @@ from app.core.llm_env import (
 )
 from app.modules.agent.application.ports import AgentTurnRouterPort
 from app.modules.agent.domain.attached_edit_request import (
-    asks_open_document_with_attachments,
     lacks_attachment_change_request,
     lacks_save_or_change_request,
     saves_result_into_document,
     selects_attachment,
-    selects_every_document,
-    selects_only_attachments,
 )
 from app.modules.agent.domain.entities import (
     AgentAction,
@@ -168,17 +165,11 @@ def route_payload(request: AgentTurnRequest) -> dict[str, object]:
             "count": count,
             "titles": list(request.reference_document_titles or ("",) * count),
         }
-        if request.active_document_title and _has_open_markdown(request):
-            payload["active_markdown_context"]["title"] = request.active_document_title  # type: ignore[index]
     return payload
 
 
 def _attachment_count(request: AgentTurnRequest) -> int:
     return len(set(request.reference_document_ids))
-
-
-def _has_open_markdown(request: AgentTurnRequest) -> bool:
-    return bool(request.active_markdown_context and request.active_markdown_context.markdown.strip())
 
 
 def _route_state(request: AgentTurnRequest) -> dict[str, object]:
@@ -313,9 +304,6 @@ def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:
 
 def _repaired_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
     repaired = repair_create_route_fields(repair_insert_after_without_section(route, request), request)
-    # 내용 있는 열린 문서가 없으면 그 값은 가리킬 곳이 없다. 열린 문서가 없는 턴과 똑같이 처리한다.
-    if repaired.include_active_markdown and not _has_open_markdown(request):
-        repaired = replace(repaired, include_active_markdown=False)
     return task_mode_route(repair_result_save_to_new_document(repaired, request), request)
 
 
@@ -415,7 +403,6 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     failures: list[str] = []
     failures.extend(_notice_failures(route, request))
     failures.extend(_attached_edit_failures(route, request))
-    failures.extend(_open_document_inclusion_failures(route, request))
     failures.extend(_open_document_edit_failures(route, request))
     if route.document_operation == "create" and saves_open_document_result_into_it(request):
         failures.append(
@@ -564,46 +551,6 @@ def _attached_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) ->
     return failures
 
 
-def _open_document_inclusion_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
-    """열린 문서까지 고치라는 요청에서 어느 한쪽이 조용히 빠지지 않게 하고, 첨부만 지목한 요청에는 열린 문서를 넣지 않는다."""
-    count = _attachment_count(request)
-    titles = request.reference_document_titles
-    if route.include_active_markdown:
-        if not route.attached_edit_targets:
-            return [
-                "include_active_markdown requires attached_edit_targets; changing only the active Markdown is "
-                "markdown_edit with include_active_markdown false"
-            ]
-        names_open_title = bool(request.active_document_title and request.active_document_title in request.message)
-        if (
-            not names_open_title
-            and not asks_open_document_with_attachments(request.message, count)
-            and selects_only_attachments(request.message, count, titles)
-        ):
-            return ["include_active_markdown must be false because the message selects only attached documents"]
-        return []
-    if (
-        not count
-        or not _has_open_markdown(request)
-        or route.document_operation != "edit"
-        or route.action not in {"markdown_edit", "workspace_workflow"}
-    ):
-        return []
-    asked = asks_open_document_with_attachments(request.message, count)
-    if route.attached_edit_targets:
-        if asked or selects_every_document(request.message, titles):
-            return [
-                "the message also includes the active Markdown, so set include_active_markdown true together with "
-                "attached_edit_targets; leaving it out silently skips the open document"
-            ]
-    elif asked:
-        return [
-            "the message also includes the attached documents, so set attached_edit_targets to them with "
-            "include_active_markdown true, workspace_workflow, and persist true"
-        ]
-    return []
-
-
 def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
     """문서가 열려 있는데 첨부를 말하지 않았으면 대상은 열린 문서다. 첨부를 고르면 말하지 않은 문서가 바뀐다.
 
@@ -616,8 +563,6 @@ def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
         and bool(context.markdown.strip())
         and not selects_attachment(request.message)
         and not any(title and title in request.message for title in request.reference_document_titles)
-        and not asks_open_document_with_attachments(request.message, _attachment_count(request))
-        and not selects_every_document(request.message, request.reference_document_titles)
     )
 
 
@@ -812,11 +757,6 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
     else:
         attached_edit_targets = tuple(sorted(raw_attached_targets))
 
-    include_active_markdown = value.get("include_active_markdown", False)
-    if not isinstance(include_active_markdown, bool):
-        failures.append("include_active_markdown must be a boolean")
-        include_active_markdown = False
-
     raw_required_capabilities = value.get("required_capabilities")
     if (
         not isinstance(raw_required_capabilities, list)
@@ -848,7 +788,6 @@ def _normalize_route(value: dict[str, Any]) -> tuple[AgentTurnRoute, list[str]]:
         required_capabilities=required_capabilities,
         notice_kind=notice_kind,
         attached_edit_targets=attached_edit_targets,
-        include_active_markdown=include_active_markdown,
     ), failures
 
 
