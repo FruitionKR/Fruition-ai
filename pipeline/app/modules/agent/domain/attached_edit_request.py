@@ -27,21 +27,12 @@ _SECTION_NAMED_AFTER_RESULT = re.compile(
 # "고치지 말고"처럼 부정한 동사는 수정 요청이 아니다.
 _NEGATED_VERB = re.compile(r"\S*지\s*(?:말|마|않)\S*|\b(?:do not|don't|dont|never|without)\s+\w+", re.IGNORECASE)
 _ENGLISH_CHANGE_VERB = r"(?:edit|fix|change|modify|update|rewrite|revise|replace|overwrite|correct|add|insert|append|remove|delete|apply)"
-# "문서에 적어 둔 내용", "위에 써 있는 메모"는 이미 있는 글을 가리키므로 시키는 말이 뒤따를 때만 센다.
-# 부정한 동사를 지운 자리에 공백이 남으므로("써 주지 마" -> "써  ") 문장 끝은 동사 바로 뒤만 본다.
-_WRITE_REQUEST_ENDING = (
-    r"(?:(?:요|라)?(?:[.!?,~…]|$)"
-    r"|\s*(?:줘|줄래|줄\s*수|줬으면|주(?:세|셔|시[오겠면죠길고]|실|십|면|고|길|라|렴)"
-    r"|둬|둘래|두(?:어|고|세|십|시[오겠죠])"
-    r"|놔|놓(?:아|고|을래|으(?:세|십|시[오겠죠]))"
-    r"|봐|보(?:세|자)|달라(?!는)|야\s*(?:해|돼)|서\s*(?:줘|주세)|(?:서\s*)?저장|넣기))"
-)
 # 명사만으로는 세지 않는다. "수정 사항을 요약해 줘"는 수정 요청이 아니다.
 # 영어는 명령형 자리만 센다. 문장 첫머리·요청하는 말 뒤는 동사만으로, "and"·쉼표 뒤는 명사 나열일 수 있어 목적어가 이어질 때만 센다.
 _CHANGE_REQUEST = re.compile(
     r"고쳐|고치고|바꿔|바꾸어|바꾸고|덮어\s*[써쓰]|지워|지우고|덧붙|넣어|넣고|빼\s*줘|빼\s*주"
     r"|(?:수정|변경|추가|삭제|제거|교체|대체|반영|적용|교정|갱신|업데이트)\s*(?:해|하|시켜|부탁)"
-    rf"|(?:앞|끝|뒤|위|아래|밑|문서)에\s*(?:적어|써|붙여|달아){_WRITE_REQUEST_ENDING}"
+    r"|(?:앞|끝|뒤|위|아래|밑|문서)에\s*(?:적어|써|붙여|달아)"
     r"|(?:^\s*|[.;!?]\s+|\b(?:please|then|also|just|let's|(?:can|could|would|will)\s+you|(?:want|need|like)\s+you\s+to)\s+)"
     rf"{_ENGLISH_CHANGE_VERB}\b(?!-)"
     rf"|(?:\band\s+|,\s*){_ENGLISH_CHANGE_VERB}\b(?!-)"
@@ -66,8 +57,6 @@ _NAMES_OPEN_DOCUMENT = re.compile(
 _NAMES_ATTACHMENT = re.compile(r"첨부|\battach", re.IGNORECASE)
 # 첨부를 순번·전체로 고르는 말이다.
 _SELECTS_ATTACHMENTS = re.compile(r"둘\s*다|모두|전부|각각|\d+\s*개|번째|\b(?:both|all|each)\b", re.IGNORECASE)
-# 열린 문서를 지목해도 문서 자체를 순번으로 고르면 첨부를 고르는 말이다. "현재 문서 형식에 맞춰 두 번째 문서를 고쳐 줘"
-_SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
 
 
 def lacks_attachment_change_request(message: str, edit_goal: str | None) -> bool:
@@ -96,10 +85,7 @@ def names_attachment(message: str) -> bool:
 
 
 def selects_attachment(message: str) -> bool:
-    """첨부를 말하거나 순번·전체로 고르면 True다. 열린 문서를 지목한 문장의 순번·전체 표현은 그 문서 안의 항목을 센다("열린 문서의 오타를 모두 고쳐 줘")."""
-    if names_attachment(message) or _SELECTS_DOCUMENT_BY_ORDER.search(message):
-        return True
-    return not names_open_document(message) and _SELECTS_ATTACHMENTS.search(message) is not None
+    return names_attachment(message) or _SELECTS_ATTACHMENTS.search(message) is not None
 
 
 def attached_edit_instruction(message: str, *, position: int, total: int) -> str:
