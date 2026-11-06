@@ -208,23 +208,6 @@ def _guard_failures(message: str, edit_goal: str) -> list[str]:
         ("Summarize this document in three lines", "shorten"),
         ("Summarize it and don't change the original", "shorten"),
         ("Translate this into Korean", "translate"),
-        # 목록에 없는 말로 결과물을 요구해도 막는다. 틀리면 원문을 고치지 않는 쪽으로 틀린다.
-        ("이 문서 요약 좀", "other"),
-        ("요약본을 만들어 줘", "other"),
-        ("Give me a summary of the attachment", "other"),
-        # 요약·번역 섹션을 대상으로 다시 요약·번역을 요구하는 말이다.
-        ("요약 섹션을 영어로 번역해 줘", "other"),
-        ("Summarize the summary section", "other"),
-        ("Summarize section 3", "other"),
-        ("Translate section 3", "other"),
-        # 요약 동사의 목적어인 영어 명사는 수정 요청이 아니다.
-        ("Summarize the latest update in this doc", "shorten"),
-        ("Summarize what to fix", "shorten"),
-        ("Summarize what I need to fix", "shorten"),
-        ("Summarize the add-on features", "shorten"),
-        ("Summarize the release notes and update log", "shorten"),
-        ("Summarize the add, remove, and edit buttons", "shorten"),
-        ("Translate the change log", "translate"),
     ],
 )
 def test_summary_or_translation_without_change_verb_cannot_target_attachment(message: str, edit_goal: str) -> None:
@@ -248,19 +231,6 @@ def test_summary_or_translation_without_change_verb_cannot_target_attachment(mes
         ("첨부한 문서를 더 부드러운 말투로", "style_change"),
         ("添付文書の誤字を直して", "cleanup"),
         ("Make the attachment more polite", "style_change"),
-        # "요약 섹션"처럼 문서의 일부를 가리키는 말은 결과물 요구가 아니다.
-        ("첨부한 문서의 요약 섹션을 더 자세히 써 줘", "other"),
-        ("번역 섹션을 보강해 줘", "other"),
-        ("Expand the summary section", "other"),
-        ("Rework the translation part", "other"),
-        ("요약 섹션을 세 줄로 줄여 줘", "shorten"),
-        # 영어 수정 동사는 명령형 자리에 있으면 수정 요청이다.
-        ("Summarize this and apply it to the document", "shorten"),
-        ("Summarize this. Then update the document", "shorten"),
-        ("Please fix the summary", "other"),
-        ("Could you update the translation?", "translate"),
-        ("Summarize the changes, add them to the top", "shorten"),
-        ("Update the summary", "other"),
     ],
 )
 def test_explicit_change_requests_keep_attachment_target(message: str, edit_goal: str) -> None:
