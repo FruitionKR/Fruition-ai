@@ -963,15 +963,16 @@ def _answer_use_case(route: AgentTurnRoute, reader: Reader, **values: object):
 ANSWER_ROUTE = AgentTurnRoute(action="chat_answer", confidence=1.0, reason="답변", retrieval_source="workspace")
 
 
-def test_answer_naming_open_document_pins_it_before_attachment() -> None:
+def test_answer_naming_open_document_pins_it_instead_of_attachment() -> None:
     reader = Reader(_document("doc-1", "첨부"))
     use_case, query = _answer_use_case(ANSWER_ROUTE, reader)
 
     use_case.execute(_request("열린 문서를 요약해 줘", "doc-1"))
 
     pinned = query.kwargs[0]["pinned_evidence"]
-    assert [snippet.source_document_id for snippet in pinned] == ["open-doc", "doc-1"]
+    assert {snippet.source_document_id for snippet in pinned} == {"open-doc"}
     assert "열린 문서 본문" in pinned[0].text
+    assert reader.body_calls == []
 
 
 def test_answer_naming_both_pins_open_document_and_attachment() -> None:
@@ -987,7 +988,7 @@ def test_answer_not_naming_open_document_pins_only_attachment() -> None:
     reader = Reader(_document("doc-1", "첨부"))
     use_case, query = _answer_use_case(ANSWER_ROUTE, reader)
 
-    use_case.execute(_request("세 줄로 요약해 줘", "doc-1"))
+    use_case.execute(_request("이 문서 세 줄로 요약해 줘", "doc-1"))
 
     assert {snippet.source_document_id for snippet in query.kwargs[0]["pinned_evidence"]} == {"doc-1"}
 

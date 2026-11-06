@@ -101,7 +101,6 @@ def reference_evidence_snippets(selected: SelectedReferenceDocuments) -> tuple[E
                     source_refs=[SourceReference(document.id, block_id) for block_id in block_ids],
                     reference_chunk=len(snippets),
                     reference_title=document.name or None,
-                    reference_is_open_document=document.id == selected.open_document_id,
                 )
             )
     return tuple(snippets)

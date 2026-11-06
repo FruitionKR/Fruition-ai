@@ -19,7 +19,6 @@ from app.modules.agent.domain.attached_edit_request import (
     asks_open_document_with_attachments,
     lacks_attachment_change_request,
     lacks_save_or_change_request,
-    points_at_open_document,
     saves_result_into_document,
     selects_attachment,
     selects_every_document,
@@ -609,7 +608,7 @@ def _open_document_inclusion_failures(route: AgentTurnRoute, request: AgentTurnR
 
 
 def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
-    """문서가 열려 있는데 첨부를 지목하지 않았으면("이 문서"도 그렇다) 대상은 열린 문서다. 첨부를 고르면 말하지 않은 문서가 바뀐다.
+    """문서가 열려 있는데 첨부를 말하지 않았으면 대상은 열린 문서다. 첨부를 고르면 말하지 않은 문서가 바뀐다.
 
     첨부 수정은 자동 승인으로 바로 저장될 수 있어 코드로 지킨다.
     내용 없는 새 노트는 대상이 아니므로 세지 않는다.
@@ -687,11 +686,6 @@ def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[s
             return [f"notice_kind {kind} requires clarify with document_operation none and no skill candidates"]
         if kind == "attachment_target" and not request.reference_document_ids:
             return ["notice_kind attachment_target requires attached documents"]
-        if kind == "attachment_target" and points_at_open_document(request.message) and _open_document_is_the_unnamed_target(request):
-            return [
-                "notice_kind attachment_target is wrong because the message points at the active Markdown and selects "
-                "no attachment; use markdown_edit with an empty attached_edit_targets array"
-            ]
         if kind == "web_disabled" and request.allow_web_search is True:
             return ["notice_kind web_disabled requires allow_web_search false"]
         return []
