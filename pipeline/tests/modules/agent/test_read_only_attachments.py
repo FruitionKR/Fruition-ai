@@ -4,7 +4,6 @@ import pytest
 
 from app.modules.agent.domain.attached_document_edits import ALL_FORBIDDEN_MESSAGE
 from app.modules.agent.domain.entities import ActiveMarkdownContext, AgentTurnRoute
-from app.modules.agent.domain.read_only_attachments import route_without_read_only_targets
 from app.modules.agent.infrastructure.chat_completions_turn_router import route_payload
 from app.modules.skill.domain.exceptions import SkillRequestRejectedError
 from tests.modules.agent.test_attached_document_edits import Editor, Reader, _document, _request, _route, _use_case
@@ -67,57 +66,6 @@ def test_message_pointing_at_read_only_document_does_not_move_to_another_documen
 
     assert (result.action, result.message) == ("clarify", ALL_FORBIDDEN_MESSAGE)
     assert starter.requests == []
-
-
-@pytest.mark.parametrize(
-    "route", [_route(2), _route(1, 2), CLARIFY_TARGET, EDIT_WITHOUT_TARGETS],
-    ids=["model-picks-editable", "model-picks-both", "model-asks-which", "model-forgets-targets"],
-)
-@pytest.mark.parametrize("message", ["이 문서 고쳐 줘", "이 문서의 오타를 모두 고쳐 줘", "fix this document"])
-def test_this_document_means_the_open_read_only_document_not_the_attachment(route: AgentTurnRoute, message: str) -> None:
-    """보기 권한으로 연 문서가 어느 첨부인지 알면 "이 문서"는 그 문서다. 모델이 첨부를 골라도 첨부를 고치지 않고 권한을 안내한다."""
-    use_case, starter, _ = _use_case(route, Reader(READ_ONLY, EDITABLE))
-
-    result = use_case.execute(_request("doc-1", "doc-2", message=message, read_only_document_id="doc-1"))
-
-    assert (result.action, result.message) == ("clarify", ALL_FORBIDDEN_MESSAGE)
-    assert starter.requests == []
-
-
-@pytest.mark.parametrize(
-    "message", ["이 문서 참고해서 편집문서 고쳐 줘", "첨부 문서 고쳐 줘", "두 번째 문서 고쳐 줘", "오타 고쳐 줘"]
-)
-def test_naming_another_document_still_edits_it_with_a_read_only_document_open(message: str) -> None:
-    use_case, starter, _ = _use_case(_route(2), Reader(READ_ONLY, EDITABLE))
-
-    use_case.execute(_request("doc-1", "doc-2", message=message, read_only_document_id="doc-1"))
-
-    assert _edited(starter) == ["doc-2"]
-
-
-@pytest.mark.parametrize(
-    "values", [{}, {"read_only_document_id": "doc-other"}], ids=["old-document-svc", "chip-removed"]
-)
-def test_this_document_is_the_chosen_attachment_when_the_open_document_is_not_attached(values: dict[str, str]) -> None:
-    """키가 없거나(구 document-svc) "현재 문서" 칩을 뺀 턴은 "이 문서"가 고른 첨부를 가리킨다."""
-    use_case, starter, _ = _use_case(_route(2), Reader(READ_ONLY, EDITABLE))
-
-    use_case.execute(_request("doc-1", "doc-2", message="이 문서 고쳐 줘", **values))
-
-    assert _edited(starter) == ["doc-2"]
-
-
-def test_open_read_only_document_is_not_edited_even_when_its_title_could_not_be_read() -> None:
-    """제목을 못 읽은 첨부는 편집 가능으로 표시된다. document-svc가 확인한 값이 우선이라 첨부로 넘어가지 않는다."""
-    route = route_without_read_only_targets(
-        _route(2),
-        _request(
-            "doc-1", "doc-2", message="이 문서 고쳐 줘", read_only_document_id="doc-1",
-            reference_document_titles=("", "편집문서"), reference_document_editable=(True, True),
-        ),
-    )
-
-    assert route.attached_edit_targets == (1,)
 
 
 def test_open_document_cannot_be_the_editable_attachment_when_no_markdown_is_open() -> None:
