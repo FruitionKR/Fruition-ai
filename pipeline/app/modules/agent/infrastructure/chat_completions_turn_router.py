@@ -15,11 +15,7 @@ from app.core.llm_env import (
     resolve_llm_selection,
 )
 from app.modules.agent.application.ports import AgentTurnRouterPort
-from app.modules.agent.domain.attached_edit_request import (
-    lacks_attachment_change_request,
-    lacks_save_or_change_request,
-    selects_attachment,
-)
+from app.modules.agent.domain.attached_edit_request import lacks_attachment_change_request
 from app.modules.agent.domain.entities import (
     AgentAction,
     AgentTurnRequest,
@@ -100,7 +96,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 
         payload = route_payload(request)
         route, failures = self._complete_route(payload)
-        route = _repaired_route(route, request)
+        route = task_mode_route(repair_insert_after_without_section(route, request), request)
         failures.extend(_route_failures(route, request))
         if failures:
             logger.warning("[Agent route 재시도] contractFailures=%s", failures)
@@ -113,7 +109,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
                 retry_payload,
                 trusted_contract_failures=failures,
             )
-            route = _repaired_route(route, request)
+            route = task_mode_route(repair_insert_after_without_section(route, request), request)
             failures.extend(_route_failures(route, request))
             if failures:
                 raise AgentTurnRouteContractError(failures)
@@ -151,9 +147,6 @@ def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     # 첨부가 있는 턴에만 싣는다. 본문과 id는 라우터에 보내지 않는다. 제목 순서가 attached_edit_targets의 순번이다.
     count = _attachment_count(request)
     if count:
-        # 내용 없는 열린 새 노트는 고칠 대상이 아니다. 편집 범위까지 빼서 열린 문서가 없는 턴과 똑같이 판단하게 한다.
-        if not (request.active_markdown_context and request.active_markdown_context.markdown.strip()):
-            payload["active_markdown_context"] = {"has_markdown": False, "target": None}
         payload["reference_documents"] = {
             "count": count,
             "titles": list(request.reference_document_titles or ("",) * count),
@@ -295,26 +288,6 @@ def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:
     return None
 
 
-def _repaired_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
-    repaired = repair_create_route_fields(repair_insert_after_without_section(route, request), request)
-    return task_mode_route(repaired, request)
-
-
-def repair_create_route_fields(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
-    """첨부 턴의 새 문서 route가 편집 필드를 함께 낸 경우 새 문서 값으로 맞춘다.
-
-    "요약해서 저장해 줘"에 모델이 edit_goal을 shorten으로 내기 쉽다. 새 문서는 원문을 건드리지 않으므로 다시 묻지 않는다.
-    """
-    if (
-        not request.reference_document_ids
-        or route.document_operation != "create"
-        or route.attached_edit_targets
-        or (route.edit_goal, route.edit_operation, route.edit_destination) == ("create_from_chat", None, None)
-    ):
-        return route
-    return replace(route, edit_goal="create_from_chat", edit_operation=None, edit_destination=None)
-
-
 def repair_insert_after_without_section(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
     """현재 섹션이 없는데 target 뒤 삽입(insert_after+target)을 고른 route를 대상 재작성(replace)으로 바꾼다.
 
@@ -362,7 +335,6 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     failures: list[str] = []
     failures.extend(_notice_failures(route, request))
     failures.extend(_attached_edit_failures(route, request))
-    failures.extend(_open_document_edit_failures(route, request))
     if route.action == "folder_lookup" and request.mode != "task":
         failures.append("folder_lookup is available only in task mode")
     if not task_mode_allows_action(request, route.action):
@@ -497,55 +469,7 @@ def _attached_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) ->
             "a summary or translation without that is chat_answer or conversation_reply, or markdown_create "
             "when it asks for a new document, with an empty array"
         )
-    if _open_document_is_the_unnamed_target(request):
-        failures.append(
-            "with active Markdown the message must name an attachment to change it; a message that does not "
-            "say which changes the active Markdown, so use markdown_edit with an empty array"
-        )
     return failures
-
-
-def _open_document_is_the_unnamed_target(request: AgentTurnRequest) -> bool:
-    """문서가 열려 있는데 첨부를 말하지 않았으면 대상은 열린 문서다. 첨부를 고르면 말하지 않은 문서가 바뀐다.
-
-    첨부 수정은 자동 승인으로 바로 저장될 수 있어 코드로 지킨다. 열린 문서 편집은 미리 보기라 틀려도 사용자가 거절할 수 있다.
-    내용 없는 새 노트는 대상이 아니므로 세지 않는다.
-    """
-    context = request.active_markdown_context
-    return (
-        context is not None
-        and bool(context.markdown.strip())
-        and not selects_attachment(request.message)
-        and not any(title and title in request.message for title in request.reference_document_titles)
-    )
-
-
-def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:
-    """요약·번역이 열린 문서를 덮어쓰지 않게 한다.
-
-    첨부 턴은 markdown_edit도 막는다. "이 문서"가 첨부를 가리킬 수 있어 고른 문서가 틀릴 수 있고, 첨부를 근거로 답하는 갈래가 있다.
-    첨부 없는 턴은 저장하는 갈래(workspace_workflow)만 막는다. markdown_edit은 미리 보기라 사용자가 적용해야 바뀌고 자동 승인을
-    타지 않으며, 작업 탭에는 답변 갈래가 없어 막으면 요약을 받을 길이 없다.
-    """
-    if route.document_operation != "edit" or route.attached_edit_targets:
-        return []
-    if route.action not in {"markdown_edit", "workspace_workflow"}:
-        return []
-    if request.reference_document_ids:
-        if lacks_attachment_change_request(request.message, route.edit_goal):
-            return [
-                "editing the open document requires the message to explicitly ask to change it; with attached "
-                "documents a summary or translation without that is chat_answer or conversation_reply, or "
-                "markdown_create, or workspace_workflow with document_operation create when it asks to save"
-            ]
-        return []
-    if (
-        route.action == "workspace_workflow"
-        and "folder-organize" not in route.required_capabilities
-        and lacks_save_or_change_request(request.message, route.edit_goal)
-    ):
-        return ["a summary or translation of the open document without a save clause is markdown_edit with persist false"]
-    return []
 
 
 def _notice_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[str]:

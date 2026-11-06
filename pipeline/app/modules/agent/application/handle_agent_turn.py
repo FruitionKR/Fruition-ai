@@ -32,11 +32,6 @@ from app.modules.agent.domain.attached_document_edits import (
     attachment_target_message,
     exclusion_notice,
 )
-from app.modules.agent.domain.attached_edit_request import (
-    attached_edit_instruction,
-    names_attachment,
-    names_open_document,
-)
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.domain.folder_lookup import (
     FolderLookupUnavailableError,
@@ -738,12 +733,7 @@ class HandleAgentTurnUseCase:
                 f"문서 {position}/{len(documents)}의 수정안을 작성하고 있어요.",
             )
             try:
-                instruction = attached_edit_instruction(
-                    request.message, position=position, total=len(route.attached_edit_targets)
-                )
-                outcome = self._attached_edit_content(
-                    request, route, selected_skill, document, reference_context, instruction
-                )
+                outcome = self._attached_edit_content(request, route, selected_skill, document, reference_context)
             except PipelineRunCancelledError:
                 raise
             except (ValueError, RuntimeError) as exc:
@@ -768,14 +758,13 @@ class HandleAgentTurnUseCase:
         selected_skill: Skill | None,
         document: SkillAuthoringReference,
         reference_context: dict[str, object],
-        instruction: str,
     ) -> StartAgentRunContent | ExclusionReason:
         context = ActiveMarkdownContext(markdown=document.markdown)
         target = _skill_edit_target(selected_skill, context)
         assert target is not None  # 호출 전에 확인했다.
         edit = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
-                instruction=instruction,
+                instruction=request.message,
                 markdown=document.markdown,
                 target=target,
                 workspace_id=request.workspace_id,
@@ -918,7 +907,7 @@ class HandleAgentTurnUseCase:
     ) -> AgentTurnResult:
         # 첨부를 읽지 못하면 답변 갈래가 아니라 되묻기로 끝나므로 분류를 기록하기 전에 읽는다.
         try:
-            references = self._answer_references(request)
+            references = self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         # Record the actual branch before retrieval/generation can fail or be interrupted.
@@ -945,7 +934,7 @@ class HandleAgentTurnUseCase:
         if self._conversation_replier is None:
             raise AgentConfigurationError("Conversation reply is not configured.")
         try:
-            references = self._answer_references(request)
+            references = self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         message = _with_notice(
@@ -1295,26 +1284,6 @@ class HandleAgentTurnUseCase:
         if not documents:
             raise ReferenceDocumentUnavailableError(REFERENCE_ALL_TOO_LONG_MESSAGE)
         return SelectedReferenceDocuments(documents=tuple(documents), too_long_count=too_long_count)
-
-    def _answer_references(self, request: AgentTurnRequest) -> SelectedReferenceDocuments:
-        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다."""
-        if not (request.reference_document_ids and _has_active_markdown(request) and names_open_document(request.message)):
-            return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
-        assert request.active_markdown_context is not None
-        opened = clip_reference_document(
-            SkillAuthoringReference(
-                id=request.document_id or "",
-                name="",
-                markdown=request.active_markdown_context.markdown,
-            ),
-            MAX_REFERENCE_ANSWER_CHARS,
-        )
-        if not names_attachment(request.message):
-            return SelectedReferenceDocuments(documents=(opened,))
-        attached = self._read_reference_documents(
-            request, max_total_chars=max(MAX_REFERENCE_ANSWER_CHARS - len(opened.markdown), 1)
-        )
-        return replace(attached, documents=(opened, *attached.documents))
 
     def _resolve_reference_context(
         self,
