@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from app.modules.agent.application.handle_agent_turn import (
     CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
-    CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE,
+    CLARIFY_REFERENCE_EDIT_MESSAGE,
     REFERENCE_ALL_TOO_LONG_MESSAGE,
     REFERENCE_NOT_ACCESSIBLE_MESSAGE,
     REFERENCE_READ_FAILED_MESSAGE,
@@ -133,8 +133,7 @@ class FakeReferenceReader:
 
     def read(self, **kwargs: object) -> SkillAuthoringReference:
         (self.title_calls if kwargs.get("max_chars") == 1 else self.calls).append(kwargs)
-        # 없는 문서는 실제 document-svc처럼 거절한다(열린 문서 제목 읽기).
-        response = self.responses.get(str(kwargs["document_id"]), SkillRequestRejectedError("invalid_reference", "없는 문서"))
+        response = self.responses[str(kwargs["document_id"])]
         if isinstance(response, Exception):
             raise response
         return response
@@ -562,8 +561,7 @@ class EditWithAttachmentsTest(unittest.TestCase):
                 result = scenario.use_case.execute(_request("doc-1"))
 
                 self.assertEqual(result.action, "clarify")
-                self.assertEqual(result.message, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE)
-                self.assertNotIn("첨부한 문서를 고치려면 그 문서를 연 뒤", result.message)
+                self.assertEqual(result.message, CLARIFY_REFERENCE_EDIT_MESSAGE)
                 # 편집 문맥이 없는 것은 그대로라 화면의 갈래 코드도 유지한다.
                 self.assertEqual(result.clarify_reason, "markdown_document_required")
                 self.assertEqual(reader.calls, [])
@@ -584,7 +582,7 @@ class EditWithAttachmentsTest(unittest.TestCase):
 
         result = scenario.use_case.execute(_request("doc-1", mode="task"))
 
-        self.assertEqual(result.message, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE)
+        self.assertEqual(result.message, CLARIFY_REFERENCE_EDIT_MESSAGE)
         self.assertEqual(result.clarify_reason, "markdown_document_required")
 
 
