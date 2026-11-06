@@ -318,27 +318,3 @@ def test_task_tab_keeps_explicit_edits(message: str) -> None:
 
     assert _route_failures(route, _request(message, mode="task", **OPEN_DOCUMENT)) == []
     assert task_mode_route(route, _request(message, mode="task", **OPEN_DOCUMENT)) == route
-
-
-# 채팅 탭의 되묻기·안내는 코드로 알아본다(새 브라우저의 세션 분류)
-
-
-def test_chat_tab_guidance_has_a_notice_code() -> None:
-    use_case, _, _, _, _, _ = _use_case(EDIT)
-
-    result = use_case.execute(_request("오타 고쳐 줘", **OPEN_DOCUMENT))
-
-    assert result.clarify_reason == "chat_tab_notice"
-    assert _to_response(result).model_dump(mode="json")["clarify_reason"] == "chat_tab_notice"
-
-
-def test_chat_tab_translation_question_has_a_notice_code() -> None:
-    use_case, _, _, _, _, _ = _use_case(REPLY)
-
-    assert use_case.execute(_request("이 문서 번역해 줘", **OPEN_DOCUMENT)).clarify_reason == "chat_tab_notice"
-
-
-def test_task_tab_clarify_has_no_chat_notice_code() -> None:
-    use_case, _, _, _, _, _ = _use_case(AgentTurnRoute(action="clarify", confidence=0.9, reason="ask", notice_kind="web_disabled"))
-
-    assert use_case.execute(_request("질문", mode="task")).clarify_reason is None

@@ -32,7 +32,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
 - 작업 탭(`mode=task`)에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 첨부·열린 문서와 상관없이 `clarify` + `chat_tab`으로 바꾸고 `clarify_reason=chat_tab_question`을 준다. 질문을 답하거나 작업으로 바꾸지 않아 원문은 그대로다. 화면은 이 코드로 질문을 채팅 탭으로 옮기는 버튼을 보인다.
-- 채팅 탭의 문서 질문(`mode=chat`)은 `chat_answer`·`conversation_reply`·`reject`만 실행한다. 그 밖의 route는 어떤 라우터가 골랐든 실행하지 않고 `clarify` + `task_tab`으로 바꾼다. 라우터의 채팅 탭 안내·`details` clarify는 질문으로 받아 `chat_answer`(`retrieval_source=workspace`)로 답한다. Skill은 쓰지 않는다(`skill_mode=off`로 처리). 근거는 첨부와 열린 문서다. 메시지가 첨부만 지목하면("첨부 문서 요약해 줘") 열린 문서를 싣지 않는다. 내용 없는 새 노트는 근거가 아니다. 첨부와 함께 "이 문서의 …"라고 물었는데 열린 문서에 답이 없고 첨부에 있으면 그 사실과 첨부 제목을 밝혀 답한다. "이 문서"가 열린 문서라는 판정과 수정 대상은 그대로다.
+- 채팅 탭의 문서 질문(`mode=chat`)은 `chat_answer`·`conversation_reply`·`reject`만 실행한다. 그 밖의 route는 어떤 라우터가 골랐든 실행하지 않고 `clarify` + `task_tab`으로 바꾼다. 라우터의 채팅 탭 안내·`details` clarify는 질문으로 받아 `chat_answer`(`retrieval_source=workspace`)로 답한다. Skill은 쓰지 않는다(`skill_mode=off`로 처리). 근거는 첨부와 열린 문서다. 메시지가 첨부만 지목하면("첨부 문서 요약해 줘") 열린 문서를 싣지 않는다. 내용 없는 새 노트는 근거가 아니다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
 ### 되묻기 이유 코드(`clarify_reason`)
@@ -43,7 +43,6 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 |---|---|---|
 | `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "어느 문서를 고칠지 알 수 없어요. 첨부한 문서를 고치려면 \"첨부한 문서를 고쳐 줘\"처럼 말해 주시고, 다른 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.". 편집 버전을 주지 않는 구 document-svc에서 첨부 수정을 요청하면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
 | `attachment_target_required` | 첨부 중 어느 문서를 고칠지 정할 수 없다. 화면은 첨부 칩을 유지한다. | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
-| `chat_tab_notice` | 채팅 탭(`mode=chat`)의 되묻기·안내다. 화면은 답변이 아닌 안내로 보고, 탭 구분이 없는 새 브라우저에서 이 세션을 채팅으로 분류한다. | 작업 탭 안내, 번역 언어 되묻기, 첨부 읽기 실패 안내 |
 | `chat_tab_question` | 작업 탭에 보낸 질문·요약·번역이라 답하지 않았다. 화면은 질문과 첨부를 채팅 탭으로 옮기게 한다. | "작업 탭에서는 문서를 고치거나 만들고 정리할 수 있어요. …" |
 
 ### 첨부 참고 문서(`reference_document_ids`)
