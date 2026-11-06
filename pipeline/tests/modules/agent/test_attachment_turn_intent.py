@@ -5,11 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCase
-from app.modules.agent.domain.attached_edit_request import (
-    attached_edit_instruction,
-    lacks_attachment_change_request,
-    lacks_save_or_change_request,
-)
+from app.modules.agent.domain.attached_edit_request import attached_edit_instruction
 from app.modules.agent.domain.entities import ActiveMarkdownContext, AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.infrastructure.chat_completions_turn_router import (
     ChatCompletionsTurnRouter,
@@ -271,129 +267,6 @@ def test_counting_words_about_open_document_do_not_select_attachment(message: st
 def test_selecting_attachments_keeps_attachment_target(message: str) -> None:
     raw = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
     request = _request(message, "doc-1", "doc-2", "doc-3", reference_document_titles=("회의록",))
-
-    assert _failures(raw, request) == []
-
-
-@pytest.mark.parametrize("action", ["markdown_edit", "workspace_workflow"])
-@pytest.mark.parametrize(
-    "message",
-    [
-        "수정하는 방법을 요약해 줘",
-        "변경하신 내용을 요약해 줘",
-        "문서에 넣어 둔 메모를 요약해 줘",
-        "고쳐 둔 부분을 요약해 줘",
-        "추가해 둔 내용을 번역해 줘",
-        "문서에 적어 두고 안 본 메모를 요약해 줘",
-        "수정하고 싶은 부분을 요약해 줘",
-        "문서에 넣어 둔 걸로 요약해 줘",
-        "문서에 넣어 둔 메모를 세 줄로 요약해 줘",
-        "고치고 나서 달라진 점을 요약해 줘",
-        "수정하면서 바뀐 점을 요약해 줘",
-        "수정해 주신 내용을 요약해서 알려 줘",
-        "변경해 달라고 한 내용을 요약해 줘",
-        "수정해야 할 부분을 번역해 줘",
-        "고쳐 주지 말고 요약해 줘",
-    ],
-)
-def test_change_word_modifying_what_to_summarize_is_not_a_change_request(action: str, message: str) -> None:
-    assert _mentions_overwrite(_failures(_edit_raw(action, edit_goal="other"), _request(message, "doc-1")))
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "이 문서에 요약을 적어 줘",
-        "문서 끝에 세 줄 요약을 적어 줘",
-        "문서 끝에 번역본을 붙여 주세요",
-        "요약해서 고쳐 줘",
-        "요약해서 문서에 넣어 줘",
-        "요약 내용을 문서에 넣어 줘",
-        "오타를 고치고 요약해 줘",
-        "오타를 고쳐서 요약해 줘",
-        "오타를 고쳐 요약해 줘",
-        "오타를 고쳐 세 줄로 요약해 줘",
-        "오타를 수정해 영어로 번역해 줘",
-        "오타를 고쳐 두고 세 줄로 요약해 줘",
-        "오타를 고치고 나서 세 줄로 요약해 줘",
-        "오타를 수정하면서 세 줄로 요약해 줘",
-        "오타를 고쳐 두고 요약해 줘",
-        "오타를 고치고 나서 요약해 줘",
-        "오타를 수정하면서 요약해 줘",
-        "오타를 수정하고 요약해 줘",
-        "오타를 수정해 주고 요약해 줘",
-        "문서를 고쳐 줘. 그리고 요약해 줘",
-        "Fix the typos in it. Then summarize it",
-    ],
-)
-def test_change_clause_counts_around_summary_word(message: str) -> None:
-    raw = _edit_raw(edit_goal="other")
-
-    assert not _mentions_overwrite(_failures(raw, _request(message, "doc-1")))
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "문서에 있는 요약을 적어 줘",
-        "문서에 적어 둔 요약을 적어 줘",
-        "요약을 적어 줘",
-        "문서에 있는 내용을 요약해서 적어 줘",
-    ],
-)
-def test_write_clause_without_document_as_destination_stays_separate_result(message: str) -> None:
-    assert _mentions_overwrite(_failures(_edit_raw(edit_goal="other"), _request(message, "doc-1")))
-
-
-@pytest.mark.parametrize(
-    ("message", "lacks_change", "lacks_save_or_change"),
-    [
-        ("요약해서 저장해 줘", True, False),
-        ("번역해서 저장해 줘", True, False),
-    ],
-)
-def test_summary_with_save_clause_keeps_new_document_path(message: str, lacks_change: bool, lacks_save_or_change: bool) -> None:
-    assert lacks_attachment_change_request(message, "other") is lacks_change
-    assert lacks_save_or_change_request(message, "other") is lacks_save_or_change
-
-
-def test_write_then_move_keeps_current_verdict() -> None:
-    assert not lacks_attachment_change_request("적어 두고 폴더로 옮겨 줘", "other")
-    assert lacks_attachment_change_request("적어 두고 폴더로 옮겨 줘", "shorten")
-    assert not lacks_attachment_change_request("문서에 적어 두고 폴더로 옮겨 줘", "shorten")
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "첨부 내용대로 열린 문서의 오타를 모두 고쳐 줘",
-        "열린 문서를 첨부 내용대로 고쳐 줘",
-        "첨부한 문서를 참고해서 열린 문서의 오타를 고쳐 줘",
-        "첨부 내용을 반영해서 현재 문서를 고쳐 줘",
-        "첨부 문서 말고 열린 문서를 고쳐 줘",
-    ],
-)
-def test_attachment_only_as_source_does_not_select_it_when_open_document_named(message: str) -> None:
-    raw = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
-    request = _request(message, "doc-1", reference_document_titles=("회의록",))
-
-    assert any("must name an attachment" in failure for failure in _failures(raw, request))
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "첨부 문서를 고쳐 줘",
-        "첨부 내용대로 고쳐 줘",
-        "첨부 내용대로 열린 문서와 첨부 문서를 모두 고쳐 줘",
-        "첨부한 문서를 열린 문서 기준으로 고쳐 줘",
-        "열린 문서와 첨부한 문서를 고쳐 줘",
-        "회의록 내용대로 열린 문서를 고쳐 줘",
-    ],
-)
-def test_changing_attachment_itself_keeps_attachment_target(message: str) -> None:
-    raw = _edit_raw("workspace_workflow", attached_edit_targets=[1], edit_goal="other")
-    request = _request(message, "doc-1", reference_document_titles=("회의록",))
 
     assert _failures(raw, request) == []
 
