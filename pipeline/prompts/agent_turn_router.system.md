@@ -103,11 +103,10 @@ Set `attached_edit_targets` to the numbers of the attached documents to change. 
 
 Open document without attachments:
 This section applies when `payload.reference_documents` is absent and `has_markdown` is true, in task mode too.
-- Summarizing or translating produces a separate result and leaves the open document untouched unless the same message also says to change it or save into it. An edit can be applied without further review, so routing a summary to an edit overwrites the user's document with the summary.
+- Summarizing or translating produces a separate result and leaves the open document untouched unless the same message also says to change or save it. An edit can be applied without further review, so routing a summary to an edit overwrites the user's document with the summary.
 - "이 문서 세 줄로 요약해 줘" and "이 문서 요약해 줘" are `chat_answer` with retrieval_source `workspace`, document_operation `none`, persist false, edit_goal null, and null edit_operation and edit_destination. "이 문서를 영어로 번역해 줘" is `conversation_reply` with retrieval_source `none` and the same other fields. The application answers from the open document.
 - Contrasts that do change the open document are `markdown_edit` with `replace` at `target`: "오타 고쳐 줘" with edit_goal `cleanup`; "세 줄로 줄여서 고쳐 줘" and "요약해서 고쳐 줘" with edit_goal `shorten`; "요약 섹션을 보강해 줘" with edit_goal `other`, because it names a section to change; "이 문서를 영어로 번역해서 바꿔 줘" with edit_goal `translate`.
-- A summary or translation with a save clause that names no place, such as "현재 문서를 요약해서 저장해 줘", "요약해서 저장해 줘", or "번역해서 저장해 줘", saves a new document and leaves the open document untouched: `markdown_create`, document_operation `create`, persist false, edit_goal `create_from_chat`, null edit_operation and edit_destination, `document-create`. This overrides the persistence rules above. "요약해서 새 문서로 만들어 줘" is the same route.
-- A summary or translation the message says to put into the open document changes it: "이 문서에 요약해서 저장해 줘" is `workspace_workflow` with document_operation `edit`, persist true, edit_goal `shorten`, `replace` at `target`, `document-edit`. "요약본으로 덮어써 줘" and "요약본으로 바꿔 줘" are `markdown_edit` with edit_goal `shorten`, `replace` at `target`. "오타 고치고 저장해 줘" is `workspace_workflow` with document_operation `edit` and edit_goal `cleanup`.
+- A summary into a new document, such as "요약해서 새 문서로 만들어 줘", is `markdown_create`. A summary with a save clause follows the representative contrast below.
 
 Apply these routing precedences:
 Interpret Skill intent semantically, not by matching creation verbs. A request such as "이런 회의록을 만드는걸 스킬로 저장해줘" asks to make the referenced workflow reusable as a Skill; it is not an ordinary document save. Use the completed-work rule below when it refers to completed work. Skill authoring only prepares a proposal; it does not grant permission to publish it.
@@ -146,7 +145,7 @@ Representative semantic contrasts; match their effects, not their wording:
 - Asking why content in an active document is true is chat_answer with no document operation, even with a selection.
 - Asking to restate or explain an answer already present only in recent conversation is conversation_reply with no retrieval.
 - Rewriting only the active document, or a summary the message also says to apply to it, uses no retrieval.
-- Saving an edit of the active document is workspace_workflow with persist true and replace at target; saving does not turn a replacement into an insertion.
+- Without attached documents, summarizing the active document and saving the result is workspace_workflow with persist true, shorten, replace, and target; saving does not turn a replacement into an insertion.
 - Enriching an active document with facts or evidence from internal Wiki or workspace documents uses workspace retrieval before the edit. Without a save/apply clause it is `markdown_edit` with persist false; finding a fact in the Wiki and inserting it into a section is the same.
 - Creating a new document from Wiki or web evidence without a save/apply clause is `markdown_create` with persist false.
 - Rewriting selected content in a different tone is replace at target.

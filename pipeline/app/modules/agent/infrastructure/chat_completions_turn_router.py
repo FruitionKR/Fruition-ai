@@ -31,13 +31,7 @@ from app.modules.agent.domain.entities import (
     RetrievalSource,
 )
 from app.modules.agent.domain.exceptions import AgentTurnRouteContractError
-from app.modules.agent.domain.task_mode import (
-    saves_open_document_result_as_new,
-    saves_open_document_result_into_it,
-    summarizes_open_document,
-    task_mode_allows_action,
-    task_mode_route,
-)
+from app.modules.agent.domain.task_mode import summarizes_open_document, task_mode_allows_action, task_mode_route
 from app.modules.markdown_edit.domain.entities import EditDestination, EditOperationType
 from app.modules.skill.domain.entities import SkillCapability
 from app.modules.skill.domain.policy import CAPABILITY_TOOLS
@@ -303,35 +297,7 @@ def _local_guard(request: AgentTurnRequest) -> AgentTurnRoute | None:
 
 def _repaired_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
     repaired = repair_create_route_fields(repair_insert_after_without_section(route, request), request)
-    return task_mode_route(repair_result_save_to_new_document(repaired, request), request)
-
-
-def repair_result_save_to_new_document(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
-    """첨부 없는 턴의 "요약해서 저장해 줘"는 모델이 무엇을 골랐든 새 문서로 보낸다. 원문을 고치면 요약본으로 덮어쓴다.
-
-    폴더 이동이 섞이면 건드리지 않는다. Skill로 새 문서를 만드는 route도 원문을 고치지 않으므로 그대로 둔다.
-    """
-    if not saves_open_document_result_as_new(request) or "folder-organize" in route.required_capabilities:
-        return route
-    if route.document_operation == "create" and route.selected_skill_id:
-        return route
-    is_chat_tab_clarify = route.action == "clarify" and route.notice_kind == "chat_tab"
-    if route.action not in {"markdown_edit", "workspace_workflow", "chat_answer", "conversation_reply"} and not is_chat_tab_clarify:
-        return route
-    return replace(
-        route,
-        action="markdown_create",
-        retrieval_source=route.retrieval_source if route.document_operation != "none" else "none",
-        document_operation="create",
-        persist=False,
-        required_capabilities=("document-create",),
-        edit_goal="create_from_chat",
-        edit_operation=None,
-        edit_destination=None,
-        selected_skill_id=None,
-        skill_candidates=(),
-        notice_kind=None,
-    )
+    return task_mode_route(repaired, request)
 
 
 def repair_create_route_fields(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTurnRoute:
@@ -397,11 +363,6 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
     failures.extend(_notice_failures(route, request))
     failures.extend(_attached_edit_failures(route, request))
     failures.extend(_open_document_edit_failures(route, request))
-    if route.document_operation == "create" and saves_open_document_result_into_it(request):
-        failures.append(
-            "the message asks to save the result into the open document, so it is an edit of that document, "
-            "not document_operation create"
-        )
     if route.action == "folder_lookup" and request.mode != "task":
         failures.append("folder_lookup is available only in task mode")
     if not task_mode_allows_action(request, route.action):
@@ -577,11 +538,6 @@ def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnReques
                 "markdown_create, or workspace_workflow with document_operation create when it asks to save"
             ]
         return []
-    if saves_open_document_result_as_new(request) and "folder-organize" not in route.required_capabilities:
-        return [
-            "saving a summary or translation of the open document leaves it untouched: use markdown_create with "
-            "document_operation create unless the message says to change the document or save into it"
-        ]
     if route.action == "markdown_edit" and summarizes_open_document(request):
         return [
             "editing the open document requires the message to explicitly ask to change it; a summary or "

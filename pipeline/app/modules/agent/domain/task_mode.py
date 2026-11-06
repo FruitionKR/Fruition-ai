@@ -2,12 +2,7 @@
 
 from dataclasses import replace
 
-from app.modules.agent.domain.attached_edit_request import (
-    lacks_attachment_change_request,
-    lacks_save_or_change_request,
-    saves_result_as_new_document,
-    saves_result_into_document,
-)
+from app.modules.agent.domain.attached_edit_request import lacks_save_or_change_request
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 
 # 첨부 없는 작업 탭에서는 답변 갈래를 고를 수 없다. 질문은 clarify로 채팅 탭을 안내한다.
@@ -23,26 +18,13 @@ def summarizes_open_document(request: AgentTurnRequest) -> bool:
 
     라우터가 고른 edit_goal이 아니라 문장만 본다. 어떤 라우터가 골랐든 수정 차단과 답변 허용, 답변 근거가 같은 판단을 쓴다.
     """
-    return _only_open_document(request) and lacks_save_or_change_request(request.message, None)
-
-
-def saves_open_document_result_as_new(request: AgentTurnRequest) -> bool:
-    """첨부 없이 열린 문서의 요약·번역을 저장하라면 원문을 두고 새 문서로 만든다."""
-    return _only_open_document(request) and saves_result_as_new_document(request.message)
-
-
-def saves_open_document_result_into_it(request: AgentTurnRequest) -> bool:
-    """첨부 없이 열린 문서의 요약·번역을 그 문서에 저장하라는 요청이다."""
-    return (
-        _only_open_document(request)
-        and lacks_attachment_change_request(request.message, None)
-        and saves_result_into_document(request.message)
-    )
-
-
-def _only_open_document(request: AgentTurnRequest) -> bool:
     context = request.active_markdown_context
-    return not request.reference_document_ids and context is not None and bool(context.markdown.strip())
+    return (
+        not request.reference_document_ids
+        and context is not None
+        and bool(context.markdown.strip())
+        and lacks_save_or_change_request(request.message, None)
+    )
 
 
 def task_mode_allows_action(request: AgentTurnRequest, action: str) -> bool:

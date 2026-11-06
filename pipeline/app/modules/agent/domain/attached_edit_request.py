@@ -81,14 +81,8 @@ _SHORTEN_REQUEST = re.compile(
 )
 
 
-# 저장하라는 말이다. 첨부 없이 열린 문서만 있는 턴의 "요약해서 저장해 줘"는 원문을 두고 새 문서로 저장한다.
+# 저장하라는 말이다. 첨부 없이 열린 문서만 있는 턴의 "요약해서 저장해 줘"는 그 문서를 바꾸는 요청으로 계속 받는다.
 _SAVE_REQUEST = re.compile(r"저장|\bsave\b", re.IGNORECASE)
-# 저장할 곳으로 열린 문서를 말한 표현이다("이 문서에 요약해서 저장해 줘"). 사이의 말이 수식하는 어미로 끝나면 저장할 곳이 아니라
-# 내용을 가리키는 말이다("이 문서에 있는 내용을 요약해서 저장해 줘"). 놓쳐도 원문을 고치지 않고 새 문서로 만드는 쪽으로 틀린다.
-_SAVE_INTO_DOCUMENT = re.compile(
-    r"(?<!새\s)(?<!새)(?<!다른\s)(?:문서|노트|원문|원본|여기)(?:\s*(?:맨\s*)?(?:앞|끝|뒤|위|아래|밑))?에\s+"
-    r"(?:\S*[^\s는은던한된둔본준쓴힌온긴간]\s+){0,3}저장"
-)
 # 열린 문서를 가리키는 말이다. "이 문서"는 첨부를 가리킬 때가 많아 세지 않는다.
 _NAMES_OPEN_DOCUMENT = re.compile(
     r"(?:열린|열려\s*있는|열어\s*둔|현재|지금)\s*(?:문서|노트)|\b(?:open|opened|current)\s+(?:document|doc|note)\b",
@@ -139,20 +133,6 @@ def lacks_save_or_change_request(message: str, edit_goal: str | None) -> bool:
     """요약·번역 요청인데 원문을 바꾸거나 저장하라는 말이 모두 없으면 True다."""
     stated = _NEGATED_VERB.sub(" ", message)
     return lacks_attachment_change_request(message, edit_goal) and _SAVE_REQUEST.search(stated) is None
-
-
-def saves_result_into_document(message: str) -> bool:
-    """요약·번역 결과를 열린 문서에 저장하라는 말이면 True다."""
-    return _SAVE_INTO_DOCUMENT.search(_NEGATED_VERB.sub(" ", message)) is not None
-
-
-def saves_result_as_new_document(message: str) -> bool:
-    """요약·번역 결과를 저장하라면서 원문을 바꾸거나 원문에 저장하라는 말이 없으면 True다."""
-    return (
-        lacks_attachment_change_request(message, None)
-        and not lacks_save_or_change_request(message, None)
-        and not saves_result_into_document(message)
-    )
 
 
 def names_open_document(message: str) -> bool:
