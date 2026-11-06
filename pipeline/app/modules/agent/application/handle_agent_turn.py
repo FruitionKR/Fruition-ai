@@ -36,7 +36,6 @@ from app.modules.agent.domain.attached_edit_request import (
     attached_edit_instruction,
     names_attachment,
     names_open_document,
-    needs_translation_language,
 )
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.domain.folder_lookup import (
@@ -195,9 +194,6 @@ CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = (
 ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
     "열린 문서가 길어 초안에 참고하지 않았어요. "
     "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
-)
-CLARIFY_TRANSLATION_LANGUAGE_MESSAGE = (
-    "어떤 언어로 번역할까요? '영어로 번역해 줘'처럼 언어를 함께 적어 다시 요청해 주세요. 원문은 그대로예요."
 )
 SUMMARY_SAVE_TOO_LONG_MESSAGE = (
     f"열린 문서가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 새 문서를 만들지 않았어요. "
@@ -1168,10 +1164,6 @@ class HandleAgentTurnUseCase:
         폴더를 읽을 수 없거나 읽을 문서가 없으면 FolderSourceUnavailableError,
         첨부를 읽을 수 없으면 ReferenceDocumentUnavailableError를 낸다.
         """
-        if selected_skill is None and not bare and (
-            saves_open_document_result_as_new(request) or summarizes_open_document(request)
-        ):
-            _require_translation_language(request)
         references = self._read_reference_documents(request)
         reference_context = _with_reference_documents(
             {} if bare else self._resolve_reference_context(request, route), references
@@ -1328,21 +1320,19 @@ class HandleAgentTurnUseCase:
         if summarizes_open_document(request):
             context = request.active_markdown_context
             assert context is not None
-            _require_translation_language(request)
             return SelectedReferenceDocuments(
-                documents=(_opened_reference(request, _selection_text(context) or context.markdown),),
-                open_document_id=request.document_id or "",
+                documents=(_opened_reference(request, _selection_text(context) or context.markdown),)
             )
         if not (request.reference_document_ids and _has_active_markdown(request) and names_open_document(request.message)):
             return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         assert request.active_markdown_context is not None
         opened = _opened_reference(request, request.active_markdown_context.markdown)
         if not names_attachment(request.message):
-            return SelectedReferenceDocuments(documents=(opened,), open_document_id=opened.id)
+            return SelectedReferenceDocuments(documents=(opened,))
         attached = self._read_reference_documents(
             request, max_total_chars=max(MAX_REFERENCE_ANSWER_CHARS - len(opened.markdown), 1)
         )
-        return replace(attached, documents=(opened, *attached.documents), open_document_id=opened.id)
+        return replace(attached, documents=(opened, *attached.documents))
 
     def _resolve_reference_context(
         self,
@@ -1612,14 +1602,6 @@ def _with_reference_documents(
     if not references.documents:
         return reference_context
     return {**reference_context, "reference_documents": reference_documents_context(references)}
-
-
-def _require_translation_language(request: AgentTurnRequest) -> None:
-    """언어 없는 번역은 원문과 같은 글이 되므로 모델을 부르지 않고 되묻는다. 호출자가 이 예외를 clarify로 끝낸다."""
-    context = request.active_markdown_context
-    assert context is not None
-    if needs_translation_language(request.message, _selection_text(context) or context.markdown):
-        raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
 
 
 def _opened_reference(request: AgentTurnRequest, markdown: str) -> SkillAuthoringReference:

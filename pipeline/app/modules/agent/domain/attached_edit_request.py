@@ -107,16 +107,6 @@ _SELECTS_ATTACHMENTS = re.compile(r"둘\s*다|모두|전부|각각|\d+\s*개|번
 _SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
 
 
-_TRANSLATION_WORD = re.compile(r"번역|translat", re.IGNORECASE)
-_SUMMARY_WORD = re.compile(r"요약|summar|tl;?dr", re.IGNORECASE)
-# 번역할 언어를 말한 표현이다. "영어로", "영문으로", "일본어 번역", "into English". 언어 이름은 끝이 없어 꼴로 본다.
-# 놓치면 언어를 한 번 더 묻는 쪽으로 틀린다. "논문 번역"처럼 문서를 가리키는 말을 세지 않으려고 "문"은 "으로"가 붙을 때만 센다.
-_STATES_LANGUAGE = re.compile(
-    r"\S+(?:어|말|글)\s*(?:로|으로|번역)|\S+문\s*으로|\b(?:to|into|in)\s+[a-z]+",
-    re.IGNORECASE,
-)
-
-
 def _asks_change(stated: str) -> bool:
     """요약·번역이라는 말이 있으면 그 뒤는 모든 수정 표현을, 앞은 잇거나 시키는 어미로 끝난 수정 표현만 센다."""
     without_sections = _SECTION_NAMED_AFTER_RESULT.sub(" ", stated)
@@ -162,21 +152,6 @@ def saves_result_as_new_document(message: str) -> bool:
         lacks_attachment_change_request(message, None)
         and not lacks_save_or_change_request(message, None)
         and not saves_result_into_document(message)
-    )
-
-
-def needs_translation_language(message: str, source_markdown: str) -> bool:
-    """번역하라면서 언어를 말하지 않았는데 원문이 한국어면 True다. 기본 언어가 한국어라 그대로 두면 원문과 같은 글이 나온다.
-
-    한글이 한 글자라도 있으면 한국어 문서로 보는 것은 질의 답변의 언어 판단(_fallback_language)과 같다.
-    한국어가 아닌 문서는 기본 언어인 한국어로 옮기면 되므로 묻지 않는다. 요약이 함께 있으면 원문과 같은 글이 되지 않아 묻지 않는다.
-    """
-    stated = _NEGATED_VERB.sub(" ", _SECTION_NAMED_AFTER_RESULT.sub(" ", message))
-    return (
-        _TRANSLATION_WORD.search(stated) is not None
-        and _SUMMARY_WORD.search(stated) is None
-        and _STATES_LANGUAGE.search(stated) is None
-        and any("가" <= character <= "힣" for character in source_markdown)
     )
 
 

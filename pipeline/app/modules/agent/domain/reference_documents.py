@@ -31,8 +31,6 @@ class SelectedReferenceDocuments:
     documents: tuple[SkillAuthoringReference, ...] = ()
     # 길어서 document-svc가 거절한 문서 수. max_chars를 모르는 구 document-svc만 413을 준다.
     too_long_count: int = 0
-    # 첨부가 아니라 열린 문서를 실었을 때의 그 문서 id다. 잘렸다는 안내에서 첨부와 구분한다.
-    open_document_id: str | None = None
 
 
 def clean_reference_title(title: str) -> str:
@@ -64,17 +62,14 @@ def clip_reference_document(document: SkillAuthoringReference, limit: int) -> Sk
 
 
 def reference_document_notice(selected: SelectedReferenceDocuments) -> str | None:
-    """첨부나 열린 문서의 일부를 쓰지 못했을 때 결과 메시지에 덧붙일 안내."""
+    """첨부 일부를 쓰지 못했을 때 결과 메시지에 덧붙일 안내."""
     sentences = []
     if selected.too_long_count:
         sentences.append(
             f"첨부한 문서 중 {selected.too_long_count}개는 너무 길어 읽지 못했어요."
             " 이 문서를 근거로 쓰려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
         )
-    truncated = [document for document in selected.documents if document.truncated]
-    if any(document.id == selected.open_document_id for document in truncated):
-        sentences.append("열린 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요.")
-    if any(document.id != selected.open_document_id for document in truncated):
+    if any(document.truncated for document in selected.documents):
         sentences.append("첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요.")
     return " ".join(sentences) or None
 
