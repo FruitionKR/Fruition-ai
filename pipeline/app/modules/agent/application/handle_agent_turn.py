@@ -61,7 +61,7 @@ from app.modules.agent.domain.reference_documents import (
     reference_documents_context,
     reference_evidence_snippets,
 )
-from app.modules.agent.domain.task_mode import is_task_mode, summarizes_open_document, task_mode_route
+from app.modules.agent.domain.task_mode import is_task_mode, task_mode_route
 from app.modules.agent_run.application.ports import (
     AgentRunManagementRepositoryPort,
     AgentRunStarterPort,
@@ -1297,20 +1297,18 @@ class HandleAgentTurnUseCase:
         return SelectedReferenceDocuments(documents=tuple(documents), too_long_count=too_long_count)
 
     def _answer_references(self, request: AgentTurnRequest) -> SelectedReferenceDocuments:
-        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다.
-
-        첨부 없이 열린 문서의 요약·번역만 시켰으면 열린 문서를 싣는다. 선택 범위가 있으면 편집이 고치던 범위와 같게 그 범위만 싣는다.
-        """
-        if summarizes_open_document(request):
-            context = request.active_markdown_context
-            assert context is not None
-            return SelectedReferenceDocuments(
-                documents=(_opened_reference(request, _selection_text(context) or context.markdown),)
-            )
+        """답변 갈래의 고정 근거. 첨부 턴에 열린 문서를 지목하면 그 문서를 싣는다. 싣지 않으면 첨부로 답해 다른 문서를 요약하게 된다."""
         if not (request.reference_document_ids and _has_active_markdown(request) and names_open_document(request.message)):
             return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         assert request.active_markdown_context is not None
-        opened = _opened_reference(request, request.active_markdown_context.markdown)
+        opened = clip_reference_document(
+            SkillAuthoringReference(
+                id=request.document_id or "",
+                name="",
+                markdown=request.active_markdown_context.markdown,
+            ),
+            MAX_REFERENCE_ANSWER_CHARS,
+        )
         if not names_attachment(request.message):
             return SelectedReferenceDocuments(documents=(opened,))
         attached = self._read_reference_documents(
@@ -1586,13 +1584,6 @@ def _with_reference_documents(
     if not references.documents:
         return reference_context
     return {**reference_context, "reference_documents": reference_documents_context(references)}
-
-
-def _opened_reference(request: AgentTurnRequest, markdown: str) -> SkillAuthoringReference:
-    return clip_reference_document(
-        SkillAuthoringReference(id=request.document_id or "", name="", markdown=markdown),
-        MAX_REFERENCE_ANSWER_CHARS,
-    )
 
 
 def _with_reply_references(request: AgentTurnRequest, references: SelectedReferenceDocuments) -> AgentTurnRequest:

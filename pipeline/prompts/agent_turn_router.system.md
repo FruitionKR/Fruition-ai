@@ -60,11 +60,11 @@ Allowed actions:
 
 Task mode:
 `payload.mode` is present only for turns sent from the task tab, and its only value is `task`. When it is absent, ignore this section.
-- When `payload.mode` is `task` and `payload.reference_documents` is absent, `chat_answer` and `conversation_reply` are unavailable, except for the summary or translation described under "Open document without attachments". Otherwise choose only among `markdown_edit`, `markdown_create`, `folder_organize`, `folder_lookup`, `workspace_workflow`, `skill_authoring`, `skill_draft_proposal`, `clarify`, and `reject`.
+- When `payload.mode` is `task` and `payload.reference_documents` is absent, `chat_answer` and `conversation_reply` are unavailable. Choose only among `markdown_edit`, `markdown_create`, `folder_organize`, `folder_lookup`, `workspace_workflow`, `skill_authoring`, `skill_draft_proposal`, `clarify`, and `reject`.
 - When `payload.mode` is `task` and `payload.reference_documents` is present, `chat_answer` and `conversation_reply` stay available and the chat-tab `clarify` is never used: attachments can only be chosen in the task tab. Questions and summaries follow the attached documents rules below.
 - Task mode removes only the answer-only routes. Every other rule in this prompt still applies: `workspace` and `web` retrieval remain available for `markdown_edit`, `markdown_create`, and `workspace_workflow`, and persist still requires an explicit save/apply clause.
 - Without attached documents, only a request whose whole result is an answer, an explanation, or small talk, with no document to create or change, is `clarify` with retrieval_source `none`, document_operation `none`, persist false, required_capabilities empty, edit_goal null, edit_operation null, and edit_destination null. Set notice_kind `chat_tab`; the application then tells the user to ask in the chat tab. Ambiguous Skill candidates still use `clarify` with skill_candidates as described below.
-- A request to rewrite, convert, or otherwise transform the active document is a document edit, not a question. A request for a summary or translation of the open document follows "Open document without attachments" below. In task mode without attached documents, a question about its content that does not ask for a summary or other change is the chat-tab `clarify`. With attached documents the attached documents rules below decide instead, also when the message names the open document.
+- A request to summarize, rewrite, convert, or otherwise transform the active document is a document edit, not a question. In task mode without attached documents, a request that asks for a summary of the open document is `markdown_edit` with edit_goal `shorten`; a question about its content that does not ask for a summary or other change is the chat-tab `clarify`. With attached documents the attached documents rules below decide instead, also when the message names the open document.
 - Do not clarify to ask which Wiki or workspace document holds the needed information; the retrieval phase searches for it.
 - A request to find Wiki, workspace, or web information in order to put it into the active document or a new document is that document route with its retrieval_source. It is never `clarify` or `reject`, except the `web_disabled` clarify above when it needs web retrieval without permission, and it is `workspace_workflow` only when the message also asks to save or apply.
 - Task mode is never a reason to `reject`. A display-only request is rejected for what it asks, in either mode, as described in the reject rules.
@@ -100,13 +100,6 @@ Set `attached_edit_targets` to the numbers of the attached documents to change. 
 - "요약해서 저장해 줘" names no document to change, so it saves the summary as a new document, even when Markdown is open: `workspace_workflow`, document_operation `create`, edit_goal `create_from_chat`, null edit_operation and edit_destination, `document-create`, and an empty array.
 - A request to translate them without saying to change the document, such as "첨부한 문서를 영어로 번역해 줘", is `conversation_reply` with retrieval_source `none`.
 - Contrasts with one attachment and no active Markdown: "이 문서 세 줄로 요약해 줘" and "원문은 고치지 말고 요약해 줘" are `chat_answer` with an empty array. "이 문서를 세 줄로 요약해서 새 문서로 만들어 줘" is `markdown_create` with an empty array. "이 문서를 세 줄로 줄여서 고쳐 줘" sets the array with edit_goal `shorten`. "영어로 번역해서 문서에 반영해 줘" sets the array with edit_goal `translate`.
-
-Open document without attachments:
-This section applies when `payload.reference_documents` is absent and `has_markdown` is true, in task mode too.
-- Summarizing or translating produces a separate result and leaves the open document untouched unless the same message also says to change or save it. An edit can be applied without further review, so routing a summary to an edit overwrites the user's document with the summary.
-- "이 문서 세 줄로 요약해 줘" and "이 문서 요약해 줘" are `chat_answer` with retrieval_source `workspace`, document_operation `none`, persist false, edit_goal null, and null edit_operation and edit_destination. "이 문서를 영어로 번역해 줘" is `conversation_reply` with retrieval_source `none` and the same other fields. The application answers from the open document.
-- Contrasts that do change the open document are `markdown_edit` with `replace` at `target`: "오타 고쳐 줘" with edit_goal `cleanup`; "세 줄로 줄여서 고쳐 줘" and "요약해서 고쳐 줘" with edit_goal `shorten`; "요약 섹션을 보강해 줘" with edit_goal `other`, because it names a section to change; "이 문서를 영어로 번역해서 바꿔 줘" with edit_goal `translate`.
-- A summary into a new document, such as "요약해서 새 문서로 만들어 줘", is `markdown_create`. A summary with a save clause follows the representative contrast below.
 
 Apply these routing precedences:
 Interpret Skill intent semantically, not by matching creation verbs. A request such as "이런 회의록을 만드는걸 스킬로 저장해줘" asks to make the referenced workflow reusable as a Skill; it is not an ordinary document save. Use the completed-work rule below when it refers to completed work. Skill authoring only prepares a proposal; it does not grant permission to publish it.
@@ -144,7 +137,7 @@ When a request combines content editing with persistence or folder operations, c
 Representative semantic contrasts; match their effects, not their wording:
 - Asking why content in an active document is true is chat_answer with no document operation, even with a selection.
 - Asking to restate or explain an answer already present only in recent conversation is conversation_reply with no retrieval.
-- Rewriting only the active document, or a summary the message also says to apply to it, uses no retrieval.
+- Summarizing or rewriting only the active document uses no retrieval.
 - Without attached documents, summarizing the active document and saving the result is workspace_workflow with persist true, shorten, replace, and target; saving does not turn a replacement into an insertion.
 - Enriching an active document with facts or evidence from internal Wiki or workspace documents uses workspace retrieval before the edit. Without a save/apply clause it is `markdown_edit` with persist false; finding a fact in the Wiki and inserting it into a section is the same.
 - Creating a new document from Wiki or web evidence without a save/apply clause is `markdown_create` with persist false.

@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 
-from app.modules.agent.domain.attached_edit_request import lacks_save_or_change_request
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 
 # 첨부 없는 작업 탭에서는 답변 갈래를 고를 수 없다. 질문은 clarify로 채팅 탭을 안내한다.
@@ -13,29 +12,11 @@ def is_task_mode(request: AgentTurnRequest) -> bool:
     return request.mode == "task"
 
 
-def summarizes_open_document(request: AgentTurnRequest) -> bool:
-    """첨부 없이 열린 문서의 요약·번역만 시켰으면 True다. 바꾸거나 저장하라는 말이 없으므로 원문을 두고 답한다.
-
-    라우터가 고른 edit_goal이 아니라 문장만 본다. 어떤 라우터가 골랐든 수정 차단과 답변 허용, 답변 근거가 같은 판단을 쓴다.
-    """
-    context = request.active_markdown_context
-    return (
-        not request.reference_document_ids
-        and context is not None
-        and bool(context.markdown.strip())
-        and lacks_save_or_change_request(request.message, None)
-    )
-
-
 def task_mode_allows_action(request: AgentTurnRequest, action: str) -> bool:
-    """첨부 UI는 작업 탭에만 있으므로, 첨부가 있는 턴은 답변 갈래로 첨부를 근거로 답한다.
-
-    열린 문서의 요약·번역도 답변 갈래다. 채팅 탭은 위키 질의만 보내 열린 문서로 답할 수 없다.
-    """
+    """첨부 UI는 작업 탭에만 있으므로, 첨부가 있는 턴은 답변 갈래로 첨부를 근거로 답한다."""
     return (
         not is_task_mode(request)
         or bool(request.reference_document_ids)
-        or summarizes_open_document(request)
         or action not in TASK_MODE_EXCLUDED_ACTIONS
     )
 
@@ -47,11 +28,10 @@ def task_mode_route(route: AgentTurnRoute, request: AgentTurnRequest) -> AgentTu
       바꾸면 의도하지 않은 편집·저장이 생기므로, 안내만 하고 끝낸다.
     - 첨부 있음: 채팅 탭 안내 clarify는 질문이라는 판단이므로 첨부를 근거로 답하는 chat_answer로 바꾼다.
       첨부는 작업 탭에서만 고를 수 있어 채팅 탭 안내로는 답을 얻을 수 없다.
-    - 첨부 없이 열린 문서의 요약·번역만 시킴: 첨부가 있을 때와 같게 열린 문서를 근거로 답한다.
     """
     if not is_task_mode(request):
         return route
-    if request.reference_document_ids or summarizes_open_document(request):
+    if request.reference_document_ids:
         return _attachment_answer_route(route) if _is_chat_tab_clarify(route) else route
     if route.action not in TASK_MODE_EXCLUDED_ACTIONS:
         return route
