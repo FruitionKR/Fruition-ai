@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from app.modules.agent.application.handle_agent_turn import (
     CLARIFY_MARKDOWN_DOCUMENT_MESSAGE,
-    CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE,
+    CLARIFY_REFERENCE_EDIT_MESSAGE,
     REFERENCE_ALL_TOO_LONG_MESSAGE,
     REFERENCE_NOT_ACCESSIBLE_MESSAGE,
     REFERENCE_READ_FAILED_MESSAGE,
@@ -561,8 +561,7 @@ class EditWithAttachmentsTest(unittest.TestCase):
                 result = scenario.use_case.execute(_request("doc-1"))
 
                 self.assertEqual(result.action, "clarify")
-                self.assertEqual(result.message, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE)
-                self.assertNotIn("첨부한 문서를 고치려면 그 문서를 연 뒤", result.message)
+                self.assertEqual(result.message, CLARIFY_REFERENCE_EDIT_MESSAGE)
                 # 편집 문맥이 없는 것은 그대로라 화면의 갈래 코드도 유지한다.
                 self.assertEqual(result.clarify_reason, "markdown_document_required")
                 self.assertEqual(reader.calls, [])
@@ -583,7 +582,7 @@ class EditWithAttachmentsTest(unittest.TestCase):
 
         result = scenario.use_case.execute(_request("doc-1", mode="task"))
 
-        self.assertEqual(result.message, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE)
+        self.assertEqual(result.message, CLARIFY_REFERENCE_EDIT_MESSAGE)
         self.assertEqual(result.clarify_reason, "markdown_document_required")
 
 

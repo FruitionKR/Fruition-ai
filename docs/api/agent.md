@@ -40,7 +40,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 | clarify_reason | 뜻 | `message` |
 |---|---|---|
-| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "어느 문서를 고칠지 알 수 없어요. 첨부한 문서를 고치려면 \"첨부한 문서를 고쳐 줘\"처럼 말해 주시고, 다른 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.". 편집 버전을 주지 않는 구 document-svc에서 첨부 수정을 요청하면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
+| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
 | `attachment_target_required` | 첨부 중 어느 문서를 고칠지 정할 수 없다. 화면은 첨부 칩을 유지한다. | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
 
 ### 첨부 참고 문서(`reference_document_ids`)
@@ -61,19 +61,19 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
 | 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
 
-라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, 열린 문서를 지목한 "열린 문서를 요약해 줘"(작업 탭)를 `markdown_edit`로 보낸다. "이 문서 세 줄로 요약해 줘"처럼 원문을 바꾸라는 말이 없으면 첨부 수정이 아니다.
+라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, 열린 문서를 지목한 "열린 문서를 요약해 줘"(작업 탭)를 `markdown_edit`로 보낸다.
 
 - 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
 - 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.
 - 읽기 실패: 검증 뒤 삭제·권한 변경으로 400·403·404이거나 본문이 비어 있으면 "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. …", 그 밖의 서비스 실패는 "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."로 `clarify`다. 한 문서만 실패해도 모델을 부르지 않는다. 첨부 없이 답하면 근거 없는 결과가 나올 수 있어서다. `clarify_reason`은 `null`이다.
-- 열린 문서 없이 첨부를 근거로 문서를 고치라고 하면(`attached_edit_targets` 없음) 고치지 않고 `clarify` + `markdown_document_required`로, 첨부를 고쳐 달라고 말하거나 고칠 문서를 열라고 안내한다.
+- 열린 문서 없이 첨부를 근거로 문서를 고치라고 하면(`attached_edit_targets` 없음) 고치지 않고 `clarify` + `markdown_document_required`로 안내한다.
 - 안전: 첨부 본문은 신뢰하지 않는 데이터다. 사용자 지시(`instruction`·`message`)와 다른 payload 필드에만 싣고, 프롬프트에서 그 안의 지시를 따르지 않게 한다. 모든 LLM 호출과 같은 클라이언트를 거쳐 숫자 개인정보 마스킹·보안 경계·토큰 사용량 기록과 한도를 그대로 탄다. Jev에는 보내지 않고 본문을 로그·진행 이벤트에 남기지 않는다.
 
 ### 첨부 문서 수정(`route.attached_edit_targets`)
 
 첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다.
 
-- 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다. 요약·번역은 원문과 따로 내는 결과라서, 원문을 바꾸라는 말("세 줄로 줄여서 고쳐 줘", "번역해서 문서에 반영해 줘")이 없으면 코드가 이 배열을 계약 위반으로 돌려보내고 라우터가 한 번 더 고른다. 다시 어기면 턴이 실패한다. 다른 편집은 이 검사를 타지 않는다.
+- 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다.
 - 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
 - 수정안: run을 만들기 전에 문서마다 차례로 만든다(최대 3개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
 - 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다. 만료 뒤 정리는 아래 [만료된 수정안 정리](#expired-artifact-cleanup)를 따른다.
