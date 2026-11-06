@@ -21,8 +21,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 
 | action | notice_kind | 결과 `message` |
 |---|---|---|
-| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 문서를 고치거나 만들고 정리할 수 있어요. 문서 내용에 대한 질문과 요약·번역은 채팅 탭에서 물어보세요. 원문은 바뀌지 않았어요."(답변·요약·번역·잡담. 첨부·열린 문서가 있어도 같다) |
-| `clarify`(채팅 탭, 문서 동작 없음) | `task_tab` | "채팅 탭에서는 문서 내용을 묻고 답을 받을 수 있어요. 문서를 고치거나 만들고 정리하려면 작업 탭에서 요청해 주세요. 원문은 바뀌지 않았어요."(수정·생성·저장·폴더·Skill 요청. 라우터가 아니라 애플리케이션이 정한다) |
+| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(첨부 없는 답변·잡담) |
 | | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
 | | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
 | `clarify`(작업·채팅 탭, 문서 동작 없음, 첨부 있음) | `attachment_target` | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
@@ -31,8 +30,8 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
-- 작업 탭(`mode=task`)에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 첨부·열린 문서와 상관없이 `clarify` + `chat_tab`으로 바꾸고 `clarify_reason=chat_tab_question`을 준다. 질문을 답하거나 작업으로 바꾸지 않아 원문은 그대로다. 화면은 이 코드로 질문을 채팅 탭으로 옮기는 버튼을 보인다.
-- 채팅 탭의 문서 질문(`mode=chat`)은 `chat_answer`·`conversation_reply`·`reject`만 실행한다. 그 밖의 route는 어떤 라우터가 골랐든 실행하지 않고 `clarify` + `task_tab`으로 바꾼다. 라우터의 채팅 탭 안내·`details` clarify는 질문으로 받아 `chat_answer`(`retrieval_source=workspace`)로 답한다. Skill은 쓰지 않는다(`skill_mode=off`로 처리). 근거는 첨부와 열린 문서다. 메시지가 첨부만 지목하면("첨부 문서 요약해 줘") 열린 문서를 싣지 않는다. 내용 없는 새 노트는 근거가 아니다.
+- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부가 있는 작업 탭은 답변 갈래를 그대로 실행한다. 첨부 UI가 작업 탭에만 있어 채팅 탭 안내로는 답을 얻을 수 없기 때문이다. 라우터가 그래도 `clarify`(`chat_tab` 또는 안내 종류 없음, 문서 동작 없음, Skill 후보 없음)를 고르면 `chat_answer`(`retrieval_source=workspace`)로 바꾼다. 응답·기록은 채팅 탭의 답변 갈래와 같다. 첨부를 읽지 못하면 답변하지 않고 읽기 실패 이유를 담은 `clarify`로 끝나며 `chat_tab`이 아니다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
 ### 되묻기 이유 코드(`clarify_reason`)
@@ -43,7 +42,6 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 |---|---|---|
 | `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "어느 문서를 고칠지 알 수 없어요. 첨부한 문서를 고치려면 \"첨부한 문서를 고쳐 줘\"처럼 말해 주시고, 다른 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.". 편집 버전을 주지 않는 구 document-svc에서 첨부 수정을 요청하면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
 | `attachment_target_required` | 첨부 중 어느 문서를 고칠지 정할 수 없다. 화면은 첨부 칩을 유지한다. | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
-| `chat_tab_question` | 작업 탭에 보낸 질문·요약·번역이라 답하지 않았다. 화면은 질문과 첨부를 채팅 탭으로 옮기게 한다. | "작업 탭에서는 문서를 고치거나 만들고 정리할 수 있어요. …" |
 
 ### 첨부 참고 문서(`reference_document_ids`)
 
@@ -63,7 +61,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
 | 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
 
-라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, "요약해서 저장해 줘"를 새 문서를 만드는 `workspace_workflow`로 보낸다. 첨부가 있는 턴의 요약·번역은 원문을 바꾸라는 말이 없으면 첨부도 열린 문서도 고치지 않는다. 모델이 수정으로 골라도 코드가 계약 위반으로 돌려보낸다(`app/modules/agent/domain/attached_edit_request.py`). "열린 문서를 요약해 줘"는 `chat_answer`이고(작업 탭에서는 채팅 탭 안내) 열린 문서를 근거로 답하며, "열린 문서를 세 줄로 줄여서 고쳐 줘"는 `markdown_edit`다. 첨부 없이 열린 문서만 있는 턴도 같다. 자동 승인을 켜면 프론트가 `markdown_edit`을 확인 없이 적용하므로, 문장에 요약·번역이 있는데 바꾸거나 저장하라는 말이 없으면 `markdown_edit`을 받지 않는다. 채팅 탭(`mode=chat`)은 `chat_answer`·`conversation_reply`로 열린 문서(선택 범위가 있으면 그 범위)를 근거로 답하고, 작업 탭(`mode=task`)은 위의 `chat_tab` 안내로 끝난다. "요약해서 고쳐 줘"는 `markdown_edit`이고, 저장 갈래(`workspace_workflow`)는 저장하거나 바꾸라는 말이 있을 때만 받는다. "요약해서 저장해 줘"·"번역해서 저장해 줘"는 원문을 두고 `markdown_create`로 새 문서를 만들며, 열린 문서(선택 범위가 있으면 그 범위)를 `source_document`로 싣는다. 모델이 수정을 골라도 코드가 새 문서로 보정한다. "이 문서에 요약해서 저장해 줘"처럼 저장할 곳으로 그 문서를 말하면 수정이다. 답변·새 문서 갈래에서 언어를 말하지 않은 번역은 원문에 한글이 있으면 모델을 부르지 않고 `clarify`로 언어를 묻고, 한글이 없으면 기본 언어인 한국어로 옮긴다. 언어를 물을 때 열려 있던 문서를 `route.clarified_document_id`로 남기고(document-svc가 다음 턴 `agent_route`로 그대로 돌려준다), 그 문서가 지금 문서와 같을 때만 "영어로" 같은 답을 앞선 요청에 잇는다. 사이에 문서를 바꿨거나 값이 없으면 잇지 않는다. 내용 없는 새 노트가 열려 있으면 라우터에는 열린 문서가 없는 턴과 같게 보낸다.
+라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, "요약해서 저장해 줘"를 새 문서를 만드는 `workspace_workflow`로 보낸다. 첨부가 있는 턴의 요약·번역은 원문을 바꾸라는 말이 없으면 첨부도 열린 문서도 고치지 않는다. 모델이 수정으로 골라도 코드가 계약 위반으로 돌려보낸다(`app/modules/agent/domain/attached_edit_request.py`). "열린 문서를 요약해 줘"는 `chat_answer`이고 열린 문서를 근거로 답하며, "열린 문서를 세 줄로 줄여서 고쳐 줘"는 `markdown_edit`다. 첨부 없이 열린 문서만 있는 턴도 같다. 자동 승인을 켜면 프론트가 `markdown_edit`을 확인 없이 적용하므로, 문장에 요약·번역이 있는데 바꾸거나 저장하라는 말이 없으면 `markdown_edit`을 받지 않고 작업 탭(`mode=task`)에서도 `chat_answer`·`conversation_reply`로 열린 문서(선택 범위가 있으면 그 범위)를 근거로 답한다. "요약해서 고쳐 줘"는 `markdown_edit`이고, 저장 갈래(`workspace_workflow`)는 저장하거나 바꾸라는 말이 있을 때만 받는다. "요약해서 저장해 줘"·"번역해서 저장해 줘"는 원문을 두고 `markdown_create`로 새 문서를 만들며, 열린 문서(선택 범위가 있으면 그 범위)를 `source_document`로 싣는다. 모델이 수정을 골라도 코드가 새 문서로 보정한다. "이 문서에 요약해서 저장해 줘"처럼 저장할 곳으로 그 문서를 말하면 수정이다. 답변·새 문서 갈래에서 언어를 말하지 않은 번역은 원문에 한글이 있으면 모델을 부르지 않고 `clarify`로 언어를 묻고, 한글이 없으면 기본 언어인 한국어로 옮긴다. 언어를 물을 때 열려 있던 문서를 `route.clarified_document_id`로 남기고(document-svc가 다음 턴 `agent_route`로 그대로 돌려준다), 그 문서가 지금 문서와 같을 때만 "영어로" 같은 답을 앞선 요청에 잇는다. 사이에 문서를 바꿨거나 값이 없으면 잇지 않는다. 내용 없는 새 노트가 열려 있으면 라우터에는 열린 문서가 없는 턴과 같게 보낸다.
 
 문서를 연 첨부 턴에서 "이 문서"·"현재 문서"·"this document"는 첨부를 제목·순번·`첨부`로 지목하지 않는 한 열린 문서다(`app/modules/agent/domain/attached_edit_request.py`의 `points_at_open_document`).
 

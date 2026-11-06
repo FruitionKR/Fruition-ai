@@ -267,13 +267,13 @@ def test_explicit_change_requests_keep_attachment_target(message: str, edit_goal
     assert _guard_failures(message, edit_goal) == []
 
 
-def test_router_retries_summary_misrouted_as_attachment_edit_then_points_to_chat_tab() -> None:
+def test_router_retries_summary_misrouted_as_attachment_edit_then_answers() -> None:
     client = SequenceClient(_raw(edit_goal="shorten"), _SUMMARY_ROUTE)
     request = replace(_request("doc-1", mode="task"), message="이 문서 세 줄로 요약해 줘")
 
     route = ChatCompletionsTurnRouter(client, "system").route(request)  # type: ignore[arg-type]
 
-    assert (route.action, route.notice_kind, route.attached_edit_targets) == ("clarify", "chat_tab", ())
+    assert (route.action, route.attached_edit_targets) == ("chat_answer", ())
     retry = json.loads(client.user_prompts[1])
     assert any("explicitly" in failure for failure in retry["contract_failures"])
 

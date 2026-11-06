@@ -35,9 +35,8 @@ from app.modules.agent.domain.attached_document_edits import (
 )
 from app.modules.agent.domain.attached_edit_request import (
     answer_includes_open_document,
-    answer_to_translation_language_question,
     attached_edit_instruction,
-    names_attachment,
+    answer_to_translation_language_question,
     needs_translation_language,
     uses_only_open_document,
 )
@@ -69,7 +68,6 @@ from app.modules.agent.domain.reference_documents import (
 )
 from app.modules.agent.domain.task_mode import (
     creates_result_only_from_open_document,
-    is_chat_mode,
     is_task_mode,
     saves_open_document_result_as_new,
     summarizes_open_document,
@@ -157,12 +155,8 @@ REFERENCE_ALL_TOO_LONG_MESSAGE = (
     "첨부한 문서가 너무 길어 읽지 못했어요. 문서를 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
 )
 CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
-    "작업 탭에서는 문서를 고치거나 만들고 정리할 수 있어요. 문서 내용에 대한 질문과 요약·번역은 채팅 탭에서 물어보세요. "
-    "원문은 바뀌지 않았어요."
-)
-CLARIFY_TASK_TAB_MESSAGE = (
-    "채팅 탭에서는 문서 내용을 묻고 답을 받을 수 있어요. 문서를 고치거나 만들고 정리하려면 작업 탭에서 요청해 주세요. "
-    "원문은 바뀌지 않았어요."
+    "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
+    "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
 )
 _DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_ATTACHED_OR_OPEN_EDIT_MESSAGE})
 CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
@@ -276,9 +270,6 @@ class HandleAgentTurnUseCase:
         if not request.message.strip():
             raise ValueError("message is required.")
 
-        # 채팅 탭은 답하기만 하므로 Skill을 고르지 않는다.
-        if is_chat_mode(request):
-            request = replace(request, skill_mode="off", skill_id=None)
         request = _with_translation_language_answer(request)
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
         result = _with_clarified_document(_with_skill_off_notice(self._execute(request)), request)
@@ -303,7 +294,7 @@ class HandleAgentTurnUseCase:
         resolved = selection.resolve_route(
             _create_skill_route(routed, _routed_skill(selection, routed))
         )
-        # 작업 탭은 답변하지 않고, 채팅 탭은 답변만 한다. 어떤 라우터가 골랐든 여기서 정한다.
+        # 첨부 없는 작업 탭은 답변 갈래를 쓰지 않는다. 어떤 라우터가 골랐든 채팅 탭 안내로 바꾼다.
         route = task_mode_route(resolved.route, request)
         selected_skill = resolved.skill
         action_message = {
@@ -610,10 +601,6 @@ class HandleAgentTurnUseCase:
                     message=attachment_target_message(request.reference_document_titles, request.reference_document_editable),
                     clarify_reason="attachment_target_required",
                 )
-            if route.notice_kind == "task_tab":
-                return AgentTurnResult(action="clarify", route=route, message=CLARIFY_TASK_TAB_MESSAGE)
-            if is_chat_mode(request) and route.notice_kind == "web_disabled":
-                return AgentTurnResult(action="clarify", route=route, message=CLARIFY_WEB_DISABLED_MESSAGE)
             if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
                 message = (
                     self._task_clarifier.ask(request, route)
@@ -636,7 +623,7 @@ class HandleAgentTurnUseCase:
                 action="clarify",
                 route=route,
                 message=message,
-                clarify_reason=_clarify_reason(message),
+                clarify_reason="markdown_document_required" if message in _DOCUMENT_REQUIRED_MESSAGES else None,
             )
 
         if route.action == "reject":
@@ -1365,8 +1352,6 @@ class HandleAgentTurnUseCase:
         keeps_attachments: 근거를 구분해 인용하는 질의 답변은 첨부도 뒤에 남긴다. 대화 답변은 받은 글 전체를 옮기므로 첨부를 말했을 때만 싣는다.
 
         첨부 없이 열린 문서의 요약·번역만 시켰으면 열린 문서를 싣는다. 선택 범위가 있으면 편집이 고치던 범위와 같게 그 범위만 싣는다.
-
-        채팅 탭은 입력창에 붙은 문서가 근거이므로 열린 문서를 지목하지 않아도 함께 싣는다. 첨부만 지목했으면("첨부 문서 요약해 줘") 싣지 않는다.
         """
         if summarizes_open_document(request):
             context = request.active_markdown_context
@@ -1376,12 +1361,7 @@ class HandleAgentTurnUseCase:
                 documents=(_opened_reference(request, _selection_text(context) or context.markdown),),
                 open_document_id=request.document_id or "",
             )
-        attachments = bool(request.reference_document_ids)
-        includes_open_document = _has_active_markdown(request) and (
-            (attachments and answer_includes_open_document(request.message))
-            or (is_chat_mode(request) and not (attachments and names_attachment(request.message)))
-        )
-        if not includes_open_document:
+        if not (request.reference_document_ids and _has_active_markdown(request) and answer_includes_open_document(request.message)):
             return self._read_reference_documents(request, max_total_chars=MAX_REFERENCE_ANSWER_CHARS)
         assert request.active_markdown_context is not None
         opened = _opened_reference(request, request.active_markdown_context.markdown)
@@ -1681,12 +1661,6 @@ def _require_translation_language(request: AgentTurnRequest) -> None:
     assert context is not None
     if needs_translation_language(request.message, _selection_text(context) or context.markdown):
         raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
-
-
-def _clarify_reason(message: str) -> ClarifyReason | None:
-    if message in _DOCUMENT_REQUIRED_MESSAGES:
-        return "markdown_document_required"
-    return "chat_tab_question" if message == CLARIFY_TASK_MODE_QUESTION_MESSAGE else None
 
 
 def _with_clarified_document(result: AgentTurnResult, request: AgentTurnRequest) -> AgentTurnResult:

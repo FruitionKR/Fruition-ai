@@ -79,8 +79,7 @@ ALLOWED_ACTIONS = {
     "reject",
 }
 ALLOWED_RETRIEVAL_SOURCES = {"none", "workspace", "web"}
-# task_tab은 애플리케이션이 채팅 탭에서 정한다. 모델이 고르는 값이 아니다.
-ALLOWED_NOTICE_KINDS = (CLARIFY_NOTICE_KINDS - {"task_tab"}) | REJECT_NOTICE_KINDS | {"skill_off"}
+ALLOWED_NOTICE_KINDS = CLARIFY_NOTICE_KINDS | REJECT_NOTICE_KINDS | {"skill_off"}
 ALLOWED_DOCUMENT_OPERATIONS = {"none", "create", "edit"}
 ALLOWED_EDIT_GOALS = {
     "shorten",
@@ -157,7 +156,7 @@ class ChatCompletionsTurnRouter(AgentTurnRouterPort):
 def route_payload(request: AgentTurnRequest) -> dict[str, object]:
     """라우터 모델에 보낼 사용자 요청 상태다. Jev 라우터도 같은 상태를 쓴다."""
     payload = _route_state(request)
-    # 기존 턴의 상태는 그대로 두고, 탭에서 보낸 턴에만 mode를 싣는다.
+    # 기존 턴의 상태는 그대로 두고, 작업 탭 턴에만 mode를 싣는다.
     if request.mode is not None:
         payload["mode"] = request.mode
     # 첨부가 있는 턴에만 싣는다. 본문과 id는 라우터에 보내지 않는다. 제목 순서가 attached_edit_targets의 순번이다.
@@ -431,14 +430,14 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
         failures.append("folder_lookup is available only in task mode")
     if not task_mode_allows_action(request, route.action):
         failures.append(
-            f"task mode does not allow {route.action}; "
+            f"task mode without attached documents does not allow {route.action}; "
             "use clarify with document_operation none for questions or conversation"
         )
     if (
         route.action == "clarify"
         and route.edit_goal is None
         and not route.skill_candidates
-        and request.mode is None
+        and request.mode != "task"
         and route.notice_kind != "attachment_target"
     ):
         failures.append(
@@ -655,7 +654,7 @@ def _open_document_edit_failures(route: AgentTurnRoute, request: AgentTurnReques
         return [
             "editing the open document requires the message to explicitly ask to change it; a summary or "
             "translation without that is chat_answer with retrieval_source workspace or conversation_reply, "
-            "with document_operation none, or the chat-tab clarify in task mode"
+            "with document_operation none, in task mode too"
         ]
     if (
         route.action == "workspace_workflow"

@@ -503,7 +503,7 @@ def test_open_document_only_edit_without_summary_word_stays_with_the_router(mess
     assert _failures(_edit_raw(), _request(message, mode="task")) == []
 
 
-@pytest.mark.parametrize("mode", [None, "chat"])
+@pytest.mark.parametrize("mode", [None, "task"])
 @pytest.mark.parametrize("message", OPEN_ONLY_ANSWERS)
 def test_open_document_only_summary_answer_passes_contract(message: str, mode: str | None) -> None:
     assert _failures(_answer_raw(), _request(message, mode=mode)) == []
@@ -511,12 +511,12 @@ def test_open_document_only_summary_answer_passes_contract(message: str, mode: s
 
 
 @pytest.mark.parametrize("message", OPEN_ONLY_ANSWERS)
-def test_open_document_only_summary_retries_and_lands_on_chat_tab_notice_in_task_mode(message: str) -> None:
+def test_open_document_only_summary_retries_and_lands_on_answer_in_task_mode(message: str) -> None:
     client = _Sequence(_edit_raw(), _answer_raw())
 
     route = ChatCompletionsTurnRouter(client, system_prompt="라우터").route(_request(message, mode="task"))
 
-    assert (route.action, route.document_operation, route.notice_kind) == ("clarify", "none", "chat_tab")
+    assert (route.action, route.document_operation, route.notice_kind) == ("chat_answer", "none", None)
     assert len(client.calls) == 2
 
 
@@ -533,7 +533,7 @@ def test_open_document_only_summary_chat_tab_clarify_becomes_answer() -> None:
     clarify = {**_answer_raw(), "action": "clarify", "retrieval_source": "none", "notice_kind": "chat_tab"}
 
     route = ChatCompletionsTurnRouter(_Sequence(clarify), system_prompt="라우터").route(
-        _request("이 문서 요약해 줘", mode="chat")
+        _request("이 문서 요약해 줘", mode="task")
     )
 
     assert (route.action, route.retrieval_source, route.notice_kind) == ("chat_answer", "workspace", None)
@@ -765,7 +765,7 @@ def test_translation_answer_without_language_asks_and_calls_no_model() -> None:
         conversation_replier=replier,
     )
 
-    result = use_case.execute(_request("이 문서 번역해 줘", mode="chat"))
+    result = use_case.execute(_request("이 문서 번역해 줘", mode="task"))
 
     assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
     assert replier.requests == []
@@ -775,7 +775,7 @@ def test_translation_answer_without_language_asks_and_calls_no_model() -> None:
 def test_translation_chat_answer_without_language_asks() -> None:
     use_case, query = _answer_use_case(ANSWER_ROUTE, Reader())
 
-    result = use_case.execute(_request("이 문서 번역해 줘", mode="chat"))
+    result = use_case.execute(_request("이 문서 번역해 줘", mode="task"))
 
     assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
     assert query.questions == []
@@ -790,7 +790,7 @@ def test_translation_answer_with_language_or_english_document_replies() -> None:
             conversation_replier=replier,
         )
 
-        result = use_case.execute(_request(message, mode="chat", active_markdown_context=context))
+        result = use_case.execute(_request(message, mode="task", active_markdown_context=context))
 
         assert result.action == "conversation_reply"
 
@@ -804,7 +804,7 @@ def _long_open_document_answer(message: str, *attachments: str) -> str:
     use_case, _ = _answer_use_case(ANSWER_ROUTE, Reader(_document("doc-1", "첨부")))
     long_document = ActiveMarkdownContext(markdown="가" * (MAX_REFERENCE_ANSWER_CHARS + 1))
 
-    result = use_case.execute(_request(message, *attachments, mode="chat", active_markdown_context=long_document))
+    result = use_case.execute(_request(message, *attachments, mode="task", active_markdown_context=long_document))
 
     return result.query_answer.answer.content
 
@@ -833,7 +833,7 @@ def test_open_document_only_answer_pins_the_open_document_without_editing() -> N
     reader = Reader()
     use_case, query = _answer_use_case(ANSWER_ROUTE, reader)
 
-    result = use_case.execute(_request("이 문서 세 줄로 요약해 줘", mode="chat"))
+    result = use_case.execute(_request("이 문서 세 줄로 요약해 줘", mode="task"))
 
     assert (result.action, result.edit, result.run_id) == ("chat_answer", None, None)
     pinned = query.kwargs[0]["pinned_evidence"]
@@ -850,7 +850,7 @@ def test_open_document_only_answer_covers_only_the_selection() -> None:
     )
     use_case, query = _answer_use_case(ANSWER_ROUTE, Reader())
 
-    use_case.execute(_request("선택한 부분 요약해 줘", mode="chat", active_markdown_context=context))
+    use_case.execute(_request("선택한 부분 요약해 줘", mode="task", active_markdown_context=context))
 
     pinned_text = " ".join(snippet.text for snippet in query.kwargs[0]["pinned_evidence"])
     assert "첫 줄" in pinned_text
@@ -865,7 +865,7 @@ def test_open_document_only_reply_gets_the_open_document_as_reference() -> None:
         conversation_replier=replier,
     )
 
-    result = use_case.execute(_request("이 문서를 영어로 번역해 줘", mode="chat"))
+    result = use_case.execute(_request("이 문서를 영어로 번역해 줘", mode="task"))
 
     assert (result.action, result.edit, result.run_id) == ("conversation_reply", None, None)
     context = replier.requests[0].conversation_context.reference_context
@@ -1273,7 +1273,7 @@ def test_language_answer_does_not_join_when_no_document_is_open_now() -> None:
 def test_language_question_records_the_document_it_asked_about(message: str) -> None:
     use_case, _ = _routed_use_case(_answer_raw() if message == "번역해 줘" else _edit_raw(edit_goal="translate"))
 
-    result = use_case.execute(_request(message, mode="chat" if message == "번역해 줘" else "task"))
+    result = use_case.execute(_request(message, mode="task"))
 
     assert (result.action, result.message) == ("clarify", CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
     assert result.route.clarified_document_id == "open-doc"
