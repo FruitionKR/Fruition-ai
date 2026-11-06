@@ -15,6 +15,9 @@ TASK_LIST_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PLAIN_TEXT_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 TASK_LIST_MARKER_PATTERN = r"(?m)^[ \t]*[-*+][ \t]+\[[ xX]\](?:[ \t]+|[ \t]*\r?$)"
 PROTECTED_TOKEN_PATTERN = r"\{\{FRUITION_PROTECTED_\d{4}\}\}"
+JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
+LLM_EVALUATION_PREFIX = "LLM evaluation:"
+LLM_EVALUATION_INVALID_FAILURE = "LLM evaluation must return a boolean passed and consistent string-list failures"
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,28 @@ class MarkdownCreateOutputContractError(ValueError):
         super().__init__("Markdown create output contract failed: " + "; ".join(failures))
         self.failures = failures
         self.output = output
+
+
+def markdown_edit_failure_code(failures: list[str]) -> str:
+    """사용자 문구를 고를 편집 실패 코드. 원인 종류만 담고 평가 문장·본문은 싣지 않는다."""
+    if REFUSAL_FAILURE in failures:
+        return "markdown_edit_refused"
+    return _failure_code("markdown_edit", failures) or "markdown_output_contract_failed"
+
+
+def markdown_create_failure_code(failures: list[str]) -> str:
+    """사용자 문구를 고를 새 문서 실패 코드. 원인 종류만 담고 평가 문장·본문은 싣지 않는다."""
+    return _failure_code("markdown_create", failures) or "markdown_create_output_contract_failed"
+
+
+def _failure_code(prefix: str, failures: list[str]) -> str | None:
+    if JSON_OBJECT_CONTRACT_FAILURE in failures:
+        return f"{prefix}_response_invalid"
+    if LLM_EVALUATION_INVALID_FAILURE in failures:
+        return f"{prefix}_evaluation_invalid"
+    if any(failure.startswith(LLM_EVALUATION_PREFIX) for failure in failures):
+        return f"{prefix}_evaluation_rejected"
+    return None
 
 
 def validate_markdown_create_output(document: GeneratedMarkdownDocument) -> list[str]:

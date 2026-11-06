@@ -21,7 +21,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
-from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
+from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from psycopg.types.json import Json
 from pydantic import ValidationError
@@ -47,6 +47,8 @@ from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
+    markdown_create_failure_code,
+    markdown_edit_failure_code,
 )
 from app.modules.markdown_edit.domain.markdown_target_scope import MarkdownTargetBoundaryError
 from app.modules.meeting_notes.domain.entities import TranscriptSegment
@@ -324,14 +326,17 @@ def _agent_failed_payload(command: dict[str, Any]) -> dict[str, str] | None:
 
 
 def _agent_failure_code(error: Exception) -> str:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
     if isinstance(error, PipelineRunCancelledError):
         return "agent_turn_cancelled"
+    if isinstance(error, TaskFailedError):  # 이미 실패로 닫힌 run. ValueError지만 요청이 잘못된 것이 아니다.
+        return stored_code(error.code)
     if isinstance(error, AgentTurnRouteContractError):
         return "agent_turn_route_contract_failed"
     if isinstance(error, MarkdownCreateOutputContractError):
-        return "markdown_create_output_contract_failed"
+        return markdown_create_failure_code(error.failures)
     if isinstance(error, MarkdownOutputContractError):
-        return "markdown_output_contract_failed"
+        return markdown_edit_failure_code(error.failures)
     if isinstance(error, MarkdownTargetBoundaryError):
         return "markdown_target_crosses_structure"
     if isinstance(error, (SkillNotFoundError, SkillDisabledError)):
@@ -340,7 +345,9 @@ def _agent_failure_code(error: Exception) -> str:
         return "agent_not_configured"
     if isinstance(error, ValueError):
         return "invalid_agent_turn_request"
-    return "agent_turn_failed"
+    # 공급사 오류(한도·장애·시간 초과)와 우리 예외의 code는 그대로 알리고, 분류되지 않은 것만 뭉친다.
+    code = failure_code(error)
+    return "agent_turn_failed" if code == INTERNAL_ERROR else code
 
 
 def _agent_failure_result(error: Exception) -> dict[str, object]:
