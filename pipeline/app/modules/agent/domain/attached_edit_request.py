@@ -118,7 +118,6 @@ _ATTACHMENT_AS_SOURCE = re.compile(
 _SELECTS_ATTACHMENTS = re.compile(r"둘\s*다|모두|전부|각각|\d+\s*개|번째|\b(?:both|all|each)\b", re.IGNORECASE)
 # 열린 문서를 지목해도 문서 자체를 순번으로 고르면 첨부를 고르는 말이다. "현재 문서 형식에 맞춰 두 번째 문서를 고쳐 줘"
 _SELECTS_DOCUMENT_BY_ORDER = re.compile(r"번째\s*(?:문서|파일)")
-_SELECTS_DOCUMENT_BY_NUMBER = re.compile(r"\d+\s*번(?!째)")
 
 
 # 열린 문서를 첨부와 나란히 고치라는 말에서 열린 문서를 가리키는 표현이다. "이 문서들"은 고른 문서 전체고, "이 문서 3개"는 수를 세는 말이라 뺀다.
@@ -280,15 +279,6 @@ def names_open_document(message: str) -> bool:
 
 def names_attachment(message: str) -> bool:
     return _NAMES_ATTACHMENT.search(message) is not None
-
-
-def points_at_one_document(message: str) -> bool:
-    """제목 없이 문서 하나를 가리키는 말이다. "이 문서", "첫 번째 문서", "1번" """
-    return (
-        _OPEN_DOCUMENT_NAMED.search(message) is not None
-        or _SELECTS_DOCUMENT_BY_ORDER.search(message) is not None
-        or _SELECTS_DOCUMENT_BY_NUMBER.search(message) is not None
-    )
 
 
 def selects_attachment(message: str) -> bool:

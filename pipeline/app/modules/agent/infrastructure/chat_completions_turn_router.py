@@ -168,9 +168,6 @@ def route_payload(request: AgentTurnRequest) -> dict[str, object]:
             "count": count,
             "titles": list(request.reference_document_titles or ("",) * count),
         }
-        # 읽기 전용 첨부가 있을 때만 싣는다. 모두 고칠 수 있는 턴의 입력은 그대로다.
-        if not all(request.reference_document_editable):
-            payload["reference_documents"]["can_edit"] = list(request.reference_document_editable)  # type: ignore[index]
         if request.active_document_title and _has_open_markdown(request):
             payload["active_markdown_context"]["title"] = request.active_document_title  # type: ignore[index]
     return payload

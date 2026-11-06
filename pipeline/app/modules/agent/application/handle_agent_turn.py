@@ -53,7 +53,6 @@ from app.modules.agent.domain.folder_sources import (
     folder_source_notice,
     select_folder_sources,
 )
-from app.modules.agent.domain.read_only_attachments import route_without_read_only_targets
 from app.modules.agent.domain.reference_documents import (
     ReferenceDocumentUnavailableError,
     MAX_REFERENCE_ANSWER_CHARS,
@@ -270,7 +269,7 @@ class HandleAgentTurnUseCase:
 
         request = _with_translation_language_answer(request)
         publish_query_event(self._event_publisher, "agent.routing", "요청과 사용할 수 있는 스킬을 확인하고 있어요.")
-        result = _with_clarified_document(_with_skill_off_notice(self._execute(request)), request)
+        result = _with_skill_off_notice(self._execute(request))
         publish_query_event(self._event_publisher, "agent.finalizing", "처리 결과와 대화 내용을 정리하고 있어요.")
         updated_summary = (
             result.query_answer.updated_conversation_summary
@@ -288,7 +287,7 @@ class HandleAgentTurnUseCase:
         if selection.explicit_skill_id is not None and not request.message.strip():
             return self._execute_bare_skill_command(request, selection.skills[0])
         request = self._with_reference_titles(request)
-        routed = route_without_read_only_targets(self._router.route(request), request)
+        routed = self._router.route(request)
         resolved = selection.resolve_route(
             _create_skill_route(routed, _routed_skill(selection, routed))
         )
@@ -596,7 +595,7 @@ class HandleAgentTurnUseCase:
                 return AgentTurnResult(
                     action="clarify",
                     route=route,
-                    message=attachment_target_message(request.reference_document_titles, request.reference_document_editable),
+                    message=attachment_target_message(request.reference_document_titles),
                     clarify_reason="attachment_target_required",
                 )
             if is_task_mode(request) and route.edit_goal is None and route.notice_kind == "details":
@@ -1269,20 +1268,19 @@ class HandleAgentTurnUseCase:
         document_ids = tuple(dict.fromkeys(request.reference_document_ids))
         if not document_ids or self._reference_reader is None or not request.workspace_id or not request.user_id:
             return request
-        attachments = tuple(self._read_reference_title(request, document_id) for document_id in document_ids)
         return replace(
             request,
-            reference_document_titles=tuple(title for title, _ in attachments),
-            reference_document_editable=tuple(editable for _, editable in attachments),
+            reference_document_titles=tuple(
+                self._read_reference_title(request, document_id) for document_id in document_ids
+            ),
             active_document_title=(
-                self._read_reference_title(request, request.document_id)[0]
+                self._read_reference_title(request, request.document_id)
                 if request.document_id is not None and _has_active_markdown(request)
                 else ""
             ),
         )
 
-    def _read_reference_title(self, request: AgentTurnRequest, document_id: str) -> tuple[str, bool]:
-        """제목과 편집 가능 여부. 읽지 못하면 편집 가능 여부를 모르므로 True로 두고 본문을 읽는 단계에 맡긴다."""
+    def _read_reference_title(self, request: AgentTurnRequest, document_id: str) -> str:
         assert self._reference_reader is not None and request.workspace_id and request.user_id
         try:
             document = self._reference_reader.read(
@@ -1295,8 +1293,8 @@ class HandleAgentTurnUseCase:
             raise
         # 읽기 실패의 안내는 실제로 본문을 읽는 단계가 정한다.
         except (ReferenceDocumentTooLargeError, SkillRequestRejectedError, RuntimeError):
-            return "", True
-        return clean_reference_title(document.name), not _is_read_only(document)
+            return ""
+        return clean_reference_title(document.name)
 
     def _read_reference_documents(
         self,
@@ -1486,14 +1484,10 @@ def _needs_newer_document_service(document: SkillAuthoringReference) -> bool:
     return not document.source_blocks and document.edit_revision is None
 
 
-def _is_read_only(document: SkillAuthoringReference) -> bool:
-    return not _needs_newer_document_service(document) and (bool(document.source_blocks) or not document.can_edit)
-
-
 def _attached_edit_exclusion(document: SkillAuthoringReference) -> ExclusionReason | None:
     if _needs_newer_document_service(document):
         return None
-    if _is_read_only(document):
+    if document.source_blocks or not document.can_edit:
         return "forbidden"
     if not document.markdown.strip():
         return "empty"
@@ -1649,18 +1643,8 @@ def _require_translation_language(request: AgentTurnRequest) -> None:
         raise ReferenceDocumentUnavailableError(CLARIFY_TRANSLATION_LANGUAGE_MESSAGE)
 
 
-def _with_clarified_document(result: AgentTurnResult, request: AgentTurnRequest) -> AgentTurnResult:
-    """언어를 되물을 때 열려 있던 문서를 route에 남긴다. 다음 턴이 같은 문서일 때만 답을 앞선 요청에 잇는다."""
-    if result.action != "clarify" or CLARIFY_TRANSLATION_LANGUAGE_MESSAGE not in (result.message or ""):
-        return result
-    return replace(result, route=replace(result.route, clarified_document_id=request.document_id))
-
-
 def _with_translation_language_answer(request: AgentTurnRequest) -> AgentTurnRequest:
-    """직전 턴이 번역 언어를 되물었고 언어로 답했으면 앞선 요청을 이어 간다. "번역해서 저장해 줘"의 답은 새 문서가 된다.
-
-    되물은 문서가 지금 문서와 같을 때만 잇는다. 사이에 문서를 바꿨거나 되물은 문서를 모르면 다른 문서에 적용될 수 있어 잇지 않는다.
-    """
+    """직전 턴이 번역 언어를 되물었고 언어로 답했으면 앞선 요청을 이어 간다. "번역해서 저장해 줘"의 답은 새 문서가 된다."""
     recent = request.conversation_context.recent_messages if request.conversation_context else ()
     if len(recent) < 2:
         return request
@@ -1669,9 +1653,6 @@ def _with_translation_language_answer(request: AgentTurnRequest) -> AgentTurnReq
         asked_request.role != "user"
         or question.role != "assistant"
         or CLARIFY_TRANSLATION_LANGUAGE_MESSAGE not in question.content
-        or question.agent_route is None
-        or question.agent_route.clarified_document_id is None
-        or question.agent_route.clarified_document_id != request.document_id
     ):
         return request
     message = answer_to_translation_language_question(request.message, asked_request.content)

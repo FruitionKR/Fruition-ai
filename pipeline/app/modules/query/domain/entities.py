@@ -72,7 +72,6 @@ class ConversationAgentRoute:
     edit_operation: Literal["replace", "insert_after"] | None = None
     edit_destination: Literal["target", "document_end"] | None = None
     selected_skill_id: str | None = None
-    clarified_document_id: str | None = None
 
 
 @dataclass(frozen=True)
