@@ -32,6 +32,9 @@ from app.modules.markdown_edit.domain.entities import (
     MarkdownEditTarget,
 )
 from app.modules.markdown_edit.domain.markdown_output_contract import (
+    JSON_OBJECT_CONTRACT_FAILURE,
+    LLM_EVALUATION_INVALID_FAILURE,
+    LLM_EVALUATION_PREFIX,
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
     ProtectedMarkdown,
@@ -79,8 +82,6 @@ DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT = Path(__file__).resolve().parents[4] / "
 DEFAULT_MARKDOWN_CREATE_EVALUATOR_PROMPT = (
     Path(__file__).resolve().parents[4] / "prompts" / "markdown_create_evaluator.system.md"
 )
-JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
-LLM_EVALUATION_PREFIX = "LLM evaluation:"
 logger = logging.getLogger(__name__)
 
 
@@ -373,7 +374,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         return self._llm_evaluation_failures(self._create_evaluation_system_prompt, payload)
 
     def _llm_evaluation_failures(self, system_prompt: str, payload: dict[str, object]) -> list[str]:
-        invalid = ["LLM evaluation must return a boolean passed and consistent string-list failures"]
+        invalid = [LLM_EVALUATION_INVALID_FAILURE]
         try:
             raw = self._client.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
         except JsonParseError:
