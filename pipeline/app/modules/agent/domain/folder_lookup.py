@@ -5,14 +5,31 @@
 
 from dataclasses import dataclass
 
+from app.core.response_language import localized, register_en
+
 MAX_LISTED_ITEMS = 50
-FOLDER_LOOKUP_READ_FAILED_MESSAGE = "폴더 목록을 읽지 못했어요. 잠시 후 다시 시도해 주세요."
-FOLDER_LOOKUP_FORBIDDEN_MESSAGE = "이 워크스페이스의 폴더 목록을 읽을 수 없어요."
-FOLDER_REFERENCE_FAILED_MESSAGE = "어느 폴더인지 판단하지 못했어요. 잠시 후 다시 시도해 주세요."
+FOLDER_LOOKUP_READ_FAILED_MESSAGE = register_en(
+    "폴더 목록을 읽지 못했어요. 잠시 후 다시 시도해 주세요.",
+    "Couldn't read the folder list. Please try again in a moment.",
+)
+FOLDER_LOOKUP_FORBIDDEN_MESSAGE = register_en(
+    "이 워크스페이스의 폴더 목록을 읽을 수 없어요.",
+    "You can't read the folder list of this workspace.",
+)
+FOLDER_REFERENCE_FAILED_MESSAGE = register_en(
+    "어느 폴더인지 판단하지 못했어요. 잠시 후 다시 시도해 주세요.",
+    "Couldn't tell which folder you meant. Please try again in a moment.",
+)
 # 지목 판단 LLM에 보내는 폴더 경로 수 상한.
 MAX_FOLDER_CANDIDATES = 500
-FOLDER_NOT_FOUND_MESSAGE = "어느 폴더인지 찾지 못했어요. 폴더 이름을 정확히 적거나 사이드바에서 폴더를 고른 뒤 다시 요청해 주세요."
-CONTENT_QUESTION_HINT = "문서 내용이 궁금하면 채팅 탭에서 질문해 주세요."
+FOLDER_NOT_FOUND_MESSAGE = register_en(
+    "어느 폴더인지 찾지 못했어요. 폴더 이름을 정확히 적거나 사이드바에서 폴더를 고른 뒤 다시 요청해 주세요.",
+    "Couldn't find which folder you meant. Type the exact folder name or pick a folder in the sidebar, then try again.",
+)
+CONTENT_QUESTION_HINT = register_en(
+    "문서 내용이 궁금하면 채팅 탭에서 질문해 주세요.",
+    "To ask about document contents, use the Chat tab.",
+)
 
 
 @dataclass(frozen=True)
@@ -63,18 +80,25 @@ def folder_lookup_message(matches: list[FolderEntry]) -> str:
         return FOLDER_NOT_FOUND_MESSAGE
     if len(matches) > 1:
         paths = "\n".join(f"- {' / '.join(entry.path)}" for entry in matches)
-        return f"해당하는 폴더가 여러 개예요. 어느 폴더인지 경로를 적어 다시 요청해 주세요.\n\n{paths}"
+        return localized(
+            f"해당하는 폴더가 여러 개예요. 어느 폴더인지 경로를 적어 다시 요청해 주세요.\n\n{paths}",
+            f"Several folders match. Type the folder path and try again.\n\n{paths}",
+        )
     entry = matches[0]
     if not entry.child_folders and not entry.child_documents:
-        return f"'{entry.name}' 폴더는 비어 있어요."
+        return localized(f"'{entry.name}' 폴더는 비어 있어요.", f"The '{entry.name}' folder is empty.")
     lines = [
-        f"'{entry.name}' 폴더({' / '.join(entry.path)})에 하위 폴더 {len(entry.child_folders)}개, "
-        f"문서 {len(entry.child_documents)}개가 있어요."
+        localized(
+            f"'{entry.name}' 폴더({' / '.join(entry.path)})에 하위 폴더 {len(entry.child_folders)}개, "
+            f"문서 {len(entry.child_documents)}개가 있어요.",
+            f"The '{entry.name}' folder ({' / '.join(entry.path)}) has {len(entry.child_folders)} subfolders "
+            f"and {len(entry.child_documents)} documents.",
+        )
     ]
     items = [f"- 📁 {name}" for name in entry.child_folders] + [f"- {name}" for name in entry.child_documents]
     lines.append("\n".join(items[:MAX_LISTED_ITEMS]))
     if len(items) > MAX_LISTED_ITEMS:
-        lines.append(f"외 {len(items) - MAX_LISTED_ITEMS}개")
+        lines.append(localized(f"외 {len(items) - MAX_LISTED_ITEMS}개", f"and {len(items) - MAX_LISTED_ITEMS} more"))
     lines.append(CONTENT_QUESTION_HINT)
     return "\n\n".join(lines)
 

@@ -11,6 +11,7 @@ from app.core.llm_env import (
     provider_api_key_env,
 )
 from app.core.untrusted_input import validate_untrusted_payload
+from app.core.response_language import localized, with_response_language
 from app.modules.agent_run.domain.plan import (
     AgentPlan,
     AgentPlanIntentClarificationRequired,
@@ -101,7 +102,8 @@ class ChatCompletionsPlanGenerator:
                 if identifier
             )
         value = self._client.complete_json(
-            self._system_prompt,
+            # summary·reason·되묻기 질문은 승인 화면에 그대로 보이므로 run을 시작한 턴의 언어로 쓴다.
+            with_response_language(self._system_prompt),
             json.dumps(payload, ensure_ascii=False, indent=2),
             trusted_identifiers=tuple(dict.fromkeys(trusted_identifiers)),
         )
@@ -184,6 +186,12 @@ MOVE_DESTINATION_KEYS = {"move_folder": "parent_folder_id", "move_document": "fo
 TARGET_FOLDER_TOOLS = {"rename_folder", "move_folder"}
 TARGET_FOLDER_NOTE = "대상 폴더 자체는 바꿀 수 없어 그 폴더의 이름 변경·이동 작업 {count}개는 계획에서 뺐어요."
 OUT_OF_SCOPE_NOTE = "대상 폴더 밖으로 옮기는 작업 {count}개는 계획에서 뺐어요."
+# 영어 요청의 같은 안내. 프론트가 문장 형식으로 찾아 따로 보여 주므로 형식을 고정한다.
+TARGET_FOLDER_NOTE_EN = (
+    "Removed {count} rename or move operations on the target folder itself from the plan "
+    "because the target folder can't be changed."
+)
+OUT_OF_SCOPE_NOTE_EN = "Removed {count} operations that move items outside the target folder from the plan."
 
 
 def _scope_moves_to_target_folder(
@@ -246,7 +254,10 @@ def _scope_moves_to_target_folder(
     summary = value.get("summary")
     notes = [
         note.format(count=len(sequences))
-        for note, sequences in ((TARGET_FOLDER_NOTE, target_folder_changes), (OUT_OF_SCOPE_NOTE, out_of_scope))
+        for note, sequences in (
+            (localized(TARGET_FOLDER_NOTE, TARGET_FOLDER_NOTE_EN), target_folder_changes),
+            (localized(OUT_OF_SCOPE_NOTE, OUT_OF_SCOPE_NOTE_EN), out_of_scope),
+        )
         if sequences
     ]
     return {

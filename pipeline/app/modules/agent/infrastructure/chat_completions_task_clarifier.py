@@ -5,12 +5,13 @@ from pathlib import Path
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.core.llm_env import api_key_from_env, int_env, optional_int_env, provider_api_key_env, resolve_llm_selection
 from app.core.pipeline_control import PipelineRunCancelledError
+from app.core.response_language import register_en, with_response_language
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import ChatClientConfig, ChatCompletionsJsonClient
 from app.modules.wiki_generation.infrastructure.json_output_parser import JsonParseError
 
 DEFAULT_TASK_CLARIFICATION_PROMPT = Path(__file__).resolve().parents[4] / "prompts" / "task_clarification.system.md"
-FALLBACK_QUESTION = "작업에 필요한 내용을 조금 더 알려 주세요."
+FALLBACK_QUESTION = register_en("작업에 필요한 내용을 조금 더 알려 주세요.", "Please tell me a bit more about what you need for this task.")
 RECENT_MESSAGE_LIMIT = 6
 MAX_QUESTION_CHARS = 300
 
@@ -35,7 +36,7 @@ class ChatCompletionsTaskClarifier:
             "router_reason": route.reason,
         }
         try:
-            raw = self._client.complete_json(self._system_prompt, json.dumps(payload, ensure_ascii=False))
+            raw = self._client.complete_json(with_response_language(self._system_prompt), json.dumps(payload, ensure_ascii=False))
         except PipelineRunCancelledError:
             raise
         except (JsonParseError, RuntimeError):

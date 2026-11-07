@@ -107,8 +107,8 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     """
                     INSERT INTO agent_runs (
                         id, workspace_id, user_id, action, skill_version_id, status, request_summary,
-                        provider, model, target_folder_id, rule_summary
-                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)
+                        provider, model, target_folder_id, rule_summary, response_language
+                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (
@@ -122,6 +122,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         run.model,
                         run.target_folder_id,
                         run.rule_summary,
+                        run.response_language,
                     ),
                 ).fetchone()
                 for position, artifact in enumerate(artifacts):
@@ -812,6 +813,7 @@ def _row_to_run(row: dict[str, Any]) -> AgentRun:
         model=row.get("model"),
         target_folder_id=row.get("target_folder_id"),
         rule_summary=row.get("rule_summary"),
+        response_language=row.get("response_language"),
         current_plan_id=row["current_plan_id"],
         error_code=row["error_code"],
         clarification_question=row.get("clarification_question"),

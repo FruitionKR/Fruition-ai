@@ -498,3 +498,35 @@ def test_preview_http_route_is_removed():
     )
     assert response.status_code in {401, 404}
     assert "/meeting-notes/preview" not in api.app.openapi()["paths"]
+
+
+def test_english_response_language_writes_english_notes_and_headings():
+    from app.core.response_language import response_language_scope
+
+    client = Mock()
+    client.complete_json.return_value = {
+        "summary": [{"text": "Discussed the launch date.", "source_segment_ids": ["s1"]}],
+        "action_items": [{"text": "Prepare the release", "owner": None, "due": None, "source_segment_ids": ["s1"]}],
+    }
+    with response_language_scope("en"):
+        result = GenerateMeetingNotes(ChatMeetingNotes(client)).execute(
+            "", [TranscriptSegment("s1", "출시 일정을 논의하자.")]
+        )
+    system = client.complete_json.call_args.args[0]
+    assert "영어(English) 회의록 초안을" in system and "Write every user-facing sentence in English" in system
+    assert result["display_name"] == "Meeting notes"
+    markdown = result["markdown"]
+    assert "- Date: Not confirmed" in markdown and "### Summary" in markdown and "### Decisions" in markdown
+    assert "- [ ] Prepare the release · Owner TBD · Due date TBD" in markdown
+    assert "- Nothing confirmed" in markdown
+
+
+def test_meeting_notes_command_accepts_optional_response_language():
+    base = {
+        "workspace_id": "w", "user_id": "u", "run_id": "r", "kind": "meeting_notes", "meeting_id": "m",
+        "provider": "openai", "model": "gpt-6-luna", "segments": [{"id": "s1", "text": "안녕"}],
+    }
+    assert MeetingNotesCommand.model_validate(base).response_language is None
+    assert MeetingNotesCommand.model_validate({**base, "response_language": "en"}).response_language == "en"
+    with pytest.raises(ValidationError):
+        MeetingNotesCommand.model_validate({**base, "response_language": "fr"})
