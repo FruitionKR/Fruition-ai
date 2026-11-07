@@ -80,6 +80,34 @@ class QueryChatAnswerGeneratorTest(unittest.TestCase):
         self.assertIn("Give a detailed explanation", system_prompt)
         self.assertNotIn("output_language", client.calls[0][1])
 
+    def test_answer_language_replaces_fixed_korean_instruction(self) -> None:
+        # 고정 한국어 지시가 남으면 모델이 뒤에 붙인 영어 지시를 따르지 않는다(dev 통합 검증 결함).
+        cases = {
+            "en": "Answer in English.",
+            "document": "Answer in the dominant language of the evidence document",
+            "ko": "Answer in Korean.",
+            None: "Answer in Korean.",
+        }
+        for output_language, expected in cases.items():
+            with self.subTest(output_language=output_language):
+                client = FakeChatClient()
+                context = QueryContext(
+                    question="Explain it",
+                    graph_context=GraphContext(),
+                    traversal_paths=[],
+                    related_pages=[],
+                    evidence_snippets=[],
+                    answer_context="# User Question\nExplain it",
+                    output_language=output_language,
+                )
+
+                QueryChatAnswerGenerator(client).generate_answer(context)
+
+                system_prompt = client.calls[0][0]
+                self.assertIn(expected, system_prompt)
+                if output_language in {"en", "document"}:
+                    self.assertNotIn("Korean", system_prompt)
+
     def test_updates_conversation_summary_from_previous_summary_and_messages(self) -> None:
         client = FakeChatClient()
         summarizer = QueryConversationSummarizer(client)

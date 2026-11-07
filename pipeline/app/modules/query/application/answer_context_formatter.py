@@ -1,5 +1,6 @@
 import json
 
+from app.core.response_preferences import OutputLanguage, answer_language_rule
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, TraversalPath
 
 
@@ -22,6 +23,7 @@ class AnswerContextFormatter:
         evidence_snippets: list[EvidenceSnippet],
         original_question: str | None = None,
         answer_mode: str | None = None,
+        output_language: OutputLanguage | None = None,
     ) -> str:
         pages_by_id = {item.page.id: item for item in related_pages}
         lines = [
@@ -37,7 +39,7 @@ class AnswerContextFormatter:
                     "",
                 ]
             )
-        lines.extend(self._output_policy(answer_mode))
+        lines.extend(self._output_policy(answer_mode, output_language))
         lines.extend(self._answer_mode_policy(answer_mode))
         lines.extend([
             "# Related Pages By Relevance",
@@ -81,10 +83,11 @@ class AnswerContextFormatter:
             )
         return "\n".join(lines).strip()
 
-    def _output_policy(self, answer_mode: str | None) -> list[str]:
+    def _output_policy(self, answer_mode: str | None, output_language: OutputLanguage | None) -> list[str]:
         output_policy = [
             "# Assistant Output Policy",
-            "- Answer in Korean.",
+            # 답변 언어가 정해지면 system prompt와 같은 언어 지시를 둔다. 없으면 지금처럼 한국어다.
+            f"- {answer_language_rule(output_language)}",
             "- Write only the conversational answer body that should be shown to the user.",
             "- Mark the evidence used for each supported sentence with citation markers like [1] or [2].",
             "- Use only the evidence rank numbers listed below as citation markers.",

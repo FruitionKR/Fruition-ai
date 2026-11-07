@@ -70,6 +70,29 @@ def localize_text(text: str | None) -> str | None:
     return text
 
 
+# 사용자에게 보이는 문장에 한국어를 고정한 프롬프트 지시 → 영어 지시. 끝에 덧붙인 언어 지시만으로는 모델이 앞의
+# 고정 지시를 따르는 경우가 있어, 영어 요청이면 고정 지시 자체를 바꾼다. 문서 본문 언어 지시는 넣지 않는다
+# (예: markdown_create의 "Use Korean unless ..."는 본문 규칙이라 그대로 둔다).
+_EN_PROMPT_RULES: dict[str, str] = {
+    # task_clarification.system.md
+    "Ask exactly one question in Korean, in the polite `~요` style,": "Ask exactly one question in English, in a polite tone,",
+    # agent_folder_plan.system.md
+    "a brief Korean clarification question": "a brief English clarification question",
+    "short Korean sentences": "short English sentences",
+    "a non-empty brief Korean string": "a non-empty brief English string",
+    "a brief user-facing Korean reason": "a brief user-facing English reason",
+    # markdown_edit·markdown_create·markdown_source_edit.system.md의 summary
+    "Write summary in Korean.": "Write summary in English.",
+    "Korean one-sentence summary": "English one-sentence summary",
+}
+
+
+def _with_english_prompt_rules(system_prompt: str) -> str:
+    for ko, en in _EN_PROMPT_RULES.items():
+        system_prompt = system_prompt.replace(ko, en)
+    return system_prompt
+
+
 def response_language_rule() -> str | None:
     """프롬프트에 덧붙일 응답 언어 지시. 요청 언어가 없으면 None이다."""
     language = _language.get()
@@ -85,6 +108,8 @@ def with_response_language(system_prompt: str) -> str:
     rule = response_language_rule()
     if rule is None:
         return system_prompt
+    if is_english():
+        system_prompt = _with_english_prompt_rules(system_prompt)
     return (
         f"{system_prompt.rstrip()}\n\n# Response Language\n- {rule}\n"
         "- Keep quotations, code, identifiers, JSON keys, and proper nouns in their original form.\n"
@@ -100,7 +125,7 @@ def with_summary_language(system_prompt: str) -> str:
     if not is_english():
         return system_prompt
     return (
-        f"{system_prompt.rstrip()}\n\n# Summary Language\n"
+        f"{_with_english_prompt_rules(system_prompt).rstrip()}\n\n# Summary Language\n"
         "- Write the `summary` field in English. This overrides any earlier instruction about the summary language.\n"
         "- Do not change the language of the document content (Markdown, title, body) because of this rule.\n"
     )

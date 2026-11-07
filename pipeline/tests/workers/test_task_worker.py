@@ -1614,6 +1614,80 @@ def test_redelivered_executing_agent_run_is_closed_as_failed() -> None:
     context.__exit__.assert_called_once_with(None, None, None)
 
 
+def test_agent_command_registers_turn_with_response_language() -> None:
+    # 채팅 패널 턴도 승인형 run처럼 요청자 화면 언어를 agent_runs.response_language에 남긴다.
+    base = {
+        "run_id": "agent_language",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "Explain it",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+    for command, expected in ((base | {"response_language": "en"}, "en"), (base, None)):
+        connection = MagicMock()
+        inserted = MagicMock()
+        inserted.fetchone.return_value = {"id": command["run_id"]}
+        locked = MagicMock()
+        locked.fetchone.return_value = {
+            "status": "queued",
+            "result": None,
+            "command_envelope_hash": task_worker._agent_command_hash(command),
+        }
+        connection.execute.side_effect = lambda query, *args: (
+            inserted if "INSERT INTO agent_runs" in query else locked if "FOR UPDATE" in query else MagicMock()
+        )
+        context = MagicMock()
+        context.__enter__.return_value = connection
+
+        with patch.object(task_worker.database, "connect_ai", return_value=context):
+            task_worker._register_agent_command(command)
+
+        run_insert = connection.execute.call_args_list[0]
+        assert "provider, model, response_language" in run_insert.args[0]
+        assert run_insert.args[1][4:7] == ("openai", "gpt-5-nano", expected)
+
+
+def test_postgres_agent_turn_stores_response_language(monkeypatch) -> None:
+    """TEST_AGENT_DATABASE_URL을 지정하면 실제 스키마에 markdown_turn 행의 응답 언어가 저장되는지 검증한다."""
+    import os
+    from pathlib import Path
+    from uuid import uuid4
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    dsn = os.environ.get("TEST_AGENT_DATABASE_URL")
+    if not dsn:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    schema = "test_turn_language_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    try:
+        with connect() as conn:
+            conn.execute((Path(__file__).parents[2] / "db/ai_schema.sql").read_text())
+        monkeypatch.setattr(task_worker.database, "connect_ai", connect)
+        for run_id, language in (("turn_en", "en"), ("turn_none", None)):
+            command = dict(kind="agent", run_id=run_id, workspace_id="ws", user_id="user",
+                           message="Explain it", provider="openai", model="gpt-5-nano")
+            if language:
+                command["response_language"] = language
+            assert task_worker._register_agent_command(command) == ("execute", None)
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT id, response_language FROM agent_runs WHERE action = 'markdown_turn' ORDER BY id"
+            ).fetchall()
+        assert [(row["id"], row["response_language"]) for row in rows] == [("turn_en", "en"), ("turn_none", None)]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
 def test_postgres_redelivered_executing_agent_run_failure_is_durable(monkeypatch) -> None:
     """TEST_AGENT_DATABASE_URL을 지정하면 실제 PostgreSQL에서 failed 상태가 commit되는지 검증한다."""
     import os

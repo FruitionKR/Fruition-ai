@@ -2461,6 +2461,32 @@ class HandleAgentTurnUseCaseTest(unittest.TestCase):
         self.assertEqual(query_use_case.kwargs[0]["response_length"], "balanced")
         self.assertFalse(query_use_case.kwargs[0]["allow_web_search"])
 
+    def test_chat_answer_language_prefers_output_language_then_response_language(self) -> None:
+        # #242 우선순위: 사용자가 정한 output_language가 먼저이고, 없으면 요청자 화면 언어를 쓴다.
+        from app.core.response_language import response_language_scope
+
+        cases = (("ko", "ko"), (None, "en"))
+        for output_language, expected in cases:
+            with self.subTest(output_language=output_language):
+                query_use_case = FakeQueryUseCase()
+                use_case = HandleAgentTurnUseCase(
+                    router=FixedRouter(AgentTurnRoute(action="chat_answer", confidence=0.9, reason="question")),
+                    query_use_case=query_use_case,  # type: ignore[arg-type]
+                    markdown_edit_use_case=Mock(),
+                    markdown_create_use_case=Mock(),
+                )
+                with response_language_scope("en"):
+                    use_case.execute(
+                        AgentTurnRequest(
+                            message="Explain PMA",
+                            workspace_id="workspace-1",
+                            user_id="user-1",
+                            output_language=output_language,
+                            allow_web_search=False,
+                        )
+                    )
+                self.assertEqual(query_use_case.kwargs[0]["output_language"], expected)
+
     def test_uses_web_search_query_use_case_when_requested(self) -> None:
         default_query_use_case = FakeQueryUseCase()
         web_search_query_use_case = FakeQueryUseCase()
