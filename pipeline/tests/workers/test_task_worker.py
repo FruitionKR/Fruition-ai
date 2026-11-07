@@ -208,6 +208,48 @@ def test_query_command_passes_runtime_model_and_web_search_flag(
     assert result == {"answer": "ok"}
 
 
+def test_query_command_uses_response_language_as_answer_language() -> None:
+    from app.core.response_language import response_language_scope
+
+    command = {
+        "run_id": "run-1", "kind": "query", "workspace_id": "workspace-1", "user_id": "user-1",
+        "session_id": "session-1", "question": "질문", "provider": "openai", "model": "gpt-5-nano",
+        "allow_web_search": False, "response_language": "en",
+    }
+    use_case = MagicMock()
+    with (
+        patch.object(task_worker, "build_answer_query_use_case", return_value=use_case),
+        patch.object(task_worker, "query_to_response") as to_response,
+        response_language_scope(command["response_language"]),
+    ):
+        to_response.return_value.model_dump.return_value = {"answer": "ok"}
+        task_worker._handle_query(command)
+
+    assert use_case.execute.call_args.kwargs["output_language"] == "en"
+
+
+def test_agent_result_fixed_messages_follow_english_response_language() -> None:
+    from app.core.response_language import response_language_scope
+    from app.modules.agent.application.handle_agent_turn import CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+
+    result = {"message": CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, "chat": {"answer": "Generated answer"}}
+    assert task_worker._localize_agent_result(result) is result
+    with response_language_scope("en"):
+        localized = task_worker._localize_agent_result(result)
+    assert localized["message"] == "Open the Markdown document to edit, then try again."
+    assert localized["chat"] == {"answer": "Generated answer"}
+
+
+def test_controlled_command_runs_inside_its_response_language() -> None:
+    from app.core.response_language import current_response_language
+
+    seen = []
+    with patch.object(task_worker, "_execute_controlled", side_effect=lambda *_: seen.append(current_response_language()) or {}):
+        task_worker._handle_controlled({"run_id": "r", "kind": "query", "response_language": "en"})
+        task_worker._handle_controlled({"run_id": "r", "kind": "query"})
+    assert seen == ["en", None]
+
+
 def test_query_command_passes_accumulated_conversation_summary() -> None:
     """요약을 넘겨야 이번 턴 요약이 앞 내용을 이어받는다. 빠뜨리면 매 턴 새로 쓰여 앞쪽이 사라진다."""
     command = {
@@ -1570,6 +1612,80 @@ def test_redelivered_executing_agent_run_is_closed_as_failed() -> None:
     assert updates[0][1] == (command["run_id"],)
     # 예외는 연결 context가 정상 종료(commit)된 뒤에 던져져야 UPDATE가 롤백되지 않는다.
     context.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_agent_command_registers_turn_with_response_language() -> None:
+    # 채팅 패널 턴도 승인형 run처럼 요청자 화면 언어를 agent_runs.response_language에 남긴다.
+    base = {
+        "run_id": "agent_language",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "Explain it",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+    for command, expected in ((base | {"response_language": "en"}, "en"), (base, None)):
+        connection = MagicMock()
+        inserted = MagicMock()
+        inserted.fetchone.return_value = {"id": command["run_id"]}
+        locked = MagicMock()
+        locked.fetchone.return_value = {
+            "status": "queued",
+            "result": None,
+            "command_envelope_hash": task_worker._agent_command_hash(command),
+        }
+        connection.execute.side_effect = lambda query, *args: (
+            inserted if "INSERT INTO agent_runs" in query else locked if "FOR UPDATE" in query else MagicMock()
+        )
+        context = MagicMock()
+        context.__enter__.return_value = connection
+
+        with patch.object(task_worker.database, "connect_ai", return_value=context):
+            task_worker._register_agent_command(command)
+
+        run_insert = connection.execute.call_args_list[0]
+        assert "provider, model, response_language" in run_insert.args[0]
+        assert run_insert.args[1][4:7] == ("openai", "gpt-5-nano", expected)
+
+
+def test_postgres_agent_turn_stores_response_language(monkeypatch) -> None:
+    """TEST_AGENT_DATABASE_URL을 지정하면 실제 스키마에 markdown_turn 행의 응답 언어가 저장되는지 검증한다."""
+    import os
+    from pathlib import Path
+    from uuid import uuid4
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    dsn = os.environ.get("TEST_AGENT_DATABASE_URL")
+    if not dsn:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    schema = "test_turn_language_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    try:
+        with connect() as conn:
+            conn.execute((Path(__file__).parents[2] / "db/ai_schema.sql").read_text())
+        monkeypatch.setattr(task_worker.database, "connect_ai", connect)
+        for run_id, language in (("turn_en", "en"), ("turn_none", None)):
+            command = dict(kind="agent", run_id=run_id, workspace_id="ws", user_id="user",
+                           message="Explain it", provider="openai", model="gpt-5-nano")
+            if language:
+                command["response_language"] = language
+            assert task_worker._register_agent_command(command) == ("execute", None)
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT id, response_language FROM agent_runs WHERE action = 'markdown_turn' ORDER BY id"
+            ).fetchall()
+        assert [(row["id"], row["response_language"]) for row in rows] == [("turn_en", "en"), ("turn_none", None)]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
 def test_postgres_redelivered_executing_agent_run_failure_is_durable(monkeypatch) -> None:

@@ -26,6 +26,8 @@ class MeetingNotesCommand(SpeechScope):
     # 참석자는 전사에서 이름이 확인된 사람만 쓴다.
     meeting_date: str | None = Field(default=None, min_length=1, max_length=40)
     attendees: list[str] = Field(default_factory=list, max_length=50)
+    # 요청자 화면 언어. 회의록 문장과 머리글을 이 언어로 쓴다. 없으면 지금처럼 한국어다.
+    response_language: Literal["ko", "en"] | None = None
 
     @model_validator(mode="after")
     def validate_attendees(self):

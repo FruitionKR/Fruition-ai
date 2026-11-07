@@ -12,6 +12,7 @@ from app.core.llm_env import (
     provider_api_key_env,
     resolve_llm_selection,
 )
+from app.core.response_language import current_response_language
 from app.core.response_preferences import with_response_preferences
 from app.modules.agent.application.ports import ConversationReplierPort
 from app.modules.agent.domain.entities import AgentTurnRequest
@@ -58,7 +59,8 @@ class ChatCompletionsConversationReplier(ConversationReplierPort):
         }
         system_prompt = with_response_preferences(
             f"{self._system_prompt}\n\n# Trusted Runtime Context\nCurrent date: {current_date}",
-            request.output_language,
+            # 응답 언어 설정이 없으면 요청자 화면 언어를 따른다. 둘 다 없으면 기존 동작이다.
+            request.output_language or current_response_language(),
             request.response_length,
         )
         try:

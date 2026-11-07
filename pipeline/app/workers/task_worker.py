@@ -23,6 +23,13 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListen
 
 from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
+from app.core.response_language import (
+    current_response_language,
+    is_english,
+    localize_text,
+    response_language_from,
+    response_language_scope,
+)
 from psycopg.types.json import Json
 from pydantic import ValidationError
 
@@ -189,6 +196,8 @@ def _handle_query(
         user_id=str(command["user_id"]),
         conversation_context=_conversation_context(command),
         allow_web_search=command["allow_web_search"],
+        # 요청자 화면 언어. document-svc가 싣지 않으면 키를 넘기지 않아 지금처럼 질문·근거 언어를 따른다.
+        **({"output_language": language} if (language := current_response_language()) else {}),
     )
     return query_to_response(result).model_dump(mode="json")
 
@@ -241,6 +250,8 @@ def _handle_agent(
                 on_chat_answer=lambda: _record_agent_chat_answer(run_id),
             ).execute(payload.to_domain())
         ).model_dump(mode="json")
+        # 안내·되묻기 같은 고정 문구를 요청 언어로 바꾼다. 저장하는 결과(재전달 replay)도 같은 언어다.
+        result = _localize_agent_result(result)
     except Exception as exc:
         error_code = _agent_failure_code(exc)
         logger.error(
@@ -289,6 +300,16 @@ def _handle_agent(
     if updated is None:
         raise PipelineRunCancelledError("Agent run no longer accepts a result.")
     return result
+
+
+def _localize_agent_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not is_english():
+        return result
+    localized_result = {**result, "message": localize_text(result.get("message"))}
+    chat = result.get("chat")
+    if isinstance(chat, dict):
+        localized_result["chat"] = {**chat, "answer": localize_text(chat.get("answer"))}
+    return localized_result
 
 
 def _record_agent_chat_answer(run_id: str) -> None:
@@ -379,9 +400,9 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
             """
             INSERT INTO agent_runs (
                 id, workspace_id, user_id, action, status, request_summary,
-                provider, model, document_id, base_version, apply_operation_id,
+                provider, model, response_language, document_id, base_version, apply_operation_id,
                 command_envelope_hash
-            ) VALUES (%s, %s, %s, 'markdown_turn', 'queued', %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, 'markdown_turn', 'queued', %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             RETURNING id
             """,
@@ -392,6 +413,8 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
                 str(command["message"])[:1000],
                 provider,
                 model,
+                # 승인형 run과 같이 턴을 시작한 요청자 화면 언어를 남긴다. 값이 없으면 NULL(기존 동작)이다.
+                response_language_from(command.get("response_language")),
                 # 문서를 열지 않은 턴은 셋 다 없다. 컬럼은 nullable이라 그대로 비워 둔다.
                 _text_or_none(command.get("document_id")),
                 _int_or_none(command.get("base_version")),
@@ -1071,7 +1094,7 @@ def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPubli
     from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
     terminal = True
     try:
-        with usage_scope(command):
+        with usage_scope(command), response_language_scope(command.get("response_language")):
             return _execute_controlled(command, event_publisher)
     except TaskAlreadyExecutingError:
         terminal = False  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.

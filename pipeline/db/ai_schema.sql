@@ -439,6 +439,8 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clarification_question text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS target_folder_id text;
 -- 선택한 Skill의 규칙 요약(실행 시점 Skill 설명). 승인 화면 안내용이며 Skill 없이 실행하면 NULL.
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS rule_summary text;
+-- run을 시작한 턴의 요청자 화면 언어('ko'|'en'). 계획 요약·되묻기 문구의 언어다. NULL이면 기존 동작(한국어 고정 문구).
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS response_language text;
 
 -- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs

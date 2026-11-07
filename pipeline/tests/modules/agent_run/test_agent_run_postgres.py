@@ -63,7 +63,9 @@ def _operation(plan_id: str, sequence: int, depends_on: tuple[int, ...] = ()) ->
     )
 
 
-def _awaiting_run(runs, *, target_folder_id: str | None = None, rule_summary: str | None = None):
+def _awaiting_run(
+    runs, *, target_folder_id: str | None = None, rule_summary: str | None = None, response_language: str | None = None
+):
     run = runs.create_with_planning_job(
         AgentRun(
             id="run-1",
@@ -75,6 +77,7 @@ def _awaiting_run(runs, *, target_folder_id: str | None = None, rule_summary: st
             request_summary="정리",
             target_folder_id=target_folder_id,
             rule_summary=rule_summary,
+            response_language=response_language,
         ),
         "planning-job",
     )
@@ -176,6 +179,12 @@ def test_target_folder_is_stored_and_returned_with_the_run(repositories) -> None
     assert body["target_folder_id"] == "folder-9"
     approved = runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
     assert AgentRunResponse.from_domain(approved).model_dump()["target_folder_id"] == "folder-9"
+
+
+def test_response_language_round_trips_for_later_agent_worker_jobs(repositories) -> None:
+    runs, _, _ = repositories
+    run, _ = _awaiting_run(runs, response_language="en")
+    assert run.response_language == "en"
 
 
 def test_plan_review_metadata_and_rule_summary_round_trip(repositories) -> None:

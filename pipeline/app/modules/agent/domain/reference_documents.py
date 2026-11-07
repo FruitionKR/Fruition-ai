@@ -8,6 +8,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, replace
 
+from app.core.response_language import localized
+
 from app.modules.agent.domain.folder_sources import TRUNCATED_SUFFIX
 from app.modules.query.domain.entities import EvidenceSnippet, SourceReference
 from app.modules.skill.domain.entities import SkillAuthoringReference
@@ -65,12 +67,17 @@ def reference_document_notice(selected: SelectedReferenceDocuments) -> str | Non
     """첨부 일부를 쓰지 못했을 때 결과 메시지에 덧붙일 안내."""
     sentences = []
     if selected.too_long_count:
-        sentences.append(
+        sentences.append(localized(
             f"첨부한 문서 중 {selected.too_long_count}개는 너무 길어 읽지 못했어요."
-            " 이 문서를 근거로 쓰려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
-        )
+            " 이 문서를 근거로 쓰려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요.",
+            f"{selected.too_long_count} of the attached documents were too long to read."
+            " To use them as evidence, add them to the wiki and ask again based on the wiki content.",
+        ))
     if any(document.truncated for document in selected.documents):
-        sentences.append("첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요.")
+        sentences.append(localized(
+            "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요.",
+            "The attached document is long, so I only read the beginning. The rest isn't reflected in the result.",
+        ))
     return " ".join(sentences) or None
 
 
