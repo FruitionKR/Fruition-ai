@@ -92,7 +92,7 @@ class TaskModeRequestSchemaTest(unittest.TestCase):
         self.assertEqual(AgentTurnRequestBody.model_validate({**base, "mode": "task"}).to_domain().mode, "task")
         self.assertIsNone(AgentTurnRequestBody.model_validate(base).to_domain().mode)
         with self.assertRaises(ValidationError):
-            AgentTurnRequestBody.model_validate({**base, "mode": "wiki"})
+            AgentTurnRequestBody.model_validate({**base, "mode": "chat"})
 
 
 class TaskModeRouterTest(unittest.TestCase):
@@ -258,7 +258,7 @@ class TaskModeHandleAgentTurnTest(unittest.TestCase):
 
     def test_other_clarifications_have_no_reason_code(self) -> None:
         use_case, _, _, _, _ = build_use_case(
-            AgentTurnRoute(action="clarify", confidence=0.9, reason="ask", notice_kind="web_disabled")
+            AgentTurnRoute(action="chat_answer", confidence=0.9, reason="question", retrieval_source="workspace")
         )
 
         result = use_case.execute(task_request())
@@ -354,14 +354,10 @@ def attachment_use_case(
 
 
 def attached_request(message: str = "첨부한 문서만 근거로 답해줘", **kwargs: object) -> AgentTurnRequest:
-    """채팅 탭의 첨부 질문. 작업 탭은 첨부가 있어도 답하지 않는다(test_chat_mode)."""
-    return AgentTurnRequest(
-        message=message, workspace_id="workspace-1", user_id="user-1", mode="chat",
-        reference_document_ids=("doc-1",), **kwargs,  # type: ignore[arg-type]
-    )
+    return task_request(message, reference_document_ids=("doc-1",), **kwargs)
 
 
-class ChatModeAttachmentRouteTest(unittest.TestCase):
+class TaskModeAttachmentRouteTest(unittest.TestCase):
     def test_router_accepts_answer_routes_with_attachments_without_retry(self) -> None:
         for action in TASK_EXCLUDED:
             with self.subTest(action=action):
@@ -374,12 +370,11 @@ class ChatModeAttachmentRouteTest(unittest.TestCase):
                 self.assertIsNone(route.notice_kind)
                 self.assertEqual(len(client.calls), 1)
 
-    def test_contract_allows_answer_routes_only_in_chat_mode(self) -> None:
+    def test_contract_allows_answer_routes_only_with_attachments(self) -> None:
         self.assertEqual(_route_failures(CHAT_ROUTE, attached_request()), [])
         self.assertEqual(_route_failures(REPLY_ROUTE, attached_request()), [])
         self.assertTrue(_route_failures(CHAT_ROUTE, task_request()))
         self.assertTrue(_route_failures(REPLY_ROUTE, task_request()))
-        self.assertTrue(_route_failures(CHAT_ROUTE, task_request(reference_document_ids=("doc-1",))))
 
     def test_chat_tab_clarify_with_attachments_becomes_grounded_answer(self) -> None:
         for notice_kind in ("chat_tab", None):
@@ -397,7 +392,7 @@ class ChatModeAttachmentRouteTest(unittest.TestCase):
                 self.assertIsNone(result.route.notice_kind)
                 self.assertEqual(len(query.questions), 1)
 
-    def test_other_task_tab_clarifications_with_attachments_are_kept(self) -> None:
+    def test_other_clarifications_with_attachments_are_kept(self) -> None:
         for notice_kind in ("details", "web_disabled", "attachment_target"):
             with self.subTest(notice_kind=notice_kind):
                 use_case, query, _, _, _ = attachment_use_case(
@@ -405,14 +400,14 @@ class ChatModeAttachmentRouteTest(unittest.TestCase):
                     FakeAttachmentReader(attachment()),
                 )
 
-                result = use_case.execute(task_request("첨부한 문서를 고쳐 줘", reference_document_ids=("doc-1",)))
+                result = use_case.execute(attached_request())
 
                 self.assertEqual(result.action, "clarify")
                 self.assertEqual(query.questions, [])
                 self.assertNotIn("채팅 탭", result.message or "")
 
 
-class ChatModeAttachmentAnswerTest(unittest.TestCase):
+class TaskModeAttachmentAnswerTest(unittest.TestCase):
     def test_question_with_attachment_answers_from_it_and_records_the_branch(self) -> None:
         use_case, query, _, editor, marks = attachment_use_case(CHAT_ROUTE, FakeAttachmentReader(attachment()))
 
@@ -475,11 +470,9 @@ class ChatModeAttachmentAnswerTest(unittest.TestCase):
         self.assertIsNone(result.edit)
         self.assertIsNone(result.run_id)
         self.assertEqual(editor.requests, [])
-        self.assertEqual(  # 첨부만 지목한 질문은 열린 문서를 근거로 섞지 않는다.
-            {snippet.source_document_id for snippet in query.kwargs[0]["pinned_evidence"]}, {"doc-1"}  # type: ignore[union-attr]
-        )
+        self.assertEqual(query.kwargs[0]["pinned_evidence"][0].source_document_id, "doc-1")  # type: ignore[index]
 
-    def test_open_document_in_task_tab_points_to_chat_tab(self) -> None:
+    def test_open_document_without_attachment_still_points_to_chat_tab(self) -> None:
         use_case, query, _, _, _ = attachment_use_case(CHAT_ROUTE, FakeAttachmentReader(attachment()))
 
         result = use_case.execute(
@@ -499,7 +492,8 @@ class TaskModeAttachmentPromptTest(unittest.TestCase):
     def test_prompt_routes_attachment_questions_and_summaries_to_answers(self) -> None:
         prompt = DEFAULT_AGENT_TURN_ROUTER_PROMPT.read_text(encoding="utf-8")
 
-        self.assertIn("with or without attachments or open Markdown", prompt)
+        self.assertIn("When `payload.mode` is `task` and `payload.reference_documents` is absent", prompt)
+        self.assertNotIn("In task mode a question stays the chat-tab `clarify`", prompt)
         self.assertNotIn("a request to summarize them into a result is `markdown_create`", prompt)
 
 

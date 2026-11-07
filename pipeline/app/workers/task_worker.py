@@ -231,8 +231,6 @@ def _handle_agent(
             "mode": command.get("mode"),
             # 작업 대상 폴더. document-svc는 지정하지 않은 턴에 키를 싣지 않는다.
             "folder_id": command.get("folder_id"),
-            # 편집 문맥 없이 보기 권한으로 연 문서. document-svc는 그런 턴에만 키를 싣는다.
-            "read_only_document_id": command.get("read_only_document_id"),
         })
         result = agent_to_response(
             build_handle_agent_turn_use_case(
