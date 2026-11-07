@@ -80,6 +80,23 @@ class AnswerContextFormatterTest(unittest.TestCase):
         self.assertIn("# Web Fallback Answer Policy", context)
         self.assertIn("Do not answer as an unsupported/refusal response", context)
 
+    def test_output_policy_follows_answer_language(self) -> None:
+        formatter = AnswerContextFormatter()
+        arguments = {
+            "question": "What is it?",
+            "related_pages": [],
+            "traversal_paths": [],
+            "evidence_snippets": [],
+        }
+
+        self.assertIn("- Answer in Korean.", formatter.format(**arguments))
+        english = formatter.format(**arguments, output_language="en")
+        self.assertIn("- Answer in English.", english)
+        self.assertNotIn("Korean", english)
+        document = formatter.format(**arguments, output_language="document")
+        self.assertIn("dominant language of the evidence document", document)
+        self.assertNotIn("Korean", document)
+
 
 if __name__ == "__main__":
     unittest.main()
