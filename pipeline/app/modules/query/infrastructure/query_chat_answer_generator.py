@@ -25,7 +25,11 @@ Write only the conversational answer body that should be shown to the user.
 Mark the evidence used for each supported sentence with citation markers like [1] or [2].
 Use only the evidence rank numbers provided in the context as citation markers.
 Every sentence that contains factual content from evidence must end with at least one citation marker.
-Do not write uncited factual sentences.
+Do not write uncited factual sentences drawn from evidence.
+If the requested value is [NUMERIC_PERSONAL_DATA], explain that it was not sent to the AI for personal-information protection, so you cannot answer that part.
+For example: 요청하신 발급번호는 개인정보 보호를 위해 AI에 전달되지 않아 답변해 드릴 수 없습니다.
+This privacy explanation describes application behavior, not document evidence: do not add citation markers, source links, or a source list to it.
+Do not guess or search for the withheld value. Unrelated masked values do not prevent answering supported, unmasked parts with their citations.
 Do not expose evidence lists, scores, path ids, page ids, page URLs, or internal metadata in the answer body.
 Do not expose internal link type names or implementation labels unless the user explicitly asks for technical details.
 If the context includes a mode-specific answer policy, follow that policy over generic unsupported-answer guidance.
