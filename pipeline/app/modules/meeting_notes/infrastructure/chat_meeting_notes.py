@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import asdict
 
+from app.core.response_language import is_english, with_response_language
 from app.modules.meeting_notes.domain.entities import TranscriptSegment
 from app.modules.wiki_generation.infrastructure.chat_completions_llm import (
     ChatCompletionsJsonClient,
@@ -73,6 +74,13 @@ MAX_ITEM_CHARS = 2000
 MAX_OUTPUT_TOKENS = 16000
 
 
+def _system_prompt() -> str:
+    """영어 요청이면 회의록을 영어로 쓰게 한다. 언어가 없거나 한국어면 기존 프롬프트 그대로다."""
+    if not is_english():
+        return SYSTEM_PROMPT
+    return with_response_language(SYSTEM_PROMPT.replace("한국어 회의록 초안을", "영어(English) 회의록 초안을", 1))
+
+
 class ChatMeetingNotes:
     def __init__(self, client: ChatCompletionsJsonClient) -> None:
         self._client = client
@@ -129,7 +137,7 @@ class ChatMeetingNotes:
         """묶음 하나를 질의한다. 잘린 JSON은 다시 쪼갤 수 있도록 예외를 값으로 돌려준다."""
         try:
             return self._client.complete_json(
-                SYSTEM_PROMPT,
+                _system_prompt(),
                 json.dumps(
                     {
                         "display_name": display_name,

@@ -89,6 +89,8 @@ class AgentRun:
     model: str | None = None
     target_folder_id: str | None = None
     rule_summary: str | None = None
+    # run을 시작한 턴의 요청자 화면 언어("ko"|"en"). 계획 요약·되묻기 문구에 쓴다. None이면 기존 동작이다.
+    response_language: str | None = None
 
 
 @dataclass(frozen=True)

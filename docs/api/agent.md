@@ -15,6 +15,14 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 응답 언어(`response_language`)
+
+`ai.agent.command`·`ai.query.command`의 선택 키 `response_language`(`"ko"`|`"en"`)는 요청자 화면 언어다. document-svc가 `Accept-Language`로 정해 싣는다. 키가 없거나 다른 값이면 기존 동작이다([ADR-0045](../adr/0045-response-language.md)).
+
+- 질의 답변·대화 답변은 이 언어로 쓴다(응답 언어 설정 `output_language`가 있으면 그것이 먼저다).
+- `clarify`·`reject`·안내 `message`, 편집안·새 문서의 `summary`와 결과 메시지, 진행 이벤트 message, 첫 문답의 채팅 제목이 이 언어를 따른다. 편집안·새 문서 본문 언어는 바꾸지 않는다.
+- 이 턴이 만든 승인형 run은 언어를 `agent_runs.response_language`에 저장한다. 계획 summary·작업 reason·되묻기 질문·경고, 계획 끝의 고정 안내도 이 언어다. 영어 고정 안내 형식: `Removed {n} operations that move items outside the target folder from the plan.`, `Removed {n} rename or move operations on the target folder itself from the plan because the target folder can't be changed.`, `Some documents not in the plan have nearly identical content: 'A' and 'B'.`, `Couldn't check {n} documents for duplicate content.`
+
 ### 작업 탭 안내 종류(`notice_kind`)
 
 라우트의 선택 항목 `notice_kind`는 사용자에게 무엇을 알릴지 정한다. 없으면(`null`) 기존 문구를 쓴다.

@@ -127,6 +127,7 @@ Command(JSON, 필드는 전부 필수이며 모르는 필드는 거부한다. `d
 }
 ```
 
+`response_language`(`"ko"`|`"en"`)는 선택이다. 요청자 화면 언어로, `"en"`이면 회의록 문장과 머리글(Date·Attendees·Summary·Discussion·Decisions·Action items·Next steps)을 영어로 쓴다. 없으면 지금처럼 한국어다. 이 외의 값은 `MEETING_NOTES_INPUT_REJECTED`다.
 `meeting_date`(1~40자 문자열)·`attendees`(최대 50명, 이름 1~100자)는 선택이다. 회의록 머리의 날짜·참석자로 쓴다.
 `meeting_date`가 없으면 날짜는 "확인되지 않음"이다. 참석자는 `attendees`를 먼저 두고 전사에서 이름이 확인된 사람을
 중복 없이 덧붙이며, 둘 다 없으면 "확인되지 않음"이다.
