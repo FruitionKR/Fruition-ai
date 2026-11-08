@@ -21,6 +21,8 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
+from app.modules.query.infrastructure.product_help import build_query_product_help
+
 from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from app.core.response_language import (
@@ -186,6 +188,9 @@ def _handle_query(
     if not isinstance(command["allow_web_search"], bool):
         raise ValueError("allow_web_search must be a boolean")
     result = build_answer_query_use_case(
+        product_help=build_query_product_help(
+            provider=str(command["provider"]).strip(), model=str(command["model"]).strip(),
+        ),
         provider=str(command["provider"]).strip(),
         model=str(command["model"]).strip(),
         allow_web_search=command["allow_web_search"],
@@ -207,7 +212,7 @@ def _handle_agent(
     event_publisher: QueryEventPublisherPort | None = None,
 ) -> dict[str, Any]:
     # 문서를 열지 않은 턴은 편집 대상이 없어 document_id·base_version·apply_operation_id·
-    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·clarify·reject만 낸다.
+    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·product_help·clarify·reject만 낸다.
     # 작업 탭 턴(mode=task)은 문서 없이도 폴더 정리·워크플로를 낼 수 있고, 문서 편집이면 clarify로 되묻는다.
     _required(command, "run_id", "workspace_id", "user_id", "message")
     run_id = str(command["run_id"])

@@ -287,7 +287,9 @@ class HandleAgentTurnUseCase:
         on_chat_answer: Callable[[], None] | None = None,
         task_clarifier: TaskClarifierPort | None = None,
         reference_reader: SkillReferenceReaderPort | None = None,
+        product_help_replier: ConversationReplierPort | None = None,
     ) -> None:
+        self._product_help_replier = product_help_replier
         self._task_clarifier = task_clarifier
         self._reference_reader = reference_reader
         self._on_chat_answer = on_chat_answer
@@ -343,6 +345,7 @@ class HandleAgentTurnUseCase:
             "markdown_create": "새 문서 작성 요청으로 확인했어요.",
             "chat_answer": "질문에 답할 근거를 찾고 있어요.",
             "conversation_reply": "대화 맥락에 맞는 답변을 작성하고 있어요.",
+            "product_help": "Fruition 사용 방법을 안내하고 있어요.",
             "folder_organize": "폴더 정리 계획을 준비하고 있어요.",
             "folder_lookup": "폴더 내용을 확인하고 있어요.",
             "workspace_workflow": "문서 작업 계획을 준비하고 있어요.",
@@ -679,6 +682,17 @@ class HandleAgentTurnUseCase:
                 message=REJECT_MESSAGES.get(route.notice_kind or "", REJECT_DEFAULT_MESSAGE),
             )
 
+        if route.action == "product_help":
+            if self._product_help_replier is None:
+                raise AgentConfigurationError("Product help is not configured.")
+            return AgentTurnResult(
+                action="product_help",
+                route=_non_mutating_route(route, action="product_help", reason=route.reason),
+                # 번들 가이드는 사용자 문서가 아니다. 문서 언어 설정으로 화면 언어를 덮어쓰지 않는다.
+                message=self._product_help_replier.reply(
+                    replace(request, output_language=None) if request.output_language == "document" else request
+                ),
+            )
         if route.action == "conversation_reply":
             return self._execute_conversation_reply(request, route)
 

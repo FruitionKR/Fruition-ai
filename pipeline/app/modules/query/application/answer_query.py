@@ -10,6 +10,7 @@ from app.modules.query.application.ports import (
     AnswerGeneratorPort,
     ConversationSummarizerPort,
     EmbeddingSearchPort,
+    ProductHelpPort,
     QueryEventPublisherPort,
     QueryEvaluatorGraphPort,
     QueryEvaluatorPort,
@@ -118,7 +119,9 @@ class AnswerQueryUseCase:
         graph_expansion_depth: int = 3,
         max_evidence_snippets: int = 8,
         conversation_summarizer: ConversationSummarizerPort | None = None,
+        product_help: ProductHelpPort | None = None,
     ) -> None:
+        self._product_help = product_help
         self._wiki_repository = wiki_repository
         self._embedding_search = embedding_search
         self._text_search = text_search
@@ -260,6 +263,24 @@ class AnswerQueryUseCase:
         query = Question(question)
         web_search_telemetry = WebSearchTelemetry()
         self._publish(event_publisher, "query_started", "질의 처리를 시작했습니다.", {"question": query.normalized})
+        if self._product_help is not None and not pinned_evidence:
+            help_answer = self._product_help.reply(
+                query.normalized,
+                conversation_context=conversation_context,
+                output_language=output_language,
+                response_length=response_length,
+            )
+            if help_answer is not None:
+                self._publish(event_publisher, "answer_generated", "답변 생성을 완료했습니다.")
+                return QueryAnswer(
+                    answer=GeneratedAnswer(content=help_answer),
+                    related_pages=[], evidence_snippets=[], graph_context=GraphContext(),
+                    traversal_paths=[],
+                    retrieval_summary=build_retrieval_summary(
+                        related_pages=[], source_candidate_count=0, concept_candidate_count=0,
+                        stop_reason="product_help",
+                    ),
+                )
         contextual_question = contextualize_question(query.normalized, conversation_context)
         if contextual_question != query.normalized:
             self._publish(

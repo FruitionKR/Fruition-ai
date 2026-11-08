@@ -1,0 +1,80 @@
+[
+  {
+    "id": "ko-chat",
+    "locale": "ko",
+    "tab": "채팅",
+    "question": "Fruition 웹 검색 기본값은 어디서 켜?",
+    "run_id": "query_5038b44d-e040-41fe-8d46-6713dfb65f02",
+    "session_id": "session_7e3ec1402a5549289e2643333397cabd",
+    "answer": "설정 → AI 설정 → 채팅에서 “웹 검색 기본으로 켜기”를 켜면 됩니다.",
+    "action": null,
+    "reload_visible": true,
+    "receipt_language": "ko",
+    "receipt_status": "succeeded"
+  },
+  {
+    "id": "ko-task",
+    "locale": "ko",
+    "tab": "작업",
+    "question": "Fruition 웹 검색 기본값은 어디서 켜?",
+    "run_id": "agent_24844f027f6941c583780ed2a6d24f2b",
+    "session_id": "session_79b3391549ce42148f1a1c298f5ca371",
+    "answer": "설정 → AI 설정 → 채팅에서 **웹 검색 기본으로 켜기**를 켜면 됩니다.",
+    "action": "product_help",
+    "reload_visible": true,
+    "receipt_language": "ko",
+    "receipt_status": "succeeded"
+  },
+  {
+    "id": "en-chat",
+    "locale": "en",
+    "tab": "Chat",
+    "question": "Where do I enable web search by default in Fruition?",
+    "run_id": "query_86ae1337-2fc1-45c6-93a1-7024c1b43aff",
+    "session_id": "session_512c2872622f48b88da252063810cfa6",
+    "answer": "Go to **Settings → AI settings → Chat**, then enable **Turn on web search by default**. This sets web search to be on by default in chat.",
+    "action": null,
+    "reload_visible": true,
+    "receipt_language": "en",
+    "receipt_status": "succeeded"
+  },
+  {
+    "id": "en-task",
+    "locale": "en",
+    "tab": "Tasks",
+    "question": "Where do I enable web search by default in Fruition?",
+    "run_id": "agent_6835a5ab151c49f6a45ecadf8d9a3422",
+    "session_id": "session_579ac14d9f0d4b918164477c81a06e9b",
+    "answer": "Go to Settings → AI settings → Chat and enable Turn on web search by default. This sets web search to be on by default in chats.",
+    "action": "product_help",
+    "reload_visible": true,
+    "receipt_language": "en",
+    "receipt_status": "succeeded"
+  },
+  {
+    "id": "ko-ambiguous",
+    "locale": "ko",
+    "tab": "채팅",
+    "question": "이 앱은 어떻게 작동해?",
+    "run_id": "query_883fb53e-9081-43db-9965-2713c2e69313",
+    "session_id": "session_8b7500b3621d451abee59d9798699cec",
+    "answer": "Fruition을 말씀하시는 건가요, 아니면 직접 만든 앱을 말씀하시는 건가요?",
+    "action": null,
+    "reload_visible": true,
+    "receipt_language": "ko",
+    "receipt_status": "succeeded"
+  },
+  {
+    "id": "en-ambiguous",
+    "locale": "en",
+    "tab": "Chat",
+    "question": "How does this app work?",
+    "run_id": "query_96157773-88d2-4c19-99d5-de4c4a2e2ed7",
+    "session_id": "session_9b13775ecf364b05b098dd6f7dd37532",
+    "answer": "Do you mean Fruition, or your own app?",
+    "action": null,
+    "reload_visible": true,
+    "receipt_language": "en",
+    "receipt_status": "succeeded"
+  }
+]
