@@ -69,3 +69,9 @@ were not tested. Jev option/contract integration is covered by unit tests. No de
 
 - `agent_turn_router.system.md`: `62a18b515d8a25ac3576b3b6ca9b5fddaaa0885e4c0531fb247863b6eaeb26de`
 - `product_help.system.md`: `ac293cdd9dcabe8392b7072c05a9750d18086ab3e8630adc01f378341de05fd3`
+
+## Language follow-up
+
+The language audit subsequently corrected UI labels and the help-only `document` preference.
+See [language-review.md](language-review.md) for current prompt hashes and evaluation results.
+The hashes and answer outputs above describe the original evaluation, before that follow-up.

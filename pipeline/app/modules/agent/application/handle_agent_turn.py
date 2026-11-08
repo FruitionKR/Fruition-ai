@@ -688,7 +688,10 @@ class HandleAgentTurnUseCase:
             return AgentTurnResult(
                 action="product_help",
                 route=_non_mutating_route(route, action="product_help", reason=route.reason),
-                message=self._product_help_replier.reply(request),
+                # 번들 가이드는 사용자 문서가 아니다. 문서 언어 설정으로 화면 언어를 덮어쓰지 않는다.
+                message=self._product_help_replier.reply(
+                    replace(request, output_language=None) if request.output_language == "document" else request
+                ),
             )
         if route.action == "conversation_reply":
             return self._execute_conversation_reply(request, route)

@@ -126,3 +126,70 @@ def test_help_eval_cases_have_valid_route_contracts():
         route, failures = _normalize_route({**case["expected"], "confidence": 1.0, "reason": "evaluation"})
         assert not failures, (case["id"], failures)
         assert not _route_failures(route, request_from_case(case)), case["id"]
+
+
+@pytest.mark.parametrize(('screen', 'output', 'expected'), [
+    ('en', None, 'English'), ('ko', None, 'Korean'),
+    ('en', 'ko', 'Korean'), ('ko', 'en', 'English'),
+    ('en', 'document', 'English'), ('ko', 'document', 'Korean'),
+    (None, None, None), (None, 'document', None),
+])
+def test_help_language_precedence_keeps_ui_language_separate(screen, output, expected):
+    from app.core.response_language import response_language_scope
+
+    client = Mock()
+    client.complete_json.return_value = {'message': 'Answer'}
+    replier = ChatCompletionsConversationReplier(client, DEFAULT_PRODUCT_HELP_PROMPT.read_text())
+    router = Mock()
+    router.route.return_value = HELP_ROUTE
+    use_case = HandleAgentTurnUseCase(router, Mock(), Mock(), Mock(), product_help_replier=replier)
+    with response_language_scope(screen):
+        use_case.execute(AgentTurnRequest(message='Fruition PDF 편집 방법', output_language=output))
+    system = client.complete_json.call_args.args[0]
+    assert f'UI language: {screen or "unknown"}' in system
+    assert 'Use the dominant language of the evidence document;' not in system
+    if expected:
+        assert f'Write the response in {expected}.' in system
+    else:
+        assert 'Write the response in English.' not in system
+        assert 'Write the response in Korean.' not in system
+
+
+def test_regular_conversation_keeps_document_language_preference():
+    client = Mock()
+    client.complete_json.return_value = {'message': 'Answer'}
+    replier = ChatCompletionsConversationReplier(client, 'conversation prompt')
+    replier.reply(AgentTurnRequest(message='Explain it', output_language='document'))
+    assert 'Use the dominant language of the evidence document;' in client.complete_json.call_args.args[0]
+
+
+def test_worker_passes_screen_language_to_help_and_does_not_leak_between_commands():
+    from unittest.mock import MagicMock
+    from app.workers import task_worker
+    from app.core.response_language import current_response_language
+
+    client = Mock()
+    client.complete_json.return_value = {'message': 'Answer'}
+    replier = ChatCompletionsConversationReplier(client, DEFAULT_PRODUCT_HELP_PROMPT.read_text())
+    router = Mock()
+    router.route.return_value = HELP_ROUTE
+    publisher = Mock()
+    use_case = HandleAgentTurnUseCase(
+        router, Mock(), Mock(), Mock(), product_help_replier=replier, event_publisher=publisher,
+    )
+    base = dict(run_id='language-test', kind='agent', workspace_id='workspace', user_id='user',
+                message='Fruition PDF 사용법', provider='openai', model='gpt-6-luna')
+    with (
+        patch.object(task_worker, '_register_agent_command', return_value=('execute', None)),
+        patch.object(task_worker.database, 'connect_ai', return_value=MagicMock()),
+        patch.object(task_worker, 'build_handle_agent_turn_use_case', return_value=use_case),
+        patch.object(task_worker, '_execute_controlled', side_effect=task_worker._handle_agent),
+    ):
+        for screen in ['en', 'ko', None]:
+            command = base | ({'response_language': screen} if screen else {})
+            result = task_worker._handle_controlled(command, publisher)
+            assert result['action'] == 'product_help' and result['message'] == 'Answer'
+            assert f'UI language: {screen or "unknown"}' in client.complete_json.call_args.args[0]
+            assert current_response_language() is None
+    routed = [call.args[1] for call in publisher.publish.call_args_list if call.args[0] == 'agent.routed']
+    assert routed == ['Explaining how to use Fruition.', 'Fruition 사용 방법을 안내하고 있어요.', 'Fruition 사용 방법을 안내하고 있어요.']

@@ -1674,3 +1674,22 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 `pipeline`에서 `python evaluate_agent_turn_router.py --provider <provider> --model <model>`로
 기존 사례와 함께 실제 모델을 평가한다. 단위 테스트는 계약과 실행 경계를 검증하며
 모델의 의미 분류 정확도나 실제 응답 지연을 보증하지 않는다.
+
+### 도움말의 언어와 UI 명칭
+
+실제 웹 요청은 화면 언어를 `Accept-Language`로 보내고 document-svc가 이를
+`response_language`로 AI command에 전달한다. 현재 공개 Agent 요청/command에는
+별도의 `output_language` 필드가 없으므로 웹 사용자는 화면 언어(ko/en)를 기준으로 안내받는다.
+AI 내부 `AgentTurnRequest`에서 `output_language=ko|en`을 지정한 경우에만 설명 언어를 우선한다.
+도움말에서 `output_language=document`는 번들 한국어 가이드의 언어를 선택하지 않고 화면 언어로
+돌아간다. 화면 언어도 없는 구 command/내부 요청에서는 질문 언어를 따른다.
+일반 문서·대화 작업의 `document` 언어 설정은 그대로 유지한다.
+
+버튼·메뉴 이름은 설명 언어와 별도로 **화면 언어**에 맞춘다. 예를 들어 영어 화면에서
+한국어 설명을 받더라도 버튼은 `Convert to Markdown`으로 안내한다. 화면 언어가 없으면
+설명 언어에 맞춘다. 도움말 프롬프트에 프런트 ko/en 번역에서 확인한 79개 UI 명칭과 출처 커밋을
+보존하며, 미확인 명칭은 임의로 버튼명처럼 인용하지 않는다.
+
+화면 언어는 서버의 trusted runtime context로 전달하고, 사용자 대화·문서 안의 언어 지시는
+이를 덮어쓰지 못하게 한다. 진행 메시지도 화면 언어를 따르며, 비동기 요청은 요청 시점의
+언어를 유지한다. 이전 대화가 한국어였더라도 현재 영어 화면에서 보낸 요청은 영어로 안내한다.
