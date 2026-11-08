@@ -1,0 +1,97 @@
+[
+  {
+    "id": "ko_help",
+    "question": "Fruition 사용법 알려줘",
+    "history": [],
+    "expected": "product_help",
+    "actual": {
+      "action": "product_help"
+    },
+    "passed": true
+  },
+  {
+    "id": "en_help",
+    "question": "How do I enable web search by default in Fruition?",
+    "history": [],
+    "expected": "product_help",
+    "actual": {
+      "action": "product_help"
+    },
+    "passed": true
+  },
+  {
+    "id": "ko_ambiguous",
+    "question": "이 앱은 어떻게 작동해?",
+    "history": [],
+    "expected": "ambiguous",
+    "actual": {
+      "action": "ambiguous"
+    },
+    "passed": true
+  },
+  {
+    "id": "en_ambiguous",
+    "question": "How does this app work?",
+    "history": [],
+    "expected": "ambiguous",
+    "actual": {
+      "action": "ambiguous"
+    },
+    "passed": true
+  },
+  {
+    "id": "own_app",
+    "question": "우리 앱에 Fruition 같은 기능을 구현하려면?",
+    "history": [],
+    "expected": "query",
+    "actual": {
+      "action": "query"
+    },
+    "passed": true
+  },
+  {
+    "id": "own_app_context",
+    "question": "이 앱은 어떻게 작동해?",
+    "history": [
+      {
+        "role": "user",
+        "content": "내가 만든 예약 앱은 매일 아침 예약 목록을 보여 줘."
+      }
+    ],
+    "expected": "query",
+    "actual": {
+      "action": "query"
+    },
+    "passed": true
+  },
+  {
+    "id": "followup",
+    "question": "그 설정은 어디 있어?",
+    "history": [
+      {
+        "role": "assistant",
+        "content": "Fruition 웹 검색 기본값은 AI 설정에서 바꿀 수 있습니다."
+      }
+    ],
+    "expected": "product_help",
+    "actual": {
+      "action": "product_help"
+    },
+    "passed": true
+  },
+  {
+    "id": "new_request",
+    "question": "이 문서를 요약해 줘",
+    "history": [
+      {
+        "role": "assistant",
+        "content": "Fruition 웹 검색 기본값은 AI 설정에서 바꿀 수 있습니다."
+      }
+    ],
+    "expected": "query",
+    "actual": {
+      "action": "query"
+    },
+    "passed": true
+  }
+]
