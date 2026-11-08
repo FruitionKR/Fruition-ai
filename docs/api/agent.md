@@ -39,7 +39,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
-- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`·`product_help`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
 - 첨부가 있는 작업 탭은 답변 갈래를 그대로 실행한다. 첨부 UI가 작업 탭에만 있어 채팅 탭 안내로는 답을 얻을 수 없기 때문이다. 라우터가 그래도 `clarify`(`chat_tab` 또는 안내 종류 없음, 문서 동작 없음, Skill 후보 없음)를 고르면 `chat_answer`(`retrieval_source=workspace`)로 바꾼다. 응답·기록은 채팅 탭의 답변 갈래와 같다. 첨부를 읽지 못하면 답변하지 않고 읽기 실패 이유를 담은 `clarify`로 끝나며 `chat_tab`이 아니다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
@@ -1645,3 +1645,32 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 질의 답변은 평가자가 활성화된 경우에만 `query_evaluating`(답변 검토)을 평가 호출 직전에 발행하고, 검토 후 재작성하는 경우 `answer_retrying`을 발행합니다. 일반 대화 등 평가자를 호출하지 않는 경로에는 검토 단계를 표시하지 않습니다.
 
 첫 문답은 최종 답변 이벤트를 먼저 전송한 뒤 같은 모델로 짧은 채팅 제목을 생성합니다. 제목 생성은 다음 문답 처리를 막지 않는 별도 작업으로 실행하고, 정상 종료 시 진행 중인 제목 전송을 마친 뒤 producer를 닫습니다. 별도의 `session_title` 이벤트로 document 서비스에 저장하며, 실패해도 완료된 답변은 바뀌지 않습니다. 이전 대화가 있으면 제목을 다시 생성하지 않습니다. agent·query command의 선택 필드 `session_title_needed`가 `false`면 사용자가 제목을 정한 세션이므로 제목을 생성하지 않고 사용량 원장 행도 열지 않습니다. 키가 없거나(구 document-svc) boolean이 아니면 없는 것으로 보고 위 규칙대로 동작합니다.
+
+## Fruition 사용법 안내 (`product_help`)
+
+로그인한 사용자가 Fruition 자체의 사용법·화면 위치·설정을 물으면 기존 라우터가
+`product_help`를 선택한다. 일반 LLM과 Jev 모두 같은 계약을 사용하며 별도의 분류 호출은 없다.
+`retrieval_source=none`, `document_operation=none`, `persist=false`이고 Skill은 선택하지 않는다.
+응답 본문은 `message`에 들어간다. 클라이언트는 새 action을 답변으로 표시해야 한다.
+문서 변경, 검색, 승인 작업이나 음성 답변용 `chat_answer` 이벤트는 생성하지 않는다.
+
+답변은 `pipeline/prompts/product_help.system.md`에 포함된 Fruition 화면 가이드
+20261026 버전의 화면 6–49를 사용한다. 회원가입·로그인 등 화면 1–5는 제외하며,
+로그인 후 계정 변경·보안 설정은 포함한다. 일반 라우터와 일반 대화 프롬프트에는 가이드 본문을 넣지 않는다.
+답변 모델·응답 길이·언어와 오류 처리·출력 정제는 기존 대화 답변 경로를 재사용한다.
+`CONVERSATION_REPLY_SYSTEM_PROMPT` 재정의는 도움말 자료를 대체하지 않는다.
+
+“이 앱”의 대상이 모호하면 `conversation_reply`에서 한 번 확인한다. 사용자 앱이나 문서를
+가리키면 기존 경로를 유지한다. 도움말 후속 질문은 문맥으로 이어가지만 새로운 작업 요청을
+도움말로 고정하지 않는다. 새 매뉴얼 작성·저장은 문서 작업이며 이미 제공된 도움말 답변을
+자료로 사용할 수 있다. 첨부 없는 작업 탭에서는 기존 답변 제한대로 `clarify/chat_tab`을 반환한다.
+
+가이드에 없는 기능·정책·오류 원인은 추측하지 않고 확인할 수 없다고 안내한다.
+사용자의 화면·권한·작업 상태를 실제로 확인한 것처럼 답하거나 조작을 완료했다고 말하지 않는다.
+업로드와 위키 편입, 보기만의 편집 예외, 휴지통 복구 후 재편입을 구분한다.
+자료의 숫자·메뉴 경로는 배포 화면과 차이가 날 수 있으므로 제품 변경 시 해당 화면 항목도 갱신한다.
+
+회귀 사례는 `pipeline/evals/agent_turn_router.jsonl`의 `product-help-*` 24개다.
+`pipeline`에서 `python evaluate_agent_turn_router.py --provider <provider> --model <model>`로
+기존 사례와 함께 실제 모델을 평가한다. 단위 테스트는 계약과 실행 경계를 검증하며
+모델의 의미 분류 정확도나 실제 응답 지연을 보증하지 않는다.

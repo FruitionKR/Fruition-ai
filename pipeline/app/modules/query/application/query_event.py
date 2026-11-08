@@ -14,6 +14,7 @@ for _ko, _en in (
     ("새 문서 작성 요청으로 확인했어요.", "Identified this as a new document request."),
     ("질문에 답할 근거를 찾고 있어요.", "Looking for evidence to answer your question."),
     ("대화 맥락에 맞는 답변을 작성하고 있어요.", "Writing a reply that fits the conversation."),
+    ("Fruition 사용 방법을 안내하고 있어요.", "Explaining how to use Fruition."),
     ("폴더 정리 계획을 준비하고 있어요.", "Preparing a folder organization plan."),
     ("폴더 내용을 확인하고 있어요.", "Checking the folder contents."),
     ("문서 작업 계획을 준비하고 있어요.", "Preparing a document task plan."),

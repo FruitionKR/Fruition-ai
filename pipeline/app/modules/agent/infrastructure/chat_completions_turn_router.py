@@ -52,6 +52,7 @@ PENDING_SKILL_FOLLOWUP_PATTERN = re.compile(
 ALLOWED_ACTIONS = {
     "chat_answer",
     "conversation_reply",
+    "product_help",
     "markdown_edit",
     "markdown_create",
     "folder_organize",
@@ -352,6 +353,8 @@ def _route_failures(route: AgentTurnRoute, request: AgentTurnRequest) -> list[st
             "clarify requires a supported Markdown target reason or ambiguous Skill candidates; "
             "use conversation_reply when a conversational task needs more user context"
         )
+    if route.action == "product_help" and (route.selected_skill_id or route.skill_candidates):
+        failures.append("product_help must not select Skill candidates")
     expected_persist = route.action in {"folder_organize", "workspace_workflow"}
     if route.persist != expected_persist:
         failures.append(
