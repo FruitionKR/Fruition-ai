@@ -64,7 +64,8 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
 - 완전한 workspace 검색 scope가 명시적 page/unit/text-byte/vector-dimension cap 안인지 cap+1 metadata probe로 먼저 판정한다. 초과하면 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`로 거부하고 unit text rank/vector unnest를 실행하지 않는다.
 - admission에 성공한 scope는 전체 page metadata와 unit text의 lexical score, 전체 current page vector의 semantic score를 계산한 후에만 candidate limit을 적용한다. evidence 배열과 statement timeout도 응답 slicing 전에 적용한다.
 - 현재 page update 뒤 완료된 stored page vector만 후보 publication identity에 쓴다. relevant unit의 완료 stored vector가 있으면 semantic rerank에 쓰고, 없으면 semantic score 0으로 두며 본문을 즉석 임베딩하지 않는다. 질문은 한 번만 임베딩한다.
-- 기존 `Bm25Searcher`, stored dense score, 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Jev, Agent 경로는 만들거나 호출하지 않는다.
+- 기존 `Bm25Searcher`, stored dense score, 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
+- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 이미 bounded된 검색 후보의 snippet unit(본문·document-qualified block ref·unit 종류·가중치)뿐이며 workspace 전체 unit을 다시 읽지 않는다. 본문·블록·문서가 같은 후보는 하나로 묶고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 후보를 고른 순서로 앞에 두고 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
 - query embedding 호출은 model usage ledger의 `kind=mcp_wiki_search_query_embedding`으로 answer generation과 분리해 기록한다.
 - 검색 실행은 API event loop 밖의 worker thread에서 수행하고, deadline-aware remote embedding transport만 허용한다. 로컬 model fallback은 이 endpoint에서 지원하지 않는다.
 
@@ -74,7 +75,7 @@ Candidate retrieval은 admission에 성공한 작은 scope에서 lexical match�
 
 Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant/client/policy/spec/tool, query hash, page size, 정렬 버전, offset, 전체 bounded 후보의 ordered page ID/version/content hash/document-qualified evidence locator를 묶는다. durable snapshot/cache는 만들지 않는다.
 
-다음 페이지마다 같은 bounded 검색을 다시 실행한다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, page version/hash/evidence/order가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
+다음 페이지마다 같은 bounded 검색을 다시 실행하되 Jev와 하이브리드 정렬은 다시 하지 않는다. 현재 후보의 page ID/version/hash/evidence가 cursor에 고정한 후보 집합과 같으면 cursor의 순서를 그대로 쓴다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, 후보 집합이나 page version/hash/evidence가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
 
 ## 6. 설정과 비활성 상태
 
