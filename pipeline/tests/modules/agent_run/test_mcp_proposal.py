@@ -395,3 +395,56 @@ def test_plan_duplicate_content_and_dependents_are_deselected_not_rejected() -> 
     preview = json.loads(repository.created[0]["artifacts"][0].preview_json)
     assert preview["removed_lines"] == 0
     assert preview["added_lines"] > 0
+
+
+def _source_bound_pdf_plan(*, drop: str | None = None) -> dict[str, object]:
+    body = plan_body()
+    markdown = "# 보고서\n\n![그림](data:image/png;base64,iVBORw0KGgo=)\n"
+    digest = "sha256:" + hashlib.sha256(markdown.encode()).hexdigest()
+    arguments = {
+        "display_name": "보고서", "folder_id": None, "content_artifact_id": "converted-markdown",
+        "content_hash": digest, "source_document_id": "doc_pdf", "source_content_hash": "sha256:" + "a" * 64,
+    }
+    if drop:
+        arguments.pop(drop)
+    body["proposal"]["operations"] = [{
+        "id": "convert-pdf", "sequence": 1, "tool_name": "create_document",
+        "target_type": "document", "target_id": None, "base_version": None,
+        "source_parent_id": None, "destination_parent_id": None,
+        "arguments": arguments, "reason": "PDF 변환본 저장", "depends_on": [],
+    }]
+    body["proposal"]["artifacts"] = [{
+        "id": "converted-markdown", "content_hash": digest, "purpose": "create_document",
+        "document_id": None, "base_version": None, "target": None, "markdown": markdown,
+    }]
+    return body
+
+
+def test_mcp_plan_keeps_pdf_source_binding_in_approved_arguments() -> None:
+    body = _source_bound_pdf_plan()
+    body["request_hash"] = mcp_proposal_request_hash(command(body))
+    repository = MemoryRepository()
+
+    CreateMcpProposalUseCase(repository, ContextReader()).execute(command(body))
+
+    arguments = repository.created[0]["plan"].operations[0].arguments
+    assert arguments["source_document_id"] == "doc_pdf"
+    assert arguments["source_content_hash"] == "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize("drop", ["source_document_id", "source_content_hash"])
+def test_mcp_plan_rejects_half_pdf_source_binding(drop: str) -> None:
+    with pytest.raises(Exception):
+        McpAgentProposalRequest.model_validate(_source_bound_pdf_plan(drop=drop))
+
+
+def test_internal_agent_plan_never_accepts_pdf_source_binding() -> None:
+    from app.modules.agent_run.application.plan_validation import ALLOWED_PLAN_TOOLS, prepare_agent_plan
+
+    operation = _source_bound_pdf_plan()["proposal"]["operations"][0]
+    with pytest.raises(ValueError, match="tool contract"):
+        prepare_agent_plan(
+            run_id="run-1", plan_id="plan-1", version=1,
+            candidate={"summary": "PDF", "operations": [operation]},
+            hierarchy=[], allowed_tools=ALLOWED_PLAN_TOOLS,
+        )

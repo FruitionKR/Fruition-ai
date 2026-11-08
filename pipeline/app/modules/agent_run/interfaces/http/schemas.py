@@ -233,6 +233,10 @@ _PLAN_ARGUMENT_KEYS = {
         "document_id", "base_version", "target", "content_artifact_id", "content_hash",
     },
 }
+# PDF 변환본 생성: 원본 PDF 문서와 그 hash를 둘 다 지정한 create_document. 하나만 오면 거절한다.
+_SOURCE_BOUND_CREATE_DOCUMENT_KEYS = _PLAN_ARGUMENT_KEYS["create_document"] | {
+    "source_document_id", "source_content_hash",
+}
 
 
 def _folder_id(value: object, *, nullable: bool = True) -> str | None:
@@ -283,8 +287,19 @@ class McpPlanOperationRequest(_McpExactModel):
 
     @model_validator(mode="after")
     def exact_tool_contract(self):
-        if set(self.arguments) != _PLAN_ARGUMENT_KEYS[self.tool_name]:
+        source_bound = (
+            self.tool_name == "create_document"
+            and set(self.arguments) == _SOURCE_BOUND_CREATE_DOCUMENT_KEYS
+        )
+        if not source_bound and set(self.arguments) != _PLAN_ARGUMENT_KEYS[self.tool_name]:
             raise ValueError("operation arguments do not match the tool contract")
+        if source_bound:
+            source_id = self.arguments["source_document_id"]
+            if not isinstance(source_id, str) or not _DOCUMENT_ID.fullmatch(source_id):
+                raise ValueError("source_document_id has an invalid format")
+            source_hash = self.arguments["source_content_hash"]
+            if not isinstance(source_hash, str) or not _HASH.fullmatch(source_hash):
+                raise ValueError("source_content_hash must be a lowercase sha256 digest")
         folder_tool = self.tool_name in {"create_folder", "rename_folder", "move_folder"}
         if self.target_type != ("folder" if folder_tool else "document"):
             raise ValueError("target_type does not match tool_name")

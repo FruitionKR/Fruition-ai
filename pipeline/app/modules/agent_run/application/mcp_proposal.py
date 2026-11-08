@@ -366,6 +366,7 @@ class CreateMcpProposalUseCase:
                     "rename_document", "create_document", "apply_document_edit",
                 },
                 target_folder_id=command.proposal.get("target_folder_id"),  # type: ignore[arg-type]
+                allow_source_bound_create=True,
             )
         except ValueError as exc:
             raise McpProposalError(400, "INVALID_INPUT", str(exc)) from exc
