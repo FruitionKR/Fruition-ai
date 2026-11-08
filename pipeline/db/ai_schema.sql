@@ -237,6 +237,45 @@ ALTER TABLE mcp_wiki_draft_idempotency ADD CONSTRAINT mcp_wiki_draft_idempotency
     tool_name IN ('start_ingest','submit_window','finalize_ingest','submit_lint_changes')
 );
 
+-- MCP 외부 AI PDF 변환 세션. 전처리(AnyDoc)는 converter journal(ai_task_runs, run_id mcpconvert:<id>:<start>)과
+-- tmp/convert/mcp/ 묶음에 있고, 여기에는 요청자 신원·원본·창 결과와 조립한 Markdown hash만 둔다.
+CREATE TABLE IF NOT EXISTS mcp_pdf_conversions (
+    conversion_id uuid PRIMARY KEY,
+    workspace_id text NOT NULL,
+    user_id text NOT NULL,
+    grant_id uuid NOT NULL,
+    client_id text NOT NULL,
+    policy_generation bigint NOT NULL,
+    idempotency_key varchar(255) NOT NULL,
+    request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    document_id text NOT NULL,
+    source_key text NOT NULL,
+    source_content_hash varchar(71) NOT NULL CHECK (source_content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    page_count integer NOT NULL CHECK (page_count BETWEEN 1 AND 50),
+    describe_figures boolean NOT NULL,
+    final_markdown_hash varchar(71) CHECK (final_markdown_hash ~ '^sha256:[0-9a-f]{64}$'),
+    final_response jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    finalized_at timestamptz,
+    UNIQUE (workspace_id, user_id, grant_id, client_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS mcp_pdf_conversions_final_idx
+    ON mcp_pdf_conversions (workspace_id, user_id, document_id, final_markdown_hash)
+    WHERE final_markdown_hash IS NOT NULL;
+CREATE TABLE IF NOT EXISTS mcp_pdf_conversion_submissions (
+    conversion_id uuid NOT NULL REFERENCES mcp_pdf_conversions(conversion_id) ON DELETE CASCADE,
+    window_id uuid NOT NULL,
+    attempt integer NOT NULL CHECK (attempt BETWEEN 1 AND 2),
+    window_hash varchar(71) NOT NULL,
+    idempotency_key varchar(255) NOT NULL,
+    request_hash varchar(71) NOT NULL,
+    result jsonb NOT NULL,
+    response jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (conversion_id, window_id, attempt),
+    UNIQUE (conversion_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS wiki_pages (
     id varchar(255) PRIMARY KEY,
     page_type varchar(255) NOT NULL CHECK (page_type IN ('source', 'concept')),

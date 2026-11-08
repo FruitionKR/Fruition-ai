@@ -93,6 +93,7 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
             ("mcp_wiki_publication_results", "DELETE FROM mcp_wiki_publication_results WHERE workspace_id = %(ws)s"),
             ("mcp_wiki_lint_drafts", "DELETE FROM mcp_wiki_drafts WHERE workspace_id = %(ws)s AND draft_kind='LINT'"),
             ("mcp_wiki_ingest_runs", "DELETE FROM mcp_wiki_ingest_runs WHERE workspace_id = %(ws)s"),
+            ("mcp_pdf_conversions", "DELETE FROM mcp_pdf_conversions WHERE workspace_id = %(ws)s"),
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE workspace_id = %(ws)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE workspace_id = %(ws)s"),
             # 개인 스킬은 workspace_id가 NULL이라 팀 스킬만 지워진다. 버전·출처는 CASCADE.
@@ -145,6 +146,7 @@ def purge_user(user_id: str) -> dict[str, int]:
             ("mcp_wiki_publication_results", "DELETE FROM mcp_wiki_publication_results WHERE user_id = %(user)s"),
             ("mcp_wiki_lint_drafts", "DELETE FROM mcp_wiki_drafts WHERE user_id = %(user)s AND draft_kind='LINT'"),
             ("mcp_wiki_ingest_runs", "DELETE FROM mcp_wiki_ingest_runs WHERE user_id = %(user)s"),
+            ("mcp_pdf_conversions", "DELETE FROM mcp_pdf_conversions WHERE user_id = %(user)s"),
             # 작업 기록을 지우면 실행 중이던 작업은 이후 변경이 거부되고, 재전달은 ai_purged_scopes로 거절된다.
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE user_id = %(user)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE user_id = %(user)s"),

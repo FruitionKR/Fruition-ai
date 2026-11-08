@@ -29,6 +29,11 @@ TARGET_FOLDER_NOTE_EN = (
     "because the target folder can't be changed."
 )
 OUT_OF_SCOPE_NOTE_EN = "Removed {count} operations that move items outside the target folder from the plan."
+# MCP 외부 AI PDF 변환본 생성. 원본 PDF와 그 hash를 승인 인자에 고정하고 Document가 승인·실행 때 다시 확인한다.
+SOURCE_BOUND_CREATE_DOCUMENT_ARGUMENTS = {
+    "display_name", "folder_id", "content_artifact_id", "content_hash",
+    "source_document_id", "source_content_hash",
+}
 
 
 def prepare_agent_plan(
@@ -41,13 +46,16 @@ def prepare_agent_plan(
     content_artifacts: tuple[ContentArtifactReference, ...] = (),
     allowed_tools: set[str],
     target_folder_id: str | None = None,
+    allow_source_bound_create: bool = False,
 ) -> AgentPlan:
     candidate = _place_creates_in_target_folder(candidate, target_folder_id)
     candidate = _scope_moves_to_target_folder(candidate, target_folder_id, hierarchy, plan_id)
     plan = normalize_plan_candidate(run_id, plan_id, version, candidate)
     if any(operation.tool_name not in allowed_tools for operation in plan.operations):
         raise ValueError("Agent plan contains a tool outside the trusted mutation scope.")
-    _validate_plan_against_hierarchy(plan, hierarchy, content_artifacts, target_folder_id)
+    _validate_plan_against_hierarchy(
+        plan, hierarchy, content_artifacts, target_folder_id, allow_source_bound_create
+    )
     return plan
 
 
@@ -274,6 +282,7 @@ def _validate_plan_against_hierarchy(
     hierarchy: list[dict[str, object]],
     content_artifacts: tuple[ContentArtifactReference, ...],
     target_folder_id: str | None = None,
+    allow_source_bound_create: bool = False,
 ) -> None:
     items = {str(item.get("id")): item for item in hierarchy if item.get("id") is not None}
     # 대상 폴더는 작업 범위 자체다. 옮기면 자기 하위로 들어가는 순환이 되고 이름을 바꾸면 범위 밖(부모 폴더)에
@@ -301,7 +310,12 @@ def _validate_plan_against_hierarchy(
         },
     }
     for operation in plan.operations:
-        if set(operation.arguments) != required_arguments[operation.tool_name]:
+        source_bound = (
+            allow_source_bound_create
+            and operation.tool_name == "create_document"
+            and set(operation.arguments) == SOURCE_BOUND_CREATE_DOCUMENT_ARGUMENTS
+        )
+        if not source_bound and set(operation.arguments) != required_arguments[operation.tool_name]:
             raise ValueError("Agent plan arguments do not match the tool contract.")
         expected_target_type = "folder" if operation.tool_name in {
             "create_folder",
