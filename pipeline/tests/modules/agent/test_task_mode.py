@@ -151,7 +151,7 @@ class TaskModeRouterTest(unittest.TestCase):
         prompt = DEFAULT_AGENT_TURN_ROUTER_PROMPT.read_text(encoding="utf-8")
 
         self.assertIn("payload.mode", prompt)
-        self.assertIn("`chat_answer` and `conversation_reply` are unavailable", prompt)
+        self.assertIn("`chat_answer`, `conversation_reply`, and `product_help` are unavailable", prompt)
 
 
 class TaskModeHandleAgentTurnTest(unittest.TestCase):

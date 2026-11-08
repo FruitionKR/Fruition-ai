@@ -207,7 +207,7 @@ def _handle_agent(
     event_publisher: QueryEventPublisherPort | None = None,
 ) -> dict[str, Any]:
     # 문서를 열지 않은 턴은 편집 대상이 없어 document_id·base_version·apply_operation_id·
-    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·clarify·reject만 낸다.
+    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·product_help·clarify·reject만 낸다.
     # 작업 탭 턴(mode=task)은 문서 없이도 폴더 정리·워크플로를 낼 수 있고, 문서 편집이면 clarify로 되묻는다.
     _required(command, "run_id", "workspace_id", "user_id", "message")
     run_id = str(command["run_id"])

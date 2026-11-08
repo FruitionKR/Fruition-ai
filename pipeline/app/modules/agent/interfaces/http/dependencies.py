@@ -9,6 +9,7 @@ from app.modules.agent.infrastructure.backend_folder_tree_reader import build_fo
 from app.modules.agent.infrastructure.chat_completions_folder_resolver import build_folder_reference_resolver
 from app.modules.agent.infrastructure.jev_folder_resolver import with_jev_folder_lookup
 from app.modules.agent.infrastructure.chat_completions_conversation_replier import (
+    DEFAULT_PRODUCT_HELP_PROMPT,
     build_conversation_replier,
 )
 from app.modules.agent.infrastructure.chat_completions_task_clarifier import build_task_clarifier
@@ -92,6 +93,9 @@ def build_handle_agent_turn_use_case(
         ),
         conversation_replier=build_conversation_replier(
             provider=provider, model=model
+        ),
+        product_help_replier=build_conversation_replier(
+            provider=provider, model=model, prompt_path=DEFAULT_PRODUCT_HELP_PROMPT
         ),
         folder_source_reader=build_folder_source_reader() if feature_enabled else None,
         reference_reader=build_skill_reference_reader(),

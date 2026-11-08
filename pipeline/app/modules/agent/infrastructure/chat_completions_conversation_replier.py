@@ -26,6 +26,7 @@ from app.modules.wiki_generation.infrastructure.json_output_parser import JsonPa
 DEFAULT_CONVERSATION_REPLY_PROMPT = (
     Path(__file__).resolve().parents[4] / "prompts" / "conversation_reply.system.md"
 )
+DEFAULT_PRODUCT_HELP_PROMPT = DEFAULT_CONVERSATION_REPLY_PROMPT.with_name("product_help.system.md")
 JSON_OBJECT_CONTRACT_FAILURE = "conversation reply output must be a JSON object"
 PRODUCT_TIMEZONE = ZoneInfo("Asia/Seoul")
 
@@ -95,12 +96,13 @@ def build_conversation_replier(
     *,
     provider: str | None = None,
     model: str | None = None,
+    prompt_path: Path | None = None,
 ) -> ConversationReplierPort:
     resolved_provider, resolved_model = resolve_llm_selection(provider, model)
     api_key = api_key_from_env(provider=resolved_provider)
     if not api_key:
         raise RuntimeError(f"Set {provider_api_key_env(resolved_provider)}.")
-    prompt_path = Path(
+    prompt_path = prompt_path or Path(
         os.environ.get(
             "CONVERSATION_REPLY_SYSTEM_PROMPT",
             str(DEFAULT_CONVERSATION_REPLY_PROMPT),

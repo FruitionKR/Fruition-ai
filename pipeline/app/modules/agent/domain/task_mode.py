@@ -5,7 +5,7 @@ from dataclasses import replace
 from app.modules.agent.domain.entities import AgentTurnRequest, AgentTurnRoute
 
 # 첨부 없는 작업 탭에서는 답변 갈래를 고를 수 없다. 질문은 clarify로 채팅 탭을 안내한다.
-TASK_MODE_EXCLUDED_ACTIONS = frozenset({"chat_answer", "conversation_reply"})
+TASK_MODE_EXCLUDED_ACTIONS = frozenset({"chat_answer", "conversation_reply", "product_help"})
 
 
 def is_task_mode(request: AgentTurnRequest) -> bool:
