@@ -33,7 +33,7 @@ def world(monkeypatch):
     judge = Judge()
     monkeypatch.setattr(jev, 'jev_concept_judge', lambda fallback: judge)
     monkeypatch.setattr(jev, 'embedding_server_model', lambda: Embedding())
-    monkeypatch.setattr(production, '_stored_concept_vectors', lambda *_: {})
+    monkeypatch.setattr(production, '_stored_concept_vectors', lambda *_, **__: {})
     monkeypatch.setattr(production, 'cached_embeddings', lambda _, texts: {text: array('f', [1., 0.]) for text in texts})
     rows, pages, loaded = {}, {}, {}
     for name in ('parent', 'child', 'referrer'):
@@ -119,3 +119,15 @@ def test_busy_target_is_not_moved_but_its_inbound_reference_is_rewritten(world):
     assert effects['page_changes']['referrer']['added_links'][0]['target'] == 'concept:parent'
     effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {'parent': {}})
     assert not effects['deleted_page_ids']
+
+
+def test_selected_planner_passes_page_and_entry_bounds(world, monkeypatch):
+    _, rows, pages, _ = world
+    seen = []
+    def vectors(*args, **kwargs):
+        seen.append(kwargs)
+        return {}
+    monkeypatch.setattr(production, '_stored_concept_vectors', vectors)
+    lint._freeze_page_moves(None, 'workspace', pages, rows, {})
+    assert set(seen[0]['page_ids']) == set(pages)
+    assert set(seen[0]['entry_ids']) <= {entry['entry_id'] for page in pages.values() for entry in page.entries}

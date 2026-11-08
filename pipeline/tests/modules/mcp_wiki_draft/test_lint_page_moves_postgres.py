@@ -130,3 +130,38 @@ def test_stale_target_without_candidate_definition_still_conflicts(selected):
         h._intake(source).lint(payload)
     assert exc.value.code == 'TARGET_CHANGED'
     assert not judge.calls
+
+
+def test_selected_vector_sql_excludes_unrelated_pages_and_entries_but_web_keeps_them(selected, monkeypatch):
+    _, source, _, payload = selected
+    h._seed_lint_page('outside', 'outside')
+    loader = h.wiki_repository._stored_concept_vectors
+    with h._connect() as conn:
+        for page_id in ('parent', 'child', 'referrer', 'outside'):
+            conn.execute(
+                "INSERT INTO wiki_page_embeddings(page_id,embedding_model,representation_hash,embedding_vector,embedding_dimension) "
+                "VALUES (%s,'fake',%s,ARRAY[1.,0.],2)", (page_id, page_id),
+            )
+        for page_id, entry_id in (('child', 'detail'), ('child', 'stale-entry'), ('outside', 'outside-entry')):
+            conn.execute(
+                "INSERT INTO wiki_embedding_vectors(id,embedding_model,representation_hash,representation_text,embedding_vector,status) "
+                "VALUES (%s,'fake',%s,'entry',ARRAY[1.,0.],'completed')", (entry_id, entry_id),
+            )
+            conn.execute(
+                "INSERT INTO wiki_embedding_units(id,embedding_vector_id,page_id,source_document_id,unit_type,text,entry_id) "
+                "VALUES (%s,%s,%s,'doc_seed','sub_entry','entry',%s)", (entry_id, entry_id, page_id, entry_id),
+            )
+        assert set(loader(conn, 'workspace-1', 'fake', page_ids=['child'], entry_ids=['detail'])) == {'child', 'detail'}
+        assert loader(conn, 'workspace-1', 'fake', page_ids=[], entry_ids=[]) == {}
+        assert set(loader(conn, 'workspace-1', 'fake')) == {
+            'parent', 'child', 'referrer', 'outside', 'detail', 'stale-entry', 'outside-entry',
+        }
+    materialized = []
+    def capture(*args, **kwargs):
+        result = loader(*args, **kwargs)
+        materialized.append(set(result))
+        return result
+    monkeypatch.setattr(h.wiki_repository, '_stored_concept_vectors', capture)
+    h._intake(source).lint(payload)
+    # The entry has no authoritative definition, so it isn't a selected head either.
+    assert materialized == [{'parent', 'child', 'referrer'}]
