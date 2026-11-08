@@ -12,6 +12,7 @@ from app.modules.wiki_generation.domain.text_utils import (
     slugify,
     unique_keep_order,
 )
+from app.modules.wiki_generation.domain.concept_identity import available_concept_slug
 
 
 class PipelineValidationError(Exception):
@@ -29,7 +30,7 @@ class SemanticNormalizer:
     def normalize_notes(self, notes: list[dict[str, Any]]) -> dict[str, Any]:
         warnings: list[str] = []
         normalized_notes = []
-        concepts_by_slug: dict[str, NormalizedConcept] = {}
+        concept_rows: list[NormalizedConcept] = []
         evidence_rows: list[NormalizedEvidence] = []
         categories_by_name: dict[str, dict[str, Any]] = {}
         section_candidates_by_slug: dict[str, dict[str, Any]] = {}
@@ -74,20 +75,33 @@ class SemanticNormalizer:
             concept_inputs = note.get("core_concepts") or (note.get("concept_candidates") or [])
             for rank, c in enumerate(concept_inputs, start=1):
                 concept = self._normalize_concept(c, warnings)
-                if concept.slug not in concepts_by_slug:
-                    concept.importance_score += max(0, 10 - rank)
-                    concepts_by_slug[concept.slug] = concept
-                else:
-                    self._merge_concept(concepts_by_slug[concept.slug], concept)
-                    concepts_by_slug[concept.slug].importance_score += max(0, 10 - rank) * 0.5
+                concept.importance_score += max(0, 10 - rank)
+                concept_rows.append(concept)
 
-        # 근거 힌트를 개념의 제목·별칭으로 썼으면 그 개념 slug로 맞춘다. 근거를 붙이는 곳과 근거 검증이 같은 기준을 쓴다.
-        slug_by_name = {slug: slug for slug in concepts_by_slug}
+        # slugify 충돌은 동일성이 아니다. 같은 제목만 먼저 합치고, 나머지는 이름 순서로 기존 후보 규칙을 적용한다.
+        concepts_by_title: dict[str, NormalizedConcept] = {}
+        for concept in sorted(concept_rows, key=lambda item: (name_key(item.title), item.slug, item.title)):
+            title_key = name_key(concept.title)
+            if title_key in concepts_by_title:
+                self._merge_concept(concepts_by_title[title_key], concept)
+                concepts_by_title[title_key].importance_score += concept.importance_score * 0.5
+            else:
+                concepts_by_title[title_key] = concept
+        concepts_by_slug: dict[str, NormalizedConcept] = {}
+        for concept in sorted(concepts_by_title.values(), key=lambda item: (name_key(item.title), item.slug)):
+            concept.slug = available_concept_slug(concept.slug, concepts_by_slug)
+            concepts_by_slug[concept.slug] = concept
+
+        # 근거 힌트 원문을 이름 키로 맞춘다. `C#`을 먼저 slugify해 `C` 근거로 바꾸지 않는다.
+        slugs_by_name: dict[str, set[str]] = {}
         for concept in concepts_by_slug.values():
-            for name in [concept.title, *concept.aliases]:
-                slug_by_name.setdefault(slugify(name), concept.slug)
+            for name in [concept.title, *concept.identity_aliases]:
+                slugs_by_name.setdefault(name_key(name), set()).add(concept.slug)
         for ev in evidence_rows:
-            ev.related_concept_slugs = unique_keep_order(slug_by_name.get(slug, slug) for slug in ev.related_concept_slugs)
+            ev.related_concept_slugs = unique_keep_order(
+                next(iter(matches)) if len(matches := slugs_by_name.get(name_key(hint), set())) == 1 else slugify(hint)
+                for hint in ev.related_concept_slugs
+            )
 
         # Attach evidence to concepts.
         missing_related_hints: dict[str, dict[str, Any]] = {}
@@ -317,10 +331,14 @@ class SemanticNormalizer:
         slug = slugify(c.get("slug_hint") or title)
         anchor_refs = self._anchor_refs((c.get("evidence_block_ids") or []) or (c.get("anchor_block_ids") or []), warnings, limit=3)
         aliases = unique_keep_order([str(a).strip() for a in (c.get("aliases") or []) if str(a).strip()] + [title])
+        identity_aliases = unique_keep_order(
+            str(a).strip() for a in (c.get("aliases") or []) if str(a).strip() and name_key(a) != name_key(title)
+        )
         return NormalizedConcept(
             slug=slug,
             title=title,
             aliases=aliases,
+            identity_aliases=identity_aliases,
             tags=clean_concept_tags(c.get("tags") or [], title, aliases),
             definition=c.get("definition", ""),
             why_page_worthy=c.get("why_page_worthy", ""),
@@ -330,6 +348,7 @@ class SemanticNormalizer:
 
     def _merge_concept(self, target: NormalizedConcept, incoming: NormalizedConcept) -> None:
         target.aliases = unique_keep_order(target.aliases + incoming.aliases)
+        target.identity_aliases = unique_keep_order(target.identity_aliases + incoming.identity_aliases)
         target.tags = clean_concept_tags(target.tags + incoming.tags, target.title, target.aliases)
         if len(incoming.definition) > len(target.definition):
             target.definition = incoming.definition
@@ -340,7 +359,7 @@ class SemanticNormalizer:
 
     def _normalize_evidence(self, evidence_id: str, ev: dict[str, Any], warnings: list[str]) -> NormalizedEvidence:
         refs = self._anchor_refs((ev.get("anchor_block_ids") or []), warnings, limit=3)
-        slugs = [slugify(x) for x in (ev.get("related_concept_hints") or [])]
+        hints = [str(value).strip() for value in (ev.get("related_concept_hints") or []) if str(value).strip()]
         confidence = ev.get("confidence", 0.0)
         try:
             confidence = float(confidence)
@@ -350,7 +369,7 @@ class SemanticNormalizer:
             evidence_id=evidence_id,
             claim=ev.get("claim", ""),
             anchor_reference_ids=refs,
-            related_concept_slugs=unique_keep_order(slugs),
+            related_concept_slugs=unique_keep_order(hints),
             confidence=max(0.0, min(1.0, confidence)),
             source_document_id=self.document.document_id,
         )
@@ -358,7 +377,7 @@ class SemanticNormalizer:
     def _expand_mentions(self, concept: NormalizedConcept) -> list[str]:
         # Exact-ish lexical expansion. This is backend calculation, not LLM output.
         # In production, this can be replaced with hybrid search + optional LLM yes/no verifier.
-        needles = unique_keep_order([concept.title] + concept.aliases + [concept.slug.replace("-", " ")])
+        needles = unique_keep_order([concept.title] + concept.aliases)
         refs = []
         for b in self.blocks:
             if any(self._direct_mention(b.text, n) for n in needles):
@@ -382,21 +401,25 @@ def _split_concept_aliases(concepts_by_slug: dict[str, NormalizedConcept]) -> li
     """
     owner_by_name = {}
     for concept in concepts_by_slug.values():
-        for name in (concept.title, concept.slug):
+        for name in (concept.title,):
             owner_by_name.setdefault(name_key(name), concept.slug)
-    names_by_slug = {slug: {name_key(name) for name in [c.title, c.slug, *c.aliases]} for slug, c in concepts_by_slug.items()}
+    identity_names_by_slug = {
+        slug: {name_key(alias) for alias in concept.identity_aliases}
+        for slug, concept in concepts_by_slug.items()
+    }
     links = []
     for concept in concepts_by_slug.values():
         kept = []
         for alias in concept.aliases:
             owner = owner_by_name.get(name_key(alias))
-            # 서로를 별칭으로 가진 두 개념은 같은 개념의 두 이름이라 그대로 두고 이름 일치 병합에 맡긴다.
-            mutual = owner is not None and bool(names_by_slug[owner] & {name_key(concept.title), name_key(concept.slug)})
+            mutual = owner is not None and name_key(concept.title) in identity_names_by_slug[owner]
             if owner and owner != concept.slug and not mutual:
                 links.append({"source": concept.slug, "target": owner})
                 continue
             kept.append(alias)
         concept.aliases = kept
+        kept_keys = {name_key(alias) for alias in kept}
+        concept.identity_aliases = [alias for alias in concept.identity_aliases if name_key(alias) in kept_keys]
     return links
 
 

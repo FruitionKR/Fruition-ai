@@ -251,3 +251,39 @@ def test_anthropic_ttl_cache_creation_is_summed_without_double_count(monkeypatch
             with ledger.track_call('anthropic', 'claude') as receipt:
                 receipt['usage'] = {'input_tokens': 100, 'output_tokens': 2, 'input_token_details': details}
     assert calls[1][1][5] == 35 and calls[3][1][5] == 40
+
+
+def _ledger_conn(monkeypatch):
+    statements = []
+    @contextmanager
+    def connect():
+        yield SimpleNamespace(execute=lambda sql, params: statements.append((sql, params)))
+    monkeypatch.setattr(ledger.database, 'connect_ai', connect)
+    return statements
+
+
+def test_reserved_call_is_reused_by_first_tracked_call_only(monkeypatch):
+    statements = _ledger_conn(monkeypatch)
+    with ledger.usage_scope({'run_id': 'r', 'workspace_id': 'w', 'user_id': 'u', 'kind': 'session_title'}):
+        reserved = ledger.start_call('openai', 'model')
+        with ledger.reserved_call(reserved):
+            with ledger.track_call('openai', 'model'):
+                pass
+            with ledger.track_call('openai', 'model'):
+                pass
+    inserts = [params for sql, params in statements if 'INSERT' in sql]
+    updates = [params for sql, params in statements if 'UPDATE' in sql]
+    # 미리 연 행 1개 + 두 번째 호출의 새 행. 첫 호출은 새 행을 만들지 않고 미리 연 행을 닫는다.
+    assert len(inserts) == 2
+    assert updates[0][-1] == reserved
+    assert updates[1][-1] != reserved
+
+
+def test_release_removes_only_unused_reservation(monkeypatch):
+    statements = _ledger_conn(monkeypatch)
+    ledger.release_reserved_call('call-1')
+    ledger.release_reserved_call(None)
+    assert len(statements) == 1
+    sql, params = statements[0]
+    assert 'DELETE FROM ai_model_usage' in sql and "status='started'" in sql
+    assert params == ('call-1',)

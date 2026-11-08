@@ -16,6 +16,7 @@ from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     ENTRY_CANDIDATE_LIMIT,
     PART_OF_RULE,
     JevConceptResolver,
+    NameMatchConceptResolver,
     with_jev_concept_merge,
 )
 
@@ -95,7 +96,13 @@ INCOMING = [
 ]
 # DB 개념 인덱스는 definition, 파일 개념 인덱스는 summary를 쓴다.
 EXISTING = [
-    {"slug": "memoization", "title": "memoization", "aliases": ["메모"], "definition": "함수 결과를 저장해 재사용한다."},
+    {
+        "slug": "memoization",
+        "title": "memoization",
+        "aliases": ["메모"],
+        "identity_aliases": ["메모"],
+        "definition": "함수 결과를 저장해 재사용한다.",
+    },
     {"slug": "cache", "title": "cache", "aliases": [], "summary": "데이터를 저장하는 포괄 개념이다."},
     {"slug": "dynamic-programming", "title": "dynamic programming", "aliases": [], "definition": "부분 문제를 저장한다."},
 ]
@@ -230,24 +237,41 @@ class JevConceptResolverTest(unittest.TestCase):
 
         self.assertEqual(result["resolutions"], [])
 
-    def test_exact_name_prefers_existing_and_breaks_incoming_cycles(self) -> None:
+    def test_exact_name_rejects_ambiguous_existing_match_and_breaks_incoming_cycles(self) -> None:
         incoming = [
-            {"slug": "attention", "title": "attention", "aliases": ["주의"], "definition": "가중치를 준다."},
-            {"slug": "주의-메커니즘", "title": "주의 메커니즘", "aliases": ["attention"], "definition": "가중치를 준다."},
+            {"slug": "attention", "title": "attention", "aliases": ["주의"], "identity_aliases": ["주의"], "definition": "가중치를 준다."},
+            {"slug": "주의-메커니즘", "title": "주의 메커니즘", "aliases": ["attention"], "identity_aliases": ["attention"], "definition": "가중치를 준다."},
         ]
         existing = [{"slug": "attn", "title": "Attention", "aliases": [], "definition": "가중치를 준다."}]
 
-        both_to_existing = _resolver(PairJev()).resolve(incoming, existing)
+        jev = PairJev()
+        both_to_existing = _resolver(jev).resolve(incoming, existing)
         among_incoming = _resolver(PairJev()).resolve(incoming, [])
 
-        self.assertEqual(
-            {item["incoming_slug"]: item["canonical_slug"] for item in both_to_existing["resolutions"]},
-            {"attention": "attn", "주의-메커니즘": "attn"},
-        )
+        self.assertEqual(both_to_existing["resolutions"], [])
+        self.assertEqual(jev.requests, [])
         # 서로 가리키면 연쇄 금지로 둘 다 남으므로 slug가 앞선 쪽만 정본으로 둔다.
         self.assertEqual(
             {item["incoming_slug"]: item["canonical_slug"] for item in among_incoming["resolutions"]},
             {"주의-메커니즘": "attention"},
+        )
+
+    def test_ambiguous_proven_aliases_never_reach_semantic_fallback(self) -> None:
+        fallback = RecordingResolver()
+
+        result = NameMatchConceptResolver(fallback).resolve(
+            [{"slug": "shared", "title": "Shared", "identity_aliases": []}],
+            [
+                {"slug": "one", "title": "One", "identity_aliases": ["Shared"]},
+                {"slug": "two", "title": "Two", "identity_aliases": ["Shared"]},
+            ],
+            [],
+        )
+
+        self.assertEqual(fallback.calls, [])
+        self.assertEqual(
+            result["resolutions"],
+            [{"incoming_slug": "shared", "decision": "create_new", "canonical_slug": "shared", "alias_to_add": None}],
         )
 
     def test_cache_overflow_still_returns_previously_cached_vectors(self) -> None:
@@ -509,10 +533,10 @@ class NameMatchConceptResolverTest(unittest.TestCase):
 
         llm = RecordingResolver()
         incoming = [
-            {"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"], "definition": "정의"},
+            {"slug": "retrieval-augmented-generation", "title": "검색 증강 생성", "aliases": ["RAG"], "identity_aliases": ["RAG"], "definition": "정의"},
             {"slug": "new-thing", "title": "새 개념", "aliases": [], "definition": "정의"},
         ]
-        existing = [{"slug": "rag", "title": "Retrieval-Augmented Generation", "aliases": ["RAG", "검색 증강 생성"], "definition": "정의"}]
+        existing = [{"slug": "rag", "title": "Retrieval-Augmented Generation", "aliases": ["RAG", "검색 증강 생성"], "identity_aliases": ["RAG", "검색 증강 생성"], "definition": "정의"}]
 
         result = NameMatchConceptResolver(llm).resolve(incoming, existing, [])
 
@@ -522,20 +546,23 @@ class NameMatchConceptResolverTest(unittest.TestCase):
         )
         self.assertEqual([c["slug"] for c in llm.calls[0][0]], ["new-thing"])
 
-    def test_follows_chained_name_matches_to_the_final_concept(self) -> None:
+    def test_does_not_follow_an_ambiguous_name_chain_to_existing(self) -> None:
         from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
 
         incoming = [
-            {"slug": "rag", "title": "RAG", "aliases": ["검색 증강 생성"], "definition": "정의"},
+            {"slug": "rag", "title": "RAG", "aliases": ["검색 증강 생성"], "identity_aliases": ["검색 증강 생성"], "definition": "정의"},
             {"slug": "rag-model", "title": "검색 증강 생성", "aliases": [], "definition": "정의"},
         ]
-        existing = [{"slug": "retrieval-augmented-generation", "title": "Retrieval-Augmented Generation", "aliases": ["RAG"], "definition": "정의"}]
+        existing = [{"slug": "retrieval-augmented-generation", "title": "Retrieval-Augmented Generation", "aliases": ["RAG"], "identity_aliases": ["RAG"], "definition": "정의"}]
 
         result = NameMatchConceptResolver(RecordingResolver()).resolve(incoming, existing, [])
 
         self.assertEqual(
-            {item["incoming_slug"]: item["canonical_slug"] for item in result["resolutions"]},
-            {"rag": "retrieval-augmented-generation", "rag-model": "retrieval-augmented-generation"},
+            {
+                item["incoming_slug"]: (item["decision"], item["canonical_slug"])
+                for item in result["resolutions"]
+            },
+            {"rag-model": ("merge_into", "rag"), "rag": ("create_new", "rag")},
         )
 
     def test_chain_follow_stops_on_cycles_and_missing_targets(self) -> None:
@@ -551,7 +578,7 @@ class NameMatchConceptResolverTest(unittest.TestCase):
         incoming = [
             {"slug": "a", "title": "Alpha", "aliases": [], "definition": "정의"},
             {"slug": "b", "title": "Beta", "aliases": [], "definition": "정의"},
-            {"slug": "x", "title": "X", "aliases": ["alpha"], "definition": "정의"},
+            {"slug": "x", "title": "X", "aliases": ["alpha"], "identity_aliases": ["alpha"], "definition": "정의"},
         ]
         cycle = Fixed([
             {"incoming_slug": "a", "decision": "merge_into", "canonical_slug": "b"},

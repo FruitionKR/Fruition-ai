@@ -27,7 +27,7 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
     def __init__(
         self,
         read_text: Callable[[str], str],
-        write_text: Callable[[str, str, str], str],
+        write_text: Callable[[str, str, str], str] | None,
         apply_current_state_and_cleanup: Callable[
             [
                 str,
@@ -43,7 +43,9 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             [str, str, list[dict[str, Any]]],
             dict[str, list[str]],
         ],
+        is_source_page_purged: Callable[[str, str], bool] = lambda workspace_id, page_id: False,
     ) -> None:
+        self._is_source_page_purged = is_source_page_purged
         self._read_text = read_text
         self._write_text = write_text
         self._apply_current_state_and_cleanup = apply_current_state_and_cleanup
@@ -57,14 +59,17 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
         link_changes: dict[str, list[dict[str, Any]]],
         replace_links: bool,
         deleted_page_ids: list[str],
+        publication: dict[str, Any] | None = None,
+        pending_deltas: list[dict[str, Any]] | None = None,
     ) -> list[str]:
+        if publication is None:
+            return self._apply_current_state_and_cleanup(
+                operation_id, workspace_id, changed_pages, link_changes,
+                replace_links, deleted_page_ids,
+            )
         return self._apply_current_state_and_cleanup(
-            operation_id,
-            workspace_id,
-            changed_pages,
-            link_changes,
-            replace_links,
-            deleted_page_ids,
+            operation_id, workspace_id, changed_pages, link_changes,
+            replace_links, deleted_page_ids, publication, pending_deltas,
         )
 
     def rebuild_page(
@@ -97,11 +102,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 f"wiki/{workspace_id}/pages/{page.page_id}/ops/"
                 f"{operation_id}.md"
             )
-            self._write_text(
-                markdown_key,
-                rebuilt.markdown,
-                "text/markdown; charset=utf-8",
-            )
+            if self._write_text is not None:
+                self._write_text(markdown_key, rebuilt.markdown, "text/markdown; charset=utf-8")
         except PageRebuildError:
             raise
         except Exception as exc:
@@ -113,11 +115,13 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "page_id": page.page_id,
             "page_type": "concept",
             "markdown_key": markdown_key,
+            "markdown": rebuilt.markdown,
             "content_hash": f"sha256:{digest}",
             "supported_links": list(rebuilt.supported_links),
             "title": rebuilt.title,
             "summary": rebuilt.summary,
             "source_document_ids": list(rebuilt.source_document_ids),
+            "identity_aliases": list(rebuilt.identity_aliases),
             "entries": list(rebuilt.entries),
         }
 
@@ -127,7 +131,10 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
         restore_to_operation_id: str,
         workspace_id: str,
         source_page: SourceSnapshotRestoreCommand,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        # 영구 삭제한 문서의 스냅샷은 없고 되살리지도 않는다. 나머지 페이지 복구는 계속한다.
+        if self._is_source_page_purged(workspace_id, source_page.page_id):
+            return None
         source_key = (
             f"wiki/{workspace_id}/pages/{source_page.page_id}/ops/"
             f"{restore_to_operation_id}.md"
@@ -143,11 +150,8 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             if not manual:
                 # 소스 페이지 요약은 두지 않는다. 요약이 있던 예전 스냅샷으로 되돌려도 되살리지 않는다.
                 markdown = without_markdown_section(markdown, "Summary")
-            self._write_text(
-                target_key,
-                markdown,
-                "text/markdown; charset=utf-8",
-            )
+            if self._write_text is not None:
+                self._write_text(target_key, markdown, "text/markdown; charset=utf-8")
         except Exception as exc:
             raise PageRebuildError(
                 f"failed to restore source snapshot:{source_page.page_id}"
@@ -157,6 +161,7 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             "page_id": source_page.page_id,
             "page_type": "source",
             "markdown_key": target_key,
+            "markdown": markdown,
             "content_hash": f"sha256:{digest}",
             # 소스 페이지 제목은 문서 파일명이다(ADR 0033). 스냅샷 본문의 생성 제목으로 되돌리지 않도록
             # 비워 두면 저장 단계가 현재 제목을 유지한다.

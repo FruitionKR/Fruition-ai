@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 from collections import deque
 from collections.abc import AsyncIterator
 import wave
@@ -14,6 +15,8 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 
 from app.modules.model_usage.infrastructure.usage_ledger import finish_call, start_call, track_call_async
 from app.modules.speech.domain.errors import InvalidAudioError, SpeechUnavailableError
+
+logger = logging.getLogger(__name__)
 
 AUDIO_TYPES = {
     "audio/wav": "wav",
@@ -36,6 +39,7 @@ LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
 TTS_EVENT_TIMEOUT_SECONDS = 60
 TTS_CANCEL_WAIT_SECONDS = 5
 PCM_BYTES_PER_SECOND = 48000  # PCM16 mono 24 kHz
+LIVE_MIN_COMMIT_BYTES = PCM_BYTES_PER_SECOND // 10  # 공급사가 100ms 미만 버퍼의 commit을 거절한다.
 
 
 class OpenAISpeech:
@@ -223,6 +227,7 @@ class OpenAISpeech:
                 while True:
                     event = json.loads(await upstream.recv())
                     if event["type"] == "error":
+                        _log_live_provider_error(event)
                         raise SpeechUnavailableError(
                             "실시간 전사를 시작하지 못했습니다."
                         )
@@ -232,7 +237,8 @@ class OpenAISpeech:
             queue: asyncio.Queue[dict | Exception] = asyncio.Queue(maxsize=32)
             sent = 0
             completed: set[str] = set()
-            committed: dict[str, str | None] = {}
+            committed: set[str] = set()
+            gate = _SpokenSegmentGate()
             # 확정 구간마다 원장 한 행을 남겨 document가 세션 중에도 사용량을 볼 수 있게 한다.
             commit_bytes: deque[int] = deque()
             segment_calls: dict[str, tuple[str | None, float | None, float]] = {}
@@ -264,11 +270,14 @@ class OpenAISpeech:
                                 )
                             )
                         elif packet in {"commit", "finish"}:
-                            if buffered:
-                                if buffered < 4800:
-                                    raise InvalidAudioError(
-                                        "발화는 최소 100ms가 필요합니다."
-                                    )
+                            if buffered and buffered < LIVE_MIN_COMMIT_BYTES:
+                                # commit은 음성을 공급사 버퍼에 둔 채 다음 구간에 합치고, finish는 이 꼬리를 버린다.
+                                logger.warning(
+                                    "실시간 전사 최소 길이 미만 버퍼: command=%s bytes=%d",
+                                    packet,
+                                    buffered,
+                                )
+                            elif buffered:
                                 sent += 1
                                 if sent - len(completed) > 8:
                                     raise InvalidAudioError(
@@ -314,9 +323,10 @@ class OpenAISpeech:
                             "error",
                             "conversation.item.input_audio_transcription.failed",
                         }:
+                            _log_live_provider_error(event)
                             raise SpeechUnavailableError("실시간 전사가 실패했습니다.")
                         if kind == "input_audio_buffer.committed":
-                            committed[event["item_id"]] = event.get("previous_item_id")
+                            committed.add(event["item_id"])
                             seconds = (
                                 commit_bytes.popleft() / PCM_BYTES_PER_SECOND
                                 if commit_bytes
@@ -330,19 +340,19 @@ class OpenAISpeech:
                                 seconds,
                                 perf_counter(),
                             )
-                            yield {
-                                "type": "committed",
-                                "segment_id": event["item_id"],
-                                "previous_segment_id": event.get("previous_item_id"),
-                            }
+                            for outgoing in gate.commit(event["item_id"]):
+                                yield outgoing
                         elif (
                             kind == "conversation.item.input_audio_transcription.delta"
                         ):
-                            yield {
-                                "type": "delta",
-                                "segment_id": event["item_id"],
-                                "text": event["delta"],
-                            }
+                            for outgoing in gate.receive(
+                                {
+                                    "type": "delta",
+                                    "segment_id": event["item_id"],
+                                    "text": event["delta"],
+                                }
+                            ):
+                                yield outgoing
                         elif (
                             kind
                             == "conversation.item.input_audio_transcription.completed"
@@ -359,14 +369,16 @@ class OpenAISpeech:
                                     "succeeded",
                                     event.get("usage"),
                                 )
-                                yield {
-                                    "type": "completed",
-                                    "segment_id": item_id,
-                                    "previous_segment_id": committed[item_id],
-                                    "text": event["transcript"],
-                                }
+                                for outgoing in gate.receive(
+                                    {
+                                        "type": "completed",
+                                        "segment_id": item_id,
+                                        "text": event["transcript"],
+                                    }
+                                ):
+                                    yield outgoing
                         if finishing and len(completed) == sent:
-                            yield {"type": "finished", "segment_count": len(completed)}
+                            yield {"type": "finished", "segment_count": gate.segment_count}
                             return
             finally:
                 for task in tasks:
@@ -375,6 +387,68 @@ class OpenAISpeech:
                 # 전사를 받지 못한 구간도 오디오는 공급사에 보냈으므로 failed로 남긴다.
                 for call in segment_calls.values():
                     await _finish_segment(call, "failed", None)
+
+
+class _SpokenSegmentGate:
+    """글이 확인된 구간만 발화 순서대로 호출자에게 알린다.
+
+    Document는 committed에서 구간 행을 만들고 되돌리지 않는다. 공급사가 빈 전사로 끝낸 구간(짧은 꼬리·무음)을
+    저장하지 않으려면 글이 보일 때까지 committed를 미룬다. 구간 위치는 committed 도착 순서로 정해지므로
+    앞 구간의 글 유무가 정해지기 전에는 뒤 구간도 알리지 않는다.
+    """
+
+    def __init__(self) -> None:
+        self._waiting: deque[str] = deque()
+        self._held: dict[str, list[dict]] = {}
+        self._previous: dict[str, str | None] = {}
+        self._dropped: set[str] = set()
+        self._last: str | None = None
+
+    @property
+    def segment_count(self) -> int:
+        return len(self._previous)
+
+    def commit(self, segment_id: str) -> list[dict]:
+        self._waiting.append(segment_id)
+        return self._release()
+
+    def receive(self, event: dict) -> list[dict]:
+        segment_id = event["segment_id"]
+        if segment_id in self._dropped:
+            return []
+        if segment_id in self._previous:
+            return [self._outgoing(event)]
+        self._held.setdefault(segment_id, []).append(event)
+        return self._release()
+
+    def _release(self) -> list[dict]:
+        released: list[dict] = []
+        while self._waiting:
+            segment_id = self._waiting[0]
+            held = self._held.get(segment_id, [])
+            if any(event["text"].strip() for event in held):
+                self._previous[segment_id] = self._last
+                released.append(
+                    {
+                        "type": "committed",
+                        "segment_id": segment_id,
+                        "previous_segment_id": self._last,
+                    }
+                )
+                released.extend(self._outgoing(event) for event in held)
+                self._last = segment_id
+            elif any(event["type"] == "completed" for event in held):
+                self._dropped.add(segment_id)
+            else:
+                break
+            self._waiting.popleft()
+            self._held.pop(segment_id, None)
+        return released
+
+    def _outgoing(self, event: dict) -> dict:
+        if event["type"] != "completed":
+            return event
+        return {**event, "previous_segment_id": self._previous[event["segment_id"]]}
 
 
 def _wav_seconds(audio: bytes) -> float | None:
@@ -398,6 +472,15 @@ async def _finish_segment(
         {"usage": usage, "audio_seconds": seconds},
         LIVE_TRANSCRIBE_MODEL,
         (perf_counter() - started) * 1000,
+    )
+
+
+def _log_live_provider_error(event: dict) -> None:
+    # 공급사 message에는 입력 내용이 섞일 수 있어 종류와 코드만 남긴다.
+    logger.warning(
+        "실시간 전사 공급사 오류: type=%s code=%s",
+        event.get("type"),
+        (event.get("error") or {}).get("code"),
     )
 
 

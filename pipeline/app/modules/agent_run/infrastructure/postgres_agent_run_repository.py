@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import base64
+import hmac
+import os
+from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg.types.json import Json
 
@@ -12,17 +16,97 @@ from app.core.pipeline_control import PipelineRunCancelledError
 from app.modules.agent_run.application.ports import (
     AgentApprovalRepositoryPort,
     AgentRunRepositoryPort,
+    McpProposalRepositoryPort,
 )
-from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
-from app.modules.agent_run.domain.plan import NOT_SELECTED_ERROR_CODE, AgentPlan, AgentPlanOperation
+from app.modules.agent_run.application.mcp_proposal import McpProposalError
+from app.modules.agent_run.application.mcp_approval import McpApprovalError
+from app.modules.agent_run.domain.entities import (
+    MAX_ARTIFACT_BYTES,
+    AgentRun,
+    DocumentEditArtifact,
+    McpApprovalCommand,
+    McpProposalActor,
+    McpProposalResult,
+    StartAgentRunArtifact,
+)
+from app.modules.agent_run.domain.plan import (
+    DOCUMENT_PURGED_ERROR_CODE,
+    NOT_SELECTED_ERROR_CODE,
+    AgentPlan,
+    AgentPlanOperation,
+)
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     delete_object,
+    is_missing_object_error,
     read_text_object,
     write_text_object,
 )
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+
+
+ARTIFACT_UNAVAILABLE_MESSAGE = "Agent plan content expired and must be requested again."
+DOCUMENT_PURGED_MESSAGE = "Agent plan target document was permanently deleted."
+
+
+def _mcp_approval_hash(command: McpApprovalCommand) -> str:
+    body = {
+        "schema_version": command.schema_version,
+        "approval_id": command.approval_id,
+        "run_id": command.run_id,
+        "workspace_id": command.workspace_id,
+        "user_id": command.user_id,
+        "plan_version": command.plan_version,
+        "operation_hash": command.operation_hash,
+        "selected_operation_ids_in_plan_order": list(command.operation_ids),
+        "grant_id": command.grant_id,
+        "client_id": command.client_id,
+        "policy_generation": command.policy_generation,
+        "approval_mode": command.approval_mode,
+    }
+    return hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
+
+
+def _cursor_key() -> bytes:
+    value = os.environ.get("AGENT_INTERNAL_TOKEN")
+    if not value:
+        raise ValueError("Agent service authentication is not configured.")
+    return value.encode("utf-8")
+
+
+def _encode_owned_cursor(workspace_id: str, user_id: str, grant_id: str,
+                         created_at: datetime, run_id: str) -> str:
+    raw = json.dumps({
+        "v": 1, "workspace_id": workspace_id, "user_id": user_id, "grant_id": grant_id,
+        "created_at": created_at.isoformat(), "run_id": run_id,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(_cursor_key(), raw, hashlib.sha256).digest()
+    encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+    return f"{encode(raw)}.{encode(signature)}"
+
+
+def _decode_owned_cursor(token: str, workspace_id: str, user_id: str,
+                         grant_id: str) -> tuple[datetime, str]:
+    try:
+        if len(token) > 2048:
+            raise ValueError("cursor")
+        encoded, signed = token.split(".")
+        decode = lambda value: base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+        raw, signature = decode(encoded), decode(signed)
+        if not hmac.compare_digest(signature, hmac.new(_cursor_key(), raw, hashlib.sha256).digest()):
+            raise ValueError("signature")
+        value = json.loads(raw)
+        if (
+            not isinstance(value, dict) or value.get("v") != 1
+            or value.get("workspace_id") != workspace_id or value.get("user_id") != user_id
+            or value.get("grant_id") != grant_id or not isinstance(value.get("run_id"), str)
+        ):
+            raise ValueError("binding")
+        return datetime.fromisoformat(value["created_at"]), value["run_id"]
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        raise ValueError("Invalid MCP run cursor.") from None
 
 
 def agent_command_hash(command: dict[str, Any]) -> str:
@@ -46,7 +130,7 @@ def register_cancelled_turn(command: dict[str, Any]) -> None:
             raise ValueError("Agent command identity mismatch.")
 
 
-class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepositoryPort):
+class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepositoryPort, McpProposalRepositoryPort):
     def __init__(self, parent_run_id: str | None = None) -> None:
         self._parent_run_id = parent_run_id
 
@@ -54,10 +138,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         self,
         run: AgentRun,
         job_id: str,
-        artifact: StartAgentRunArtifact | None = None,
+        artifacts: tuple[StartAgentRunArtifact, ...] = (),
     ) -> AgentRun:
-        object_key = _artifact_object_key(run.id, artifact.id) if artifact is not None else ""
-        object_written = False
+        written_keys: list[str] = []
         try:
             with database.connect_ai() as conn:
                 if self._parent_run_id is not None:
@@ -73,7 +156,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     # 하위 run 생성과 참조를 함께 커밋하여 취소·재전달 경합을 막는다.
                     conn.execute("UPDATE agent_runs SET result = %s, updated_at = now() WHERE id = %s",
                                  (Json({"run_id": run.id}), self._parent_run_id))
-                if artifact is not None:
+                for artifact in artifacts:
                     _validate_artifact_metadata(
                         artifact.purpose,
                         artifact.document_id,
@@ -81,14 +164,20 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         artifact.target,
                     )
                     _validate_content_hash(artifact.markdown, artifact.content_hash)
+                    object_key = _artifact_object_key(run.id, artifact.id)
                     write_text_object(object_key, artifact.markdown)
-                    object_written = True
+                    written_keys.append(object_key)
+                    if artifact.preview_json is not None:
+                        _validate_size(artifact.preview_json)
+                        preview_key = _preview_object_key(run.id, artifact.id)
+                        write_text_object(preview_key, artifact.preview_json, "application/json; charset=utf-8")
+                        written_keys.append(preview_key)
                 row = conn.execute(
                     """
                     INSERT INTO agent_runs (
                         id, workspace_id, user_id, action, skill_version_id, status, request_summary,
-                        provider, model, target_folder_id, rule_summary
-                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)
+                        provider, model, target_folder_id, rule_summary, response_language
+                    ) VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (
@@ -102,16 +191,19 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                         run.model,
                         run.target_folder_id,
                         run.rule_summary,
+                        run.response_language,
                     ),
                 ).fetchone()
-                if artifact is not None:
+                for position, artifact in enumerate(artifacts):
+                    # 한 트랜잭션의 now()는 같으므로 created_at에 순서를 담아 계획이 첨부 순서를 따르게 한다.
                     conn.execute(
                         """
                         INSERT INTO agent_run_artifacts (
                             id, run_id, workspace_id, user_id, content_hash, purpose, object_key,
-                            document_id, base_version, target, expires_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                  now() + interval '1 day')
+                            document_id, base_version, target, display_name, summary, preview_object_key,
+                            created_at, expires_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                  now() + %s * interval '1 microsecond', now() + interval '1 day')
                         """,
                         (
                             artifact.id,
@@ -120,10 +212,14 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                             run.user_id,
                             artifact.content_hash,
                             artifact.purpose,
-                            object_key,
+                            _artifact_object_key(run.id, artifact.id),
                             artifact.document_id,
                             artifact.base_version,
                             Json(artifact.target) if artifact.target is not None else None,
+                            artifact.display_name,
+                            artifact.summary,
+                            _preview_object_key(run.id, artifact.id) if artifact.preview_json is not None else None,
+                            position,
                         ),
                     )
                 conn.execute(
@@ -134,10 +230,79 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                     (job_id, run.id),
                 )
         except Exception:
-            if object_written:
-                delete_object(object_key)
+            for written_key in written_keys:
+                delete_object(written_key)
             raise
         return _row_to_run(row)
+
+    def load_document_edit_artifacts(self, run_id: str) -> tuple[DocumentEditArtifact, ...]:
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT *, expires_at IS NOT NULL AND expires_at <= now() AS expired
+                FROM agent_run_artifacts
+                WHERE run_id = %s AND preview_object_key IS NOT NULL
+                ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(
+            DocumentEditArtifact(
+                id=row["id"],
+                content_hash=row["content_hash"],
+                document_id=row["document_id"],
+                base_version=row["base_version"],
+                target=row["target"],
+                summary=row["summary"] or "",
+                expired=row["expired"],
+            )
+            for row in rows
+        )
+
+    def get_edit_previews(self, workspace_id: str, user_id: str, run_id: str) -> dict[str, object] | None:
+        with database.connect_ai() as conn:
+            # 수정안은 run과 같은 트랜잭션에서 만들어 만료 시각이 run 생성 + 1일이다. 행이 지워진 뒤에는 이 값으로 답한다.
+            run = conn.execute(
+                """
+                SELECT current_plan_id, LEAST(created_at + interval '1 day', now()) AS removed_expires_at
+                FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s
+                """,
+                (run_id, workspace_id, user_id),
+            ).fetchone()
+            if run is None:
+                return None
+            rows = conn.execute(
+                """
+                SELECT operation.id AS operation_id, operation.tool_name, operation.base_version,
+                       artifact.id AS artifact_id,
+                       artifact.document_id, artifact.display_name, artifact.summary, artifact.preview_object_key,
+                       artifact.expires_at,
+                       artifact.expires_at IS NOT NULL AND artifact.expires_at <= now() AS expired
+                FROM agent_plan_operations operation
+                LEFT JOIN agent_run_artifacts artifact
+                  ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+                 AND artifact.purpose = operation.tool_name
+                 AND artifact.content_hash = operation.arguments->>'content_hash'
+                WHERE operation.plan_id = %s
+                  AND operation.tool_name IN ('apply_document_edit', 'create_document')
+                  AND operation.error_code IS DISTINCT FROM %s
+                  AND (artifact.id IS NULL OR artifact.preview_object_key IS NOT NULL)
+                ORDER BY operation.sequence
+                """,
+                (run_id, run["current_plan_id"], DOCUMENT_PURGED_ERROR_CODE),
+            ).fetchall()
+        # 객체가 남아 있으면 만료 뒤에도 내용을 돌려준다. 화면은 expires_at이 지났는지로 수락을 막으며 이유를 보여 주므로,
+        # 정리로 지워진 수정안도 null이 아닌 지난 시각으로 답한다. null이면 만료가 아니라 수락이 열린다.
+        previews = [_edit_preview_item(row) for row in rows]
+        expiries = [
+            row["expires_at"] if row["artifact_id"] else run["removed_expires_at"]
+            for row in rows
+            if row["expires_at"] is not None or not row["artifact_id"]
+        ]
+        return {
+            "items": [preview for preview in previews if preview is not None],
+            "expires_at": min(expiries, default=None),
+        }
 
     def get_for_user(self, workspace_id: str, user_id: str, run_id: str) -> AgentRun | None:
         with database.connect_ai() as conn:
@@ -149,6 +314,185 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 (run_id, workspace_id, user_id),
             ).fetchone()
         return _row_to_run(row) if row else None
+
+    def list_owned_mcp_runs(
+        self, workspace_id: str, user_id: str, grant_id: str,
+        cursor: str | None, limit: int,
+    ) -> dict[str, object]:
+        if not workspace_id or len(workspace_id) > 255 or not user_id or len(user_id) > 255:
+            raise ValueError("Invalid owner identity.")
+        grant = UUID(grant_id)
+        if str(grant) != grant_id or grant.version != 4:
+            raise ValueError("Invalid grant identity.")
+        before = _decode_owned_cursor(cursor, workspace_id, user_id, grant_id) if cursor else None
+        with database.connect_ai() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, status, created_at FROM agent_runs
+                WHERE origin = 'MCP_CLIENT' AND workspace_id = %s AND user_id = %s AND grant_id = %s
+                  AND (%s::timestamptz IS NULL OR (created_at, id) < (%s::timestamptz, %s))
+                ORDER BY created_at DESC, id DESC LIMIT %s
+                """,
+                (
+                    workspace_id, user_id, grant_id,
+                    before[0] if before else None, before[0] if before else None,
+                    before[1] if before else None, limit + 1,
+                ),
+            ).fetchall()
+        selected = rows[:limit]
+        next_cursor = None
+        if len(rows) > limit:
+            last = selected[-1]
+            next_cursor = _encode_owned_cursor(
+                workspace_id, user_id, grant_id, last["created_at"], last["id"]
+            )
+        return {
+            "items": [{"run_id": row["id"], "status": row["status"]} for row in selected],
+            "next_cursor": next_cursor,
+        }
+
+    def find_mcp_proposal(
+        self, actor: McpProposalActor, idempotency_key: str, request_hash: str
+    ) -> McpProposalResult | None:
+        with database.connect_ai() as conn:
+            row = _find_mcp_proposal(conn, actor, idempotency_key)
+        return _checked_mcp_proposal(row, request_hash)
+
+    def create_mcp_proposal(
+        self,
+        *,
+        run: AgentRun,
+        plan: AgentPlan,
+        artifacts: tuple[StartAgentRunArtifact, ...],
+        actor: McpProposalActor,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> McpProposalResult:
+        if len(artifacts) > 20:
+            raise ValueError("MCP proposal accepts at most twenty artifacts.")
+        for artifact in artifacts:
+            _validate_artifact_metadata(artifact.purpose, artifact.document_id, artifact.base_version, artifact.target)
+            _validate_content_hash(artifact.markdown, artifact.content_hash)
+        if run.origin != "MCP_CLIENT" or run.current_plan_id != plan.id or plan.run_id != run.id:
+            raise ValueError("MCP proposal persistence bindings are invalid.")
+        written_keys: list[str] = []
+        try:
+            with database.connect_ai() as conn:
+                # Shared write locks serialize creation with the write-first purge fence.
+                journal.lock_workspace_writes(conn, actor.workspace_id, shared=True)
+                journal.lock_user_writes(conn, actor.user_id, shared=True)
+                journal.reject_purged(
+                    conn,
+                    {"workspace_id": actor.workspace_id, "user_id": actor.user_id},
+                )
+                scope = json.dumps(
+                    (actor.grant_id, actor.user_id, actor.workspace_id, actor.tool_name, idempotency_key)
+                )
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    ("mcp-agent-proposal:" + scope,),
+                )
+                existing = _checked_mcp_proposal(
+                    _find_mcp_proposal(conn, actor, idempotency_key), request_hash
+                )
+                if existing is not None:
+                    return existing
+
+                for artifact in artifacts:
+                    object_key = _artifact_object_key(run.id, artifact.id)
+                    write_text_object(object_key, artifact.markdown)
+                    written_keys.append(object_key)
+                    if artifact.preview_json is not None:
+                        _validate_size(artifact.preview_json)
+                        preview_key = _preview_object_key(run.id, artifact.id)
+                        write_text_object(
+                            preview_key, artifact.preview_json, "application/json; charset=utf-8"
+                        )
+                        written_keys.append(preview_key)
+
+                conn.execute(
+                    """
+                    INSERT INTO agent_runs (
+                        id, workspace_id, user_id, action, status, request_summary, current_plan_id,
+                        origin, grant_id, client_id, policy_generation, invocation_id, spec_version,
+                        tool_name, proposal_request_hash
+                    ) VALUES (%s, %s, %s, %s, 'awaiting_approval', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run.id,
+                        run.workspace_id,
+                        run.user_id,
+                        run.action,
+                        run.request_summary,
+                        plan.id,
+                        actor.origin,
+                        actor.grant_id,
+                        actor.client_id,
+                        actor.policy_generation,
+                        actor.invocation_id,
+                        actor.spec_version,
+                        actor.tool_name,
+                        request_hash,
+                    ),
+                )
+                _insert_plan(conn, plan)
+                for position, artifact in enumerate(artifacts):
+                    conn.execute(
+                        """
+                        INSERT INTO agent_run_artifacts (
+                            id, run_id, workspace_id, user_id, content_hash, purpose, object_key,
+                            document_id, base_version, target, display_name, summary, preview_object_key,
+                            created_at, expires_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                  now() + %s * interval '1 microsecond', now() + interval '1 day')
+                        """,
+                        (
+                            artifact.id, run.id, run.workspace_id, run.user_id,
+                            artifact.content_hash, artifact.purpose,
+                            _artifact_object_key(run.id, artifact.id), artifact.document_id,
+                            artifact.base_version,
+                            Json(artifact.target) if artifact.target is not None else None,
+                            artifact.display_name, artifact.summary,
+                            _preview_object_key(run.id, artifact.id)
+                            if artifact.preview_json is not None else None,
+                            position,
+                        ),
+                    )
+                # A delayed request may not commit after a purge fence.
+                journal.reject_purged(
+                    conn,
+                    {"workspace_id": actor.workspace_id, "user_id": actor.user_id},
+                )
+                conn.execute(
+                    """
+                    INSERT INTO agent_mcp_proposal_requests (
+                        grant_id, user_id, workspace_id, tool_name, idempotency_key, request_hash,
+                        invocation_id, client_id, policy_generation, run_id, plan_id, plan_version,
+                        operation_hash, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              'awaiting_approval')
+                    """,
+                    (
+                        actor.grant_id,
+                        actor.user_id,
+                        actor.workspace_id,
+                        actor.tool_name,
+                        idempotency_key,
+                        request_hash,
+                        actor.invocation_id,
+                        actor.client_id,
+                        actor.policy_generation,
+                        run.id,
+                        plan.id,
+                        plan.version,
+                        plan.operation_hash,
+                    ),
+                )
+        except Exception:
+            for key in written_keys:
+                delete_object(key)
+            raise
+        return McpProposalResult(run.id, plan.id, plan.version, plan.operation_hash)
 
     def authorize_tool_read(self, workspace_id: str, user_id: str, run_id: str) -> bool:
         with database.connect_ai() as conn:
@@ -173,11 +517,16 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         operation_id: str,
         tool_name: str,
         arguments: dict[str, object],
+        approval_id: str | None = None,
+        attempt_id: str | None = None,
+        grant_id: str | None = None,
+        client_id: str | None = None,
+        policy_generation: int | None = None,
     ) -> bool:
         with database.connect_ai() as conn:
             operation = conn.execute(
                 """
-                SELECT operation.arguments
+                SELECT operation.arguments, run.origin
                 FROM agent_runs run
                 JOIN agent_plans plan
                   ON plan.id = run.current_plan_id AND plan.run_id = run.id
@@ -236,6 +585,39 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 recorded = undo["response_metadata"]
                 return (recorded.get("undo_tool") == tool_name
                         and _canonical_json(recorded.get("undo_arguments")) == _canonical_json(arguments))
+            mcp_fields = (approval_id, attempt_id, grant_id, client_id, policy_generation)
+            if operation["origin"] == "MCP_CLIENT":
+                if any(value is None for value in mcp_fields):
+                    return False
+                mcp = conn.execute(
+                    """
+                    SELECT 1
+                    FROM agent_approvals approval
+                    JOIN agent_mcp_tool_attempts attempt
+                      ON attempt.approval_id = approval.id
+                     AND attempt.run_id = approval.run_id AND attempt.plan_id = approval.plan_id
+                    WHERE approval.id = %s AND attempt.attempt_id = %s
+                      AND approval.run_id = %s AND approval.plan_id = %s
+                      AND approval.plan_version = %s AND approval.operation_hash = %s
+                      AND %s = ANY(approval.operation_ids)
+                      AND approval.workspace_id = %s AND approval.user_id = %s
+                      AND approval.grant_id = %s AND approval.client_id = %s
+                      AND approval.policy_generation = %s
+                      AND approval.schema_version = 'mcp.agent-approval.v1'
+                      AND approval.approval_mode = 'EXPLICIT_WEB'
+                      AND attempt.operation_id = %s AND attempt.tool_name = %s
+                      AND attempt.status IN ('started', 'unknown')
+                    """,
+                    (
+                        approval_id, attempt_id, run_id, plan_id, plan_version, operation_hash,
+                        operation_id, workspace_id, user_id, grant_id, client_id, policy_generation,
+                        operation_id, tool_name,
+                    ),
+                ).fetchone()
+                if mcp is None:
+                    return False
+            elif any(value is not None for value in mcp_fields):
+                return False
             result_rows = conn.execute(
                 """
                 SELECT DISTINCT ON (execution.operation_id)
@@ -404,10 +786,35 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             ).fetchone()
             operation_rows = conn.execute(
                 """
-                SELECT * FROM agent_plan_operations
-                WHERE plan_id = %s ORDER BY sequence
+                SELECT operation.*, execution.response_metadata AS existing_result_metadata,
+                       attempt.receipt AS existing_result_receipt
+                FROM agent_plan_operations operation
+                LEFT JOIN LATERAL (
+                    SELECT response_metadata
+                    FROM agent_tool_executions
+                    WHERE run_id = %s AND plan_id = operation.plan_id
+                      AND operation_id = operation.id AND tool_name = operation.tool_name
+                      AND ((status = 'succeeded' AND response_metadata->>'existing_result' = 'true')
+                           OR (idempotency_key = 'undo:' || operation.id
+                               AND response_metadata ? 'mcp_blocked_attempt_id'))
+                    ORDER BY finished_at DESC NULLS LAST LIMIT 1
+                ) execution ON true
+                LEFT JOIN LATERAL (
+                    SELECT attempt.receipt
+                    FROM agent_mcp_tool_attempts attempt
+                    JOIN agent_approvals approval ON approval.id = attempt.approval_id
+                    WHERE attempt.tool_name = operation.tool_name
+                      AND attempt.status IN ('committed', 'no_change') AND attempt.receipt IS NOT NULL
+                      AND (attempt.receipt->>'receipt_id' = execution.response_metadata->>'source_receipt_id'
+                           OR attempt.attempt_id = execution.response_metadata->>'mcp_blocked_attempt_id')
+                      AND approval.workspace_id = %s AND approval.user_id = %s
+                      AND approval.schema_version = 'mcp.agent-approval.v1'
+                      AND %s = 'MCP_CLIENT'
+                    ORDER BY attempt.attempt DESC LIMIT 1
+                ) attempt ON true
+                WHERE operation.plan_id = %s ORDER BY operation.sequence
                 """,
-                (run_row["current_plan_id"],),
+                (run_id, workspace_id, user_id, run_row.get("origin"), run_row["current_plan_id"]),
             ).fetchall()
         if plan_row is None:
             return None
@@ -422,39 +829,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 "UPDATE agent_plans SET status = 'superseded' WHERE run_id = %s AND status <> 'approved'",
                 (run_id,),
             )
-            conn.execute(
-                """
-                INSERT INTO agent_plans (id, run_id, version, summary, operation_hash, status)
-                VALUES (%s, %s, %s, %s, %s, 'awaiting_approval')
-                """,
-                (plan.id, run_id, plan.version, plan.summary, plan.operation_hash),
-            )
-            for operation in plan.operations:
-                conn.execute(
-                    """
-                    INSERT INTO agent_plan_operations (
-                        id, plan_id, sequence, tool_name, target_type, target_id, base_version,
-                        source_parent_id, destination_parent_id, arguments, reason, depends_on, status,
-                        warning, suggested_selected
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
-                    """,
-                    (
-                        operation.id,
-                        plan.id,
-                        operation.sequence,
-                        operation.tool_name,
-                        operation.target_type,
-                        operation.target_id,
-                        operation.base_version,
-                        operation.source_parent_id,
-                        operation.destination_parent_id,
-                        Json(operation.arguments),
-                        operation.reason,
-                        list(operation.depends_on),
-                        Json(operation.warning) if operation.warning is not None else None,
-                        operation.suggested_selected,
-                    ),
-                )
+            _insert_plan(conn, plan)
             conn.execute(
                 """
                 UPDATE agent_runs
@@ -463,6 +838,114 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 WHERE id = %s
                 """,
                 (plan.id, run_id),
+            )
+
+    def find_mcp_approval(self, command: McpApprovalCommand) -> AgentRun | None:
+        with database.connect_ai() as conn:
+            row = conn.execute(
+                """
+                SELECT approval.approval_request_hash, run.*
+                FROM agent_approvals approval
+                JOIN agent_runs run ON run.id = approval.run_id
+                WHERE approval.id = %s
+                """,
+                (command.approval_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["approval_request_hash"] != _mcp_approval_hash(command):
+            raise McpApprovalError(409, "IDEMPOTENCY_CONFLICT", "MCP approval identity conflicts.")
+        return _row_to_run(row)
+
+    def approve_mcp_and_enqueue(
+        self, command: McpApprovalCommand, plan: AgentPlan, job_id: str
+    ) -> AgentRun:
+        approval_hash = _mcp_approval_hash(command)
+        with database.connect_ai() as conn:
+            journal.lock_workspace_writes(conn, command.workspace_id, shared=True)
+            journal.lock_user_writes(conn, command.user_id, shared=True)
+            journal.reject_purged(conn, {"workspace_id": command.workspace_id, "user_id": command.user_id})
+            locked = conn.execute(
+                """SELECT * FROM agent_runs
+                   WHERE id = %s AND workspace_id = %s AND user_id = %s FOR UPDATE""",
+                (command.run_id, command.workspace_id, command.user_id),
+            ).fetchone()
+            existing = conn.execute(
+                "SELECT approval_request_hash FROM agent_approvals WHERE id = %s",
+                (command.approval_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["approval_request_hash"] != approval_hash:
+                    raise McpApprovalError(409, "IDEMPOTENCY_CONFLICT", "MCP approval identity conflicts.")
+                return _row_to_run(locked)
+            current_plan = conn.execute(
+                "SELECT * FROM agent_plans WHERE id = %s AND run_id = %s FOR UPDATE",
+                (plan.id, command.run_id),
+            ).fetchone()
+            if (
+                locked is None or current_plan is None or locked["origin"] != "MCP_CLIENT"
+                or locked["grant_id"] != command.grant_id or locked["client_id"] != command.client_id
+                or locked["policy_generation"] != command.policy_generation
+                or locked["status"] != "awaiting_approval" or locked["current_plan_id"] != plan.id
+                or current_plan["status"] != "awaiting_approval"
+                or current_plan["version"] != command.plan_version
+                or current_plan["operation_hash"] != command.operation_hash
+            ):
+                raise McpApprovalError(409, "SOURCE_CHANGED", "MCP Agent plan changed and must be reviewed again.")
+            operations = conn.execute(
+                "SELECT id FROM agent_plan_operations WHERE plan_id = %s ORDER BY sequence",
+                (plan.id,),
+            ).fetchall()
+            if tuple(row["id"] for row in operations if row["id"] in command.operation_ids) != command.operation_ids:
+                raise McpApprovalError(400, "INVALID_INPUT", "MCP approval selection is invalid.")
+            if _has_unavailable_artifact(conn, command.run_id, plan.id, command.operation_ids, ignore_purged=True):
+                raise McpApprovalError(409, "ARTIFACT_UNAVAILABLE", ARTIFACT_UNAVAILABLE_MESSAGE)
+            if _only_purged_operations_selected(conn, plan.id, command.operation_ids):
+                raise McpApprovalError(409, "PURGED", DOCUMENT_PURGED_MESSAGE)
+            conn.execute(
+                """
+                INSERT INTO agent_approvals (
+                    id, run_id, plan_id, plan_version, operation_hash, user_id, decision,
+                    operation_ids, approved_by, schema_version, approval_mode, workspace_id,
+                    grant_id, client_id, policy_generation, approval_request_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'approved', %s, 'user', %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    command.approval_id, command.run_id, plan.id, command.plan_version,
+                    command.operation_hash, command.user_id, list(command.operation_ids),
+                    command.schema_version, command.approval_mode, command.workspace_id,
+                    command.grant_id, command.client_id, command.policy_generation, approval_hash,
+                ),
+            )
+            conn.execute("UPDATE agent_plans SET status = 'approved' WHERE id = %s", (plan.id,))
+            conn.execute(
+                """UPDATE agent_plan_operations SET status = 'skipped', error_code = %s, updated_at = now()
+                   WHERE plan_id = %s AND status = 'pending' AND NOT (id = ANY(%s))""",
+                (NOT_SELECTED_ERROR_CODE, plan.id, list(command.operation_ids)),
+            )
+            updated = conn.execute(
+                "UPDATE agent_runs SET status = 'executing', updated_at = now() WHERE id = %s RETURNING *",
+                (command.run_id,),
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO agent_jobs (id, run_id, job_type, status) VALUES (%s, %s, 'execution', 'queued')",
+                (job_id, command.run_id),
+            )
+        return _row_to_run(updated)
+
+    def halt_mcp_run(self, run_id: str, reason: str) -> None:
+        with database.connect_ai() as conn:
+            conn.execute(
+                """UPDATE agent_plan_operations SET status = 'forbidden', error_code = %s, updated_at = now()
+                   WHERE plan_id = (SELECT current_plan_id FROM agent_runs WHERE id = %s)
+                     AND status IN ('pending', 'running')""",
+                (reason, run_id),
+            )
+            conn.execute(
+                """UPDATE agent_runs SET status = 'halted', error_code = %s, updated_at = now(), finished_at = now()
+                   WHERE id = %s AND origin = 'MCP_CLIENT'
+                     AND status IN ('awaiting_approval', 'executing', 'verifying')""",
+                (reason, run_id),
             )
 
     def approve_and_enqueue(
@@ -483,6 +966,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 "SELECT * FROM agent_plans WHERE id = %s AND run_id = %s FOR UPDATE",
                 (plan.id, run.id),
             ).fetchone()
+            # shortcut: I4 proposals stay non-executable until I5 adds stable explicit approval and reservation.
+            if locked is not None and locked.get("origin") == "MCP_CLIENT":
+                raise ValueError("MCP Agent proposals cannot use the legacy approval path.")
             if (
                 locked is None
                 or current_plan is None
@@ -493,6 +979,10 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
                 or current_plan["operation_hash"] != plan.operation_hash
             ):
                 raise ValueError("Agent plan changed and must be reviewed again.")
+            if _has_unavailable_artifact(conn, run.id, plan.id, selected_operation_ids, ignore_purged=True):
+                raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
+            if _only_purged_operations_selected(conn, plan.id, selected_operation_ids):
+                raise ValueError(DOCUMENT_PURGED_MESSAGE)
             conn.execute(
                 """
                 INSERT INTO agent_approvals (
@@ -599,7 +1089,13 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             run = _lock_user_run(conn, workspace_id, user_id, run_id)
             if run is None or run["status"] not in {"awaiting_approval", "clarification_required"}:
                 raise ValueError("AgentRun cannot be revised in its current state.")
+            # shortcut: remove with the approval guard when I5 introduces an MCP-specific revise contract (if any).
+            if run.get("origin") == "MCP_CLIENT":
+                raise ValueError("MCP Agent proposals cannot be revised.")
             if run["current_plan_id"]:
+                # 수정안 없이 다시 계획하면 첨부 수정 경로를 벗어나 모델이 다른 계획을 세운다. 다시 요청하게 막는다.
+                if _has_unavailable_artifact(conn, run_id, run["current_plan_id"]):
+                    raise ValueError(ARTIFACT_UNAVAILABLE_MESSAGE)
                 conn.execute(
                     "UPDATE agent_plans SET status = 'superseded' WHERE id = %s",
                     (run["current_plan_id"],),
@@ -624,6 +1120,164 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
         return _row_to_run(updated)
 
 
+def _edit_preview_item(row: dict[str, Any]) -> dict[str, object] | None:
+    """미리 보기 한 건. 수정안이 정리됐으면(행 없음, 또는 만료된 행의 객체만 먼저 지워짐) None이다."""
+    if row["artifact_id"] is None:
+        return None
+    try:
+        raw = read_text_object(row["preview_object_key"])
+        _validate_size(raw)
+        preview = json.loads(raw)
+    except Exception as exc:
+        if row["expired"] and is_missing_object_error(exc):
+            return None
+        raise
+    if not isinstance(preview, dict):
+        raise ValueError("Agent edit preview object is invalid.")
+    return {
+        "operation_id": row["operation_id"],
+        "tool_name": row["tool_name"],
+        "document_id": row["document_id"],
+        "display_name": row["display_name"] or "",
+        "base_version": row["base_version"],
+        "summary": row["summary"] or "",
+        **preview,
+    }
+
+
+def _has_unavailable_artifact(
+    conn: Any,
+    run_id: str,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None = None,
+    *,
+    ignore_purged: bool = False,
+) -> bool:
+    """계획의 작업이 쓰는 artifact가 만료됐거나 정리됐는지 본다. operation_ids가 있으면 그 작업만 본다.
+
+    호출자가 run 행을 잠근 상태에서 부른다. 정리 작업도 run 행을 잠그므로, 이 확인을 통과한 승인과 정리가 겹치지 않는다.
+    ignore_purged: 영구 삭제한 문서의 작업은 이미 건너뛰게 표시돼 있어 승인할 때는 나머지 문서를 막지 않는다.
+    """
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_plan_operations operation
+        LEFT JOIN agent_run_artifacts artifact
+          ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
+        WHERE operation.plan_id = %s
+          AND jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
+          AND (%s::text[] IS NULL OR operation.id = ANY(%s::text[]))
+          AND (NOT %s OR operation.error_code IS DISTINCT FROM %s)
+          AND (artifact.id IS NULL OR artifact.expires_at <= now())
+        LIMIT 1
+        """,
+        (
+            run_id,
+            plan_id,
+            list(operation_ids) if operation_ids is not None else None,
+            list(operation_ids) if operation_ids is not None else None,
+            ignore_purged,
+            DOCUMENT_PURGED_ERROR_CODE,
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def _only_purged_operations_selected(
+    conn: Any,
+    plan_id: str,
+    operation_ids: tuple[str, ...] | None,
+) -> bool:
+    """고른 작업이 모두 영구 삭제한 문서의 것이면 실행할 것이 없다. 호출자가 run 행을 잠근 상태에서 부른다."""
+    rows = conn.execute(
+        """
+        SELECT status, error_code FROM agent_plan_operations
+        WHERE plan_id = %s AND (%s::text[] IS NULL OR id = ANY(%s::text[]))
+        """,
+        (plan_id, list(operation_ids) if operation_ids is not None else None,
+         list(operation_ids) if operation_ids is not None else None),
+    ).fetchall()
+    return bool(rows) and all(
+        row["status"] == "skipped" and row["error_code"] == DOCUMENT_PURGED_ERROR_CODE for row in rows
+    )
+
+
+def _insert_plan(conn: Any, plan: AgentPlan) -> None:
+    conn.execute(
+        """
+        INSERT INTO agent_plans (id, run_id, version, summary, operation_hash, status)
+        VALUES (%s, %s, %s, %s, %s, 'awaiting_approval')
+        """,
+        (plan.id, plan.run_id, plan.version, plan.summary, plan.operation_hash),
+    )
+    for operation in plan.operations:
+        conn.execute(
+            """
+            INSERT INTO agent_plan_operations (
+                id, plan_id, sequence, tool_name, target_type, target_id, base_version,
+                source_parent_id, destination_parent_id, arguments, reason, depends_on, status,
+                warning, suggested_selected
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+            """,
+            (
+                operation.id,
+                plan.id,
+                operation.sequence,
+                operation.tool_name,
+                operation.target_type,
+                operation.target_id,
+                operation.base_version,
+                operation.source_parent_id,
+                operation.destination_parent_id,
+                Json(operation.arguments),
+                operation.reason,
+                list(operation.depends_on),
+                Json(operation.warning) if operation.warning is not None else None,
+                operation.suggested_selected,
+            ),
+        )
+
+
+def _find_mcp_proposal(
+    conn: Any, actor: McpProposalActor, idempotency_key: str
+) -> dict[str, Any] | None:
+    return conn.execute(
+        """
+        SELECT request_hash, run_id, plan_id, plan_version, operation_hash, status
+        FROM agent_mcp_proposal_requests
+        WHERE grant_id = %s AND user_id = %s AND workspace_id = %s
+          AND tool_name = %s AND idempotency_key = %s
+        """,
+        (
+            actor.grant_id,
+            actor.user_id,
+            actor.workspace_id,
+            actor.tool_name,
+            idempotency_key,
+        ),
+    ).fetchone()
+
+
+def _checked_mcp_proposal(
+    row: dict[str, Any] | None, request_hash: str
+) -> McpProposalResult | None:
+    if row is None:
+        return None
+    if row["request_hash"] != request_hash:
+        raise McpProposalError(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "The idempotency key was already used for a different proposal.",
+        )
+    return McpProposalResult(
+        run_id=row["run_id"],
+        plan_id=row["plan_id"],
+        plan_version=row["plan_version"],
+        operation_hash=row["operation_hash"],
+        status=row["status"],
+    )
+
+
 def _row_to_run(row: dict[str, Any]) -> AgentRun:
     return AgentRun(
         id=row["id"],
@@ -637,6 +1291,15 @@ def _row_to_run(row: dict[str, Any]) -> AgentRun:
         model=row.get("model"),
         target_folder_id=row.get("target_folder_id"),
         rule_summary=row.get("rule_summary"),
+        response_language=row.get("response_language"),
+        origin=row.get("origin"),
+        grant_id=row.get("grant_id"),
+        client_id=row.get("client_id"),
+        policy_generation=row.get("policy_generation"),
+        invocation_id=row.get("invocation_id"),
+        spec_version=row.get("spec_version"),
+        tool_name=row.get("tool_name"),
+        proposal_request_hash=row.get("proposal_request_hash"),
         current_plan_id=row["current_plan_id"],
         error_code=row["error_code"],
         clarification_question=row.get("clarification_question"),
@@ -672,10 +1335,36 @@ def _rows_to_plan(plan_row: dict[str, Any], operation_rows: list[dict[str, Any]]
                 error_code=row["error_code"],
                 warning=row.get("warning"),
                 suggested_selected=row.get("suggested_selected", True) is not False,
+                existing_result=_existing_operation_result(row),
             )
             for row in operation_rows
         ),
     )
+
+
+def _existing_operation_result(row: dict[str, Any]) -> dict[str, object] | None:
+    metadata = row.get("existing_result_metadata")
+    receipt = row.get("existing_result_receipt")
+    if not isinstance(metadata, dict) or not isinstance(receipt, dict):
+        return None
+    if isinstance(metadata.get("mcp_blocked_attempt_id"), str):
+        metadata = {"existing_result": True, "id": receipt.get("resource_id"),
+                    "current_version": receipt.get("after_version")}
+    resource_type = "FOLDER" if row["target_type"] == "folder" else "DOCUMENT"
+    resource_id = metadata.get("id")
+    version = metadata.get("current_version")
+    if (
+        metadata.get("existing_result") is not True
+        or not isinstance(resource_id, str)
+        or not resource_id
+        or type(version) is not int
+        or version < 1
+        or receipt.get("resource_type") != resource_type
+        or receipt.get("resource_id") != resource_id
+        or receipt.get("after_version") != version
+    ):
+        return None
+    return {"resource_type": resource_type, "resource_id": resource_id, "current_version": version}
 
 
 def _lock_user_run(
@@ -726,15 +1415,27 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _run_object_prefix(run_id: str) -> str:
+    return f"agent-runs/{hashlib.sha256(run_id.encode('utf-8')).hexdigest()}/"
+
+
 def _artifact_object_key(run_id: str, artifact_id: str) -> str:
-    scope = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     suffix = hashlib.sha256(f"{run_id}:{artifact_id}".encode("utf-8")).hexdigest()
-    return f"agent-runs/{scope}/artifacts/{suffix}.md"
+    return f"{_run_object_prefix(run_id)}artifacts/{suffix}.md"
+
+
+def _preview_object_key(run_id: str, artifact_id: str) -> str:
+    """파기가 run 접두사로 지우므로 artifact와 같은 접두사 아래에 둔다(postgres_purge._sweep_artifacts)."""
+    return _artifact_object_key(run_id, artifact_id).removesuffix(".md") + ".preview.json"
+
+
+def _validate_size(text: str) -> None:
+    if len(text.encode("utf-8")) > MAX_ARTIFACT_BYTES:
+        raise ValueError("Agent artifact Markdown is too large.")
 
 
 def _validate_content_hash(markdown: str, content_hash: str) -> None:
-    if len(markdown.encode("utf-8")) > 5 * 1024 * 1024:
-        raise ValueError("Agent artifact Markdown is too large.")
+    _validate_size(markdown)
     expected = f"sha256:{hashlib.sha256(markdown.encode('utf-8')).hexdigest()}"
     if content_hash != expected:
         raise ValueError("Agent artifact content hash does not match its content.")

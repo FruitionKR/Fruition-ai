@@ -12,6 +12,7 @@ from app.core.llm_env import (
     provider_api_key_env,
     resolve_llm_selection,
 )
+from app.core.response_language import current_response_language
 from app.core.response_preferences import with_response_preferences
 from app.modules.agent.application.ports import ConversationReplierPort
 from app.modules.agent.domain.entities import AgentTurnRequest
@@ -25,6 +26,7 @@ from app.modules.wiki_generation.infrastructure.json_output_parser import JsonPa
 DEFAULT_CONVERSATION_REPLY_PROMPT = (
     Path(__file__).resolve().parents[4] / "prompts" / "conversation_reply.system.md"
 )
+DEFAULT_PRODUCT_HELP_PROMPT = DEFAULT_CONVERSATION_REPLY_PROMPT.with_name("product_help.system.md")
 JSON_OBJECT_CONTRACT_FAILURE = "conversation reply output must be a JSON object"
 PRODUCT_TIMEZONE = ZoneInfo("Asia/Seoul")
 
@@ -57,8 +59,10 @@ class ChatCompletionsConversationReplier(ConversationReplierPort):
             "reference_context": conversation.reference_context if conversation else {},
         }
         system_prompt = with_response_preferences(
-            f"{self._system_prompt}\n\n# Trusted Runtime Context\nCurrent date: {current_date}",
-            request.output_language,
+            f"{self._system_prompt}\n\n# Trusted Runtime Context\nCurrent date: {current_date}\n"
+            f"UI language: {current_response_language() or 'unknown'}",
+            # 응답 언어 설정이 없으면 요청자 화면 언어를 따른다. 둘 다 없으면 기존 동작이다.
+            request.output_language or current_response_language(),
             request.response_length,
         )
         try:
@@ -93,12 +97,13 @@ def build_conversation_replier(
     *,
     provider: str | None = None,
     model: str | None = None,
+    prompt_path: Path | None = None,
 ) -> ConversationReplierPort:
     resolved_provider, resolved_model = resolve_llm_selection(provider, model)
     api_key = api_key_from_env(provider=resolved_provider)
     if not api_key:
         raise RuntimeError(f"Set {provider_api_key_env(resolved_provider)}.")
-    prompt_path = Path(
+    prompt_path = prompt_path or Path(
         os.environ.get(
             "CONVERSATION_REPLY_SYSTEM_PROMPT",
             str(DEFAULT_CONVERSATION_REPLY_PROMPT),

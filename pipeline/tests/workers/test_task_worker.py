@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -22,6 +23,21 @@ from tests.modules.query.test_answer_query import (
     ScoreSearch,
     source_page,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_publication_relay(monkeypatch):
+    # Worker unit tests isolate the publication relay's external database.
+    monkeypatch.setattr(task_worker, "relay_pending", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "relay_pending_mcp_publications", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "reconcile_sent_receipts", MagicMock(return_value=0))
+    monkeypatch.setattr(task_worker, "expire_inactive_runs", MagicMock(return_value=0))
+
+
+@pytest.fixture(autouse=True)
+def stub_product_help_builder():
+    with patch.object(task_worker, "build_query_product_help", return_value=None):
+        yield
 
 
 def test_event_uses_common_command_envelope() -> None:
@@ -188,6 +204,7 @@ def test_query_command_passes_runtime_model_and_web_search_flag(
         result = task_worker._handle_query(command)
 
     build_use_case.assert_called_once_with(
+        product_help=None,
         provider="openai",
         model="gpt-5-nano",
         allow_web_search=allow_web_search,
@@ -206,6 +223,48 @@ def test_query_command_passes_runtime_model_and_web_search_flag(
         allow_web_search=allow_web_search,
     )
     assert result == {"answer": "ok"}
+
+
+def test_query_command_uses_response_language_as_answer_language() -> None:
+    from app.core.response_language import response_language_scope
+
+    command = {
+        "run_id": "run-1", "kind": "query", "workspace_id": "workspace-1", "user_id": "user-1",
+        "session_id": "session-1", "question": "질문", "provider": "openai", "model": "gpt-5-nano",
+        "allow_web_search": False, "response_language": "en",
+    }
+    use_case = MagicMock()
+    with (
+        patch.object(task_worker, "build_answer_query_use_case", return_value=use_case),
+        patch.object(task_worker, "query_to_response") as to_response,
+        response_language_scope(command["response_language"]),
+    ):
+        to_response.return_value.model_dump.return_value = {"answer": "ok"}
+        task_worker._handle_query(command)
+
+    assert use_case.execute.call_args.kwargs["output_language"] == "en"
+
+
+def test_agent_result_fixed_messages_follow_english_response_language() -> None:
+    from app.core.response_language import response_language_scope
+    from app.modules.agent.application.handle_agent_turn import CLARIFY_MARKDOWN_DOCUMENT_MESSAGE
+
+    result = {"message": CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, "chat": {"answer": "Generated answer"}}
+    assert task_worker._localize_agent_result(result) is result
+    with response_language_scope("en"):
+        localized = task_worker._localize_agent_result(result)
+    assert localized["message"] == "Open the Markdown document to edit, then try again."
+    assert localized["chat"] == {"answer": "Generated answer"}
+
+
+def test_controlled_command_runs_inside_its_response_language() -> None:
+    from app.core.response_language import current_response_language
+
+    seen = []
+    with patch.object(task_worker, "_execute_controlled", side_effect=lambda *_: seen.append(current_response_language()) or {}):
+        task_worker._handle_controlled({"run_id": "r", "kind": "query", "response_language": "en"})
+        task_worker._handle_controlled({"run_id": "r", "kind": "query"})
+    assert seen == ["en", None]
 
 
 def test_query_command_passes_accumulated_conversation_summary() -> None:
@@ -621,7 +680,8 @@ def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
             "checkpoint_pipeline_run",
             side_effect=lambda *_args: calls.append("checkpoint"),
         ),
-        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest",
+                     side_effect=lambda _run_id, values: calls.append("search_ready") if "embedding" in values else None),
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
         patch.object(
             task_worker,
@@ -658,6 +718,7 @@ def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
     assert persist.call_args.args == ("document-1", "workspace-1", artifact, "ingest-run-1")
     assert calls.index("cluster") < calls.index("persist")
     assert calls.index("persist") < calls.index("quality")
+    assert calls.index("search_ready") < calls.index("quality")
     if runs_embedding:
         # 편입이 저장한 페이지만 임베딩한다. 클러스터 반영은 위키 페이지를 바꾸지 않는다.
         assert calls.index(("embedding", ("page-1",))) < calls.index("quality")
@@ -1274,6 +1335,27 @@ def test_agent_command_without_mode_keeps_legacy_mode() -> None:
     assert use_case.execute.call_args.args[0].mode is None
 
 
+def test_agent_command_passes_reference_documents_to_request_body() -> None:
+    """document-svc는 검증한 첨부 문서 id를 싣는다. 구 document-svc는 키가 없고, null이어도 첨부 없음이다."""
+    command = {
+        "run_id": "agent_0123456789abcdef0123456789abcdef",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "첨부 문서를 요약해줘",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+
+    attached = _run_agent_command({**command, "reference_document_ids": ["doc-1", "doc-2"]})
+
+    assert attached.execute.call_args.args[0].reference_document_ids == ("doc-1", "doc-2")
+    assert _run_agent_command(command).execute.call_args.args[0].reference_document_ids == ()
+    for empty in ([], None):
+        request = _run_agent_command({**command, "reference_document_ids": empty}).execute.call_args.args[0]
+        assert request.reference_document_ids == ()
+
+
 def test_agent_command_passes_target_folder_to_request_body() -> None:
     """document-svc는 작업 대상 폴더를 folder_id로 싣고, 지정하지 않으면 키를 싣지 않는다."""
     command = {
@@ -1549,6 +1631,80 @@ def test_redelivered_executing_agent_run_is_closed_as_failed() -> None:
     assert updates[0][1] == (command["run_id"],)
     # 예외는 연결 context가 정상 종료(commit)된 뒤에 던져져야 UPDATE가 롤백되지 않는다.
     context.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_agent_command_registers_turn_with_response_language() -> None:
+    # 채팅 패널 턴도 승인형 run처럼 요청자 화면 언어를 agent_runs.response_language에 남긴다.
+    base = {
+        "run_id": "agent_language",
+        "kind": "agent",
+        "workspace_id": "workspace-1",
+        "user_id": "user-1",
+        "message": "Explain it",
+        "provider": "openai",
+        "model": "gpt-5-nano",
+    }
+    for command, expected in ((base | {"response_language": "en"}, "en"), (base, None)):
+        connection = MagicMock()
+        inserted = MagicMock()
+        inserted.fetchone.return_value = {"id": command["run_id"]}
+        locked = MagicMock()
+        locked.fetchone.return_value = {
+            "status": "queued",
+            "result": None,
+            "command_envelope_hash": task_worker._agent_command_hash(command),
+        }
+        connection.execute.side_effect = lambda query, *args: (
+            inserted if "INSERT INTO agent_runs" in query else locked if "FOR UPDATE" in query else MagicMock()
+        )
+        context = MagicMock()
+        context.__enter__.return_value = connection
+
+        with patch.object(task_worker.database, "connect_ai", return_value=context):
+            task_worker._register_agent_command(command)
+
+        run_insert = connection.execute.call_args_list[0]
+        assert "provider, model, response_language" in run_insert.args[0]
+        assert run_insert.args[1][4:7] == ("openai", "gpt-5-nano", expected)
+
+
+def test_postgres_agent_turn_stores_response_language(monkeypatch) -> None:
+    """TEST_AGENT_DATABASE_URL을 지정하면 실제 스키마에 markdown_turn 행의 응답 언어가 저장되는지 검증한다."""
+    import os
+    from pathlib import Path
+    from uuid import uuid4
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    dsn = os.environ.get("TEST_AGENT_DATABASE_URL")
+    if not dsn:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    schema = "test_turn_language_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    try:
+        with connect() as conn:
+            conn.execute((Path(__file__).parents[2] / "db/ai_schema.sql").read_text())
+        monkeypatch.setattr(task_worker.database, "connect_ai", connect)
+        for run_id, language in (("turn_en", "en"), ("turn_none", None)):
+            command = dict(kind="agent", run_id=run_id, workspace_id="ws", user_id="user",
+                           message="Explain it", provider="openai", model="gpt-5-nano")
+            if language:
+                command["response_language"] = language
+            assert task_worker._register_agent_command(command) == ("execute", None)
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT id, response_language FROM agent_runs WHERE action = 'markdown_turn' ORDER BY id"
+            ).fetchall()
+        assert [(row["id"], row["response_language"]) for row in rows] == [("turn_en", "en"), ("turn_none", None)]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
 def test_postgres_redelivered_executing_agent_run_failure_is_durable(monkeypatch) -> None:
@@ -1914,7 +2070,191 @@ def _consumer_stub():
     )
 
 
-def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
+def _run_first_turn(send_error=None, relay_error=None):
+    """첫 문답 하나를 처리하며 원장 예약·결과 발행·제목 호출의 순서를 남긴다."""
+    command = {"kind": "agent", "run_id": "run-1", "workspace_id": "w", "user_id": "u", "session_id": "s",
+               "provider": "openai", "model": "m", "message": "질문"}
+
+    async def run_test():
+        stop_callbacks = []
+        order = []
+        consumer = _consumer_stub()
+        producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        message = SimpleNamespace(topic="t", partition=0, offset=1, value=command)
+        delivered = []
+        relay_calls = 0
+
+        async def getmany(**kwargs):
+            if not delivered:
+                delivered.append(True)
+                return {"partition": [message]}
+            stop_callbacks[0]()
+            await asyncio.sleep(0)
+            return {}
+
+        async def send(topic, event, **kwargs):
+            order.append(event["status"])
+            if send_error is not None:
+                raise send_error
+
+        async def relay(*_args):
+            nonlocal relay_calls
+            relay_calls += 1
+            if relay_calls == 1:
+                return 0
+            order.append("relay")
+            if relay_error is not None:
+                raise relay_error
+            return 0
+
+        async def to_thread(function, *args):
+            if function is task_worker._handle_controlled:
+                return {"action": "conversation_reply", "message": "답변"}
+            if function is task_worker._reserve_session_title_call:
+                order.append("reserve")
+                return "call-1"
+            if function is task_worker.release_reserved_call:
+                order.append(("release", args[0]))
+                return None
+            if function is task_worker.generate_chat_session_title:
+                order.append("title_call")
+                return "제목"
+            return None
+
+        consumer.getmany = getmany
+        producer.send_and_wait = send
+        with (patch.dict(task_worker.os.environ, {"AI_DATABASE_URL": "unused"})
+              if relay_error is not None else nullcontext()), \
+                patch.object(task_worker.database, "ensure_ai_schema"), \
+                patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
+                patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
+                patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(task_worker, "relay_pending", side_effect=relay), \
+                patch.object(asyncio, "to_thread", side_effect=to_thread), \
+                patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
+                patch.object(asyncio.get_running_loop(), "add_signal_handler",
+                             side_effect=lambda sig, callback: stop_callbacks.append(callback)):
+            try:
+                await asyncio.wait_for(task_worker.consume(), timeout=1)
+            except Exception as exc:
+                if exc not in {send_error, relay_error}:
+                    raise
+        if relay_error is not None:
+            assert consumer.commit.await_count == 0
+        return order
+
+    return asyncio.run(run_test())
+
+
+def test_title_ledger_row_opens_before_result_publish_and_model_call_stays_after() -> None:
+    # document-svc는 결과를 받으면 run_id로 원장을 읽고, started 행이 있어야 재시도한다.
+    # 행이 발행 전에 있어야 제목 호출을 놓치지 않고, 모델 호출은 발행 뒤라 답변을 늦추지 않는다.
+    assert _run_first_turn() == ["reserve", "succeeded", "title_call", ("release", "call-1"), "session_title"]
+
+
+def test_title_reservation_is_released_when_result_publish_fails() -> None:
+    assert _run_first_turn(send_error=RuntimeError("kafka down")) == ["reserve", "succeeded", ("release", "call-1")]
+
+
+def test_relay_failure_keeps_scheduled_title_reservation_and_offset_uncommitted() -> None:
+    assert _run_first_turn(relay_error=RuntimeError("relay down")) == [
+        "reserve", "succeeded", "relay", "title_call", ("release", "call-1"), "session_title",
+    ]
+
+
+def test_failed_title_generation_still_releases_reservation() -> None:
+    releases = []
+    with patch.object(task_worker, "release_reserved_call", side_effect=releases.append), \
+            patch.object(task_worker, "generate_chat_session_title", side_effect=RuntimeError("no key")):
+        producer = SimpleNamespace(send_and_wait=AsyncMock())
+        asyncio.run(task_worker._publish_session_title(producer, {"run_id": "run-1"}, {}, "call-1"))
+    assert releases == ["call-1"]
+    producer.send_and_wait.assert_not_awaited()
+
+
+def test_cancelled_title_keeps_reservation_because_model_thread_may_still_close_it() -> None:
+    async def run_test() -> list:
+        releases = []
+        started = threading.Event()
+        finish = threading.Event()
+
+        def slow_title(command, result):
+            started.set()
+            finish.wait(timeout=5)
+
+        producer = SimpleNamespace(send_and_wait=AsyncMock())
+        with patch.object(task_worker, "release_reserved_call", side_effect=releases.append), \
+                patch.object(task_worker, "generate_chat_session_title", side_effect=slow_title):
+            task = asyncio.create_task(task_worker._publish_session_title(producer, {"run_id": "r"}, {}, "call-1"))
+            await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            finish.set()
+        return releases
+
+    assert asyncio.run(run_test()) == []
+
+
+def test_reservation_failure_does_not_block_result_publish() -> None:
+    command = {"kind": "query", "run_id": "r", "session_id": "s", "provider": "openai", "model": "m", "question": "질문"}
+    with patch.object(task_worker, "start_call", side_effect=RuntimeError("db down")):
+        assert task_worker._reserve_session_title_call(command, {"answer": "답변"}) is None
+
+
+def test_reservation_is_skipped_when_no_title_is_needed() -> None:
+    command = {"kind": "query", "run_id": "r", "provider": "openai", "model": "m", "question": "질문"}
+    with patch.object(task_worker, "start_call") as start_call:
+        assert task_worker._reserve_session_title_call(command, {"answer": "답변"}) is None
+    start_call.assert_not_called()
+
+
+_TITLE_TURNS = [
+    ({"kind": "agent", "message": "질문"}, {"message": "답변"}),
+    ({"kind": "query", "question": "질문"}, {"answer": "답변"}),
+]
+
+
+def _run_title_flow(fields: dict, result: dict) -> tuple:
+    """실제 판단으로 원장 예약과 제목 발행을 돌린다. 모델·원장 쓰기만 막는다."""
+    command = {"run_id": "r", "workspace_id": "w", "user_id": "u", "session_id": "s",
+               "provider": "openai", "model": "m", **fields}
+    title_module = "app.modules.agent.infrastructure.chat_session_title"
+    producer = SimpleNamespace(send_and_wait=AsyncMock())
+    with patch.object(task_worker, "start_call", return_value="call-1") as start_call, \
+            patch.object(task_worker, "release_reserved_call") as release, \
+            patch.object(task_worker, "resolve_llm_selection", return_value=("openai", "m")), \
+            patch(f"{title_module}.api_key_from_env", return_value="unused"), \
+            patch(f"{title_module}.ChatCompletionsJsonClient") as client:
+        client.return_value.complete_json.return_value = {"title": "제목"}
+        reserved = task_worker._reserve_session_title_call(command, result)
+        asyncio.run(task_worker._publish_session_title(producer, command, result, reserved))
+    return start_call, client, producer, release
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+def test_title_not_needed_skips_reservation_model_call_and_event(fields, result) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, "session_title_needed": False}, result)
+
+    start_call.assert_not_called()
+    client.assert_not_called()
+    producer.send_and_wait.assert_not_awaited()
+    release.assert_not_called()
+
+
+@pytest.mark.parametrize(("fields", "result"), _TITLE_TURNS)
+@pytest.mark.parametrize("flag", [{}, {"session_title_needed": True}, {"session_title_needed": None},
+                                  {"session_title_needed": "false"}, {"session_title_needed": 0}])
+def test_title_flow_stays_when_flag_is_true_missing_or_invalid(fields, result, flag) -> None:
+    start_call, client, producer, release = _run_title_flow({**fields, **flag}, result)
+
+    start_call.assert_called_once()
+    client.return_value.complete_json.assert_called_once()
+    producer.send_and_wait.assert_awaited_once()
+    release.assert_called_once_with("call-1")
+
+
+def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None, job=None, then=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
@@ -1924,12 +2264,17 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
         consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=3, offset=42, value=command or {"kind": kind, "run_id": "run-1"})
+        batch = [message]
+        if then is not None:
+            # 같은 key(같은 workspace)로 뒤따르는 command. 앞 메시지가 끝나야 실행된다.
+            message.key = b"w"
+            batch.append(SimpleNamespace(topic="t", partition=3, offset=43, key=b"w", value=then))
         delivered = []
 
         async def getmany(**kwargs):
             if not delivered:
                 delivered.append(True)
-                return {"partition": [message]}
+                return {"partition": batch}
             if not handled:
                 stop_callbacks[0]()
             await asyncio.sleep(0)
@@ -1951,6 +2296,8 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
             if function is task_worker.generate_chat_session_title:
                 titles.append(args[0]["run_id"])
                 return "제목"
+            if job is not None and function is job.recover:
+                return function(*args)
             return None
 
         consumer.getmany = getmany
@@ -1962,12 +2309,57 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
                 patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(task_worker, "get_wiki_embedding_job", return_value=job), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
             await asyncio.wait_for(task_worker.consume(), timeout=1)
         return consumer, events, titles
 
     return asyncio.run(run_test())
+
+
+_INDEX_WAKE = {"kind": "mcp_publication_index", "run_id": "mcp-index:event-1", "workspace_id": "w"}
+
+
+def test_mcp_publication_wake_recovers_embeddings_before_commit_without_task_event() -> None:
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    order = []
+    job.recover.side_effect = lambda run_id: order.append(("recover", run_id))
+    emitted = []
+
+    consumer, events, _ = _run_consume([], command=_INDEX_WAKE, emitted=emitted, job=job)
+
+    # 실행 기록·결과 이벤트 없이 임베딩 복구를 끝낸 뒤에만 offset을 커밋한다.
+    assert order == [("recover", "mcp-index:event-1")]
+    assert events == [] and emitted == []
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
+
+
+def test_mcp_publication_wake_failure_leaves_offset_uncommitted() -> None:
+    job = MagicMock()
+    job.recover.side_effect = RuntimeError("wiki page embedding recovery failed")
+
+    with pytest.raises(RuntimeError, match="recovery failed"):
+        _run_consume([], command=_INDEX_WAKE, job=job)
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+
+
+def test_mcp_publication_wake_with_failed_page_lets_next_same_key_command_run() -> None:
+    # 페이지별 실패만 남은 복구는 recover가 정상 반환하므로, 같은 partition·key의 다음 command가 이어서 처리되고 둘 다 커밋된다.
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    job.recover.return_value = None
+    consumer, events, _ = _run_consume(
+        [{"answer": "ok"}], command=_INDEX_WAKE, job=job, then={"kind": "query", "run_id": "run-2"},
+    )
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+    assert "succeeded" in events
+    assert consumer.commit.await_args_list[-1].args[0] == {TopicPartition("t", 3): 44}
 
 
 def test_redelivered_running_task_waits_in_place_without_seek() -> None:

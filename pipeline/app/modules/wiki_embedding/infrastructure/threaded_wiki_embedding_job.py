@@ -44,12 +44,19 @@ class ThreadedWikiEmbeddingJob:
         )
         thread.start()
 
-    def _execute(self, run_id: str, page_ids: list[str]) -> None:
+    def recover(self, run_id: str) -> None:
+        """누락 임베딩 복구를 이 스레드에서 끝까지 한다. 앞선 임베딩 작업이 돌고 있으면 건너뛰지 않고 끝나기를 기다린다.
+        DB·모델 적재 같은 인프라 예외가 마지막 시도까지 이어지면 호출자가 command를 완료 처리하지 않도록 예외를 올린다.
+        페이지별 실패는 미완료 상태로 DB에 남아 이후 모든 복구(기동·주기·다음 깨우기)가 다시 고르므로 올리지 않는다.
+        올리면 영구히 실패하는 페이지 하나가 maintenance partition을 계속 막는다."""
+        self._execute(run_id, [], blocking=True)
+
+    def _execute(self, run_id: str, page_ids: list[str], blocking: bool = False) -> None:
         try:
             repository = PostgresWikiPageEmbeddingRepository()
             model_name = _embedding_model().model_name
             with database.connect() as lock_connection:
-                if page_ids:
+                if page_ids or blocking:
                     lock_connection.execute(
                         "SELECT pg_advisory_lock(hashtext(%s))",
                         (_EMBEDDING_LOCK_NAME,),
@@ -76,8 +83,10 @@ class ThreadedWikiEmbeddingJob:
                                 )
                                 return
                             error = f'{result["failed_count"]} page(s) failed'
+                            infrastructure_failed = False
                         except Exception as exc:
                             error = str(exc)
+                            infrastructure_failed = True
                         self._logger.warning(
                             "wiki page embedding job retry run_id=%s attempt=%s error=%s",
                             run_id,
@@ -91,6 +100,8 @@ class ThreadedWikiEmbeddingJob:
                         run_id,
                         error,
                     )
+                    if blocking and infrastructure_failed:
+                        raise RuntimeError(f"wiki page embedding recovery failed: {error}")
                 finally:
                     lock_connection.execute(
                         "SELECT pg_advisory_unlock(hashtext(%s))",
@@ -102,6 +113,8 @@ class ThreadedWikiEmbeddingJob:
                 run_id,
                 exc,
             )
+            if blocking:
+                raise
 
 
 class DeferredWikiEmbeddingJob:

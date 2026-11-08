@@ -11,6 +11,7 @@ from app.core import ai_database as database
 
 logger = logging.getLogger(__name__)
 _actor = ContextVar('model_usage_actor', default=None)
+_reserved = ContextVar('model_usage_reserved_call', default=None)
 UNATTRIBUTED = 'unattributed'
 # 하위 프로세스(converter → restoration CLI)에 actor를 JSON으로 넘기는 env
 SCOPE_ENV = 'MODEL_USAGE_SCOPE'
@@ -42,6 +43,10 @@ def _seconds(value):
 
 def start_call(provider, model):
     """호출 전 started 행을 남긴다. scope 밖 호출은 기록할 사용자가 없어 None을 돌려준다."""
+    reserved = _reserved.get()
+    if reserved is not None:
+        _reserved.set(None)
+        return reserved
     actor = _actor.get()
     if actor is None:
         logger.warning('사용량 원장 scope 밖 모델 호출: provider=%s model=%s', provider, model)
@@ -56,6 +61,24 @@ def start_call(provider, model):
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'started')''',
             (call_id, actor['run_id'], actor['workspace_id'], actor['user_id'], actor['kind'], provider, model, model))
     return call_id
+
+
+@contextmanager
+def reserved_call(call_id):
+    """미리 연 started 행을 이 안의 첫 호출이 쓰게 한다. 그 호출 하나가 행을 닫는다."""
+    token = _reserved.set(call_id)
+    try:
+        yield
+    finally:
+        _reserved.reset(token)
+
+
+def release_reserved_call(call_id):
+    """미리 열었지만 모델을 부르지 않은 행을 지운다. 호출이 쓴 행은 이미 닫혀 있어 남는다."""
+    if call_id is None:
+        return
+    with database.connect_ai() as conn:
+        conn.execute("DELETE FROM ai_model_usage WHERE id=%s AND status='started'", (call_id,))
 
 
 def finish_call(call_id, status, receipt, model, duration_ms):

@@ -21,12 +21,19 @@ ingest 결과 이벤트(`kind=document`·`chat_wiki` 등 ingest worker 발행)�
 
 `kind=post_ingest` 결과 이벤트는 원본 command(`request`)를 싣지 않는 대신, 어느 편입의 후속인지 알 수 있게 부모 편입 run id를 최상위 `ingest_run_id`에 담습니다.
 
+검색 인덱스 생성이 끝나면 후속 품질 평가 전에 부모 pipeline run의 `manifest.post_ingest.embedding`에
+`target_count`, `embedded_count`, `skipped_count`, `failed_count`를 기록합니다. Document는 이 상태를 조회해
+문서를 `completed`로 바꾸고 편입 완료 알림을 냅니다. 기존 완료 결과의 `post_ingest.result.embedding`도 같은 의미입니다.
+`quality_status=needs_review`만으로 검색 준비 실패로 판단하지 않습니다. 실패 없이 대상 전체를 처리한 임베딩 결과가
+없고 post-ingest가 종료됐다면 검색 준비 실패입니다.
+
 `ai.task.event`의 실패 이벤트 `error`, `agent_runs.error_code`, `pipeline_runs.error`, ingest·post_ingest 실패 payload의 `summary`는 예외 원문이 아니라 코드만 담습니다. 사용자에게 보이는 문구는 Document가 코드별로 정하며, 예외 원문은 AI 로그에만 남습니다.
 
 | 코드 | 의미 |
 |---|---|
 | `provider_rate_limited` | 모델 공급사 429·rate limit |
 | `provider_unavailable` | 공급사 5xx·시간 초과·연결 오류·과부하 |
+| `ai_service_starting` | 내부 임베딩 서버가 모델을 적재 중이라고 명시적으로 응답함. 503의 `detail.code`로 구분하며, 연결 오류·일반 5xx·적재 실패·기동 5분 초과에는 사용하지 않음 |
 | `input_rejected` | 검증 실패·`ValueError` 등 처리할 수 없는 입력 |
 | `deadline_exceeded` | 호출자가 기다리는 시간 초과 |
 | `cancelled` | 취소 요청·대상 비활성화·파기된 범위 |
@@ -74,6 +81,30 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 실패 이벤트(`status: failed`)의 `error`는 위 [실패 코드](#실패-코드-계약)의 공통 코드다: 암호·손상 PDF, 범위·`source_key` 위반은 `input_rejected`, 전체 마감(`CONVERT_BATCH_DEADLINE_SECONDS`, 기본 7200초) 초과는 `deadline_exceeded`, 취소는 `cancelled`, 그 외는 `internal_error`. 예외 원문은 싣지 않는다.
 
 변환 시도가 실패하거나 시도 제한(`CONVERT_ATTEMPT_TIMEOUT_SECONDS`, 기본 1500초)을 넘기면 AI가 쪽 범위를 절반으로 나눠 1쪽까지 다시 시도한다. 1쪽도 실패하면 batch가 실패한다. 입력 거절과 취소는 나누지 않는다. 취소는 위 `POST /internal/ai/tasks/{run_id}/cancel`에 batch의 `run_id`와 `command`를 보내며, 진행 중인 변환은 약 2초 안에 중단된다. `parent_run_id`로는 취소할 수 없고 batch마다 보내야 한다.
+
+## MCP 외부 AI PDF 변환 세션
+
+웹 PDF 변환과 같은 crop-first 파이프라인에서 모델 판단(selective repair·그림 설명)만 MCP 클라이언트가 맡는다. 공급사 호출은 없다.
+
+**전처리 command.** 위 PDF 변환 command에 `restoration: "external"`과 `conversion_id`를 더하고 `provider`·`model`은 뺀다.
+`run_id`는 `mcpconvert:{conversion_id}:{start_page}`, `parent_run_id`는 `mcpconvert:{conversion_id}`여야 한다(아니면 `input_rejected`).
+converter는 기존 batch·journal·쪽 나눔 재시도로 AnyDoc 전처리(`--mode crop-first-prepare`)만 하고, 기존 복원 요청을 창
+(`external/windows.json`과 PNG)으로 만들어 `tmp/convert/mcp/{workspace_id}/{conversion_id}/{묶음 시작 쪽}/`에 PDF 사본 없이 올린다.
+결과 `payload`는 `{conversion_id, page_start, page_end, total_pages, segments:[{page_start, page_end, prefix, window_count}]}`다.
+converter는 command를 발행하지 않는다. 다음 batch는 세션 상태의 `dispatch_start_page`를 보고 document가 기존 outbox로 넣는다.
+
+**세션 API**(`/internal/mcp/pdf-conversions`, Agent 서비스 토큰, `schema_version: mcp.pdf-conversion.v1`, 요청에 MCP `actor`):
+
+| 경로 | 동작 |
+|---|---|
+| `POST /` | `{idempotency_key, request_hash, document_id, source_key, source_content_hash, page_count, describe_figures}`로 세션을 만들거나 같은 키의 세션을 돌려준다. 다른 `request_hash`면 409 `IDEMPOTENCY_CONFLICT`. 응답 `dispatch_start_page`(0부터, 없으면 null)가 있으면 document가 그 batch를 넣는다 |
+| `POST /{id}/status` | journal의 batch를 따라 `PREPARING·READY·FAILED·FINALIZED`를 돌려준다 |
+| `POST /{id}/windows/read` | `{window_ordinal}`. 기존 복원 prompt·payload·`result_schema`와 묶음 안 이미지 key. `READY` 전이면 409 `CONVERSION_NOT_READY` |
+| `POST /{id}/windows/{window_id}/submissions` | `{idempotency_key, request_hash, window_hash, result}`. 기존 검증(`valid_replacement`, `clean_description`)에서 떨어진 block id를 돌려준다. 창당 2번까지(409 `ATTEMPTS_EXHAUSTED`) |
+| `POST /{id}/finalize` | 모든 창이 제출됐으면(아니면 409 `WINDOWS_NOT_SUBMITTED`) 묶음마다 마지막 제출을 기존 결과 파일로 쓰고 기존 조립·이미지 내장을 한 뒤 쪽 번호를 원본 기준으로 바꾸고, AnyDoc 원문 링크만 남겨 sanitize한다. Markdown은 `tmp/convert/mcp/{workspace_id}/{id}/final.md`에 두고 `content_hash`·`result_key`·`restoration_summary`를 돌려준다. 4MiB를 넘으면 413 `SOURCE_LIMIT_EXCEEDED`. 다시 부르면 같은 결과다 |
+
+세션은 workspace·user·grant·client·policy generation이 모두 같은 actor만 본다(아니면 404 `RESOURCE_NOT_FOUND`).
+상태는 `mcp_pdf_conversions`·`mcp_pdf_conversion_submissions`에 두고 워크스페이스·사용자 삭제 때 지운다. 묶음 object는 `tmp/convert/` lifecycle이 지운다.
 
 ## 모델별 사용량 조회
 

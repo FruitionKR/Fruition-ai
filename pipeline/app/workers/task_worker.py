@@ -21,13 +21,28 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
-from app.core.failure_codes import INPUT_REJECTED, failure_code, stored_code
+from app.modules.query.infrastructure.product_help import build_query_product_help
+
+from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
+from app.core.response_language import (
+    current_response_language,
+    is_english,
+    localize_text,
+    response_language_from,
+    response_language_scope,
+)
 from psycopg.types.json import Json
 from pydantic import ValidationError
 
 from app.core.llm_env import api_key_from_env, resolve_llm_selection, resolve_workspace_llm_selection
-from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title
+from app.modules.agent.infrastructure.chat_session_title import generate_chat_session_title, needs_chat_session_title
+from app.modules.model_usage.infrastructure.usage_ledger import (
+    release_reserved_call,
+    reserved_call,
+    start_call,
+    usage_scope,
+)
 from app.core.pipeline_control import PipelineRunCancelledError, ReplayedResult, ScopePurgedError, ensure_task_active, task_cancellation_scope
 from app.modules.agent.domain.exceptions import (
     AgentConfigurationError,
@@ -41,6 +56,8 @@ from app.modules.agent.interfaces.http.schemas import AgentTurnRequestBody
 from app.modules.markdown_edit.domain.markdown_output_contract import (
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
+    markdown_create_failure_code,
+    markdown_edit_failure_code,
 )
 from app.modules.markdown_edit.domain.markdown_target_scope import MarkdownTargetBoundaryError
 from app.modules.meeting_notes.domain.entities import TranscriptSegment
@@ -97,6 +114,13 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
     WikiLintOut,
 )
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import (
+    reconcile_sent_receipts,
+    relay_pending,
+)
+from app.modules.wiki_ingestion.infrastructure.wiki_publication_cleanup import cleanup_configured_publications
+from app.modules.mcp_wiki_draft.infrastructure.postgres_repository import expire_inactive_runs
+from app.modules.mcp_wiki_draft.infrastructure.apply_repository import relay_pending_mcp_publications
 from app.workers.event_request import without_top_level_secrets
 
 
@@ -112,6 +136,10 @@ POST_INGEST_MAX_ATTEMPTS = 3
 POST_INGEST_AUDIT_LIMIT = 3
 # maintenance worker가 임베딩이 덜 된 활성 페이지를 다시 처리하는 주기(초). 기동 직후 한 번 돌고 이 간격으로 반복한다.
 EMBEDDING_RECOVERY_INTERVAL_SECONDS = 600
+# Existing outbox retries become eligible after five seconds.
+PUBLICATION_RECONCILIATION_INTERVAL_SECONDS = 5
+# Document가 MCP 위키 발행을 받은 뒤 ai.maintenance.command로 보내는 임베딩 깨우기 command.
+MCP_PUBLICATION_INDEX_KIND = "mcp_publication_index"
 
 
 def _required(command: dict[str, Any], *fields: str) -> None:
@@ -171,6 +199,9 @@ def _handle_query(
     if not isinstance(command["allow_web_search"], bool):
         raise ValueError("allow_web_search must be a boolean")
     result = build_answer_query_use_case(
+        product_help=build_query_product_help(
+            provider=str(command["provider"]).strip(), model=str(command["model"]).strip(),
+        ),
         provider=str(command["provider"]).strip(),
         model=str(command["model"]).strip(),
         allow_web_search=command["allow_web_search"],
@@ -181,6 +212,8 @@ def _handle_query(
         user_id=str(command["user_id"]),
         conversation_context=_conversation_context(command),
         allow_web_search=command["allow_web_search"],
+        # 요청자 화면 언어. document-svc가 싣지 않으면 키를 넘기지 않아 지금처럼 질문·근거 언어를 따른다.
+        **({"output_language": language} if (language := current_response_language()) else {}),
     )
     return query_to_response(result).model_dump(mode="json")
 
@@ -190,7 +223,7 @@ def _handle_agent(
     event_publisher: QueryEventPublisherPort | None = None,
 ) -> dict[str, Any]:
     # 문서를 열지 않은 턴은 편집 대상이 없어 document_id·base_version·apply_operation_id·
-    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·clarify·reject만 낸다.
+    # editor_snapshot이 오지 않는다. 이때 AI는 chat_answer·conversation_reply·product_help·clarify·reject만 낸다.
     # 작업 탭 턴(mode=task)은 문서 없이도 폴더 정리·워크플로를 낼 수 있고, 문서 편집이면 clarify로 되묻는다.
     _required(command, "run_id", "workspace_id", "user_id", "message")
     run_id = str(command["run_id"])
@@ -217,6 +250,8 @@ def _handle_agent(
             "skill_draft_user_directives": command.get("skill_draft_user_directives", []),
             "skill_draft_excluded_literals": command.get("skill_draft_excluded_literals", []),
             "skill_scope_type": command.get("skill_scope_type"),
+            # 사용자가 첨부한 참고 문서. 구 document-svc는 키를 싣지 않는다.
+            "reference_document_ids": command.get("reference_document_ids") or [],
             # 작업 탭 턴은 "task"다. 이 값이 없으면 기존 동작이다.
             "mode": command.get("mode"),
             # 작업 대상 폴더. document-svc는 지정하지 않은 턴에 키를 싣지 않는다.
@@ -231,6 +266,8 @@ def _handle_agent(
                 on_chat_answer=lambda: _record_agent_chat_answer(run_id),
             ).execute(payload.to_domain())
         ).model_dump(mode="json")
+        # 안내·되묻기 같은 고정 문구를 요청 언어로 바꾼다. 저장하는 결과(재전달 replay)도 같은 언어다.
+        result = _localize_agent_result(result)
     except Exception as exc:
         error_code = _agent_failure_code(exc)
         logger.error(
@@ -281,6 +318,16 @@ def _handle_agent(
     return result
 
 
+def _localize_agent_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not is_english():
+        return result
+    localized_result = {**result, "message": localize_text(result.get("message"))}
+    chat = result.get("chat")
+    if isinstance(chat, dict):
+        localized_result["chat"] = {**chat, "answer": localize_text(chat.get("answer"))}
+    return localized_result
+
+
 def _record_agent_chat_answer(run_id: str) -> None:
     # Optional analytics metadata must not prevent the query or product journal writes.
     # Persist before the query starts so Kafka redelivery retains its classification.
@@ -314,14 +361,17 @@ def _agent_failed_payload(command: dict[str, Any]) -> dict[str, str] | None:
 
 
 def _agent_failure_code(error: Exception) -> str:
+    from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskFailedError
     if isinstance(error, PipelineRunCancelledError):
         return "agent_turn_cancelled"
+    if isinstance(error, TaskFailedError):  # 이미 실패로 닫힌 run. ValueError지만 요청이 잘못된 것이 아니다.
+        return stored_code(error.code)
     if isinstance(error, AgentTurnRouteContractError):
         return "agent_turn_route_contract_failed"
     if isinstance(error, MarkdownCreateOutputContractError):
-        return "markdown_create_output_contract_failed"
+        return markdown_create_failure_code(error.failures)
     if isinstance(error, MarkdownOutputContractError):
-        return "markdown_output_contract_failed"
+        return markdown_edit_failure_code(error.failures)
     if isinstance(error, MarkdownTargetBoundaryError):
         return "markdown_target_crosses_structure"
     if isinstance(error, (SkillNotFoundError, SkillDisabledError)):
@@ -330,7 +380,9 @@ def _agent_failure_code(error: Exception) -> str:
         return "agent_not_configured"
     if isinstance(error, ValueError):
         return "invalid_agent_turn_request"
-    return "agent_turn_failed"
+    # 공급사 오류(한도·장애·시간 초과)와 우리 예외의 code는 그대로 알리고, 분류되지 않은 것만 뭉친다.
+    code = failure_code(error)
+    return "agent_turn_failed" if code == INTERNAL_ERROR else code
 
 
 def _agent_failure_result(error: Exception) -> dict[str, object]:
@@ -364,9 +416,9 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
             """
             INSERT INTO agent_runs (
                 id, workspace_id, user_id, action, status, request_summary,
-                provider, model, document_id, base_version, apply_operation_id,
+                provider, model, response_language, document_id, base_version, apply_operation_id,
                 command_envelope_hash
-            ) VALUES (%s, %s, %s, 'markdown_turn', 'queued', %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, 'markdown_turn', 'queued', %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             RETURNING id
             """,
@@ -377,6 +429,8 @@ def _register_agent_command(command: dict[str, Any]) -> tuple[str, dict[str, Any
                 str(command["message"])[:1000],
                 provider,
                 model,
+                # 승인형 run과 같이 턴을 시작한 요청자 화면 언어를 남긴다. 값이 없으면 NULL(기존 동작)이다.
+                response_language_from(command.get("response_language")),
                 # 문서를 열지 않은 턴은 셋 다 없다. 컬럼은 nullable이라 그대로 비워 둔다.
                 _text_or_none(command.get("document_id")),
                 _int_or_none(command.get("base_version")),
@@ -500,7 +554,8 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         result = get_wiki_maintenance().lint(
             WikiLintIn.model_validate(lint_payload).to_command()
         )
-        payload = WikiLintOut.model_validate(result).model_dump(mode="json")
+        api_payload = WikiLintOut.model_validate(result).model_dump(mode="json")
+        payload = dict(result.get("publication_result") or api_payload)
         database.finish_pipeline_run(run_id, {"task_result": payload})
         return payload
     except Exception as exc:
@@ -544,20 +599,52 @@ def _handle_meeting_transcription(command: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(use_case.execute(request.workspace_id, request.run_id, request.meeting_id, request.recording_key))
 
 
-def _validate_restore_contributions(command: dict[str, Any]) -> None:
+def _validate_restore_contributions(command: dict[str, Any]) -> list[dict[str, Any]]:
     expected = command.get("expected_contributions") or {}
     if not expected:
-        return
+        return []
     rows = read_contributions(list(expected), str(command["workspace_id"]))
     current: dict[str, list[str]] = {str(page_id): [] for page_id in expected}
+    indexed: dict[tuple[str, str, int], dict[str, Any]] = {}
     for row in sorted(rows, key=lambda item: int(item.get("sequence_revision") or 0)):
         page_id = str(row.get("page_id") or "")
         current.setdefault(page_id, []).append(
             f"{row.get('ingest_operation_id')}:{int(row.get('sequence_revision') or 0)}:"
             f"{'1' if row.get('active') else '0'}"
         )
-    if current != {str(key): list(value) for key, value in expected.items()}:
+        indexed[(page_id, str(row.get("ingest_operation_id")), int(row.get("sequence_revision") or 0))] = row
+    desired = {str(key): list(value) for key, value in expected.items()}
+    current_identity = {
+        page_id: [value.rsplit(":", 1)[0] for value in values]
+        for page_id, values in current.items()
+    }
+    desired_identity = {
+        page_id: [value.rsplit(":", 1)[0] for value in values]
+        for page_id, values in desired.items()
+    }
+    if current_identity != desired_identity:
         raise ValueError("restore contribution manifest is stale")
+    pending = []
+    for page_id, signatures in desired.items():
+        for signature in signatures:
+            identity, active = signature.rsplit(":", 1)
+            operation_id, sequence = identity.rsplit(":", 1)
+            row = indexed[(page_id, operation_id, int(sequence))]
+            wanted = active == "1"
+            if bool(row.get("active")) == wanted:
+                continue
+            if not row.get("object_key"):
+                raise ValueError("restore contribution object identity is unavailable")
+            pending.append({
+                "page_id": page_id,
+                "operation_id": operation_id,
+                "document_id": row.get("source_document_id"),
+                "object_key": row.get("object_key"),
+                "active": wanted,
+                "sequence_revision": int(sequence),
+                "linked_by_operation_id": row.get("lint_operation_id"),
+            })
+    return pending
 
 
 def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
@@ -579,15 +666,19 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
             f"kafka:{command['kind']}", f"runs/{run_id}", str(command["kind"]),
         )
     try:
-        _validate_restore_contributions(command)
+        pending_deltas = _validate_restore_contributions(command)
         use_case = get_restore_wiki_pages_use_case()
         if command["kind"] == "restore_ingest":
             result = use_case.execute_ingest(
-                IngestOperationRestoreIn.model_validate(command).to_command()
+                IngestOperationRestoreIn.model_validate(command).to_command(),
+                str(command["user_id"]),
+                pending_deltas,
             )
         else:
             result = use_case.execute_lint(
-                LintOperationRestoreIn.model_validate(command).to_command()
+                LintOperationRestoreIn.model_validate(command).to_command(),
+                str(command["user_id"]),
+                pending_deltas,
             )
         database.finish_pipeline_run(run_id, {"task_result": result})
         return result
@@ -925,6 +1016,12 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if embedding_future is not None and embedding_error is not None:
             raise embedding_error
 
+        # 화면의 편입 완료는 검색 준비 완료를 뜻한다. 후속 품질 검토가 끝나기 전에도
+        # 부모 run을 조회하는 document가 인덱스 준비를 확인할 수 있게 한다.
+        database.update_pipeline_run_post_ingest(
+            str(command["ingest_run_id"]), {"embedding": state["embedding"]}
+        )
+
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
         quality_required = bool(command.get("quality_required", True))
         generation_ready = (
@@ -1056,7 +1153,7 @@ def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPubli
     from app.modules.task_cancellation.infrastructure.postgres_task_journal import TaskAlreadyExecutingError
     terminal = True
     try:
-        with usage_scope(command):
+        with usage_scope(command), response_language_scope(command.get("response_language")):
             return _execute_controlled(command, event_publisher)
     except TaskAlreadyExecutingError:
         terminal = False  # 다른 worker가 쓰는 체크포인트는 지우지 않는다.
@@ -1219,11 +1316,47 @@ def _failure_is_durable(command: dict[str, Any]) -> bool:
         return False
 
 
-async def _publish_session_title(producer, command: dict[str, Any], result: dict[str, Any]) -> None:
+def _reserve_session_title_call(command: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """제목을 만들 문답이면 제목 호출의 원장 행을 결과 발행 전에 연다. 모델은 부르지 않는다.
+
+    제목 호출은 답변을 늦추지 않으려고 발행 뒤에 시작하고, document-svc는 결과를 받으면 run_id로 원장을 읽어 대기열에서
+    지운다. 그때 행이 없으면 제목 호출은 일일 대사까지 빠진다. started 행이 있으면 document-svc가 끝날 때까지 다시 수집한다.
+    여는 데 실패해도 답변 발행을 막지 않는다.
+    """
     try:
-        from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
+        if not needs_chat_session_title(command, result):
+            return None
+        provider, model = resolve_llm_selection(command["provider"], command["model"])
         with usage_scope({**command, "kind": "session_title"}):
-            title = await asyncio.to_thread(generate_chat_session_title, command, result)
+            return start_call(provider, model)
+    except Exception as exc:
+        logger.warning("채팅 제목 원장 예약 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+        return None
+
+
+async def _release_session_title_call(command: dict[str, Any], call_id: str | None) -> None:
+    if call_id is None:
+        return
+    try:
+        await asyncio.to_thread(release_reserved_call, call_id)
+    except Exception as exc:
+        # 남은 started 행은 원장 조회가 1시간 뒤 abandoned로 닫는다.
+        logger.warning("채팅 제목 원장 예약 해제 실패: run_id=%s error_type=%s", command.get("run_id"), type(exc).__name__)
+
+
+async def _publish_session_title(
+    producer, command: dict[str, Any], result: dict[str, Any], reserved: str | None = None
+) -> None:
+    try:
+        try:
+            with usage_scope({**command, "kind": "session_title"}), reserved_call(reserved):
+                title = await asyncio.to_thread(generate_chat_session_title, command, result)
+        except asyncio.CancelledError:
+            # 스레드는 계속 돌아 행을 직접 닫는다. 지우면 그 호출의 청구가 사라진다.
+            reserved = None
+            raise
+        finally:
+            await _release_session_title_call(command, reserved)
         if title:
             await producer.send_and_wait(
                 RESULT_TOPIC, _event(command, "session_title", payload={"title": title}, with_request=False),
@@ -1370,6 +1503,10 @@ async def consume() -> None:
     consumer.subscribe([COMMAND_TOPIC], listener=_RebalanceListener(dispatcher, commit_lock, consumer))
     await consumer.start()
     await producer.start()
+    if os.environ.get("AI_DATABASE_URL"):
+        await asyncio.to_thread(reconcile_sent_receipts)
+        await relay_pending(producer, RESULT_TOPIC)
+        await relay_pending_mcp_publications()
     executor = ThreadPoolExecutor(max_workers=CONCURRENCY, thread_name_prefix="ai-task")
     title_tasks: set[asyncio.Task[None]] = set()
     running: set[asyncio.Task[None]] = set()
@@ -1390,6 +1527,11 @@ async def consume() -> None:
         """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
         # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
         command = message.value if isinstance(message.value, dict) else {}
+        if command.get("kind") == MCP_PUBLICATION_INDEX_KIND:
+            # MCP 발행 뒤 Document가 보내는 깨우기 command다. 실행 기록·과금·결과 이벤트 없이 누락 임베딩만 만든다.
+            # 끝난 뒤에 offset을 커밋해 lag이 남아 있는 동안 KEDA가 이 worker를 0으로 줄이지 않는다.
+            await _run_blocking(executor, get_wiki_embedding_job().recover, str(command.get("run_id") or "mcp-publication-index"))
+            return True
         try:
             while True:
                 try:
@@ -1449,15 +1591,24 @@ async def consume() -> None:
                 error=INPUT_REJECTED if malformed else error,
                 with_request=command.get("kind") not in {"post_ingest", "meeting_notes"},
             )
+        # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
+        wants_title = event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
+            and not isinstance(result, ReplayedResult)
+        title_call = await asyncio.to_thread(_reserve_session_title_call, command, result) if wants_title else None
         # 발행이 끝난 뒤에만 완료로 표시해 커밋 대상이 되게 한다.
-        await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
-        if event["status"] == "succeeded" and command.get("kind") in {"agent", "query"} \
-                and not isinstance(result, ReplayedResult):
-            # 재생된 결과는 제목을 이미 만들었으므로 다시 과금하지 않는다.
+        try:
+            await producer.send_and_wait(RESULT_TOPIC, event, key=event["run_id"].encode("utf-8"))
+        except BaseException:
+            await _release_session_title_call(command, title_call)
+            raise
+        if wants_title:
             # 제목용 모델 응답이 다음 문답의 소비를 막지 않게 한다.
-            task = asyncio.create_task(_publish_session_title(producer, command, result))
+            task = asyncio.create_task(_publish_session_title(producer, command, result, title_call))
             title_tasks.add(task)
             task.add_done_callback(title_tasks.discard)
+        if os.environ.get("AI_DATABASE_URL"):
+            await relay_pending(producer, RESULT_TOPIC)
+            await relay_pending_mcp_publications()
         return True
 
     async def run(message) -> None:
@@ -1479,9 +1630,19 @@ async def consume() -> None:
     logger.info("[worker 기동] topic=%s group=%s concurrency=%s", COMMAND_TOPIC, GROUP_ID, CONCURRENCY)
     recovers_embeddings = COMMAND_TOPIC.endswith("maintenance.command")
     next_embedding_recovery = time.monotonic()
+    next_publication_reconciliation = time.monotonic()
     try:
         while not stop.is_set():
+            if recovers_embeddings and time.monotonic() >= next_publication_reconciliation:
+                await asyncio.to_thread(reconcile_sent_receipts)
+                await relay_pending(producer, RESULT_TOPIC)
+                await relay_pending_mcp_publications()
+                next_publication_reconciliation = (
+                    time.monotonic() + PUBLICATION_RECONCILIATION_INTERVAL_SECONDS
+                )
             if recovers_embeddings and time.monotonic() >= next_embedding_recovery:
+                await asyncio.to_thread(cleanup_configured_publications)
+                await asyncio.to_thread(expire_inactive_runs)
                 get_wiki_embedding_job().start("pending-recovery", [])
                 next_embedding_recovery = time.monotonic() + EMBEDDING_RECOVERY_INTERVAL_SECONDS
             await asyncio.to_thread(journal.rollback_pending)

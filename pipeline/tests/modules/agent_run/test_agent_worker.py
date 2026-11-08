@@ -355,7 +355,12 @@ class AgentWorkerTest(unittest.TestCase):
 
         for content, expected in (
             ({"edit_revision": 2, "content_hash": "sha256:abc"}, True),
+            ({"edit_revision": 2, "content_hash": "sha256:other"}, False),
+            # 저장 뒤 다른 사람이 고치면 revision이 올라가고 해시도 달라진다. 저장은 실제로 일어났다.
+            ({"edit_revision": 3, "content_hash": "sha256:other"}, True),
             ({"edit_revision": 1, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": True, "content_hash": "sha256:abc"}, False),
+            ({"edit_revision": "3", "content_hash": "sha256:abc"}, False),
             ({"content_hash": "sha256:abc"}, False),
         ):
             with self.subTest(content=content):
@@ -726,8 +731,8 @@ class AgentWorkerTest(unittest.TestCase):
         query, parameters = connection.execute.call_args.args
         self.assertIn("finished_at < now() - interval '90 days'", query)
         self.assertEqual(
-            parameters,
-            (["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled"],),
+            parameters["statuses"],
+            ["completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled"],
         )
 
     def test_deletes_only_selected_expired_terminal_runs(self) -> None:
@@ -741,9 +746,9 @@ class AgentWorkerTest(unittest.TestCase):
 
         self.assertEqual(deleted_count, 1)
         query, parameters = connection.execute.call_args.args
-        self.assertIn("id = ANY(%s)", query)
+        self.assertIn("id = ANY(%(ids)s)", query)
         self.assertIn("finished_at < now() - interval '90 days'", query)
-        self.assertEqual(parameters[0], ["run-1", "run-2"])
+        self.assertEqual(parameters["ids"], ["run-1", "run-2"])
 
     def test_claims_only_oldest_active_job_for_each_run(self) -> None:
         connection = MagicMock()
@@ -766,13 +771,14 @@ class AgentWorkerTest(unittest.TestCase):
         checkpointer.delete_thread.side_effect = lambda run_id: cleanup_order.append(f"checkpoint:{run_id}")
         repository.delete_expired_runs.side_effect = lambda run_ids: cleanup_order.append("runs") or 3
 
-        next_cleanup_at = agent_worker._cleanup_expired_runs_if_due(repository, checkpointer, 0.0, 100.0)
-        unchanged = agent_worker._cleanup_expired_runs_if_due(
-            repository,
-            checkpointer,
-            next_cleanup_at,
-            101.0,
-        )
+        with patch.object(agent_worker, "delete_run_objects", side_effect=lambda run_id: cleanup_order.append(f"objects:{run_id}")):
+            next_cleanup_at = agent_worker._cleanup_expired_runs_if_due(repository, checkpointer, 0.0, 100.0)
+            unchanged = agent_worker._cleanup_expired_runs_if_due(
+                repository,
+                checkpointer,
+                next_cleanup_at,
+                101.0,
+            )
 
         self.assertEqual(next_cleanup_at, 100.0 + 24 * 60 * 60)
         self.assertEqual(unchanged, next_cleanup_at)
@@ -780,7 +786,7 @@ class AgentWorkerTest(unittest.TestCase):
             [call.args[0] for call in checkpointer.delete_thread.call_args_list],
             ["run-1", "run-2"],
         )
-        self.assertEqual(cleanup_order, ["checkpoint:run-1", "checkpoint:run-2", "runs"])
+        self.assertEqual(cleanup_order, ["objects:run-1", "objects:run-2", "checkpoint:run-1", "checkpoint:run-2", "runs"])
         repository.delete_expired_runs.assert_called_once_with(("run-1", "run-2"))
 
     def test_main_fails_leased_job_for_setup_failures_and_missing_selection(self) -> None:
@@ -813,6 +819,8 @@ class AgentWorkerTest(unittest.TestCase):
                     patch.object(agent_worker, "build_plan_generator", return_value=plan_generator) as plan_builder,
                     patch.object(agent_worker, "AgentWorker", return_value=worker) as worker_factory,
                     patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+                    patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
+                    patch.object(agent_worker, "_retry_document_purges_if_due", return_value=0),
                     patch.object(agent_worker.time, "monotonic", return_value=1),
                 ):
                     database_module.connect_ai.return_value = connection_context
@@ -829,6 +837,59 @@ class AgentWorkerTest(unittest.TestCase):
                 expected_error = "missing_llm_selection" if failure.startswith("missing_") else "RuntimeError"
                 repository.fail.assert_called_once_with(job, expected_error)
                 worker.process.assert_not_called()
+
+    def test_process_job_executes_persisted_mcp_run_without_llm_selection(self) -> None:
+        repository = MagicMock()
+        job = MagicMock(id="job-1", run_id="run-1", job_type="execution")
+        repository.load_context.return_value = replace(
+            _executing_context(),
+            run=replace(
+                _executing_context().run,
+                origin="MCP_CLIENT",
+                provider=None,
+                model=None,
+            ),
+        )
+        worker = MagicMock()
+
+        with (
+            patch.object(agent_worker, "build_plan_generator") as plan_builder,
+            patch.object(agent_worker, "AgentWorker", return_value=worker) as worker_factory,
+        ):
+            agent_worker._process_job(
+                job,
+                repository=repository,
+                run_repository=MagicMock(),
+                tool_gateway=MagicMock(),
+                checkpointer=MagicMock(),
+                folder_content_reader=MagicMock(),
+            )
+
+        plan_builder.assert_not_called()
+        self.assertIsNone(worker_factory.call_args.kwargs["plan_generator"])
+        worker.process.assert_called_once_with(job)
+        repository.fail.assert_not_called()
+
+    def test_process_job_keeps_missing_llm_selection_guard_for_web_execution(self) -> None:
+        repository = MagicMock()
+        job = MagicMock(id="job-1", run_id="run-1", job_type="execution")
+        repository.load_context.return_value = replace(
+            _executing_context(),
+            run=replace(_executing_context().run, provider=None, model=None, origin=None),
+        )
+
+        with patch.object(agent_worker, "AgentWorker") as worker_factory:
+            agent_worker._process_job(
+                job,
+                repository=repository,
+                run_repository=MagicMock(),
+                tool_gateway=MagicMock(),
+                checkpointer=MagicMock(),
+                folder_content_reader=MagicMock(),
+            )
+
+        repository.fail.assert_called_once_with(job, "missing_llm_selection")
+        worker_factory.assert_not_called()
 
     def test_main_does_not_fail_again_when_process_raises(self) -> None:
         repository = MagicMock()
@@ -852,6 +913,8 @@ class AgentWorkerTest(unittest.TestCase):
             patch.object(agent_worker, "build_plan_generator"),
             patch.object(agent_worker, "AgentWorker", return_value=worker),
             patch.object(agent_worker, "_cleanup_expired_runs_if_due", return_value=0),
+            patch.object(agent_worker, "_delete_expired_artifacts_if_due", return_value=0),
+            patch.object(agent_worker, "_retry_document_purges_if_due", return_value=0),
             patch.object(agent_worker.time, "monotonic", return_value=1),
         ):
             database_module.connect_ai.return_value = connection_context

@@ -12,8 +12,15 @@ from app.modules.agent_run.domain.entities import AgentJob
 from app.modules.agent_run.infrastructure.agent_worker import AgentWorker
 from app.modules.agent_run.infrastructure.backend_tool_gateway import agent_backend_url, build_backend_tool_gateway
 from app.modules.agent_run.infrastructure.chat_completions_plan_generator import build_plan_generator
+from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
+    ARTIFACT_CLEANUP_BATCH_SIZE,
+    delete_expired_artifacts,
+)
 from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
+from app.modules.agent_run.infrastructure.mcp_attempt_reconciliation import reconcile_mcp_attempts
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
+from app.modules.data_purge.infrastructure.document_copy_purge import purge_pending_documents
+from app.modules.data_purge.infrastructure.postgres_purge import delete_run_objects
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 
@@ -21,8 +28,18 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 _CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
+# 90일 run 정리. 객체를 지우느라 job이 밀리지 않게 한 번에 묶어 지우고, 꽉 차면 곧 다시 돈다.
+_EXPIRED_RUN_BATCH_SIZE = 100
+_EXPIRED_RUN_BACKLOG_INTERVAL_SECONDS = 60
+_EXPIRED_RUN_MAX_STORAGE_FAILURES = 3
+# 영구 삭제 문서의 객체 재시도 주기.
+_DOCUMENT_PURGE_RETRY_INTERVAL_SECONDS = 60 * 60
 # 마지막 시도 중 죽은 job(lease만 남음)을 닫는 주기. lease가 90초라 그보다 자주 볼 필요는 없다.
 _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS = 60
+# 만료된 수정안 정리. 한 배치가 꽉 차면 밀린 것이 더 있다고 보고 곧 다시 돈다.
+_ARTIFACT_CLEANUP_INTERVAL_SECONDS = 60 * 60
+_ARTIFACT_CLEANUP_BACKLOG_INTERVAL_SECONDS = 60
+_DEFAULT_ARTIFACT_CLEANUP_GRACE_SECONDS = 24 * 60 * 60
 # SIGTERM 뒤 진행 중 job을 기다리는 상한. Pod terminationGracePeriodSeconds(900) - 60초 여유.
 _DEFAULT_SHUTDOWN_BUDGET_SECONDS = 840
 
@@ -71,6 +88,14 @@ def _shutdown_budget_seconds() -> float:
     return float(os.environ.get("AGENT_WORKER_SHUTDOWN_BUDGET_SECONDS", str(_DEFAULT_SHUTDOWN_BUDGET_SECONDS)))
 
 
+def _artifact_cleanup_grace_seconds() -> float:
+    grace = float(os.environ.get("AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS", str(_DEFAULT_ARTIFACT_CLEANUP_GRACE_SECONDS)))
+    # 음수면 아직 만료되지 않은 수정안까지 지운다.
+    if grace < 0:
+        raise ValueError("AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS must not be negative.")
+    return grace
+
+
 def _cleanup_expired_runs_if_due(
     repository: PostgresAgentJobRepository,
     checkpointer: PostgresSaver,
@@ -79,12 +104,26 @@ def _cleanup_expired_runs_if_due(
 ) -> float:
     if now < next_cleanup_at:
         return next_cleanup_at
-    run_ids = repository.list_expired_run_ids()
+    run_ids = repository.list_expired_run_ids(limit=_EXPIRED_RUN_BATCH_SIZE)
+    removable: list[str] = []
+    failures = 0
     for run_id in run_ids:
+        # 행을 먼저 지우면 객체 접두사를 다시 계산할 run id를 잃는다. 실패한 run은 행을 남겨 다음 주기에 다시 시도한다.
+        try:
+            delete_run_objects(run_id)
+        except Exception as exc:
+            failures += 1
+            logger.warning("만료된 AgentRun 객체 삭제 실패: run_id=%s type=%s", run_id, type(exc).__name__)
+            if failures >= _EXPIRED_RUN_MAX_STORAGE_FAILURES:
+                break
+            continue
+        removable.append(run_id)
+    for run_id in removable:
         checkpointer.delete_thread(run_id)
-    deleted_count = repository.delete_expired_runs(run_ids)
-    logger.info("Deleted %s expired AgentRun records.", deleted_count)
-    return now + _CLEANUP_INTERVAL_SECONDS
+    deleted_count = repository.delete_expired_runs(tuple(removable))
+    logger.info("Deleted %s expired AgentRun records. object_failures=%s", deleted_count, failures)
+    backlog = len(removable) >= _EXPIRED_RUN_BATCH_SIZE
+    return now + (_EXPIRED_RUN_BACKLOG_INTERVAL_SECONDS if backlog else _CLEANUP_INTERVAL_SECONDS)
 
 
 def _fail_exhausted_leases_if_due(
@@ -98,6 +137,40 @@ def _fail_exhausted_leases_if_due(
     if closed:
         logger.warning("시도 한도에서 중단된 Agent job %s건을 실패로 닫았습니다.", closed)
     return now + _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS
+
+
+def _reconcile_mcp_attempts_if_due(repository, gateway, next_check_at: float, now: float) -> float:
+    if now < next_check_at:
+        return next_check_at
+    try:
+        reconcile_mcp_attempts(repository, gateway)
+    except Exception as exc:
+        logger.warning("MCP receipt reconciliation unavailable: type=%s", type(exc).__name__)
+    return now + 60
+
+
+def _delete_expired_artifacts_if_due(grace_seconds: float, next_cleanup_at: float, now: float) -> float:
+    if now < next_cleanup_at:
+        return next_cleanup_at
+    result = delete_expired_artifacts(grace_seconds=grace_seconds)
+    if result.deleted or result.failed or result.rejected:
+        logger.info(
+            "만료된 수정안 정리: deleted=%s failed=%s rejected=%s",
+            result.deleted,
+            result.failed,
+            result.rejected,
+        )
+    backlog = result.deleted >= ARTIFACT_CLEANUP_BATCH_SIZE
+    return now + (_ARTIFACT_CLEANUP_BACKLOG_INTERVAL_SECONDS if backlog else _ARTIFACT_CLEANUP_INTERVAL_SECONDS)
+
+
+def _retry_document_purges_if_due(next_retry_at: float, now: float) -> float:
+    if now < next_retry_at:
+        return next_retry_at
+    result = purge_pending_documents()
+    if result.finished or result.pending:
+        logger.info("영구 삭제 문서 재시도: finished=%s pending=%s", result.finished, result.pending)
+    return now + _DOCUMENT_PURGE_RETRY_INTERVAL_SECONDS
 
 
 def _build_folder_content_reader() -> BackendFolderSourceReader:
@@ -115,6 +188,7 @@ def _build_folder_content_reader() -> BackendFolderSourceReader:
 
 def main(shutdown: ShutdownRequest | None = None) -> None:
     shutdown = shutdown or ShutdownRequest(_shutdown_budget_seconds())
+    artifact_grace_seconds = _artifact_cleanup_grace_seconds()
     database.verify_schema()
     database.verify_agent_schema()
     repository = PostgresAgentJobRepository()
@@ -131,7 +205,13 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
         poll_seconds = float(os.environ.get("AGENT_WORKER_POLL_SECONDS", "1"))
         next_cleanup_at = 0.0
         next_sweep_at = 0.0
+        next_artifact_cleanup_at = 0.0
+        next_document_purge_retry_at = 0.0
+        next_mcp_reconciliation_at = 0.0
         while not shutdown.requested:
+            next_mcp_reconciliation_at = _reconcile_mcp_attempts_if_due(
+                repository, tool_gateway, next_mcp_reconciliation_at, time.monotonic(),
+            )
             next_cleanup_at = _cleanup_expired_runs_if_due(
                 repository,
                 checkpointer,
@@ -139,6 +219,15 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
                 time.monotonic(),
             )
             next_sweep_at = _fail_exhausted_leases_if_due(repository, next_sweep_at, time.monotonic())
+            next_artifact_cleanup_at = _delete_expired_artifacts_if_due(
+                artifact_grace_seconds,
+                next_artifact_cleanup_at,
+                time.monotonic(),
+            )
+            next_document_purge_retry_at = _retry_document_purges_if_due(
+                next_document_purge_retry_at,
+                time.monotonic(),
+            )
             job = repository.claim_next(worker_id)
             if job is None:
                 time.sleep(poll_seconds)
@@ -179,13 +268,15 @@ def _process_job(
         plan_generator = None
         if job.job_type != "rollback":
             context = repository.load_context(job.run_id)
-            if context.run.provider is None or context.run.model is None:
+            mcp_execution = job.job_type == "execution" and context.run.origin == "MCP_CLIENT"
+            if not mcp_execution and (context.run.provider is None or context.run.model is None):
                 repository.fail(job, "missing_llm_selection")
                 return
-            plan_generator = build_plan_generator(
-                provider=context.run.provider,
-                model=context.run.model,
-            )
+            if not mcp_execution:
+                plan_generator = build_plan_generator(
+                    provider=context.run.provider,
+                    model=context.run.model,
+                )
         worker = AgentWorker(
             repository=repository,
             run_repository=run_repository,

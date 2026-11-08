@@ -46,12 +46,19 @@ def _sweep_artifacts(run_ids: list[str]) -> int:
     return _delete_objects(prefixes, [])
 
 
+def delete_run_objects(run_id: str) -> int:
+    """90일 정리가 run 행을 지우기 전에 부른다. 수정안·미리 보기·되돌리기용 artifact가 모두 이 접두사 아래에 있다."""
+    return _sweep_artifacts([run_id])
+
+
 def _mark_purged(scope_type: str, scope_id: str) -> None:
     # 삭제보다 먼저 커밋해 파기 중에 들어온 작업도 journal register에서 거절되게 한다.
     with connect() as conn:
         if scope_type == "workspace":
             # 진행 중인 위키 객체 쓰기가 끝날 때까지 기다린다. 이 표시 뒤의 쓰기는 write_fence가 거절한다.
             journal.lock_workspace_writes(conn, scope_id, shared=False)
+        else:
+            journal.lock_user_writes(conn, scope_id, shared=False)
         conn.execute("INSERT INTO ai_purged_scopes(scope_type, scope_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                      (scope_type, scope_id))
 
@@ -75,16 +82,25 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
                                        "UNION SELECT document_id FROM document_wiki_links WHERE workspace_id = %(ws)s "
                                        "UNION SELECT document_id FROM wiki_source_tombstones WHERE workspace_id = %(ws)s "
                                        "UNION SELECT document_id FROM pipeline_runs WHERE workspace_id = %(ws)s AND document_id IS NOT NULL "
+                                       "UNION SELECT document_id FROM mcp_wiki_ingest_runs WHERE workspace_id = %(ws)s "
                                        "UNION SELECT command->>'document_id' FROM ai_task_runs "
                                        "WHERE workspace_id = %(ws)s AND command->>'document_id' IS NOT NULL", params)
         # 임베딩 벡터는 같은 문구를 쓰는 다른 워크스페이스와 공유하므로, 이 워크스페이스가 참조하던 것 중 남은 참조가 없는 것만 지운다.
         params["vectors"] = _column(conn, "SELECT DISTINCT u.embedding_vector_id FROM wiki_embedding_units u "
                                           "JOIN wiki_pages p ON p.id = u.page_id WHERE p.workspace_id = %(ws)s", params)
         statements = [
+            ("mcp_wiki_draft_idempotency", "DELETE FROM mcp_wiki_draft_idempotency WHERE workspace_id = %(ws)s"),
+            ("mcp_wiki_publication_results", "DELETE FROM mcp_wiki_publication_results WHERE workspace_id = %(ws)s"),
+            ("mcp_wiki_lint_drafts", "DELETE FROM mcp_wiki_drafts WHERE workspace_id = %(ws)s AND draft_kind='LINT'"),
+            ("mcp_wiki_ingest_runs", "DELETE FROM mcp_wiki_ingest_runs WHERE workspace_id = %(ws)s"),
+            ("mcp_pdf_conversions", "DELETE FROM mcp_pdf_conversions WHERE workspace_id = %(ws)s"),
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE workspace_id = %(ws)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE workspace_id = %(ws)s"),
             # 개인 스킬은 workspace_id가 NULL이라 팀 스킬만 지워진다. 버전·출처는 CASCADE.
             ("skills", "DELETE FROM skills WHERE workspace_id = %(ws)s"),
+            ("wiki_pending_contributions", "DELETE FROM wiki_pending_contributions WHERE workspace_id = %(ws)s"),
+            # Publication rows own the mandatory outbox and inflight object index. S3 was removed first.
+            ("wiki_publications", "DELETE FROM wiki_publications WHERE workspace_id = %(ws)s"),
             # 링크·임베딩·임베딩 단위는 CASCADE.
             ("wiki_pages", "DELETE FROM wiki_pages WHERE workspace_id = %(ws)s"),
             ("wiki_embedding_vectors", "DELETE FROM wiki_embedding_vectors v WHERE v.id = ANY(%(vectors)s) "
@@ -95,6 +111,7 @@ def purge_workspace(workspace_id: str) -> dict[str, int]:
             ("document_derived_state", "DELETE FROM document_derived_state WHERE workspace_id = %(ws)s"),
             ("wiki_source_tombstones", "DELETE FROM wiki_source_tombstones WHERE workspace_id = %(ws)s"),
             ("pipeline_runs", "DELETE FROM pipeline_runs WHERE workspace_id = %(ws)s"),
+            ("ai_document_purges", "DELETE FROM ai_document_purges WHERE workspace_id = %(ws)s"),
         ]
         # 계획·승인·작업·산출물 행은 ON DELETE CASCADE로 함께 지워진다.
         agent_deleted, run_ids = _delete_agent_runs(conn, "workspace_id = %(ws)s", params)
@@ -110,6 +127,13 @@ def purge_user(user_id: str) -> dict[str, int]:
     with connect() as conn:
         artifacts = _column(conn, "SELECT object_key FROM agent_run_artifacts "
                                   "WHERE user_id = %s AND object_key IS NOT NULL", (user_id,))
+        artifacts.extend(_column(
+            conn,
+            "SELECT object.object_key FROM wiki_publication_objects object "
+            "JOIN wiki_publications publication USING(publication_id) "
+            "WHERE publication.user_id = %s AND publication.state IN ('PREPARED', 'ABANDONED')",
+            (user_id,),
+        ))
         # 진행 중인 회의 전사 체크포인트. 작업 기록을 지우기 전에 접두사를 계산한다.
         prefixes = [checkpoint_prefix(row["workspace_id"], row["id"]) for row in conn.execute(
             "SELECT id, workspace_id FROM ai_task_runs WHERE user_id = %s AND kind = 'meeting_transcription'",
@@ -118,11 +142,20 @@ def purge_user(user_id: str) -> dict[str, int]:
 
     with connect() as conn:
         statements = [
+            ("mcp_wiki_draft_idempotency", "DELETE FROM mcp_wiki_draft_idempotency WHERE user_id = %(user)s"),
+            ("mcp_wiki_publication_results", "DELETE FROM mcp_wiki_publication_results WHERE user_id = %(user)s"),
+            ("mcp_wiki_lint_drafts", "DELETE FROM mcp_wiki_drafts WHERE user_id = %(user)s AND draft_kind='LINT'"),
+            ("mcp_wiki_ingest_runs", "DELETE FROM mcp_wiki_ingest_runs WHERE user_id = %(user)s"),
+            ("mcp_pdf_conversions", "DELETE FROM mcp_pdf_conversions WHERE user_id = %(user)s"),
             # 작업 기록을 지우면 실행 중이던 작업은 이후 변경이 거부되고, 재전달은 ai_purged_scopes로 거절된다.
             ("ai_task_changes", "DELETE FROM ai_task_changes WHERE run_id IN (SELECT id FROM ai_task_runs WHERE user_id = %(user)s)"),
             ("ai_task_runs", "DELETE FROM ai_task_runs WHERE user_id = %(user)s"),
             ("skills", "DELETE FROM skills WHERE scope_type = 'personal' AND owner_user_id = %(user)s"),
             ("wiki_schemas", "DELETE FROM wiki_schemas WHERE user_id = %(user)s"),
+            ("wiki_pending_contributions", "DELETE FROM wiki_pending_contributions WHERE publication_id IN "
+                                           "(SELECT publication_id FROM wiki_publications WHERE user_id = %(user)s)"),
+            # Shared wiki bytes stay, but body-free result/outbox rows still carry the purged user id.
+            ("wiki_publications", "DELETE FROM wiki_publications WHERE user_id = %(user)s"),
         ]
         agent_deleted, run_ids = _delete_agent_runs(conn, "user_id = %(user)s", {"user": user_id})
         deleted.update(agent_deleted)

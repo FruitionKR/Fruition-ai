@@ -20,7 +20,8 @@ from app.core.ai_database import ai_database_url
 
 TABLES = frozenset({"pipeline_runs", "wiki_pages", "document_wiki_links", "wiki_page_links", "wiki_page_entries", "wiki_page_entry_references", "source_blocks", "source_block_snapshots",
                     "wiki_page_embeddings", "wiki_embedding_vectors", "wiki_embedding_units", "wiki_schemas",
-                    "document_derived_state", "document_quality_reviews", "wiki_pending_contributions", "skills", "skill_versions", "skill_version_sources"})
+                    "document_derived_state", "document_quality_reviews", "wiki_pending_contributions",
+                    "skills", "skill_versions", "skill_version_sources"})
 # 종료한 run에서 지울 kind별 command 필드. 전사·초안은 document가 소유하므로 AI는 끝난 작업의 본문을 보관하지 않는다.
 # command_hash와 status·error_code·run_id는 남겨 재전달 판정(재생·불일치)에 쓴다.
 # meeting_transcription은 command에 전사가 없어 녹음 객체 키만 지우고, result의 전사 본문은 같은 방식으로 지운다.
@@ -58,7 +59,7 @@ def connect():
 
 
 def register(command: dict[str, Any]) -> dict[str, Any]:
-    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "skill_author", "skill_publish", "skill_update", "skill_test_run", "convert_batch"}:
+    if command.get("kind") not in {"query", "document", "chat_wiki", "lint", "restore_ingest", "restore_lint", "post_ingest", "meeting_notes", "meeting_transcription", "ingest", "mcp_wiki_ingest", "mcp_wiki_lint", "skill_author", "skill_publish", "skill_update", "skill_test_run", "convert_batch"}:
         raise ValueError("Unsupported task kind.")
     digest = hashlib.sha256(json.dumps(command, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     with connect() as conn:
@@ -97,6 +98,11 @@ def lock_workspace_writes(conn, workspace_id: str, shared: bool) -> None:
     """위키 객체 쓰기(공유)와 워크스페이스 파기 표시(배타)가 같은 트랜잭션 advisory 잠금을 잡는다(object_change_journal.write_fence)."""
     function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
     conn.execute(f"SELECT {function}(hashtextextended(%s, 0))", ("ai-workspace-write:" + str(workspace_id),))
+
+
+def lock_user_writes(conn, user_id: str, shared: bool) -> None:
+    function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    conn.execute(f"SELECT {function}(hashtextextended(%s, 0))", ("ai-user-write:" + str(user_id),))
 
 
 def active(run_id: str) -> bool:
@@ -142,6 +148,13 @@ def request_cancel(run_id: str, workspace_id: str, user_id: str) -> dict[str, An
                            (run_id, workspace_id, user_id)).fetchone()
         if row is None:
             raise KeyError("Task not found.")
+        draft_id = (row.get("command") or {}).get("draft_id")
+        if row["kind"] in {"mcp_wiki_ingest", "mcp_wiki_lint"} and draft_id and conn.execute(
+            "SELECT 1 FROM mcp_wiki_publication_results WHERE draft_id=%s AND state IN ('PUBLISHED','NO_CHANGE')",
+            (draft_id,),
+        ).fetchone():
+            # A committed publication is immutable evidence. Reversal is the existing explicit restore flow.
+            return {key: row[key] for key in ("id", "status", "error_code")}
         conn.execute("WITH RECURSIVE tree AS (SELECT id FROM ai_task_runs WHERE id = %s UNION ALL "
                      "SELECT child.id FROM ai_task_runs child JOIN tree ON child.parent_run_id = tree.id) "
                      "UPDATE ai_task_runs SET status = 'cancel_requested', error_code = NULL, updated_at = now() "
@@ -174,9 +187,66 @@ def rollback(run_id: str) -> None:
     if not _undo_changes(run_id):
         return
     with connect() as conn:
+        task = conn.execute("SELECT kind FROM ai_task_runs WHERE id = %s FOR UPDATE", (run_id,)).fetchone()
+        if task is not None and task["kind"] == "mcp_wiki_ingest":
+            # Cancellation only closes a draft that has not atomically published.
+            conn.execute(
+                "UPDATE mcp_wiki_ingest_runs SET state = 'CANCELLED', updated_at = now() "
+                "WHERE run_id = %s AND state IN ('ACTIVE_WINDOWING', 'READY_TO_FINALIZE', 'AWAITING_WEB_APPROVAL', 'APPLYING', 'UNKNOWN')",
+                (run_id,),
+            )
+            conn.execute(
+                "UPDATE mcp_wiki_publication_results SET state='HALTED',error_code='CANCELLED',updated_at=now() "
+                "WHERE draft_id=(SELECT draft_id FROM mcp_wiki_ingest_runs WHERE run_id=%s) "
+                "AND state IN ('APPLYING','UNKNOWN')",
+                (run_id,),
+            )
+            conn.execute("DELETE FROM mcp_wiki_drafts WHERE run_id = %s", (run_id,))
+        elif task is not None and task["kind"] == "mcp_wiki_lint":
+            conn.execute(
+                "UPDATE mcp_wiki_publication_results SET state='HALTED',error_code='CANCELLED',updated_at=now() "
+                "WHERE draft_id=%s AND state IN ('APPLYING','UNKNOWN')",
+                (run_id,),
+            )
+            conn.execute(
+                "DELETE FROM mcp_wiki_drafts WHERE draft_id=%s AND draft_kind='LINT' "
+                "AND state IN ('AWAITING_WEB_APPROVAL','APPLYING','UNKNOWN')",
+                (run_id,),
+            )
         conn.execute("UPDATE ai_task_runs SET status = 'cancelled', error_code = NULL, updated_at = now() WHERE id = %s",
                      (run_id,))
+        _mark_task_publication_abandoned(conn, run_id)
         _scrub_terminal(conn, run_id)
+
+
+def _mark_task_publication_abandoned(conn, run_id: str) -> None:
+    """Only a successfully rolled-back terminal task may retire its unpublished bytes."""
+    publication = conn.execute(
+        """
+        SELECT publication.publication_id
+        FROM wiki_publications publication
+        JOIN ai_task_runs task ON task.id = %s
+        WHERE task.status = 'cancelled' AND publication.state = 'PREPARED'
+          AND publication.operation_id = task.command->>'operation_id'
+          AND publication.workspace_id = task.workspace_id
+          AND publication.user_id = task.user_id
+        """,
+        (run_id,),
+    ).fetchone()
+    if publication is None:
+        return
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        ("ai-wiki-publication:" + str(publication["publication_id"]),),
+    )
+    conn.execute(
+        """
+        UPDATE wiki_publications
+        SET state = 'ABANDONED', abandoned_at = clock_timestamp()
+        WHERE publication_id = %s AND state = 'PREPARED'
+        """,
+        (publication["publication_id"],),
+    )
 
 
 def _undo_changes(run_id: str) -> bool:
@@ -264,7 +334,9 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
         if row["status"] in STOPPING:
             rollback(run_id)
             raise PipelineRunCancelledError("Task cancellation requested.")
-        _begin_attempt(row)
+        recovered = _begin_attempt(row)
+        if recovered is not None:
+            return ReplayedResult(recovered)
         token = task_run_id.set(run_id)
         try:
             with task_cancellation_scope(lambda: active(run_id)), usage_scope(command):
@@ -274,6 +346,12 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
                 return result
         except BaseException as exc:
             cancelled = not active(run_id)
+            recovered = None if cancelled else _committed_publication_result(run_id)
+            if recovered is not None:
+                task_run_id.reset(token)
+                token = None
+                complete(run_id, recovered)
+                return recovered
             task_run_id.reset(token)
             token = None
             request_cancel(run_id, row["workspace_id"], row["user_id"])
@@ -290,11 +368,26 @@ def execute(command: dict[str, Any], handle) -> dict[str, Any]:
                 task_run_id.reset(token)
 
 
-def _begin_attempt(row: dict[str, Any]) -> None:
+def _begin_attempt(row: dict[str, Any]) -> dict[str, Any] | None:
     """running인 run의 시도 번호를 올린다. 이미 시도가 있었다면 이전 worker가 죽어 중단된 것이므로
     부분 변경을 되돌린 뒤 같은 전달 안에서 다시 실행한다(사용자 취소는 호출 전에 STOPPING으로 걸러진다)."""
     run_id = row["id"]
     previous = row["attempt"]
+    if previous > 0:
+        result = _committed_publication_result(run_id)
+        if result is not None:
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE ai_task_runs SET status = 'completed', result = %s, updated_at = now() WHERE id = %s",
+                    (Jsonb(result), run_id),
+                )
+                conn.execute(
+                    "UPDATE pipeline_runs SET status = 'succeeded', manifest = "
+                    "COALESCE(manifest, '{}'::jsonb) || jsonb_build_object('task_result', %s::jsonb), "
+                    "updated_at = now(), finished_at = now() WHERE id::text = %s AND status = 'running'",
+                    (Jsonb(result), run_id),
+                )
+                return result
     if previous >= MAX_INTERRUPTED_ATTEMPTS:
         request_cancel(run_id, row["workspace_id"], row["user_id"])
         rollback(run_id)
@@ -317,6 +410,24 @@ def _begin_attempt(row: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute("UPDATE ai_task_runs SET status = 'running', attempt = attempt + 1, updated_at = now() "
                      "WHERE id = %s AND status IN ('running', 'rolling_back')", (run_id,))
+    return None
+
+
+def _committed_publication_result(run_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        committed = conn.execute(
+            """
+            SELECT publication.result
+            FROM wiki_publications publication
+            JOIN ai_task_runs task ON task.id = %s
+            WHERE publication.operation_id = task.command->>'operation_id'
+              AND publication.workspace_id = task.workspace_id
+              AND publication.user_id = task.user_id
+              AND publication.state = 'COMMITTED'
+            """,
+            (run_id,),
+        ).fetchone()
+    return None if committed is None else dict(committed["result"])
 
 
 def rollback_pending() -> None:
@@ -333,4 +444,3 @@ def rollback_pending() -> None:
                 rollback(row["id"])
         except TaskAlreadyExecutingError:
             continue
-

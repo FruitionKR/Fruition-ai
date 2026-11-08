@@ -213,6 +213,30 @@ def test_user_purge_keeps_shared_wiki_and_removes_personal_data(database, storag
     assert set(second.values()) == {0}
 
 
+def test_user_purge_removes_abandoned_publication_object(database, storage):
+    key = "wiki/other/pages/page-other/ops/abandoned.md"
+    with database() as conn:
+        seed(conn)
+        conn.execute(
+            "INSERT INTO wiki_publications(publication_id,operation_id,workspace_id,user_id,kind,request_hash,state,abandoned_at) "
+            "VALUES ('wiki:abandoned','abandoned','other','alice','LINT','hash','ABANDONED',now())"
+        )
+        conn.execute(
+            "INSERT INTO wiki_publication_objects(publication_id,page_id,object_key,content_hash,content_type,uploaded_at) "
+            "VALUES ('wiki:abandoned','page-other',%s,'sha256:hash','text/markdown',now())",
+            (key,),
+        )
+    storage.objects.add(key)
+
+    purge.purge_user("alice")
+
+    assert key not in storage.objects
+    with database() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM wiki_publications WHERE publication_id = 'wiki:abandoned'"
+        ).fetchone() is None
+
+
 def test_checkpoint_write_after_agent_run_purge_is_rejected(database, storage):
     """파기가 run 행을 지운 뒤에는 늦게 도착한 checkpoint 쓰기가 거부돼 개인정보가 남지 않는다."""
     with database() as conn:

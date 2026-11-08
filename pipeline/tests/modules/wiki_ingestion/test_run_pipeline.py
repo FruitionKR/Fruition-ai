@@ -75,7 +75,9 @@ class FakeRepository:
     def fail(self, run_id: str, error: str) -> None:
         self.calls.append(("fail", run_id, error))
 
-    def list_active_concept_index(self, workspace_id: str, *, use_cache: bool = True) -> list[dict[str, object]]:
+    def list_active_concept_index(
+        self, workspace_id: str, *, use_cache: bool = True, include_deleted: bool = False
+    ) -> list[dict[str, object]]:
         return []
 
     def touch(self, run_id: str) -> bool:
@@ -381,7 +383,9 @@ class RunPipelineUseCaseTest(unittest.TestCase):
                     active += run_id
                 return super().finish(run_id, manifest, expected_source_hash)
 
-            def list_active_concept_index(self, workspace_id: str, *, use_cache: bool = True):
+            def list_active_concept_index(
+                self, workspace_id: str, *, use_cache: bool = True, include_deleted: bool = False
+            ):
                 index_reads.append(use_cache)
                 # 먼저 저장한 편입의 개념이 목록에 있다.
                 return [{"slug": f"concept-{run_id}"} for run_id in ("run-1", "run-2") if run_id in active]

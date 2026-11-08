@@ -13,9 +13,9 @@ from typing import Any
 from app.modules.agent_run.application.ports import (
     AgentJobRepositoryPort, AgentPlanRepositoryPort, AgentToolGatewayPort, ToolGatewayError,
 )
-from app.modules.agent_run.domain.compensation import compensation_request
+from app.modules.agent_run.domain.compensation import compensation_request, mcp_receipt_result
 from app.modules.agent_run.domain.entities import AgentRunContext
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
+from app.modules.agent_run.domain.plan import ROLLBACK_DOCUMENT_PURGED, AgentPlan, AgentPlanOperation
 
 
 class RollbackAgentRunUseCase:
@@ -45,10 +45,23 @@ class RollbackAgentRunUseCase:
             self._repository.finish_rollback(run_id, self._repository.parent_rollback_error(run_id))
             return
         versions: dict[tuple[str, str], int] = {}
+        document_purged = False
         for record in self._repository.load_undo_records(run_id):
             try:
                 # HTTP 호출 전에 영속 실행 기록을 남긴다. 그 기록이 없으면 실행하지 않은 단계다.
                 if record["forward_status"] is None:
+                    if record["id"] is not None:
+                        self._repository.complete_undo(record["id"], {})
+                    else:
+                        # 복구 기록을 남기기 전에 취소돼 running으로 멈춘 단계다.
+                        self._repository.mark_operation(record["operation_id"], ("running",), "cancelled")
+                    continue
+                if record["tool_name"] == "publish_skill_definition":
+                    # 저장 여부는 실행 응답이 아니라 저장 증거(skill_undo)로 판정한다. 증거가 없으면 저장하지 않았다.
+                    error = self._repository.parent_rollback_error(run_id)
+                    if error is not None:
+                        self._repository.finish_rollback(run_id, f"{error}:{record['operation_id']}")
+                        return
                     if record["id"] is not None:
                         self._repository.complete_undo(record["id"], {})
                     continue
@@ -56,12 +69,26 @@ class RollbackAgentRunUseCase:
                         and record.get("forward_error_code") in {"tool_http_400", "tool_http_401", "tool_http_403", "tool_http_404", "tool_http_409", "tool_http_422"}):
                     self._repository.complete_undo(record["id"], {})
                     continue
+                if record["id"] is not None and record["response_metadata"].get("document_purged"):
+                    # 문서가 없어 되돌릴 것도 없다. 멈추면 다른 문서를 되돌리지 못하므로 건너뛰고 끝에 실패로 알린다.
+                    document_purged = True
+                    continue
                 if record["id"] is None:
                     raise ValueError("rollback_snapshot_missing")
                 if record["forward_status"] != "succeeded":
                     # 응답이 없으면 요청이 서버에 반영됐는지 단정할 수 없다.
                     raise ValueError("rollback_forward_outcome_unknown")
                 response = record["forward_response"]
+                if response.get("existing_result") is True:
+                    self._repository.complete_undo(record["id"], {})
+                    continue
+                if context.run.origin == "MCP_CLIENT":
+                    if response.get("outcome") == "NO_CHANGE" and response.get("changed") is False:
+                        self._repository.complete_undo(record["id"], {})
+                        continue
+                    # Keep the authoritative receipt stored unchanged; adapt it for existing compensation.
+                    response = mcp_receipt_result(record["tool_name"], response)
+                    record = {**record, "forward_response": response}
                 target_type = "folder" if record["tool_name"].endswith("folder") else "document"
                 content_edit = record["tool_name"] == "apply_document_edit"
                 target = ("content" if content_edit else target_type, response.get("document_id" if content_edit else "id"))
@@ -86,7 +113,7 @@ class RollbackAgentRunUseCase:
                 code = str(exc) if str(exc) in codes else "rollback_snapshot_invalid"
                 self._repository.finish_rollback(run_id, f"{code}:{record['operation_id']}")
                 return
-        self._repository.finish_rollback(run_id)
+        self._repository.finish_rollback(run_id, ROLLBACK_DOCUMENT_PURGED if document_purged else None)
 
     def _undo(self, context: AgentRunContext, record: dict[str, Any], version: int) -> dict[str, Any]:
         metadata = record["response_metadata"]
@@ -118,7 +145,8 @@ class RollbackAgentRunUseCase:
         return restored
 
     def _snapshot(self, context: AgentRunContext, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if tool in {"create_folder", "create_document"}:
+        # Skill 저장은 AI 수락 API가 같은 트랜잭션에 run.result.skill_undo로 되돌릴 증거를 남긴다.
+        if tool in {"create_folder", "create_document", "publish_skill_definition"}:
             return {}
         if tool == "apply_document_edit":
             before = self._read(context, "get_document_content", {"document_id": arguments["document_id"]})
@@ -137,7 +165,8 @@ class RollbackAgentRunUseCase:
             content_hash = hashlib.sha256(before["markdown"].encode("utf-8")).hexdigest()
             if before["content_hash"] != content_hash:
                 raise ValueError("rollback_snapshot_hash_mismatch")
-        if version != arguments["base_version"]:
+        # 문서 편집은 document-svc가 계획 뒤의 변경과 병합하거나 409로 막는다. 여기서 막으면 병합에 닿지 못한다(document-svc ADR-0032).
+        if tool != "apply_document_edit" and version != arguments["base_version"]:
             raise ValueError("rollback_snapshot_version_conflict")
         return before
 

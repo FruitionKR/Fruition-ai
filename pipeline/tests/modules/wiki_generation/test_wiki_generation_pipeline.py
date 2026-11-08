@@ -1,11 +1,19 @@
+import json
 import tempfile
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+from app.modules.wiki_ingestion.application.models import PipelineRunCommand
+from app.modules.wiki_ingestion.domain.source_block_changes import SourceBlockChanges
+from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    load_concept_contributions,
+    rebuild_concept_page,
+)
 from run_lab import (
     PipelineLog,
     PipelinePrompts,
@@ -15,6 +23,7 @@ from run_lab import (
     _prepare_post_ingest_clusters,
     _resolve_pipeline_concepts,
     _run_wiki_generation_loop,
+    run_pipeline,
 )
 
 
@@ -66,6 +75,150 @@ class FakeConceptResolutionClient:
 
 
 class WikiGenerationPipelineTest(unittest.TestCase):
+    def test_reingest_manifest_uses_remapped_incoming_graph_for_contribution_and_post_ingest(self) -> None:
+        blocks = [
+            SourceBlock("doc-new", "A1", "ref-A1", "alpha evidence", 1, 1),
+            SourceBlock("doc-new", "B1", "ref-B1", "beta evidence", 2, 2),
+        ]
+        incoming = {
+            "document": {"document_id": "doc-new", "title": "New"},
+            "semantic_notes": [],
+            "concept_ledger": [
+                {
+                    "slug": "alpha", "title": "Alpha", "aliases": ["Display A"],
+                    "identity_aliases": ["Alias A"], "tags": ["tag-a"], "definition": "A",
+                    "anchor_reference_ids": ["A1"], "display_reference_ids": ["A1"],
+                    "evidence_claim_ids": ["ev-a"], "source_document_ids": ["doc-new"],
+                    "importance_score": 0.4,
+                },
+                {
+                    "slug": "beta", "title": "Beta", "aliases": ["Display B"],
+                    "identity_aliases": ["Alias B"], "tags": ["tag-b"],
+                    "definition": "Beta definition",
+                    "anchor_reference_ids": ["B1"], "display_reference_ids": ["B1"],
+                    "evidence_claim_ids": ["ev-b"], "source_document_ids": ["doc-new"],
+                    "importance_score": 0.6,
+                },
+            ],
+            "evidence_units": [
+                {
+                    "evidence_id": "ev-a", "claim": "alpha evidence", "anchor_reference_ids": ["A1"],
+                    "related_concept_slugs": ["alpha"], "source_document_id": "doc-new",
+                },
+                {
+                    "evidence_id": "ev-b", "claim": "beta evidence", "anchor_reference_ids": ["B1"],
+                    "related_concept_slugs": ["beta"], "source_document_id": "doc-new",
+                },
+            ],
+            "entry_changes": {
+                "alpha": [{
+                    "op": "add", "entry_id": "entry:a", "name": "Detail A", "slug": "alpha",
+                    "anchor_reference_ids": ["A1"], "evidence_claim_ids": ["ev-a"],
+                }],
+                "beta": [{
+                    "op": "add", "entry_id": "entry:b", "name": "Detail B", "slug": "beta",
+                    "anchor_reference_ids": ["B1"], "evidence_claim_ids": ["ev-b"],
+                }],
+            },
+            "links": [
+                {"source": "concept:alpha", "target": "concept:outside", "relation": "related_to"},
+                {"source": "concept:beta", "target": "concept:outside", "relation": "supports"},
+            ],
+            "concept_resolutions": [{
+                "incoming_slug": "alpha", "canonical_slug": "alpha", "link_targets": ["alpha", "beta"],
+                "link_confidences": {"alpha": 0.7, "beta": 0.9},
+            }],
+            "categories": [], "observations": [], "section_candidates": [], "mentions": [],
+            "concept_slug_map": {"alpha": "alpha", "beta": "beta"},
+            "hint_slug_map": {"Alpha": "alpha", "Beta": "beta"}, "warnings": [],
+        }
+        source_artifact = {
+            "document_id": "doc-new",
+            "core_concepts": [{
+                "term": "Canonical", "slug": "canonical", "identity_aliases": ["Alpha", "Beta"],
+                "evidence_block_ids": ["A1"],
+            }],
+            "evidence_claims": [], "section_candidates": [], "mentions": [],
+            "source_markdown": "[[canonical|Canonical]]",
+        }
+        command = PipelineRunCommand(
+            run_id="run-remap", input="input.md", input_name="input.md", out="unused",
+            user_id="user", workspace_id="workspace", operation_id="op-new", reingest=True,
+            provider="openai", model="gpt-5-nano", existing_source_artifact=source_artifact,
+            existing_source_markdown="[[canonical|Canonical]]",
+            existing_source_blocks=[{"block_id": block.block_id, "text": block.text} for block in blocks],
+        )
+        changes = SourceBlockChanges(blocks, [], 2, ["A1", "B1"], [], [], [], [])
+
+        def assemble(*_args, normalized, **_kwargs):
+            self.assertEqual(
+                [(item["title"], item["slug"]) for item in normalized["concept_ledger"]],
+                [("Canonical", "canonical")],
+            )
+            return SimpleNamespace(
+                source_page={"markdown": "[[canonical|Canonical]]"},
+                source_page_normalized={"source_extraction_artifact": {}},
+                concept_pages=[{"slug": "canonical", "title": "Canonical", "markdown": "# Canonical"}],
+                links=[
+                    {"source": "concept:canonical", "target": "concept:outside", "relation": "related_to"},
+                    {"source": "concept:canonical", "target": "concept:outside", "relation": "supports"},
+                ],
+                source_page_mode="skeleton", concept_page_mode="skeleton",
+            )
+
+        def post_ingest(*, normalized, log):
+            self.assertEqual([item["slug"] for item in normalized["concept_ledger"]], ["canonical"])
+            self.assertEqual(
+                [item["related_concept_slugs"] for item in normalized["evidence_units"]],
+                [["canonical"], ["canonical"]],
+            )
+            self.assertEqual(normalized["concept_resolutions"][0]["link_targets"], ["canonical"])
+            self.assertEqual(normalized["concept_resolutions"][0]["link_confidences"], {"canonical": 0.9})
+            return {}, {"cluster_normalized": normalized}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            command = replace(command, out=tmp_dir)
+            with (
+                patch("run_lab.PipelineLog"),
+                patch("run_lab._load_pipeline_prompts", return_value=PipelinePrompts("", "", "", "", "")),
+                patch("run_lab._prepare_api_client", return_value=object()),
+                patch("run_lab._extract_pipeline_source", return_value=(
+                    SourceDocument("doc-new", "New", "input.md", "hash"), blocks, [], "hash",
+                )),
+                patch("run_lab.compare_source_blocks", return_value=changes),
+                patch("run_lab._empty_normalized", return_value=incoming),
+                patch("run_lab.drop_unsupported_number_items", side_effect=lambda value, _texts: (value, [])),
+                patch("run_lab.demote_unsupported_core_concepts", side_effect=lambda value, _blocks: (value, [])),
+                patch("run_lab._assemble_wiki_pages", side_effect=assemble),
+                patch("run_lab._prepare_post_ingest_clusters", side_effect=post_ingest),
+            ):
+                manifest = run_pipeline(command, finalization_callback=lambda build: build([]))
+
+        self.assertEqual(list(manifest["concept_contributions"]), ["canonical"])
+        contribution = manifest["concept_contributions"]["canonical"]
+        self.assertEqual(contribution["concept"]["identity_aliases"], ["Alias A", "Alias B"])
+        self.assertEqual(contribution["concept"]["evidence_claim_ids"], ["op-new:ev-a", "op-new:ev-b"])
+        self.assertEqual([item["evidence_id"] for item in contribution["evidence_units"]], ["op-new:ev-a", "op-new:ev-b"])
+        self.assertEqual([item["block_id"] for item in contribution["source_blocks"]], ["A1", "B1"])
+        self.assertEqual([item["entry_id"] for item in contribution["entry_changes"]], ["entry:a", "entry:b"])
+        self.assertEqual([item["relation"] for item in contribution["links"]], ["related_to", "supports"])
+        self.assertEqual(manifest["normalized"]["existing_source_context"]["source_markdown"], "[[canonical|Canonical]]")
+
+        stored = {**contribution, "page_id": "page-canonical"}
+        key = "wiki/workspace/pages/page-canonical/ops/op-new.json"
+        loaded = load_concept_contributions(
+            workspace_id="workspace",
+            page_id="page-canonical",
+            keep_contributions=[{"operation_id": "op-new", "sequence": 1}],
+            read_text={key: json.dumps(stored)}.__getitem__,
+        )
+        rebuilt = rebuild_concept_page(loaded)
+        self.assertEqual(rebuilt.identity_aliases, ("Alias A", "Alias B"))
+        self.assertEqual([item["entry_id"] for item in rebuilt.entries], ["entry:a", "entry:b"])
+        self.assertEqual([item["relation"] for item in rebuilt.supported_links], ["related_to", "supports"])
+        self.assertIn("alpha evidence", rebuilt.markdown)
+        self.assertIn("beta evidence", rebuilt.markdown)
+
     def test_api_page_assembly_preserves_content_without_llm_calls(self) -> None:
         client = Mock()
         normalized = {

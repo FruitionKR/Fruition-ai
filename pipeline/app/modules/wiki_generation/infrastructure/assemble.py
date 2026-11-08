@@ -128,6 +128,8 @@ def _term_record(item: dict[str, Any]) -> dict[str, Any]:
         record["evidence_block_ids"] = refs
     if item.get("aliases"):
         record["aliases"] = item.get("aliases")
+    if item.get("identity_aliases"):
+        record["identity_aliases"] = item.get("identity_aliases")
     if item.get("tags"):
         record["tags"] = item.get("tags")
     return record

@@ -104,6 +104,7 @@ def _plan_with(worker_reader: MagicMock, hierarchy: list[dict[str, object]], pla
     )
     repository.next_plan_version.return_value = 1
     plans, gateway, generator = MagicMock(), MagicMock(), MagicMock()
+    plans.load_document_edit_artifacts.return_value = ()
     generator.generate.return_value = plan
     worker = AgentWorker(repository, plans, gateway, generator, folder_content_reader=worker_reader)
     with (
@@ -273,3 +274,19 @@ def test_shingle_budget_skips_longest_documents_but_keeps_exact_groups() -> None
     assert {key: value.original_id for key, value in review.duplicates.items()} == {"doc-1": "doc-0", "doc-3": "doc-2"}
     # 상한 밖 묶음(doc-2·doc-3)은 다른 문서와 비교하지 못했다.
     assert review.unchecked_documents == 2
+
+
+def test_summary_notes_and_warnings_follow_english_response_language() -> None:
+    from app.core.response_language import response_language_scope
+
+    review = ContentReview({"doc-b": ContentDuplicate("doc-b", "B.md", "doc-a", "A.md")}, unchecked_documents=2)
+    with response_language_scope("en"):
+        summary = content_review_summary("Rename files.", review, set())
+        reviewed = review_content_duplicates(_plan(_rename(1, "doc-b")), review.duplicates)
+    assert summary == (
+        "Rename files. Some documents not in the plan have nearly identical content: 'B.md' and 'A.md'."
+        " Couldn't check 2 documents for duplicate content."
+    )
+    assert reviewed.operations[0].warning["message"] == (
+        "The content is nearly identical to 'A.md', so this may be a duplicate."
+    )

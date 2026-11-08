@@ -34,7 +34,8 @@ def test_skill_and_agent_run_routes_have_independent_flags(
             (
                 "import json, api; paths = api.app.openapi()['paths']; "
                 "print(json.dumps({'skill': '/skills' in paths, "
-                "'agent_run': any(path.startswith('/agent/runs/') for path in paths), "
+                "'agent_run': '/agent/runs/{run_id}' in paths, "
+                "'mcp_proposal': '/agent/runs/mcp-proposals' in paths, "
                 "'run_draft': '/skills/draft-from-runs/preview' in paths}))"
             ),
         ],
@@ -45,4 +46,4 @@ def test_skill_and_agent_run_routes_have_independent_flags(
         text=True,
     )
 
-    assert json.loads(result.stdout) == expected
+    assert json.loads(result.stdout) == {**expected, "mcp_proposal": True}

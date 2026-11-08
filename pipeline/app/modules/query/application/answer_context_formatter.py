@@ -1,3 +1,6 @@
+import json
+
+from app.core.response_preferences import OutputLanguage, answer_language_rule
 from app.modules.query.domain.entities import EvidenceSnippet, RetrievedPage, TraversalPath
 
 
@@ -20,6 +23,7 @@ class AnswerContextFormatter:
         evidence_snippets: list[EvidenceSnippet],
         original_question: str | None = None,
         answer_mode: str | None = None,
+        output_language: OutputLanguage | None = None,
     ) -> str:
         pages_by_id = {item.page.id: item for item in related_pages}
         lines = [
@@ -35,7 +39,7 @@ class AnswerContextFormatter:
                     "",
                 ]
             )
-        lines.extend(self._output_policy(answer_mode))
+        lines.extend(self._output_policy(answer_mode, output_language))
         lines.extend(self._answer_mode_policy(answer_mode))
         lines.extend([
             "# Related Pages By Relevance",
@@ -55,6 +59,10 @@ class AnswerContextFormatter:
         lines.extend(["", "# Evidence Snippets By Relevance"])
         for snippet in evidence_snippets:
             lines.append(f"## Evidence {snippet.rank}")
+            if snippet.reference_chunk is not None:
+                lines.append("- source: document attached by the user")
+            if snippet.reference_title:
+                lines.append(f"- document_title: {json.dumps(snippet.reference_title, ensure_ascii=False)}")
             if snippet.entry_path:
                 lines.append(f"- entry: {snippet.entry_path}")
             lines.extend(
@@ -75,10 +83,11 @@ class AnswerContextFormatter:
             )
         return "\n".join(lines).strip()
 
-    def _output_policy(self, answer_mode: str | None) -> list[str]:
+    def _output_policy(self, answer_mode: str | None, output_language: OutputLanguage | None) -> list[str]:
         output_policy = [
             "# Assistant Output Policy",
-            "- Answer in Korean.",
+            # 답변 언어가 정해지면 system prompt와 같은 언어 지시를 둔다. 없으면 지금처럼 한국어다.
+            f"- {answer_language_rule(output_language)}",
             "- Write only the conversational answer body that should be shown to the user.",
             "- Mark the evidence used for each supported sentence with citation markers like [1] or [2].",
             "- Use only the evidence rank numbers listed below as citation markers.",
@@ -86,7 +95,8 @@ class AnswerContextFormatter:
             "- Cite only evidence that directly supports the sentence.",
             "- Prefer one citation per sentence; use at most three citation markers when multiple evidence snippets are genuinely needed.",
             "- Do not attach broad citation lists to a sentence.",
-            "- Do not write uncited factual sentences.",
+            "- Do not write uncited factual sentences drawn from evidence.",
+            "- When the requested value is [NUMERIC_PERSONAL_DATA], explain that it was not sent to the AI for personal-information protection and cannot be provided. Do not cite this privacy explanation or search for the withheld value. Answer supported, unmasked parts normally.",
             "- Do not expose evidence lists, scores, path ids, page ids, or page URLs in the answer body.",
             "- Never output source block references such as [doc_id:B0001]. Use only rank markers like [1].",
             "- If the evidence directly answers the question, answer naturally from that evidence.",

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 import logging
+import re
 import threading
 from contextlib import nullcontext
 from typing import Annotated, Any, TypedDict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from langgraph.channels import UntrackedValue
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -15,7 +16,9 @@ from langgraph.types import Command, interrupt
 from langsmith import tracing_context
 
 from app.core.failure_codes import failure_code
+from app.core.response_language import localized, response_language_scope
 from app.modules.agent_run.application.rollback_agent_run import RollbackAgentRunUseCase
+from app.modules.agent_run.domain.compensation import mcp_receipt_result
 from app.modules.agent_run.application.ports import (
     AgentJobRepositoryPort,
     AgentPlanGeneratorPort,
@@ -29,8 +32,17 @@ from app.modules.agent_run.domain.entities import (
     AgentJob,
     AgentRunContext,
     ContentArtifactReference,
+    DocumentEditArtifact,
+    McpApprovalCommand,
+    McpExecutionAttempt,
+    McpExecutionIdentity,
 )
-from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanIntentClarificationRequired, AgentPlanOperation
+from app.modules.agent_run.domain.plan import (
+    AgentPlan,
+    AgentPlanIntentClarificationRequired,
+    AgentPlanOperation,
+    build_agent_plan,
+)
 from app.modules.agent_run.domain.content_duplicates import (
     ContentReview,
     content_review_summary,
@@ -49,8 +61,33 @@ _CONTENT_CHECK_MAX_FOLDERS = 10
 _CONTENT_CHECK_MAX_DOCUMENTS_PER_FOLDER = 50
 _CONTENT_CHECK_MAX_DOCUMENT_CHARS = 50_000
 _TERMINAL_RUN_STATUSES = frozenset(
-    {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "cancel_requested", "rolling_back", "rollback_failed"}
+    {
+        "completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled",
+        "cancel_requested", "rolling_back", "rollback_failed", "halted",
+    }
 )
+# AI가 더 모델을 부르지 않는 상태. 앞의 일곱 개는 document-svc의 AUTONOMOUS_TERMINAL과 같고, 되묻기는 사용자 답을
+# 기다리는 동안 수집이 밀리지 않게 넣는다. cancel_requested·rolling_back은 곧 cancelled가 되므로 뺀다.
+_USAGE_COLLECT_RUN_STATUSES = frozenset(
+    {"completed", "partial_failed", "failed", "conflicted", "rejected", "cancelled", "rollback_failed", "halted", "clarification_required"}
+)
+_MCP_HALT_REASONS = frozenset(
+    {"GRANT_INACTIVE", "CLIENT_DISABLED", "POLICY_DISABLED", "POLICY_GENERATION_MISMATCH", "PURGED"}
+)
+_MCP_DOCUMENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,254}")
+
+
+def _valid_receipt_resource_id(resource_type: str, value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    if resource_type == "DOCUMENT":
+        return _MCP_DOCUMENT_ID.fullmatch(value) is not None
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
+
+
 class _ToolBudgetExhausted(Exception):
     """재시도 도중 tool 호출 예산이 소진되었음을 알리는 내부 신호.
     execute 단계가 이를 잡아 request_clarification 경로로 처리한다."""
@@ -117,29 +154,39 @@ class AgentWorker:
             stop_heartbeat.set()
             heartbeat.join(timeout=1)
         # 실행 잠금을 풀고 job을 끝낸 뒤 알린다. 승인 대기 interrupt가 checkpoint에 남은 뒤라야
-        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있다.
-        if completed and job.job_type == "planning":
-            self._notify_plan_ready(job.run_id)
+        # 자동 승인으로 생긴 execution job이 계획을 이어 실행할 수 있고, 이 job의 모델 호출이 원장에서 끝난 뒤라야
+        # document-svc가 그 호출까지 수집한다.
+        self._notify_document_service(job, plan_finished=completed and job.job_type == "planning")
 
-    def _notify_plan_ready(self, run_id: str) -> None:
-        """계획이 승인 대기에 들어갔으면 document-svc에 알려 사용자의 자동 승인 설정을 적용하게 한다.
+    def _notify_document_service(self, job: AgentJob, *, plan_finished: bool) -> None:
+        """계획이 승인 대기에 들어갔거나 run이 멈췄으면 document-svc의 plan-ready를 부른다.
 
-        승인 여부는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 정한다. 알림이 실패해도 계획은 승인 대기로
-        남아 사용자가 직접 승인할 수 있고(화면 조회 때 document-svc가 다시 판단한다), job 결과는 바꾸지 않는다.
+        승인 대기에서는 document-svc가 그 시점의 사용자 설정과 대상 권한으로 자동 승인을 정한다. 알림이 실패해도 계획은
+        승인 대기로 남아 사용자가 직접 승인할 수 있다(화면 조회 때 document-svc가 다시 판단한다).
+
+        끝난 상태·되묻기에서도 같은 호출을 쓴다. 이름과 달리 plan-ready는 사용량 수집을 대기열에 넣고 run을 다시 조회해,
+        자동 승인은 awaiting_approval에서만 판단하고 끝난 run은 닫는 범용 신호다. 화면을 닫은 작업도 일일 대사까지
+        밀리지 않게 하려고 새 내부 API를 늘리지 않고 재사용한다. document-svc 쪽은 같은 run을 여러 번 알려도 청구가
+        호출 단위로 한 번만 쌓인다. 알림은 job마다 한 번만 시도하고, 실패하면 일일 대사에 맡기며 job 결과는 바꾸지 않는다.
         """
         if self._plan_ready_notifier is None:
             return
         try:
-            run = self._repository.load_context(run_id).run
-            if run.status != "awaiting_approval":
+            run = self._repository.load_context(job.run_id).run
+            # markdown_turn 복구는 AgentRun이 아니다. 턴 사용량은 Kafka 결과와 취소 흐름이 수집한다.
+            if run.action == "markdown_turn":
+                return
+            if run.status not in _USAGE_COLLECT_RUN_STATUSES and not (
+                plan_finished and run.status == "awaiting_approval"
+            ):
                 return
             self._plan_ready_notifier.notify_plan_ready(
                 run_id=run.id, workspace_id=run.workspace_id, user_id=run.user_id
             )
         except Exception as exc:
             logger.warning(
-                "Agent 계획 승인 대기 알림 실패(수동 승인으로 남김): run_id=%s type=%s detail=%s",
-                run_id,
+                "Agent run 상태 알림 실패(승인 대기는 수동 승인, 사용량은 일일 대사로 남김): run_id=%s type=%s detail=%s",
+                job.run_id,
                 type(exc).__name__,
                 _failure_detail(exc),
             )
@@ -245,7 +292,7 @@ class AgentWorker:
         with tracing_context(enabled=False), usage_scope({
             "run_id": job.run_id, "workspace_id": run.workspace_id,
             "user_id": run.user_id, "kind": "agent_" + job.job_type,
-        }):
+        }), response_language_scope(run.response_language):
             self._graph.invoke(graph_input, config=config, durability="sync")
 
     def _plan_node(self, state: AgentRunGraphState) -> AgentRunGraphState:
@@ -265,7 +312,7 @@ class AgentWorker:
 
     def _start_execution_node(self, state: AgentRunGraphState) -> AgentRunGraphState:
         context = self._repository.load_context(state["run_id"])
-        if context.run.status in {"cancelled", "cancel_requested", "rolling_back", "rollback_failed"}:
+        if context.run.status in {"cancelled", "cancel_requested", "rolling_back", "rollback_failed", "halted"}:
             return {"outcome": "finished"}
         plan = self._repository.load_current_plan(state["run_id"])
         if plan.status != "approved" or context.run.status != "executing":
@@ -292,8 +339,6 @@ class AgentWorker:
         self._plan_run(job.run_id)
 
     def _plan_run(self, run_id: str) -> str | None:
-        if self._plan_generator is None:
-            raise ValueError("Agent planning requires a plan generator.")
         context = self._repository.load_context(run_id)
         if context.run.status not in {"queued", "planning", "clarification_required"}:
             return
@@ -303,6 +348,14 @@ class AgentWorker:
             "planning",
         ):
             raise ValueError("AgentRun cannot enter planning.")
+        # 첨부 문서 수정은 turn에서 만든 수정안이 곧 계획이다. 트리와 모델이 필요 없다.
+        if context.run.action == "workspace_workflow":
+            edit_artifacts = self._run_repository.load_document_edit_artifacts(run_id)
+            if edit_artifacts:
+                self._save_document_edit_plan(context, edit_artifacts)
+                return None
+        if self._plan_generator is None:
+            raise ValueError("Agent planning requires a plan generator.")
         hierarchy = scoped_hierarchy(self._inspect_hierarchy(context), context.run.target_folder_id)
         content_review = self._review_document_contents(context, hierarchy)
         content_artifacts = self._load_content_artifacts(context)
@@ -343,6 +396,50 @@ class AgentWorker:
                 ),
             )
         self._run_repository.save_plan(run_id, reviewed)
+
+    def _save_document_edit_plan(
+        self,
+        context: AgentRunContext,
+        artifacts: tuple[DocumentEditArtifact, ...],
+    ) -> None:
+        if any(artifact.expired for artifact in artifacts):
+            raise ValueError("Document edit artifact expired.")
+        if context.run.skill_version_id is not None and "apply_document_edit" not in context.allowed_tools:
+            raise ValueError("Agent plan contains tools not allowed by the selected Skill.")
+        operations = tuple(
+            AgentPlanOperation(
+                id=str(uuid4()),
+                sequence=sequence,
+                tool_name="apply_document_edit",
+                target_type="document",
+                target_id=artifact.document_id,
+                base_version=artifact.base_version,
+                source_parent_id=None,
+                destination_parent_id=None,
+                arguments={
+                    "document_id": artifact.document_id,
+                    "base_version": artifact.base_version,
+                    "target": artifact.target,
+                    "content_artifact_id": artifact.id,
+                    "content_hash": artifact.content_hash,
+                },
+                reason=artifact.summary,
+            )
+            for sequence, artifact in enumerate(artifacts, start=1)
+        )
+        self._run_repository.save_plan(
+            context.run.id,
+            build_agent_plan(
+                str(uuid4()),
+                context.run.id,
+                self._repository.next_plan_version(context.run.id),
+                localized(
+                    f"아직 바꾸지 않았습니다. 승인하면 문서 {len(operations)}개를 수정합니다.",
+                    f"Nothing has changed yet. Approve to edit {len(operations)} documents.",
+                ),
+                operations,
+            ),
+        )
 
     def _review_document_contents(
         self,
@@ -442,7 +539,7 @@ class AgentWorker:
         with tracing_context(enabled=False), usage_scope({
             "run_id": job.run_id, "workspace_id": run.workspace_id,
             "user_id": run.user_id, "kind": "agent_execution",
-        }):
+        }), response_language_scope(run.response_language):
             self._graph.invoke(
                 {"run_id": job.run_id, "event": "execution"},
                 config={
@@ -468,6 +565,9 @@ class AgentWorker:
         if context.run.status != "executing":
             raise ValueError("AgentRun left the executing state.")
         if steps >= _MAX_EXECUTION_STEPS:
+            if context.run.origin == "MCP_CLIENT":
+                self._skip_unstarted_mcp_operations(run_id, "react_step_limit_exceeded")
+                return {"outcome": "verify", "steps": steps + 1}
             return self._request_execution_clarification(
                 run_id,
                 "react_step_limit_exceeded",
@@ -534,6 +634,9 @@ class AgentWorker:
 
         remaining_tool_calls = self._repository.remaining_tool_calls(run_id)
         if remaining_tool_calls < len(remaining):
+            if context.run.origin == "MCP_CLIENT":
+                self._skip_unstarted_mcp_operations(run_id, "react_tool_budget_insufficient")
+                return {"outcome": "verify", "steps": steps + 1}
             return self._request_execution_clarification(
                 run_id,
                 "react_tool_budget_insufficient",
@@ -555,6 +658,11 @@ class AgentWorker:
         try:
             response = self._execute_operation(latest_context, plan, operation, results)
         except _ToolBudgetExhausted:
+            if context.run.origin == "MCP_CLIENT":
+                self._repository.mark_operation(
+                    operation.id, ("pending", "running"), "skipped", "react_tool_budget_insufficient"
+                )
+                return {"outcome": "continue", "steps": steps + 1}
             return self._request_execution_clarification(
                 run_id,
                 "react_tool_budget_insufficient",
@@ -571,9 +679,15 @@ class AgentWorker:
         observations.append(observation)
         return {"observations": observations, "steps": steps + 1, "outcome": "continue"}
 
+    def _skip_unstarted_mcp_operations(self, run_id: str, error_code: str) -> None:
+        plan = self._repository.load_current_plan(run_id)
+        for operation in plan.operations:
+            if operation.status == "pending":
+                self._repository.mark_operation(operation.id, ("pending",), "skipped", error_code)
+
     def _active_execution_context(self, run_id: str) -> AgentRunContext | None:
         context = self._repository.load_context(run_id)
-        if context.run.status in {"cancelled", "cancel_requested", "rolling_back", "rollback_failed"}:
+        if context.run.status in {"cancelled", "cancel_requested", "rolling_back", "rollback_failed", "halted"}:
             return None
         if context.run.status != "executing":
             raise ValueError("AgentRun left the executing state.")
@@ -612,6 +726,8 @@ class AgentWorker:
         except ValueError:
             self._repository.mark_operation(operation.id, ("running",), "failed", "unresolved_dependency")
             return None
+        if context.run.origin == "MCP_CLIENT":
+            return self._execute_mcp_operation(context, plan, operation, arguments, idempotency_key)
         for attempt in range(1, 4):
             if not self._repository.reserve_tool_call(context.run.id):
                 # 예산 소진을 예외로 던지지 않고 operation을 pending으로 되돌려
@@ -620,7 +736,19 @@ class AgentWorker:
                 raise _ToolBudgetExhausted()
             if self._active_execution_context(context.run.id) is None:
                 return None
-            if not self._rollback.prepare(context, plan, operation, arguments):
+            # 스냅샷 실패는 요청을 보내기 전이다. 전방 실행 기록을 남기지 않아 롤백이 실행하지 않은 단계로 건너뛴다.
+            try:
+                if not self._rollback.prepare(context, plan, operation, arguments):
+                    return None
+            except ToolGatewayError as exc:
+                if exc.retryable and attempt < 3:
+                    continue
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), _tool_error_code(exc))
+                return None
+            except (ValueError, KeyError, TypeError):
+                if operation.tool_name != "apply_document_edit":
+                    raise
+                self._repository.mark_operation(operation.id, ("running",), "failed", "rollback_snapshot_invalid")
                 return None
             self._repository.save_tool_execution(
                 run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
@@ -654,10 +782,9 @@ class AgentWorker:
                 self._repository.mark_operation(operation.id, ("running",), "succeeded")
                 return response
             except ToolGatewayError as exc:
-                error_code = f"tool_http_{exc.status_code or 'unavailable'}"
+                error_code = _tool_error_code(exc)
                 if exc.retryable and attempt < 3:
                     continue
-                status = "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
                 self._repository.save_tool_execution(
                     run_id=context.run.id,
                     plan_id=plan.id,
@@ -669,9 +796,268 @@ class AgentWorker:
                     response_metadata={},
                     error_code=error_code,
                 )
-                self._repository.mark_operation(operation.id, ("running",), status, error_code)
+                self._repository.mark_operation(operation.id, ("running",), _failed_status(exc), error_code)
                 return None
         return None
+
+    def _execute_mcp_operation(
+        self,
+        context: AgentRunContext,
+        plan: AgentPlan,
+        operation: AgentPlanOperation,
+        arguments: dict[str, object],
+        idempotency_key: str,
+    ) -> dict[str, object] | None:
+        identity = self._repository.load_mcp_execution_identity(context.run.id, plan.id, operation.id)
+        if identity is None:
+            self._repository.mark_operation(operation.id, ("running",), "failed", "mcp_approval_missing")
+            return None
+        if not self._repository.reserve_tool_call(context.run.id):
+            self._repository.mark_operation(operation.id, ("running",), "pending")
+            raise _ToolBudgetExhausted()
+        if self._active_execution_context(context.run.id) is None:
+            return None
+        try:
+            if not self._rollback.prepare(context, plan, operation, arguments):
+                return None
+        except ToolGatewayError as exc:
+            self._repository.mark_operation(
+                operation.id, ("running",), _failed_status(exc), _tool_error_code(exc)
+            )
+            return None
+        attempt = self._repository.get_or_create_mcp_attempt(
+            context.run.id, plan.id, operation.id, operation.tool_name, arguments
+        )
+        if attempt.status == "held":
+            self._repository.mark_operation(
+                operation.id, ("running",), "skipped", "mcp_create_pending_reconciliation"
+            )
+            return None
+        if attempt.status == "existing":
+            receipt = attempt.receipt or {}
+            result = {
+                "existing_result": True,
+                "id": receipt.get("resource_id"),
+                "current_version": receipt.get("after_version"),
+                "source_receipt_id": receipt.get("receipt_id"),
+            }
+            if not isinstance(result["id"], str) or type(result["current_version"]) is not int:
+                self._repository.mark_operation(
+                    operation.id, ("running",), "failed", "mcp_receipt_mismatch"
+                )
+                return None
+            self._repository.save_tool_execution(
+                run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
+                tool_name=operation.tool_name, idempotency_key=idempotency_key,
+                attempt=0, status="succeeded", response_metadata=result, error_code=None,
+            )
+            self._repository.mark_operation(operation.id, ("running",), "succeeded")
+            return result
+        self._repository.save_tool_execution(
+            run_id=context.run.id,
+            plan_id=plan.id,
+            operation_id=operation.id,
+            tool_name=operation.tool_name,
+            idempotency_key=idempotency_key,
+            attempt=attempt.attempt,
+            status="running",
+            response_metadata={},
+            error_code=None,
+        )
+        if not attempt.created:
+            return self._reconcile_mcp_attempt(
+                context, plan, operation, arguments, identity, attempt, idempotency_key
+            )
+        try:
+            response = self._tool_gateway.execute(
+                operation.tool_name,
+                run_id=context.run.id,
+                workspace_id=context.run.workspace_id,
+                user_id=context.run.user_id,
+                plan_id=plan.id,
+                plan_version=plan.version,
+                operation_hash=plan.operation_hash,
+                operation_id=operation.id,
+                idempotency_key=idempotency_key,
+                arguments=arguments,
+                approval_id=identity.approval_id,
+                attempt_id=attempt.attempt_id,
+                grant_id=identity.grant_id,
+                client_id=identity.client_id,
+                policy_generation=identity.policy_generation,
+            )
+            receipt = self._validate_mcp_receipt(
+                response, context, operation, arguments, identity, attempt.attempt_id
+            )
+            return self._complete_mcp_receipt(
+                context, plan, operation, attempt, idempotency_key, receipt
+            )
+        except ToolGatewayError as exc:
+            return self._reconcile_mcp_attempt(
+                context, plan, operation, arguments, identity, attempt, idempotency_key, exc
+            )
+        except (TypeError, ValueError, KeyError):
+            self._repository.finish_mcp_attempt(
+                attempt.attempt_id, "unknown", None, "mcp_receipt_mismatch"
+            )
+            self._repository.mark_operation(
+                operation.id, ("running",), "failed", "mcp_receipt_mismatch"
+            )
+            return None
+
+    def _reconcile_mcp_attempt(
+        self,
+        context: AgentRunContext,
+        plan: AgentPlan,
+        operation: AgentPlanOperation,
+        arguments: dict[str, object],
+        identity: McpExecutionIdentity,
+        attempt: McpExecutionAttempt,
+        idempotency_key: str,
+        failure: ToolGatewayError | None = None,
+    ) -> dict[str, object] | None:
+        try:
+            lookup = self._tool_gateway.lookup_mcp_receipt(
+                identity, operation.id, context.run.workspace_id, context.run.user_id
+            )
+        except ToolGatewayError:
+            lookup = {"status": "UNKNOWN", "receipt": None}
+        if set(lookup) != {"status", "receipt"} or not isinstance(lookup.get("status"), str):
+            lookup = {"status": "UNKNOWN", "receipt": None}
+        if lookup["status"] in {"COMMITTED", "NO_CHANGE"}:
+            try:
+                receipt = self._validate_mcp_receipt(
+                    lookup["receipt"], context, operation, arguments, identity, attempt.attempt_id
+                )
+            except (TypeError, ValueError, KeyError):
+                receipt = None
+            if receipt is not None and receipt["outcome"] == lookup["status"]:
+                return self._complete_mcp_receipt(
+                    context, plan, operation, attempt, idempotency_key, receipt
+                )
+        if failure is not None:
+            approval = McpApprovalCommand(
+                run_id=context.run.id,
+                workspace_id=context.run.workspace_id,
+                user_id=context.run.user_id,
+                plan_version=plan.version,
+                operation_hash=plan.operation_hash,
+                operation_ids=identity.operation_ids,
+                approval_id=identity.approval_id,
+                approval_mode="EXPLICIT_WEB",
+                grant_id=identity.grant_id,
+                client_id=identity.client_id,
+                policy_generation=identity.policy_generation,
+            )
+            try:
+                validity = self._tool_gateway.lookup_mcp_approval(approval)
+            except ToolGatewayError:
+                validity = None
+            if validity is not None and validity.status == "FENCED" and validity.reason in _MCP_HALT_REASONS:
+                self._repository.finish_mcp_attempt(attempt.attempt_id, "failed", None, validity.reason)
+                self._repository.save_tool_execution(
+                    run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
+                    tool_name=operation.tool_name, idempotency_key=idempotency_key,
+                    attempt=attempt.attempt, status="failed", response_metadata={}, error_code=validity.reason,
+                )
+                self._repository.halt_mcp_run(context.run.id, validity.reason)
+                return None
+        if lookup["status"] == "FAILED" or (
+            failure is not None and failure.status_code in {400, 401, 403, 404, 422}
+        ):
+            error_code = (
+                failure.code or _tool_error_code(failure)
+                if failure is not None
+                else "mcp_execution_failed"
+            )
+            self._repository.finish_mcp_attempt(attempt.attempt_id, "failed", None, error_code)
+            self._repository.save_tool_execution(
+                run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
+                tool_name=operation.tool_name, idempotency_key=idempotency_key,
+                attempt=attempt.attempt, status="failed", response_metadata={}, error_code=error_code,
+            )
+            self._repository.mark_operation(
+                operation.id, ("running",), _failed_status(failure) if failure else "failed", error_code
+            )
+            return None
+        self._repository.finish_mcp_attempt(
+            attempt.attempt_id, "unknown", None, "mcp_execution_unknown"
+        )
+        # Keep the forward execution row running: rollback must not infer that an absent response means no commit.
+        self._repository.mark_operation(
+            operation.id, ("running",), "failed", "mcp_execution_unknown"
+        )
+        return None
+
+    def _complete_mcp_receipt(
+        self,
+        context: AgentRunContext,
+        plan: AgentPlan,
+        operation: AgentPlanOperation,
+        attempt: McpExecutionAttempt,
+        idempotency_key: str,
+        receipt: dict[str, object],
+    ) -> dict[str, object]:
+        attempt_status = "committed" if receipt["outcome"] == "COMMITTED" else "no_change"
+        self._repository.finish_mcp_attempt(attempt.attempt_id, attempt_status, receipt, None)
+        result = mcp_receipt_result(operation.tool_name, receipt)
+        self._repository.save_tool_execution(
+            run_id=context.run.id, plan_id=plan.id, operation_id=operation.id,
+            tool_name=operation.tool_name, idempotency_key=idempotency_key,
+            attempt=attempt.attempt, status="succeeded", response_metadata=result, error_code=None,
+        )
+        self._repository.mark_operation(operation.id, ("running",), "succeeded")
+        return result
+
+    @staticmethod
+    def _validate_mcp_receipt(
+        value: object,
+        context: AgentRunContext,
+        operation: AgentPlanOperation,
+        arguments: dict[str, object],
+        identity: McpExecutionIdentity,
+        attempt_id: str,
+    ) -> dict[str, object]:
+        fields = {
+            "receipt_id", "approval_id", "operation_id", "attempt_id", "workspace_id", "user_id",
+            "grant_id", "client_id", "tool_name", "outcome", "changed", "resource_type", "resource_id",
+            "before_version", "after_version", "committed_at",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("MCP receipt shape mismatch.")
+        resource_type = {"folder": "FOLDER", "document": "DOCUMENT", "skill": "SKILL"}[operation.target_type]
+        # Skill 정의 저장은 skill_id가 없을 때 생성이다(수정은 expected_version이 base_version).
+        created = operation.tool_name in {"create_folder", "create_document"} or (
+            operation.tool_name == "publish_skill_definition" and operation.target_id is None)
+        resource_id = value.get("resource_id")
+        if (
+            value["approval_id"] != identity.approval_id or value["operation_id"] != operation.id
+            or value["attempt_id"] != attempt_id or value["workspace_id"] != context.run.workspace_id
+            or value["user_id"] != context.run.user_id or value["grant_id"] != identity.grant_id
+            or value["client_id"] != identity.client_id or value["tool_name"] != operation.tool_name
+            or value["resource_type"] != resource_type
+            or (not created and resource_id != operation.target_id)
+            or not _valid_receipt_resource_id(resource_type, resource_id)
+        ):
+            raise ValueError("MCP receipt identity mismatch.")
+        outcome, changed = value["outcome"], value["changed"]
+        if type(changed) is not bool or (outcome, changed) not in {
+            ("COMMITTED", True), ("NO_CHANGE", False),
+        } or (created and outcome != "COMMITTED"):
+            raise ValueError("MCP receipt outcome mismatch.")
+        expected_before = arguments.get("base_version") if not created else None
+        before_version = value["before_version"]
+        after_version = value["after_version"]
+        if (
+            not isinstance(value["receipt_id"], str) or not isinstance(value["committed_at"], str)
+            or (created and before_version is not None)
+            or (not created and (type(before_version) is not int or before_version != expected_before))
+            or type(after_version) is not int or after_version < 1
+            or (not created and outcome == "COMMITTED" and after_version <= before_version)
+            or (not created and outcome == "NO_CHANGE" and after_version != before_version)
+        ):
+            raise ValueError("MCP receipt values are invalid.")
+        return value
 
     def _verify(self, job: AgentJob) -> None:
         self._verify_run(job.run_id)
@@ -690,6 +1076,10 @@ class AgentWorker:
         elif context.run.status != "verifying":
             raise ValueError("AgentRun cannot enter verification.")
         plan = self._repository.load_current_plan(run_id)
+        if context.run.origin == "MCP_CLIENT":
+            # Document receipts are the mutation authority; a second content read cannot improve that proof.
+            self._repository.finish_run_from_operations(run_id)
+            return
         results = self._repository.load_operation_results(run_id, plan.id)
         for operation in plan.operations:
             if operation.status != "succeeded":
@@ -719,14 +1109,20 @@ class AgentWorker:
             current = self._read_tool(context, "get_document_content", {"document_id": target_id}, budgeted=False)
             expected_version = response.get("current_version")
             expected_hash = response.get("content_hash")
-            return (
-                isinstance(expected_version, int)
-                and not isinstance(expected_version, bool)
-                and isinstance(expected_hash, str)
-                and bool(expected_hash)
-                and current.get("edit_revision") == expected_version
-                and current.get("content_hash") == expected_hash
-            )
+            current_version = current.get("edit_revision")
+            if (
+                not _is_revision(expected_version)
+                or not _is_revision(current_version)
+                or not isinstance(expected_hash, str)
+                or not expected_hash
+            ):
+                return False
+            # revision이 저장값보다 크면 저장 뒤 다른 쪽이 고친 것이므로 이 저장은 성공했다. 지금 본문이 이 저장본이라는 뜻은 아니다.
+            # 전제: 에이전트 저장은 저널(ai_task_changes)에 남지 않아 작업 취소 undo로 그 값 아래로 내려가지 않는다.
+            # undo는 revision을 이전 값으로 되돌리므로, document가 에이전트 저장을 저널에 남기도록 바꾸면 이 판단은 깨진다.
+            if current_version != expected_version:
+                return current_version > expected_version
+            return current.get("content_hash") == expected_hash
         if operation.target_type == "document" and operation.tool_name == "rename_document":
             current = self._read_tool(context, "get_document_metadata", {"document_id": target_id}, budgeted=False)
             return _response_name(current) == _response_name(response)
@@ -818,6 +1214,14 @@ def scoped_hierarchy(
     return scoped
 
 
+def _tool_error_code(exc: ToolGatewayError) -> str:
+    return f"tool_http_{exc.status_code or 'unavailable'}"
+
+
+def _failed_status(exc: ToolGatewayError) -> str:
+    return "forbidden" if exc.status_code == 403 else "conflicted" if exc.status_code == 409 else "failed"
+
+
 def _route_job_event(state: AgentRunGraphState) -> str:
     event = state.get("event")
     if event not in {"planning", "execution", "verification"}:
@@ -871,6 +1275,10 @@ def _resolve_operation_references(
     if isinstance(value, list):
         return [_resolve_operation_references(item, results) for item in value]
     return value
+
+
+def _is_revision(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _response_name(response: dict[str, object]) -> object | None:

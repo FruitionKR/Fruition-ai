@@ -17,6 +17,7 @@ from app.core.llm_env import (
     resolve_llm_selection,
 )
 from app.core.llm_prompt import with_schema_and_skill_prompt
+from app.core.response_language import with_summary_language
 from app.core.response_preferences import with_response_preferences
 from app.modules.query.application.ports import QueryEventPublisherPort
 from app.modules.query.application.query_event import publish_query_event
@@ -32,6 +33,9 @@ from app.modules.markdown_edit.domain.entities import (
     MarkdownEditTarget,
 )
 from app.modules.markdown_edit.domain.markdown_output_contract import (
+    JSON_OBJECT_CONTRACT_FAILURE,
+    LLM_EVALUATION_INVALID_FAILURE,
+    LLM_EVALUATION_PREFIX,
     MarkdownCreateOutputContractError,
     MarkdownOutputContractError,
     ProtectedMarkdown,
@@ -79,8 +83,6 @@ DEFAULT_MARKDOWN_EDIT_EVALUATOR_PROMPT = Path(__file__).resolve().parents[4] / "
 DEFAULT_MARKDOWN_CREATE_EVALUATOR_PROMPT = (
     Path(__file__).resolve().parents[4] / "prompts" / "markdown_create_evaluator.system.md"
 )
-JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
-LLM_EVALUATION_PREFIX = "LLM evaluation:"
 logger = logging.getLogger(__name__)
 
 
@@ -142,7 +144,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             "editable_context": _editable_context_payload(scope, protected.markdown),
         }
         payload["requested_operation"] = requested_operation
-        system_prompt = with_response_preferences(
+        system_prompt = with_summary_language(with_response_preferences(
             with_schema_and_skill_prompt(
                 self._system_prompt,
                 self._schema_prompt_provider(
@@ -154,7 +156,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             ),
             request.output_language,
             None,
-        )
+        ))
         try:
             result = self._complete_edit(system_prompt, payload, request, protected, scope)
         except JsonParseError:
@@ -212,7 +214,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             **source_range_payload(plan),
             **_read_only_context_payload(scope),
         }
-        system_prompt = with_response_preferences(
+        system_prompt = with_summary_language(with_response_preferences(
             with_schema_and_skill_prompt(
                 self._source_edit_system_prompt,
                 self._schema_prompt_provider(
@@ -224,7 +226,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             ),
             request.output_language,
             None,
-        )
+        ))
         try:
             result, failures, _ = self._complete_source_range_edit(system_prompt, payload, request, plan)
         except JsonParseError:
@@ -373,7 +375,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
         return self._llm_evaluation_failures(self._create_evaluation_system_prompt, payload)
 
     def _llm_evaluation_failures(self, system_prompt: str, payload: dict[str, object]) -> list[str]:
-        invalid = ["LLM evaluation must return a boolean passed and consistent string-list failures"]
+        invalid = [LLM_EVALUATION_INVALID_FAILURE]
         try:
             raw = self._client.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False, indent=2))
         except JsonParseError:
@@ -395,7 +397,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             "conversation_summary": request.conversation_summary,
             "reference_context": request.reference_context or {},
         }
-        system_prompt = with_response_preferences(
+        system_prompt = with_summary_language(with_response_preferences(
             with_schema_and_skill_prompt(
                 self._create_system_prompt,
                 self._schema_prompt_provider(
@@ -408,7 +410,7 @@ class ChatCompletionsMarkdownEditor(MarkdownEditorPort):
             request.output_language,
             None,
             document_creation=True,
-        )
+        ))
         try:
             result, failures, raw = self._complete_markdown_create(
                 system_prompt,

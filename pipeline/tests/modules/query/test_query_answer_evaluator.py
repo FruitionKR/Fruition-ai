@@ -18,6 +18,8 @@ def test_evaluator_prompt_defines_exclusive_route_order() -> None:
     assert "evidence_relevance` is a reporting metric, not a route threshold" in prompt
     assert "arbitrary numeric cutoff" in prompt
     assert "retrieved evidence is sufficient, but" not in prompt
+    assert "privacy-only refusal, with web_query null" in prompt
+    assert "do not require document citations or search for the withheld value" in prompt
 
 
 def test_evaluator_defaults_to_web_search_requests(monkeypatch) -> None:

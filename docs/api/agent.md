@@ -7,6 +7,98 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `/agent/runs/**`와 artifact 조회·Tool 인가·상태 조회는 Backend가 내부 HTTP로 호출한다.
 `POST /internal/agent/runs/artifacts/register`는 현재 저장소 안에 운영 호출자가 없다.
 
+## MCP 문서 편집·다단계 계획 제안(I4/I6)
+
+`POST /agent/runs/mcp-proposals`는 `AGENT_SKILLS_ENABLED`와 무관하게 노출되는 서비스 간 API이며
+`X-Agent-Service-Token`이 필요하다. document-svc가 현재 `write_propose` grant와 문서 편집 권한을
+다시 확인한 뒤에만 호출한다. AI는 다시 document-svc
+`propose_document_edit`에는 `POST /internal/agent/mcp/document-edit-context`, `propose_plan`에는
+`POST /internal/agent/mcp/plan-context`를 호출해 현재 권한, workspace, hierarchy/version과 편집 대상의
+본문 hash/Markdown을 결합한다. MCP bearer나 client가 보낸 본문·계층은 신뢰하지 않는다.
+
+Request는 unknown field가 없는 `mcp.agent-proposal.v1`이다. `actor`는
+`{invocation_id, grant_id, user_id, workspace_id, client_id, policy_generation,
+origin:"MCP_CLIENT", spec_version:"2025-11-25", tool_name:"propose_document_edit"}`이고,
+그 밖의 top-level field는 `idempotency_key`, `request_hash`, `proposal`이다. I4의 `proposal`은 raw
+`instruction`, trim된 같은 값인 `request_summary`, `target_folder_id:null`, 정확히 하나의
+`apply_document_edit` operation과 정확히 하나의 `apply_document_edit` artifact만 받는다. operation과
+artifact의 document/base/target/id/raw UTF-8 `sha256:` hash는 모두 같아야 하며 selection line은 현재
+본문 범위 안이어야 한다. `propose_plan`은 `instruction:null`, trim된 `request_summary`, UUID 또는 null인
+`target_folder_id`, 정확한 v1 operation 1~20개와 각 문서 mutation이 한 번씩 참조하는 artifact를 받는다.
+operation은 `create_folder|rename_folder|move_folder|move_document|rename_document|create_document|apply_document_edit`
+중 하나이고 unknown field, 잘못된 result reference/dependency, 오래된 hierarchy/version, 범위 밖 대상은 거절한다.
+MCP 외부 AI PDF 변환본(Fruition-document `finalize_pdf_conversion`)은 `create_document` 인자에 `source_document_id`(원본 PDF
+문서 ID)와 `source_content_hash`(`sha256:` 64 hex)를 함께 담는다. 둘 중 하나만 오면 거절한다. 이 인자는 MCP proposal 경로에서만
+받으며 내부 Agent planning(LLM) 계획은 받지 않는다. artifact는 같은 workspace·user의 [MCP PDF 변환 세션](tasks.md#mcp-외부-ai-pdf-변환-세션)이
+조립해 finalize한 Markdown과 hash가 같아야 한다(아니면 `INVALID_INPUT`). 서버가 조립·sanitize한 결과라 일반 `create_document`의
+sanitize 일치 검사는 하지 않는다. 두 값은 승인된 operation 인자에 그대로 남아 document-svc가 승인·실행 때 원본 권한과 hash를 다시 확인한다.
+
+`propose_skill_definition`의 `proposal`은 `{request_summary, definition}`이고 `definition`은
+`POST /skills/mcp-acceptances`의 정의와 같은 필드를 모두(생략 값은 `null`) 보낸다. AI는 LLM 없이
+`accept_external_skill_definition(publish=False)`로 검증하고(팀 Skill 관리 권한, `expected_version`이 다르면
+`409 SOURCE_CHANGED`, 안전 검사·형식 오류는 `400 INVALID_INPUT`), artifact 없이 operation 하나
+(`tool_name:"publish_skill_definition"`, `target_type:"skill"`, `target_id`=skill_id 또는 null,
+`base_version`=expected_version, `arguments`=이어받은 값까지 확정한 저장 정의 + 계산한 `allowed_tools`)만 저장한다.
+승인 뒤 실행은 기존 tool gateway로 document-svc가 받아 `POST /skills/mcp-acceptances`를 부르고, AI는 resource_type
+`SKILL` 영수증을 검증한다(생성은 before_version null). 취소 시 되돌리기는 저장 증거 `skill_undo`로 한다.
+
+Response는 정확히 다음 shape이며 LLM planning job은 만들지 않는다.
+
+```json
+{"schema_version":"mcp.agent-proposal.v1","run_id":"<uuid>","plan_id":"<uuid>","plan_version":1,"operation_hash":"<64 lowercase hex>","status":"awaiting_approval"}
+```
+
+AI는 raw instruction을 보존하고 URL sanitizer·기존 Markdown output validator를 거친 실제 최종
+Markdown bytes로 artifact와 operation hash를 만든다. byte-identical 결과는 `OBVIOUS_NO_OP`로
+거절하며 아무 run/artifact/idempotency success도 저장하지 않는다. 같은
+`(grant,user,workspace,tool,idempotency_key)`와 같은 verified request hash는 기존 run/plan을 돌려주고,
+다른 hash는 `409 IDEMPOTENCY_CONFLICT`다. 인증·현재 문서 확인은 replay 조회보다 먼저다.
+
+run, 정규화한 plan, 모든 operation/artifact metadata, immutable actor provenance와 replay row는 한 DB transaction에서
+`awaiting_approval`로 저장된다. `agent_runs.origin='MCP_CLIENT'`인 run은 I5의 안정된 승인/예약/current-authz
+경로만 사용하며 legacy approve/auto-approve/revise는 거절된다. 확정 가능한 rename/move/edit no-op 하나라도
+있으면 제안 전체를 저장 전에 거절한다. 이름 중복 의심과 그 dependent는 warning과
+`suggested_selected=false`로 남기며 제안 자체는 성공한다. 공개 MCP write tool catalog 등록은 별도다.
+
+## MCP 명시 승인·실행(I5)
+
+`POST /agent/runs/{run_id}/approve`는 기존 web 승인 body를 그대로 지원하면서 service token으로 전달된
+정확한 `mcp.agent-approval.v1` body도 받는다. MCP body는
+`{schema_version,workspace_id,user_id,plan_version,operation_hash,operation_ids,approval_id,
+approval_mode:"EXPLICIT_WEB",grant_id,client_id,policy_generation}`만 허용하고 UUID는 canonical v4다.
+operation 1~20개의 유효한 부분집합을 plan 순서로 승인하며 dependency가 빠진 선택은 거절한다. Document 소유 가격은 AI로 보내지 않는다.
+AI는 저장된 provenance와 현재 plan/version/hash를 비교하고 document-svc
+`POST /internal/agent/mcp/approvals/lookup`이 같은 identity·selection에 대해 `VALID`이고 lifecycle이
+`RESERVED|FORWARDED`일 때만 run, plan, approval, execution job을 한 transaction으로 전환한다. 같은
+Document approval body retry는 기존 결과를 돌려주고 job을 다시 만들지 않으며 다른 body는 충돌한다.
+
+worker는 승인 행에서 전체 선택과 `approval_id,grant_id,client_id,policy_generation`을 읽고 operation별 UUIDv4
+`attempt_id`를 먼저 저장한 뒤 mutation execute endpoint로 모두 전달한다. 응답이 불명확하면 execute를 다시
+부르지 않고 `POST /internal/agent/mcp/receipts/lookup`의 body-free receipt만 조회한다. receipt의 actor,
+approval, operation, attempt, tool, resource와 before/after version, outcome/changed가 모두 맞아야 성공이다.
+folder tool receipt는 `resource_type=FOLDER`, document tool은 `DOCUMENT`다. create는 `before_version:null`,
+positive `after_version`, `COMMITTED/changed=true`만 허용하고 기존 target mutation은 persisted/resolved target과
+positive before version을 묶는다. COMMITTED는 after>before, NO_CHANGE는 before=after다.
+없는 receipt·timeout·5xx·in-progress는 미실행 증거로 간주하지 않고 unknown evidence를 보존한다. Document의
+`GRANT_INACTIVE`, `CLIENT_DISABLED`, `POLICY_DISABLED`, `POLICY_GENERATION_MISMATCH`, `PURGED` fence만
+run을 `halted`로 만들며 자동 rollback하지 않는다. 일반 권한 실패나 authz 장애는 admin halt로 오인하지 않는다.
+
+같은 workspace/user, create tool, 실제 resolved destination에서 normalized name 또는 content hash가 일치하는
+`started|unknown` create attempt는 advisory lock 아래 새 candidate 하나만 `mcp_create_pending_reconciliation`로
+건너뛴다. 다른 proposal/operation은 막지 않고 receipt-confirmed failure는 이후 실행 증거에서 제외한다.
+20-operation 실행은 기존 40-call budget과 step 집계를 쓰며, 시작하지 못한 operation은 이유를 붙여 skip하고
+unknown attempt는 재실행하지 않는다. MCP 실행은 clarification이나 server replan을 만들지 않는다.
+
+Agent worker는 기존 60초 maintenance에서 `started|unknown` 시도를 한 번에 최대 20개씩 읽기 전용
+영수증 조회로 대사한다. 조회 순서를 순환하며 실행 중인 run은 건너뛴다. 검증된 결과는 attempt와
+실행 증거에 함께 반영하지만 종료된 run이나 operation을 재실행하거나 성공 상태로 바꾸지 않는다.
+영수증 부재·잘못된 응답·통신 장애는 미확정으로 유지하고, 미확정 시도가 남은 run은 90일 정리에서 제외한다.
+
+`GET /agent/runs/mcp-owned?workspace_id&user_id&grant_id&cursor&limit`는 service-token 전용 locator다.
+저장된 MCP provenance로 owner/workspace/grant를 제한하고 `created_at DESC, run_id DESC` keyset pagination
+(limit 1..20)으로 `{items:[{run_id,status}],next_cursor}`만 반환한다. 과거 run 조회에는 현재 grant의 active
+여부를 요구하지 않는다.
+
 `ai.agent.command`의 선택 키 `folder_id`(document-svc가 검증한 폴더 UUID)는 작업 대상 폴더다. 지정하지 않은 턴은
 키를 싣지 않으며 기존처럼 워크스페이스 전체·최상위(루트)를 대상으로 한다. 지정하면 다음과 같이 쓴다.
 
@@ -15,22 +107,148 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 - 위치를 정하지 않은(최상위) `create_folder`·`create_document`는 그 폴더 안에 만든다(`parent_folder_id`·`folder_id`와 `destination_parent_id`).
 - 결과 방식이 `create`인 Skill은 열린 문서 없이도(루트·폴더만 고른 턴) 새 문서 초안(`markdown_create`)이나 저장 계획(`workspace_workflow` + `create_document`)으로 실행한다. 초안 문서는 document-svc·클라이언트가 같은 `folder_id`로 만든다.
 
+### 응답 언어(`response_language`)
+
+`ai.agent.command`·`ai.query.command`의 선택 키 `response_language`(`"ko"`|`"en"`)는 요청자 화면 언어다. document-svc가 `Accept-Language`로 정해 싣는다. 키가 없거나 다른 값이면 기존 동작이다([ADR-0045](../adr/0045-response-language.md)).
+
+- 질의 답변·대화 답변은 이 언어로 쓴다(응답 언어 설정 `output_language`가 있으면 그것이 먼저다).
+- `clarify`·`reject`·안내 `message`, 편집안·새 문서의 `summary`와 결과 메시지, 진행 이벤트 message, 첫 문답의 채팅 제목이 이 언어를 따른다. 편집안·새 문서 본문 언어는 바꾸지 않는다.
+- 턴 행(`action='markdown_turn'`)도 이 언어를 `agent_runs.response_language`에 저장한다. 키가 없으면 NULL이다.
+- 이 턴이 만든 승인형 run은 언어를 `agent_runs.response_language`에 저장한다. 계획 summary·작업 reason·되묻기 질문·경고, 계획 끝의 고정 안내도 이 언어다. 영어 고정 안내 형식: `Removed {n} operations that move items outside the target folder from the plan.`, `Removed {n} rename or move operations on the target folder itself from the plan because the target folder can't be changed.`, `Some documents not in the plan have nearly identical content: 'A' and 'B'.`, `Couldn't check {n} documents for duplicate content.`
+
 ### 작업 탭 안내 종류(`notice_kind`)
 
 라우트의 선택 항목 `notice_kind`는 사용자에게 무엇을 알릴지 정한다. 없으면(`null`) 기존 문구를 쓴다.
 
 | action | notice_kind | 결과 `message` |
 |---|---|---|
-| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(답변·잡담) |
+| `clarify`(작업 탭, 문서 동작 없음, Skill 후보 없음) | `chat_tab` | "작업 탭에서는 … 채팅 탭에서 해 주세요."(첨부 없는 답변·잡담) |
 | | `details` | 작업은 분명하지만 사용자의 말로 결과가 정해지지 않을 때 LLM(`prompts/task_clarification.system.md`)이 만든 질문 한 문장. 실패하면 "작업에 필요한 내용을 조금 더 알려 주세요." |
 | | `web_disabled` | "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."(`allow_web_search`가 꺼져 있을 때만) |
+| `clarify`(작업·채팅 탭, 문서 동작 없음, 첨부 있음) | `attachment_target` | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
 | `reject` | `sensitive_data`·`unsupported`·`policy` | 민감한 값·워크스페이스 밖 작업·규칙 우회별 거절 이유 |
 | | `display_unsupported` | "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요."(작업 탭·채팅 탭 모두. 표 열 정렬처럼 Markdown으로 나타낼 수 있는 변경은 편집) |
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
-- 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
-- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`).
+- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부가 있는 작업 탭은 답변 갈래를 그대로 실행한다. 첨부 UI가 작업 탭에만 있어 채팅 탭 안내로는 답을 얻을 수 없기 때문이다. 라우터가 그래도 `clarify`(`chat_tab` 또는 안내 종류 없음, 문서 동작 없음, Skill 후보 없음)를 고르면 `chat_answer`(`retrieval_source=workspace`)로 바꾼다. 응답·기록은 채팅 탭의 답변 갈래와 같다. 첨부를 읽지 못하면 답변하지 않고 읽기 실패 이유를 담은 `clarify`로 끝나며 `chat_tab`이 아니다.
+- Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
+
+### 되묻기 이유 코드(`clarify_reason`)
+
+`action=clarify` 결과의 선택 항목이다. 화면이 `message` 문구와 비교하지 않고 갈래를 정하도록 추가했고, 코드가 없는 되묻기와 다른 action은 `null`이다.
+
+| clarify_reason | 뜻 | `message` |
+|---|---|---|
+| `markdown_document_required` | 편집 요청인데 요청에 편집할 Markdown 문맥이 없다. 문서를 열지 않았거나 화면이 문맥을 보내지 않은 경우(보기 권한 문서 등)다. AI는 권한을 모르므로 이유는 화면이 자신의 권한 정보와 함께 판단한다. | "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."(첨부 문서가 있으면 "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.") |
+| `attachment_target_required` | 첨부 중 어느 문서를 고칠지 정할 수 없다. 화면은 첨부 칩을 유지한다. | "첨부한 문서 중 어느 문서를 고칠까요? …"와 번호를 붙인 제목 목록 |
+
+### 첨부 참고 문서(`reference_document_ids`)
+
+`ai.agent.command`의 선택 키 `reference_document_ids`(문자열 배열, 최대 3개)는 사용자가 이 turn에 첨부해 document-svc가 검증한 문서다. 구 document-svc는 키를 싣지 않으며, 키가 없거나 `null`·빈 배열이면 기존과 같다. 첨부는 근거로 쓰고, 라우터가 수정 대상으로 고른 첨부만 고친다.
+
+- 본문은 Skill 참조 문서와 같은 document-svc `POST /internal/agent/skill-authoring/references/read`(`X-Agent-Service-Token`)로 라우팅 뒤 필요한 갈래에서만 읽는다. 일반 turn은 선택 필드 `max_chars`를 보내고 응답의 `truncated`로 잘렸는지 안다. 원본(ORIGINAL) 문서는 AI DB의 `source_blocks`에서 읽고 여기서 자른다. Skill 작성 경로는 `max_chars`를 보내지 않으며 동작이 같다.
+- 글자 수: 문서당 40,000자, 합계 80,000자(Skill 경로 상한과 같다). 답변 갈래(`chat_answer`·`conversation_reply`)는 입력이 근거 8개(7,200자)를 전제로 하고 재작성·평가로 반복되므로 합계 30,000자(열린 문서 상한과 같다)만 읽는다. 남은 합계를 남은 문서 수로 나눈 값을 문서별 `max_chars`로 쓰므로 앞 문서가 짧으면 남은 양이 뒤 문서로 넘어간다.
+- 제목: 응답에 선택 필드 `display_name`이 있으면 줄바꿈·제어 문자를 정리해 한 줄(최대 200자)로 만들어 `reference_documents[].title`과 답변 근거의 `document_title`에 싣는다. 구 document-svc처럼 없으면 싣지 않는다. 제목도 신뢰하지 않는 데이터다.
+- 라우터는 `reference_documents.count`와 `titles`만 받는다(본문·id 없음). 라우팅 전에 문서마다 `max_chars=1`로 읽어 제목을 정리한다. 읽지 못한 문서는 빈 제목으로 두어 순번을 유지하고, 실패 안내는 본문을 읽는 단계가 정한다. Jev에는 보내지 않고 첨부 턴은 LLM 라우터가 처리한다.
+
+| 갈래 | 첨부 사용 |
+|---|---|
+| `chat_answer`(작업 탭 포함) | 문단을 900자 이하 조각으로 나눠 위키 근거 앞에 고정 근거로 넣는다. `evidence_snippets[].source_document_id`가 첨부 문서이고, 원본 문서는 `source_block_ids`·`source_refs`가 실제 블록을, 편집 문서는 빈 배열이다(블록이 없다). 위키에 근거가 없어도 답한다(`stop_reason=reference_documents`). |
+| `conversation_reply`(작업 탭 포함) | `reference_context.reference_documents`. 인용 없음. |
+| `markdown_create`·`workspace_workflow`(create) | `reference_context.reference_documents`. 인용 흐름이 없어 본문에 근거 번호를 달지 않는다. 열린 문서 없이 동작한다. |
+| `markdown_edit`·`workspace_workflow`(edit), `attached_edit_targets` 없음 | 열린 문서(`active_markdown_context`)만 편집하고 첨부는 `reference_context.reference_documents`로 준다. 이미 만든 미리보기를 저장할 때는 읽지 않는다. |
+| `workspace_workflow`(edit), `attached_edit_targets` 있음 | 아래 [첨부 문서 수정](#첨부-문서-수정route-attached_edit_targets)을 따른다. |
+| 그 밖(`folder_organize`·`folder_lookup`·`skill_authoring`·`skill_draft_proposal`·`reject`, 작업 탭 `clarify`) | 읽지 않는다. |
+
+라우터는 첨부 질문과 대상을 말하지 않은 "요약해 줘"를 `chat_answer`로, "요약해서 새 문서로 만들어 줘"를 `markdown_create`로, 열린 문서를 지목한 "열린 문서를 요약해 줘"(작업 탭)를 `markdown_edit`로 보낸다.
+
+- 긴 문서: 잘리면 실패시키지 않고 결과 메시지(`chat_answer`는 답변 끝)에 "첨부한 문서가 길어 앞부분만 읽었어요. 뒷부분은 결과에 반영되지 않았어요."를 덧붙인다.
+- 구 document-svc는 `max_chars`를 몰라 30,000자가 넘는 편집 문서에 413을 준다. 다른 첨부가 있으면 그 문서를 빼고 "첨부한 문서 중 N개는 너무 길어 읽지 못했어요. …"를 덧붙이고, 전부 413이면 모델을 부르지 않고 `clarify`로 끝난다.
+- 읽기 실패: 검증 뒤 삭제·권한 변경으로 400·403·404이거나 본문이 비어 있으면 "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. …", 그 밖의 서비스 실패는 "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."로 `clarify`다. 한 문서만 실패해도 모델을 부르지 않는다. 첨부 없이 답하면 근거 없는 결과가 나올 수 있어서다. `clarify_reason`은 `null`이다.
+- 열린 문서 없이 첨부를 근거로 문서를 고치라고 하면(`attached_edit_targets` 없음) 고치지 않고 `clarify` + `markdown_document_required`로 안내한다.
+- 안전: 첨부 본문은 신뢰하지 않는 데이터다. 사용자 지시(`instruction`·`message`)와 다른 payload 필드에만 싣고, 프롬프트에서 그 안의 지시를 따르지 않게 한다. 모든 LLM 호출과 같은 클라이언트를 거쳐 숫자 개인정보 마스킹·보안 경계·토큰 사용량 기록과 한도를 그대로 탄다. Jev에는 보내지 않고 본문을 로그·진행 이벤트에 남기지 않는다.
+
+### 첨부 문서 수정(`route.attached_edit_targets`)
+
+첨부 문서 자체를 고치는 요청은 문서를 열지 않고 문서별 수정안과 승인 계획을 만든다. 열린 문서의 `markdown_edit`는 바뀌지 않는다.
+
+- 라우터: `attached_edit_targets`(1부터 시작하는 순번, 기본 `[]`)를 채우고 `workspace_workflow`, `persist=true`, `document_operation=edit`, `replace`+`target` 또는 `insert_after`+`document_end`를 고른다. 어느 첨부인지 정할 수 없으면 `clarify` + `notice_kind=attachment_target`이고 결과는 `clarify_reason=attachment_target_required`와 제목 목록이다. 근거로 쓰는 요청은 빈 배열이다. 열린 문서와 첨부가 함께면 메시지가 지목하는 쪽, 모르면 열린 문서다.
+- 읽기: 대상은 `max_chars` 없이 읽는다. 응답의 `edit_revision`·`can_edit`을 쓴다. 편집 문서에 `edit_revision`이 없으면 구 document-svc로 보고 모델을 부르지 않고 `clarify` + `markdown_document_required`로 끝난다.
+- 수정안: run을 만들기 전에 문서마다 차례로 만든다(최대 3개). `edit_goal`은 라우터 값, 범위는 `whole_document`로 시작하고 저장값은 `edit.actual_target`이다. 대상이 아닌 첨부만 `reference_context.reference_documents`로 준다. 검색(`retrieval_source`)은 턴에 한 번만 한다. 모델 호출은 턴의 사용량 scope에 기록된다.
+- 저장: Markdown과 미리 보기 JSON을 object storage에, 메타데이터를 `agent_run_artifacts`에 둔다. `expires_at`은 1일, 객체당 5MiB다. 본문은 로그와 진행 이벤트에 남기지 않는다. 만료 뒤 정리는 아래 [만료된 수정안 정리](#expired-artifact-cleanup)를 따른다.
+- 계획: 미리 보기가 있는 artifact가 있는 `workspace_workflow`는 트리를 읽거나 모델을 부르지 않고 `apply_document_edit` 작업을 첨부 순서대로 만든다. `reason`은 수정안 요약, `summary`는 "아직 바꾸지 않았습니다. 승인하면 문서 N개를 수정합니다."다. 선택한 Skill의 `allowed_tools`는 그대로 검사하고, `depends_on`은 비어 있으며, run의 `target_folder_id`는 `null`이다. 큰 변경에 대한 경고는 만들지 않는다. 계획 전에 수정안이 만료됐으면 job이 실패한다. `revise`도 같은 수정안으로 다시 계획하므로 지시가 내용에 반영되지 않고, 수정안이 만료됐으면 `409`다.
+
+계획에서 빠지는 문서는 나머지를 진행하고 결과 메시지에 제목과 이유를 덧붙인다.
+
+| 이유 | 안내 | 남은 문서가 없을 때 |
+|---|---|---|
+| `can_edit=false`, 읽기 400·403·404, 원본 문서 | 편집 권한이 없어 제외 | 권한 문제뿐이면 `clarify` "편집 권한이 없어요. …", `clarify_reason=null` |
+| 413, 30,000자 초과, 결과가 5MiB 초과 | 너무 길어 수정하지 못함 | `clarify` + 그 안내 |
+| 본문이 비어 있음 | 내용이 없어 수정하지 못함 | `clarify` + 그 안내 |
+| `changed=false` 또는 결과가 원문과 같음 | 바꿀 내용이 없어 계획에서 뺌 | 변경 없음뿐이면 `clarify` + `NO_CHANGES_MESSAGE` |
+| 수정안 생성 실패 | 수정안을 만들지 못함 | 턴 실패(일반 편집과 같음) |
+
+읽기 서비스 오류(5xx 등)와 근거 첨부를 읽지 못한 경우는 기존 첨부 안내로 `clarify`다.
+
+실행 결과는 작업마다 정해지고 한 작업이 실패해도 나머지는 계속한다.
+
+| 상황 | 작업 상태 | `error_code` |
+|---|---|---|
+| 계획 뒤 겹치지 않는 변경 | `succeeded`(document-svc가 병합) | |
+| 겹치는 변경 | `conflicted` | `tool_http_409` |
+| 다른 사람이 편집 중 | `failed`(재시도 없음) | `tool_http_423` |
+| 권한 회수 | `forbidden` | `tool_http_403` |
+| 문서 삭제 | `failed` | `tool_http_404` |
+| 승인 전에 문서를 영구 삭제 | `skipped` | `document_purged` |
+| 실행 전 스냅샷이 맞지 않음 | `failed` | `rollback_snapshot_invalid` |
+
+run 상태는 `finish_run_from_operations`가 정한다. 겹침이 하나라도 있으면 다른 문서가 성공했어도 `conflicted`이고, 그 밖의 실패가 섞이면 `partial_failed`, 전부 실패면 `failed`다. 롤백 스냅샷은 `apply_document_edit`의 버전을 비교하지 않는다. 비교하면 계획 뒤 변경이 document-svc 병합에 닿지 못한다. 스냅샷을 읽지 못한 작업은 요청을 보내지 않았으므로 롤백에서 건너뛴다.
+
+<a id="expired-artifact-cleanup"></a>
+#### 만료된 수정안 정리
+
+- agent worker가 1시간마다(시작 직후 포함) `expires_at < now() - AGENT_ARTIFACT_CLEANUP_GRACE_SECONDS`(기본 86400초, 음수면 기동 실패)인 artifact의 Markdown·미리 보기 객체와 행을 지운다. 한 주기 100건이고, 100건을 다 지우면 60초 뒤 다시 돈다. 로그에는 건수와 artifact id만 남긴다.
+- `expires_at IS NULL`(되돌리기에 쓴 artifact)과 `queued`·`planning`·`executing`·`verifying`·`cancel_requested`·`rolling_back` run의 artifact는 지우지 않는다. 승인 뒤 실행까지 끝난 수정안은 `expires_at`이 그대로라 끝난 뒤 함께 지워진다. 되돌리기는 실행 전 스냅샷을 쓰므로 이 수정안이 필요 없다.
+- 여러 worker가 겹쳐도 `FOR UPDATE SKIP LOCKED`로 한 번만 처리한다. 승인·`revise`와는 run 행 잠금으로 겹치지 않는다. 진행 중인 승인이 있으면 그 run을 건너뛰고, 정리가 먼저면 승인은 기다렸다가 `409`를 받는다.
+- 객체 삭제에 실패하면 행을 남겨 다음 주기에 다시 시도한다. 없는 객체는 성공으로 본다. 한 주기에 3건 실패하면 저장소 장애로 보고 그 주기를 끝낸다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 객체도 행도 건드리지 않고 오류 로그를 남긴다.
+- 버킷은 버전 관리 중이라 삭제는 현재 버전을 지우는 것이다. 이전 버전은 S3 lifecycle(flatform ADR 0023)로 30일 뒤 사라진다.
+- 휴지통 이동(`document_deleted`)은 복구할 수 있어 수정안을 지우지 않는다. 문서를 영구 삭제하면 아래 절차로 바로 지운다.
+
+<a id="document-purge"></a>
+#### 문서 영구 삭제(`document_purged`)
+
+document-svc `DocumentTrashPurgeWorker`가 문서 행을 지우는 트랜잭션에서 outbox로 보낸다. ingest worker가 처리하고 run·plan·operation·실행 행은 이력으로 남긴 채 본문이 든 값만 지운다. 워크스페이스 파기는 이 command 없이 `purge_workspace`가 통째로 지운다.
+
+| 대상 | 처리 |
+|---|---|
+| `agent_tool_executions`의 되돌리기 스냅샷(`undo:*`) | `response_metadata`를 `{"document_purged": true}`로 바꾼다 |
+| `agent_tool_executions`의 실행 결과 | `id`·`document_id`·`current_version`만 남긴다 |
+| `agent_run_artifacts`(수정안·미리 보기·`undo-*`·이 문서를 만든 `create_document`)와 객체 | 키 단위로 객체를 지우고 행을 지운다. 같은 run의 다른 문서는 건드리지 않는다 |
+| `agent_plan_operations` | `apply_document_edit`·`create_document`의 `reason`을 안내 문구로 바꾸고, `pending`이면 `skipped`(`document_purged`)로 둔다 |
+| `agent_runs.result`(이 문서의 `markdown_turn`) | `edit`·`generated_markdown`을 뺀다 |
+| 근거 문장(`ai_task_runs.result`, `agent_runs.result`, `pipeline_runs.manifest`, `document_quality_reviews.evaluations`) | `source_document_id`가 이 문서이거나 `source_refs`에 이 문서가 있는 항목의 `text`·`expected_claims`만 비운다. 여러 문서를 걸친 근거는 나눌 수 없어 함께 비운다 |
+| `ai_task_runs`(편입 kind) | `command`의 `input_markdown`·`input_blocks`를 빼고 `result`를 `{"scrubbed": true}`로 바꾼다 |
+| `pipeline_runs.manifest`(이 문서의 run. post_ingest는 `document_id`가 없어 같은 id의 `ai_task_runs.command`로 찾는다) | `{"scrubbed": true}`로 바꾼다 |
+| `ai_task_changes` | 이 문서·소스 페이지·이 문서 run의 변경 기록을 지운다(소스 페이지·소스 객체 기록 포함). 작업 취소가 그 값을 되살리지 않는다. 다른 문서 run의 `pipeline_runs`·`document_quality_reviews` 기록은 이 문서의 근거만 비운다 |
+| `wiki/{ws}/clusters/active.md`·`archived.md`, `wiki/{ws}/logs/*.md`와 그 객체 변경 기록 | 이 문서를 인용한 근거 줄과 이 문서의 편입 항목만 뺀다. 근거가 없어진 클러스터는 지우고, 다른 문서가 남은 클러스터의 대표명·승격 사유는 남긴다. 변경 기록에도 같은 변환을 적용해 작업 취소의 대조가 맞고 본문이 되살아나지 않는다. 개념 잠금을 5초 안에 못 잡으면 다음 주기로 넘긴다 |
+| `pipeline_runs.manifest` | `{"scrubbed": true}`로 바꾼다 |
+| 소스 페이지 객체(`wiki/{ws}/sources/{document_id}.md`, `wiki/{ws}/pages/{page}/`), `wiki_pages.summary`·`markdown_uri` | 객체를 지우고 요약은 빈 값, `markdown_uri`는 NULL로 둔다. 행은 `deleted`로 남긴다. 위키 조회·그래프·임베딩은 활성 페이지만 읽고, 로그 되돌리기는 이 페이지를 건너뛰고 개념 페이지를 복구한다 |
+| `source_blocks`·`source_block_snapshots`·`document_quality_reviews`·`document_derived_state` | 행을 지운다 |
+
+- core_db의 소스 페이지 버전 본문은 document가 지운다. core_db에는 페이지 종류가 없어 document만으로는 소스 페이지를 가릴 수 없으므로, AI가 결과 event(`document_purge`)의 `payload.source_page_ids`로 알린다.
+- 남기는 것: 사용자 메시지(`request_summary`), AI 답변, 여러 문서 파생(개념 페이지·개념 기여, 클러스터), Skill 본문, `ai_model_usage`.
+- 취소 API(`/internal/ai/tasks/{run_id}/cancel`)는 document가 본문을 지운 command(`document_purged: true`)를 받으면 해시 대조와 등록을 건너뛴다. 실행이 없으면 `409`다.
+- `document_deleted`가 처리되지 못해 소스 페이지가 아직 활성이면 같은 정리를 먼저 돌린다. 개념 잠금 시간 초과는 실패로 기록하고 다음 주기에 다시 시도한다.
+- 스캔 뒤에 결과를 쓸 수 있는 run이 있으면 끝내지 않고 다음 주기에 다시 훑는다. 다른 문서의 run도 질의·편입·lint로 이 문서의 근거를 읽으므로 문서 id로 좁히지 않는다. 위키를 읽지 않는 `convert_batch`·`meeting_notes`·`meeting_transcription`은 기다리지 않는다. 요청 뒤 하루가 지나면 기다리지 않고 그 시도의 스캔으로 끝내며(그때 아직 도는 run은 경고 로그에 건수를 남긴다), 그 뒤 이 run들이 쓰는 근거는 AI DB에 남을 수 있다. document의 `scrubOrphans`는 core_db만 정리해 이 값을 지우지 않는다.
+- `ai_document_purges`에 요청을 먼저 커밋한다. 객체 삭제나 다른 처리가 실패해도 offset은 넘어가고, `finished_at`이 빈 행을 agent worker가 1시간마다 오래 못 본 것부터 다시 시도한다(한 주기 20건, 3건 실패하면 그 주기 종료). 재전달해도 결과가 같다. 키가 `agent-runs/{sha256(run_id)}/` 밖이면 지우지 않고 오류 로그를 남기며 대기로 둔다. 로그에는 건수와 id만 남긴다.
+- 지운 뒤 승인: 나머지 문서는 그대로 승인·실행하고 run은 `partial_failed`로 끝난다. 실행할 작업이 영구 삭제 문서뿐이면 `409`다. `revise`도 수정안이 없어 `409`이고, 미리 보기는 나머지 문서만 돌려준다.
+- 지운 뒤 되돌리기: 그 문서 단계는 document-svc를 부르지 않고 건너뛰고 나머지 문서는 되돌린다. 끝에 run은 `rollback_failed`(`rollback_document_purged`)로 닫히고 `finished_at`을 채운다. 다시 요청해도 결과가 같고, 다른 `rollback_failed`와 달리 90일 정리 대상이다. 상위 `markdown_turn`도 같은 코드를 받는다.
+
+배포 전 `migrate_ai_schema`로 `ai_document_purges`를 만들어야 한다. 이 표가 없으면 ingest worker와 agent worker의 스키마 확인이 실패한다. `last_scan_at` 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) 영구 삭제 처리가 실패한다. 같은 명령이 `ai_task_runs`의 인덱스를 `CONCURRENTLY`로 만들고, 못 만들어도 삭제는 동작한다([절차](../script.md#영구-삭제가-쓰는-작업-기록-인덱스)).
+
+배포 전 `migrate_ai_schema`로 `agent_run_artifacts`의 새 열을 적용해야 한다. 열이 없으면 준비 상태 확인은 통과하지만(테이블만 본다) artifact를 쓰는 모든 `workspace_workflow`가 실패한다.
 
 ### 폴더 내용 조회(`folder_lookup`)
 
@@ -101,6 +319,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | API | 목적 |
 |---|---|
 | [`GET /agent/runs/{run_id}`](#summary-get-agent-runs-run-id) | 승인형 Agent run의 현재 계획과 상태를 조회합니다. |
+| [`GET /agent/runs/{run_id}/edit-previews`](#summary-get-agent-runs-run-id-edit-previews) | 첨부 문서 수정 계획의 문서별 변경을 조회합니다. |
 | [`POST /agent/runs/{run_id}/approve`](#summary-post-agent-runs-run-id-approve) | 현재 계획의 version과 operation hash를 검증해 승인합니다. |
 | [`POST /agent/runs/{run_id}/cancel`](#summary-post-agent-runs-run-id-cancel) | 실행 가능한 Agent run을 취소합니다. |
 | [`POST /agent/runs/{run_id}/reject`](#summary-post-agent-runs-run-id-reject) | 현재 Agent 계획을 거절합니다. |
@@ -310,6 +529,28 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 
 </details>
 
+<a id="summary-get-agent-runs-run-id-edit-previews"></a>
+### `GET /agent/runs/{run_id}/edit-previews`
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 첨부 문서 수정 계획의 문서별 변경을 조회합니다. |
+| 입력 | **Path** — `run_id`: `string`<br>**Query** — `workspace_id`, `user_id`: `string`<br>**Header** — `X-Agent-Service-Token` |
+| 출력 | `200` — `AgentRunEditPreviewsResponse` |
+| 조건 | `AGENT_SKILLS_ENABLED=true`일 때만 노출되며 workspace·user 소유권을 확인합니다. 문서별 읽기 권한과 현재 제목은 document-svc 프록시가 확인합니다. |
+| 주요 오류 | `401` 토큰 불일치<br>`404` run 없음<br>`503` 토큰 미설정 |
+
+```ts
+type AgentRunEditPreviews = { items: AgentDocumentEditPreview[]; expires_at: string | null };
+type AgentDocumentEditPreview = {
+  operation_id: string; document_id: string; display_name: string;
+  base_version: number; summary: string; added_lines: number; removed_lines: number;
+  hunks: { before_start: number; after_start: number; lines: { type: "context" | "delete" | "insert"; text: string }[] }[];
+};
+```
+
+줄 번호는 1부터 시작하고 문맥은 3줄이다. 계획이 없거나 미리 보기가 없는 run은 `items: []`, `expires_at: null`이다. 객체가 남아 있으면 만료 뒤에도 내용을 돌려주므로 화면이 `expires_at`으로 수락을 막는다. [정리](#expired-artifact-cleanup)로 수정안이 지워지면 그 문서는 `items`에서 빠지고 `expires_at`은 지난 시각이다. 응답 형식은 같고 5xx가 아니다.
+
 <a id="summary-post-agent-runs-run-id-approve"></a>
 ### `POST /agent/runs/{run_id}/approve`
 
@@ -318,8 +559,8 @@ curl "$PIPELINE/agent/runs/run_123?workspace_id=workspace_123&user_id=user_123" 
 | 목적 | 사용자가 확인한 현재 plan version과 operation hash를 검증해 실행을 승인합니다. 고른 작업만 실행하는 부분 승인도 받습니다. |
 | 입력 | **Path** — `run_id`<br>**Body** — workspace·user·plan version·operation hash·선택 `operation_ids`·선택 `approved_by` |
 | 출력 | `200` — `status=executing`인 `AgentRunResponse` |
-| 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. |
-| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌<br>`422` 요청 검증 실패 |
+| 조건 | run과 plan이 모두 `awaiting_approval`이고 승인값이 현재 계획과 정확히 일치해야 합니다. 승인하는 작업이 쓰는 artifact가 만료됐거나 지워졌으면 거절하고 run은 `awaiting_approval`로 남습니다. 거절·취소는 그대로 됩니다. |
+| 주요 오류 | `400` 작업 선택 오류<br>`409` 계획 변경·상태 충돌·수정안 만료<br>`422` 요청 검증 실패 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -416,7 +657,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 - 인바운드 호출자: Fruition-document `src/main/java/fruition/core/agent/repository/PipelineAgentRunStatusRequester.java`:73-76(사용자 승인)·83-86(자동 승인, `approved_by=auto:user-setting`) → 101-107 (`app.agent.run-endpoint`, `X-Agent-Service-Token`).
 - 아웃바운드 호출: 승인 실행은 Tool gateway를 거쳐 document-svc `POST /internal/agent/tools/execute/{tool_name}`를 호출한다(`app/modules/agent_run/infrastructure/backend_tool_gateway.py:52`).
-- 아웃바운드 호출(승인 대기 알림): agent worker는 planning job을 끝낸 뒤 run이 `awaiting_approval`이면 document-svc `POST /internal/agent/runs/{run_id}/plan-ready`(body `workspace_id`·`user_id`, `X-Agent-Service-Token`)를 호출한다(`app/modules/agent_run/infrastructure/agent_worker.py:121-122,124-145` → `backend_tool_gateway.py:66-71`). document-svc가 사용자의 자동 승인 설정과 대상 권한을 보고 이 API를 `approved_by=auto:user-setting`으로 부를지 정한다. 알림이 실패해도 경고만 남기고 계획은 승인 대기로 남아 사용자가 직접 승인할 수 있다.
+- 아웃바운드 호출(run 상태 알림): agent worker는 job을 끝낸 뒤 run이 끝난 상태(`completed`·`partial_failed`·`failed`·`conflicted`·`rejected`·`cancelled`·`rollback_failed`)나 `clarification_required`이면, 또는 planning job 뒤 `awaiting_approval`이면 document-svc `POST /internal/agent/runs/{run_id}/plan-ready`(body `workspace_id`·`user_id`, `X-Agent-Service-Token`)를 job마다 한 번 호출한다(`app/modules/agent_run/infrastructure/agent_worker.py`의 `_notify_document_service` → `backend_tool_gateway.py`의 `notify_plan_ready`). `markdown_turn` 복구는 알리지 않는다. document-svc는 사용량 수집을 대기열에 넣고, `awaiting_approval`이면 사용자의 자동 승인 설정과 대상 권한을 보고 이 API를 `approved_by=auto:user-setting`으로 부를지 정하며, 끝난 상태면 run을 닫는다. 알림이 실패해도 경고만 남기고 job 결과는 바뀌지 않는다. 계획은 승인 대기로 남아 사용자가 직접 승인할 수 있고, 사용량은 종료 조회나 일일 대사가 가져간다.
 - 미연동 표시: 없음.
 
 </details>
@@ -448,7 +689,7 @@ curl -X POST "$PIPELINE/agent/runs/run_123/approve" \
 
 상위 `markdown_turn`과 하위 run의 연결은 하위 생성과 같은 DB 트랜잭션에서 `result.run_id`에 기록합니다. 상위 취소는 이미 완료된 하위 작업도 복구 대상으로 삼으며, 하위가 `cancelled`가 된 뒤 상위 취소를 완료합니다. 실행 중인 상위 턴의 늦은 결과는 외부에 발행하지 않습니다.
 
-상태는 `cancel_requested` → `rolling_back` → `cancelled`로 진행합니다. 실제 결과를 확인할 수 없거나 다른 사용자의 후속 변경과 충돌하거나 복구 도구가 실패하면 `rollback_failed`와 `error_code`를 남깁니다. 도구의 429·5xx 응답처럼 재시도할 수 있는 오류는 바로 확정하지 않고 job backoff(5초 간격, 최대 3회)로 다시 시도하며, 소진한 뒤에 `rollback_failed`로 닫습니다. 재요청하면 기존 복구 기록과 멱등키로 재시도합니다. 내용·이름·위치·순서를 복원하며 버전과 감사 기록은 이전 숫자로 되감지 않습니다.
+영구 삭제한 문서의 단계는 건너뛰고 끝에 `rollback_failed`(`rollback_document_purged`)를 남깁니다. 상태는 `cancel_requested` → `rolling_back` → `cancelled`로 진행합니다. 실제 결과를 확인할 수 없거나 다른 사용자의 후속 변경과 충돌하거나 복구 도구가 실패하면 `rollback_failed`와 `error_code`를 남깁니다. 도구의 429·5xx 응답처럼 재시도할 수 있는 오류는 바로 확정하지 않고 job backoff(5초 간격, 최대 3회)로 다시 시도하며, 소진한 뒤에 `rollback_failed`로 닫습니다. 재요청하면 기존 복구 기록과 멱등키로 재시도합니다. 내용·이름·위치·순서를 복원하며 버전과 감사 기록은 이전 숫자로 되감지 않습니다.
 
 Backend는 `delete_folder(require_empty=true)`로 빈 폴더를 잠금 상태에서 확인해 삭제하고, `delete_document`는 일반 문서 삭제와 같게 문서를 휴지통으로 옮기고 파생 Wiki 정리는 `document_deleted` command로 비동기 처리합니다. AI는 정리 완료를 기다리거나 확인하지 않습니다. Query·수집·변환·Skill 게시 등 공개 AI 기능의 전체 취소는 [공통 작업 취소 API](tasks.md)를 사용합니다. 이 내부 Agent API만 직접 호출하면 core DB의 채팅·업무 변경까지 복구하지 않습니다.
 
@@ -609,8 +850,8 @@ curl -X POST "$PIPELINE/agent/runs/run_123/reject" \
 | 목적 | 기존 계획을 폐기하고 사용자 지시로 새 계획을 생성하도록 등록합니다. |
 | 입력 | **Path** — `run_id`<br>**Body** — `workspace_id`, `user_id`, `instruction` |
 | 출력 | `200` — `status=queued`인 `AgentRunResponse` |
-| 조건 | `awaiting_approval` 또는 `clarification_required` 상태에서만 허용합니다. |
-| 주요 오류 | `409` 수정할 수 없는 상태 |
+| 조건 | `awaiting_approval` 또는 `clarification_required` 상태에서만 허용합니다. 현재 계획이 쓰는 artifact가 만료됐거나 지워졌으면 거절합니다. |
+| 주요 오류 | `409` 수정할 수 없는 상태·수정안 만료 |
 
 <details>
 <summary>상세 계약 보기</summary>
@@ -1495,4 +1736,55 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 
 질의 답변은 평가자가 활성화된 경우에만 `query_evaluating`(답변 검토)을 평가 호출 직전에 발행하고, 검토 후 재작성하는 경우 `answer_retrying`을 발행합니다. 일반 대화 등 평가자를 호출하지 않는 경로에는 검토 단계를 표시하지 않습니다.
 
-첫 문답은 최종 답변 이벤트를 먼저 전송한 뒤 같은 모델로 짧은 채팅 제목을 생성합니다. 제목 생성은 다음 문답 처리를 막지 않는 별도 작업으로 실행하고, 정상 종료 시 진행 중인 제목 전송을 마친 뒤 producer를 닫습니다. 별도의 `session_title` 이벤트로 document 서비스에 저장하며, 실패해도 완료된 답변은 바뀌지 않습니다. 이전 대화가 있으면 제목을 다시 생성하지 않습니다.
+첫 문답은 최종 답변 이벤트를 먼저 전송한 뒤 같은 모델로 짧은 채팅 제목을 생성합니다. 제목 생성은 다음 문답 처리를 막지 않는 별도 작업으로 실행하고, 정상 종료 시 진행 중인 제목 전송을 마친 뒤 producer를 닫습니다. 별도의 `session_title` 이벤트로 document 서비스에 저장하며, 실패해도 완료된 답변은 바뀌지 않습니다. 이전 대화가 있으면 제목을 다시 생성하지 않습니다. agent·query command의 선택 필드 `session_title_needed`가 `false`면 사용자가 제목을 정한 세션이므로 제목을 생성하지 않고 사용량 원장 행도 열지 않습니다. 키가 없거나(구 document-svc) boolean이 아니면 없는 것으로 보고 위 규칙대로 동작합니다.
+
+## Fruition 사용법 안내 (`product_help`)
+
+로그인한 사용자가 Fruition 자체의 사용법·화면 위치·설정을 물으면 기존 라우터가
+`product_help`를 선택한다. Agent에서는 일반 LLM과 Jev 모두 같은 계약을 사용한다.
+일반 채팅의 Query command는 짧은 의도 분류를 먼저 실행한다. Fruition 사용법은 번들 가이드로, 모호한 앱 지칭은 확인 질문으로 답하고, 그 외에는 기존 Query 검색을 그대로 실행한다. Agent가 이미 선택한 Query 및 품질 평가는 재분류하지 않는다.
+작업 탭에서도 `product_help`를 허용하며, 서버는 비변경 결과로 저장하고 프런트는 작업 탭에 안내 본문을 표시한다.
+Query 안내는 기존 Query 응답/저장 계약을 사용하므로 새 action 전송이 필요 없다.
+`retrieval_source=none`, `document_operation=none`, `persist=false`이고 Skill은 선택하지 않는다.
+응답 본문은 `message`에 들어간다. 클라이언트는 새 action을 답변으로 표시해야 한다.
+문서 변경, 검색, 승인 작업이나 음성 답변용 `chat_answer` 이벤트는 생성하지 않는다.
+
+답변은 `pipeline/prompts/product_help.system.md`에 포함된 Fruition 화면 가이드
+20261026 버전의 화면 6–49를 사용한다. 회원가입·로그인 등 화면 1–5는 제외하며,
+로그인 후 계정 변경·보안 설정은 포함한다. 일반 라우터와 일반 대화 프롬프트에는 가이드 본문을 넣지 않는다.
+답변 모델·응답 길이·언어와 오류 처리·출력 정제는 기존 대화 답변 경로를 재사용한다.
+`CONVERSATION_REPLY_SYSTEM_PROMPT` 재정의는 도움말 자료를 대체하지 않는다.
+
+“이 앱”의 대상이 모호하면 `conversation_reply`에서 한 번 확인한다. 사용자 앱이나 문서를
+가리키면 기존 경로를 유지한다. 도움말 후속 질문은 문맥으로 이어가지만 새로운 작업 요청을
+도움말로 고정하지 않는다. 새 매뉴얼 작성·저장은 문서 작업이며 이미 제공된 도움말 답변을
+자료로 사용할 수 있다. 작업 탭의 Fruition 사용법 질문에는 첨부 없이도 안내 본문을 반환한다.
+
+가이드에 없는 기능·정책·오류 원인은 추측하지 않고 확인할 수 없다고 안내한다.
+사용자의 화면·권한·작업 상태를 실제로 확인한 것처럼 답하거나 조작을 완료했다고 말하지 않는다.
+업로드와 위키 편입, 보기만의 편집 예외, 휴지통 복구 후 재편입을 구분한다.
+자료의 숫자·메뉴 경로는 배포 화면과 차이가 날 수 있으므로 제품 변경 시 해당 화면 항목도 갱신한다.
+
+회귀 사례는 `pipeline/evals/agent_turn_router.jsonl`의 `product-help-*` 24개다.
+`pipeline`에서 `python evaluate_agent_turn_router.py --provider <provider> --model <model>`로
+기존 사례와 함께 실제 모델을 평가한다. 단위 테스트는 계약과 실행 경계를 검증하며
+모델의 의미 분류 정확도나 실제 응답 지연을 보증하지 않는다.
+
+### 도움말의 언어와 UI 명칭
+
+실제 웹 요청은 화면 언어를 `Accept-Language`로 보내고 document-svc가 이를
+`response_language`로 AI command에 전달한다. 현재 공개 Agent 요청/command에는
+별도의 `output_language` 필드가 없으므로 웹 사용자는 화면 언어(ko/en)를 기준으로 안내받는다.
+AI 내부 `AgentTurnRequest`에서 `output_language=ko|en`을 지정한 경우에만 설명 언어를 우선한다.
+도움말에서 `output_language=document`는 번들 한국어 가이드의 언어를 선택하지 않고 화면 언어로
+돌아간다. 화면 언어도 없는 구 command/내부 요청에서는 질문 언어를 따른다.
+일반 문서·대화 작업의 `document` 언어 설정은 그대로 유지한다.
+
+버튼·메뉴 이름은 설명 언어와 별도로 **화면 언어**에 맞춘다. 예를 들어 영어 화면에서
+한국어 설명을 받더라도 버튼은 `Convert to Markdown`으로 안내한다. 화면 언어가 없으면
+설명 언어에 맞춘다. 도움말 프롬프트에 프런트 ko/en 번역에서 확인한 79개 UI 명칭과 출처 커밋을
+보존하며, 미확인 명칭은 임의로 버튼명처럼 인용하지 않는다.
+
+화면 언어는 서버의 trusted runtime context로 전달하고, 사용자 대화·문서 안의 언어 지시는
+이를 덮어쓰지 못하게 한다. 진행 메시지도 화면 언어를 따르며, 비동기 요청은 요청 시점의
+언어를 유지한다. 이전 대화가 한국어였더라도 현재 영어 화면에서 보낸 요청은 영어로 안내한다.

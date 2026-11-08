@@ -12,6 +12,7 @@ from app.workers import ingest_worker
 
 def test_create_pipeline_run_ignores_duplicate_run_id() -> None:
     connection = MagicMock()
+    connection.__enter__.return_value.execute.return_value.fetchone.return_value = None
 
     with patch.object(database, "connect", return_value=connection):
         database.create_pipeline_run(
@@ -589,3 +590,68 @@ def test_result_payload_reports_pages_deleted_by_reingest() -> None:
     assert payload["changed_pages"] == [{"page_id": "p1"}]
     assert payload["deleted_pages"] == ["p2"]
     assert ingest_worker._result_payload({}, None, "failed", "x")["deleted_pages"] == []
+
+
+def _purge_command() -> dict:
+    return {"run_id": "purge-1", "kind": "document_purged", "document_id": "document-1", "workspace_id": "workspace-1"}
+
+
+def _controlled(command: dict, *, purged: bool = False) -> dict:
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    with patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.connect", return_value=connection), \
+            patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.workspace_purged", return_value=purged):
+        return ingest_worker._handle_controlled(command)
+
+
+def test_document_purged_runs_copy_purge_without_task_journal() -> None:
+    from app.modules.data_purge.infrastructure.document_copy_purge import DocumentCopyPurge
+
+    with patch("app.modules.data_purge.infrastructure.document_copy_purge.purge_document",
+               return_value=DocumentCopyPurge(source_page_ids=("page-1",))) as purge, \
+            patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.execute") as execute:
+        # document가 이 값으로 core_db의 소스 페이지 버전 본문을 지운다.
+        assert _controlled(_purge_command()) == {"source_page_ids": ["page-1"]}
+
+    purge.assert_called_once_with("workspace-1", "document-1")
+    execute.assert_not_called()
+
+
+def test_document_purged_event_kind_is_document_purge_and_succeeded() -> None:
+    event = ingest_worker._result_event(_purge_command(), {"source_page_ids": ["page-1"]})
+
+    assert (event["kind"], event["status"]) == ("document_purge", "succeeded")
+    assert event["payload"] == {"source_page_ids": ["page-1"]}
+    assert ingest_worker._post_ingest_command(_purge_command()) is None
+
+
+@pytest.mark.parametrize("missing", ["workspace_id", "document_id"])
+def test_malformed_document_purged_is_discarded_not_retried(missing: str) -> None:
+    command = {key: value for key, value in _purge_command().items() if key != missing}
+
+    with pytest.raises(ingest_worker.UnprocessableIngestCommand):
+        ingest_worker._handle_controlled(command)
+
+
+def test_document_purged_for_purged_workspace_is_discarded() -> None:
+    with pytest.raises(ingest_worker.ScopePurgedError):
+        _controlled(_purge_command(), purged=True)
+
+
+def test_document_purged_object_failure_still_advances_the_partition() -> None:
+    """저장소가 실패해도 예외가 consumer로 올라가지 않는다. 재시도는 agent worker 정리 작업이 한다."""
+    from app.modules.data_purge.infrastructure.document_copy_purge import DocumentCopyPurge
+
+    with patch("app.modules.data_purge.infrastructure.document_copy_purge.purge_document",
+               return_value=DocumentCopyPurge(pending_artifacts=2, source_page_ids=("page-1",))):
+        assert _controlled(_purge_command()) == {"source_page_ids": ["page-1"]}
+
+
+def test_old_command_kinds_still_work_and_unknown_kind_is_discarded() -> None:
+    """구 document_deleted는 그대로 처리하고, 이 worker가 모르는 kind는 파티션을 막지 않고 폐기한다(구 AI가 document_purged를 받을 때와 같다)."""
+    with patch.object(database, "delete_document_wiki_data") as delete:
+        _controlled({"kind": "document_deleted", "document_id": "document-1", "workspace_id": "workspace-1"})
+    delete.assert_called_once_with("workspace-1", "document-1")
+
+    with pytest.raises(ingest_worker.UnprocessableIngestCommand):
+        ingest_worker._handle_controlled({"kind": "future_kind", "document_id": "document-1", "workspace_id": "workspace-1"})

@@ -36,6 +36,7 @@ from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
 from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import ConceptLockTimeout
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import relay_pending
 from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     get_deferred_pipeline_run_use_case,
     get_pipeline_run_repository,
@@ -67,7 +68,11 @@ DELETE_LOCK_ATTEMPTS = 10
 
 
 # journal을 거치지 않는 문서 단위 bookkeeping command와 그 결과 event kind. document 결과 consumer는 이 kind들을 처리하지 않고 건너뛴다.
-_EVENT_KINDS = {"document_deleted": "document_cleanup", "document_renamed": "document_rename"}
+_EVENT_KINDS = {
+    "document_deleted": "document_cleanup",
+    "document_renamed": "document_rename",
+    "document_purged": "document_purge",
+}
 _BOOKKEEPING_KINDS = frozenset(_EVENT_KINDS)
 
 
@@ -117,6 +122,8 @@ def _build_payload(command: dict) -> PipelineRunIn | ChatWikiRunIn:
 
 
 def _result_payload(command: dict, manifest: dict | None, status: str, error: str | None = None) -> dict:
+    if status == "succeeded" and (manifest or {}).get("publication_result"):
+        return dict((manifest or {})["publication_result"])
     return {
         "operation_id": command.get("operation_id"),
         "operation_type": "ingest",
@@ -213,6 +220,8 @@ async def _dispatch_post_ingest(
 def _handle_controlled(command: dict) -> dict:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command.get("kind") in _BOOKKEEPING_KINDS:
+        if not command.get("workspace_id") or not command.get("document_id"):
+            raise UnprocessableIngestCommand(f"{command.get('kind')} command requires workspace_id and document_id")
         # journal을 거치지 않아 reject_purged가 닫히지 않는다. 파기한 워크스페이스의 행을 되살리거나 고치지 않도록 직접 확인한다.
         with journal.connect() as conn:
             if journal.workspace_purged(conn, command["workspace_id"]):
@@ -240,6 +249,11 @@ def _handle(command: dict) -> dict:
     if command.get("kind") == "document_deleted":
         _delete_document_wiki_data(command["workspace_id"], command["document_id"])
         return {}
+    if command.get("kind") == "document_purged":
+        # 실패는 안에서 기록하고 올리지 않는다. 재시도는 agent worker가 한다(파티션을 막지 않는다).
+        from app.modules.data_purge.infrastructure import document_copy_purge
+        result = document_copy_purge.purge_document(command["workspace_id"], command["document_id"])
+        return {"source_page_ids": list(result.source_page_ids)}
     if command.get("kind") == "document_renamed":
         title = str(command.get("title") or "").strip()
         if not title:
@@ -309,6 +323,8 @@ async def consume() -> None:
     )
     await consumer.start()
     await producer.start()
+    if os.environ.get("AI_DATABASE_URL"):
+        await relay_pending(producer, RESULT_TOPIC)
     logger.info("[worker 기동] topic=%s group=%s bootstrap=%s", TOPIC, GROUP_ID, BOOTSTRAP_SERVERS)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -384,6 +400,8 @@ async def consume() -> None:
                     await producer.send_and_wait(
                         RESULT_TOPIC, event, key=event["run_id"].encode("utf-8")
                     )
+                    if os.environ.get("AI_DATABASE_URL"):
+                        await relay_pending(producer, RESULT_TOPIC)
                     await consumer.commit()
     finally:
         await producer.stop()

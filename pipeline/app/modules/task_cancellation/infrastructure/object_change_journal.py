@@ -10,6 +10,17 @@ from app.core.pipeline_control import PipelineRunCancelledError, ScopePurgedErro
 from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
 
 
+def _immutable_publication_key(key: str) -> bool:
+    parts = key.split("/")
+    return (
+        len(parts) == 6
+        and parts[0] == "wiki"
+        and parts[2] == "pages"
+        and parts[4] == "ops"
+        and (key.endswith(".md") or key.endswith(".json"))
+    )
+
+
 def workspace_of(key: str) -> str | None:
     # 위키 객체는 모두 wiki/{workspace_id}/ 아래에 있다(ADR 0033).
     root, _, rest = key.partition("/")
@@ -59,6 +70,8 @@ def apply(client, bucket: str, key: str, value):
 
 
 def change_object(run_id: str, client, bucket: str, key: str, after) -> None:
+    if _immutable_publication_key(key):
+        raise RuntimeError("immutable publication objects must use create-or-verify")
     with write_fence(key, after), journal.connect() as conn:
         conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (f"ai-object:{bucket}/{key}",))
         try:
@@ -83,6 +96,13 @@ def undo_object(change) -> None:
     from app.modules.wiki_ingestion.infrastructure.object_storage import client
     storage = client()
     bucket, key = change["row_key"]["bucket"], change["row_key"]["key"]
+    if _immutable_publication_key(key):
+        with journal.connect() as conn:
+            current = snapshot(storage, bucket, key)
+            if current != change["before_value"] and current != change["after_value"]:
+                raise ValueError("Immutable publication object changed after this task.")
+            conn.execute("UPDATE ai_task_changes SET undone = true WHERE id = %s", (change["id"],))
+        return
     with write_fence(key, change["before_value"]), journal.connect() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"ai-object:{bucket}/{key}",))
         current = snapshot(storage, bucket, key)

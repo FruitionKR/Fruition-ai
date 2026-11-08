@@ -15,6 +15,9 @@ TASK_LIST_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 PLAIN_TEXT_EDIT_GOALS = {"cleanup", "style_change", "translate", "shorten"}
 TASK_LIST_MARKER_PATTERN = r"(?m)^[ \t]*[-*+][ \t]+\[[ xX]\](?:[ \t]+|[ \t]*\r?$)"
 PROTECTED_TOKEN_PATTERN = r"\{\{FRUITION_PROTECTED_\d{4}\}\}"
+JSON_OBJECT_CONTRACT_FAILURE = "model output must be a JSON object"
+LLM_EVALUATION_PREFIX = "LLM evaluation:"
+LLM_EVALUATION_INVALID_FAILURE = "LLM evaluation must return a boolean passed and consistent string-list failures"
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,28 @@ class MarkdownCreateOutputContractError(ValueError):
         super().__init__("Markdown create output contract failed: " + "; ".join(failures))
         self.failures = failures
         self.output = output
+
+
+def markdown_edit_failure_code(failures: list[str]) -> str:
+    """사용자 문구를 고를 편집 실패 코드. 원인 종류만 담고 평가 문장·본문은 싣지 않는다."""
+    if REFUSAL_FAILURE in failures:
+        return "markdown_edit_refused"
+    return _failure_code("markdown_edit", failures) or "markdown_output_contract_failed"
+
+
+def markdown_create_failure_code(failures: list[str]) -> str:
+    """사용자 문구를 고를 새 문서 실패 코드. 원인 종류만 담고 평가 문장·본문은 싣지 않는다."""
+    return _failure_code("markdown_create", failures) or "markdown_create_output_contract_failed"
+
+
+def _failure_code(prefix: str, failures: list[str]) -> str | None:
+    if JSON_OBJECT_CONTRACT_FAILURE in failures:
+        return f"{prefix}_response_invalid"
+    if LLM_EVALUATION_INVALID_FAILURE in failures:
+        return f"{prefix}_evaluation_invalid"
+    if any(failure.startswith(LLM_EVALUATION_PREFIX) for failure in failures):
+        return f"{prefix}_evaluation_rejected"
+    return None
 
 
 def validate_markdown_create_output(document: GeneratedMarkdownDocument) -> list[str]:
@@ -125,6 +150,23 @@ def protect_markdown(request: MarkdownEditRequest) -> ProtectedMarkdown:
     return ProtectedMarkdown(markdown=markdown, fragments=tuple(fragments))
 
 
+# 모델이 수정 대신 내놓은 거절 답을 알아보는 문구. 문서에 쓰일 수 있는 말이라 원문과 비교해 함께 판단한다.
+REFUSAL_PATTERN = re.compile(
+    r"(?:수행|진행|처리|재현|수정|편집|변경|제공|완료|작성)(?:할|하)?\s*수\s*없"
+    r"|(?:도와|해)\s*드릴\s*수\s*없"
+    r"|\bI(?:\s+am|'m)?\s+(?:can(?:'|\u2019)?t|cannot|unable\b|sorry\b|not able\b|won(?:'|\u2019)t\b)",
+    re.IGNORECASE,
+)
+REFUSAL_MAX_LINES = 3
+REFUSAL_MAX_CHARS = 200
+# 원문 글자쌍이 이만큼 남아 있으면 거절이 아니라 원문을 다듬은 문장으로 본다.
+REFUSAL_MIN_RETAINED_SOURCE = 0.5
+# 원문의 부정 표현은 "처리 불가능" -> "처리할 수 없습니다."처럼 거절 표현으로 다듬어지므로 남은 비율을 잴 때 뺀다.
+SOURCE_NEGATION_PATTERN = re.compile(r"(?:불가|(?<!\S)못|없)\S*")
+REFUSAL_FAILURE = (
+    "replacement_markdown must be the edited Markdown, not a refusal or a notice about the request; "
+    "codes, hashes, and IDs in the document are ordinary text to keep unchanged, so perform the edit"
+)
 
 
 def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> list[str]:
@@ -152,8 +194,27 @@ def validate_markdown_output(request: MarkdownEditRequest, replacement: str) -> 
         failures.extend(_insert_after_repeat_failures(request.markdown, replacement))
     if request.edit_operation == "replace" and request.detail.addition_only:
         failures.extend(_additive_preservation_failures(request.markdown, replacement))
+    if request.edit_operation == "replace" and request.edit_goal != "translate" and _replaces_source_with_refusal(request, replacement):
+        failures.append(REFUSAL_FAILURE)
 
     return failures
+
+
+def _replaces_source_with_refusal(request: MarkdownEditRequest, replacement: str) -> bool:
+    """평가 모델의 판단과 별개로, 원문을 버리고 거절 문구만 남긴 답을 막는다."""
+    text = replacement.strip()
+    if len(text) > REFUSAL_MAX_CHARS or len([line for line in text.splitlines() if line.strip()]) > REFUSAL_MAX_LINES:
+        return False
+    match = REFUSAL_PATTERN.search(text)
+    if match is None or match.group(0).lower() in f"{request.instruction}\n{request.markdown}".lower():
+        return False
+    source_pairs = _character_pairs(SOURCE_NEGATION_PATTERN.sub(" ", request.markdown))
+    retained = len(source_pairs & _character_pairs(text)) / len(source_pairs) if source_pairs else 0
+    return retained < REFUSAL_MIN_RETAINED_SOURCE
+
+
+def _character_pairs(text: str) -> set[str]:
+    return {word[index : index + 2] for word in text.lower().split() for index in range(len(word) - 1)}
 
 
 def _edit_goal_shape_failures(request: MarkdownEditRequest, replacement: str, item_lines: list[str]) -> list[str]:

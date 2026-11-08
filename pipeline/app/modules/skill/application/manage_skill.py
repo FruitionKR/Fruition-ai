@@ -114,7 +114,9 @@ class ManageSkillUseCase:
         targets: tuple[SkillTarget, ...] = (),
         result_mode: SkillResultMode | None = None,
         requires_source: bool = False,
+        expected_version: int | None = None,
     ) -> Skill:
+        """expected_version을 주면 저장 잠금 안에서 최신 버전과 비교해 어긋나면 SkillVersionConflictError다."""
         skill = self.get_manageable(workspace_id, user_id, skill_id)
         _validate_definition(
             name,
@@ -141,7 +143,9 @@ class ManageSkillUseCase:
         )
         if _blocked_issues(version):
             raise ValueError("Skill version has blocked safety issues.")
-        return self._repository.save_published_version(skill, version)
+        if expected_version is None:
+            return self._repository.save_published_version(skill, version)
+        return self._repository.save_published_version(skill, version, expected_version)
 
     def set_enabled(self, workspace_id: str, user_id: str, skill_id: str, enabled: bool) -> Skill:
         skill = self.get_manageable(workspace_id, user_id, skill_id)

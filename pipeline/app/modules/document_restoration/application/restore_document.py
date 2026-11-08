@@ -22,8 +22,9 @@ class RestoreDocumentUseCase:
         prepared = self._stages.prepare(command)
         timings: list[StageTiming] = []
 
+        crop_first = command.mode in {RestorationMode.CROP_FIRST, RestorationMode.CROP_FIRST_PREPARE}
         if (
-            command.mode is not RestorationMode.CROP_FIRST
+            not crop_first
             and self._stages.needs_docling_baseline(prepared)
         ):
             timings.append(
@@ -33,6 +34,11 @@ class RestoreDocumentUseCase:
                     prepared,
                 )
             )
+
+        if command.mode is RestorationMode.CROP_FIRST_PREPARE:
+            timings.append(self._stages.run_stage(RestorationStage.PREPARE_CROP_FIRST, command, prepared))
+            self._stages.write_timings(command, timings, time.perf_counter() - started_at)
+            return timings
 
         if command.mode is RestorationMode.CROP_FIRST:
             stages = [

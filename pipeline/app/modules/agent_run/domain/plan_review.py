@@ -8,6 +8,7 @@
 from dataclasses import replace
 import unicodedata
 
+from app.core.response_language import localized
 from app.modules.agent_run.domain.content_duplicates import ContentDuplicate
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation
 
@@ -24,6 +25,7 @@ _NAMING_TOOLS = {
     "move_document": ("document", "folder_id", None),
 }
 _TYPE_LABEL = {"folder": "폴더", "document": "문서"}
+_TYPE_LABEL_EN = {"folder": "folder", "document": "document"}
 
 
 def review_duplicate_names(plan: AgentPlan, hierarchy: list[dict[str, object]]) -> AgentPlan:
@@ -50,9 +52,11 @@ def review_duplicate_names(plan: AgentPlan, hierarchy: list[dict[str, object]]) 
         if duplicate is None:
             continue
         entry = state[key]
-        message = (
+        message = localized(
             f"같은 위치에 이름이 같은 {_TYPE_LABEL.get(str(entry['type']), '항목')} "
-            f"'{entry['name']}'이(가) 있어 중복일 수 있어요."
+            f"'{entry['name']}'이(가) 있어 중복일 수 있어요.",
+            f"A {_TYPE_LABEL_EN.get(str(entry['type']), 'item')} named '{entry['name']}' "
+            "already exists in the same location, so this may be a duplicate.",
         )
         for operation_id in operation_ids:
             warnings[operation_id] = {"type": DUPLICATE_NAME_WARNING, "message": message}
@@ -71,7 +75,7 @@ def review_content_duplicates(plan: AgentPlan, duplicates: dict[str, ContentDupl
         if operation.warning is not None and not operation.suggested_selected
     }
     for operation in plan.operations:
-        duplicate = duplicates.get(operation.target_id or "")
+        duplicate = duplicates.get(operation.target_id or operation.id)
         if duplicate is None or operation.target_type != "document":
             continue
         existing = warnings.get(operation.id)
@@ -79,7 +83,10 @@ def review_content_duplicates(plan: AgentPlan, duplicates: dict[str, ContentDupl
             continue
         warnings[operation.id] = {
             "type": DUPLICATE_CONTENT_WARNING,
-            "message": f"'{duplicate.original_name}'와(과) 내용이 거의 같아 중복일 수 있어요.",
+            "message": localized(
+                f"'{duplicate.original_name}'와(과) 내용이 거의 같아 중복일 수 있어요.",
+                f"The content is nearly identical to '{duplicate.original_name}', so this may be a duplicate.",
+            ),
         }
     return _apply_warnings(plan, warnings)
 
@@ -92,7 +99,10 @@ def _apply_warnings(plan: AgentPlan, warnings: dict[str, dict[str, str]]) -> Age
             unselected.add(operation.id)
             warnings[operation.id] = {
                 "type": DEPENDS_ON_UNSELECTED_WARNING,
-                "message": "중복이 의심되는 작업에 이어지는 작업이라 함께 선택에서 뺐어요.",
+                "message": localized(
+                    "중복이 의심되는 작업에 이어지는 작업이라 함께 선택에서 뺐어요.",
+                    "Deselected because it follows a task that may be a duplicate.",
+                ),
             }
     if not warnings:
         return plan

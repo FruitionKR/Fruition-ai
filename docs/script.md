@@ -72,6 +72,40 @@ Query 답변에서만 TTS를 호출한다. 회의 전사는 명령으로 실행�
 
 분리 AI 저장소의 `pipeline/`에서 migration 권한의 `AI_DB_MIGRATION_URL`을 주입하고 `python -m app.modules.wiki_ingestion.infrastructure.migrate_ai_schema`를 실행한다. 멱등 DDL이 `ai_model_usage`와 인덱스를 생성한다. 기존 runtime의 ai_runtime 권한에 INSERT/UPDATE/SELECT가 포함되어야 한다. `AI_DB_CONVERTER_ROLE`(예: `ai_converter`)을 함께 주입하면 같은 트랜잭션에서 converter 전용 role의 테이블 단위 UPDATE를 회수한 뒤 `ai_model_usage` INSERT, `finish_call`이 SET하는 컬럼의 UPDATE, `id`·`status`·`finished_at` 컬럼 SELECT를 부여한다. 비우면 부여를 건너뛰고 경고를 남기며, role이 없으면 적용이 실패한다. role은 platform `init-db-isolation.sh`로 먼저 만든다. 그 뒤 새 pipeline API·worker 이미지를 적용한다. 사용량 원장은 작업 취소 복구 대상이 아니며 이전 호출은 소급 기록하지 않는다.
 
+## 영구 삭제가 쓰는 작업 기록 인덱스
+
+`idx_ai_task_runs_workspace_status`와 `idx_ai_task_runs_command_document`는 `db/ai_schema.sql`에 없다. 그 파일은 한 트랜잭션이고 `ai_task_runs`의 `ALTER TABLE`이 ACCESS EXCLUSIVE를 커밋까지 쥐어, 안에서 인덱스를 만들면 빌드 내내 작업 기록이 멈춘다. `migrate_ai_schema`가 스키마를 커밋한 뒤 autocommit 연결에서 `CREATE INDEX CONCURRENTLY`로 만든다. 평소 배포에서 사람이 할 일은 없다.
+
+- 인덱스가 없어도 영구 삭제는 `ai_task_runs`를 순차로 훑어 그대로 동작한다. 느려질 뿐이다.
+- 기동 경로(`ensure_ai_schema`, `AI_DB_MIGRATION_URL`을 주입한 Compose·kind)는 인덱스를 만들지 않는다. 필요하면 `migrate_ai_schema`를 실행한다.
+- 스키마 적용과 인덱스 빌드는 advisory lock(`732004150`)으로 겹치지 않는다. 빌드 중에 스키마를 적용하는 인스턴스는 표가 아니라 이 잠금에서 기다려 다른 읽기·쓰기를 막지 않는다. 이 잠금은 이 변경 이후 이미지에만 있다.
+- 시간 제한은 인덱스마다 180초(잠금 대기 30초)다. AWS migration Job의 600초 deadline을 넘기지 않으려는 값이다. 넘기면 Job을 실패시키지 않고 `ai_db 인덱스 미생성` 줄을 출력한 뒤 끝나고, 다음 `migrate_ai_schema`가 잔해를 지우고 다시 만든다.
+
+`ai-migration` Job 로그에 `ai_db 인덱스 미생성`이 있거나 아래 확인 결과가 두 행이 아니면, 표가 커서 시간 제한 안에 끝나지 않는 경우이므로 다음을 수행한다.
+
+1. **이 수동 절차는 public schema fingerprint를 바꾼다.** 직전 성공 release로의 자동 rollback과 같은 SHA 재시도가 막히므로 다음 배포 직전에, 또는 복구 검토를 감수할 수 있을 때 수행한다. 다음 배포의 Job은 이미 있는 인덱스를 건너뛰고 새 fingerprint를 기록한다.
+2. 부하가 낮을 때, 진행 중인 스키마 적용이 없는지 확인하고 migration 계정(표 소유자)으로 접속한다. 트랜잭션 안에서 실행할 수 없으므로 `BEGIN` 없이 한 문장씩 실행한다.
+
+   ```sql
+   SET lock_timeout = '30s';
+   SET statement_timeout = 0;
+   SELECT pg_advisory_lock(732004150);
+   DROP INDEX CONCURRENTLY IF EXISTS idx_ai_task_runs_workspace_status;  -- 아래 확인에서 indisvalid=false이거나 없을 때만
+   CREATE INDEX CONCURRENTLY idx_ai_task_runs_workspace_status ON ai_task_runs (workspace_id, status);
+   DROP INDEX CONCURRENTLY IF EXISTS idx_ai_task_runs_command_document;  -- 위와 같다
+   CREATE INDEX CONCURRENTLY idx_ai_task_runs_command_document ON ai_task_runs ((command->>'document_id')) WHERE command->>'document_id' IS NOT NULL;
+   SELECT pg_advisory_unlock(732004150);
+   ```
+
+3. 두 행 모두 `indisvalid = true`인지 확인한다.
+
+   ```sql
+   SELECT indexrelid::regclass, indisvalid FROM pg_index
+   WHERE indexrelid::regclass::text IN ('idx_ai_task_runs_workspace_status', 'idx_ai_task_runs_command_document');
+   ```
+
+`lock_timeout` 오류로 실패하면 긴 트랜잭션이 끝나기를 기다린다. `pg_stat_activity`에서 찾을 수 있고, 실패한 빌드는 `indisvalid = false`로 남으므로 다시 지우고 만든다.
+
 ## 과거 파기 누락분 정리
 
 access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이터를 파기한 워크스페이스·사용자는 AI 데이터(위키, 스킬, 에이전트 기록, S3 객체)가 남아 있다. 일회성 스크립트 `pipeline/reconcile_purged_scopes.py`가 access에 없는 ID를 찾아 기존 파기 함수(`purge_workspace`·`purge_user`)로 지운다. 파기 함수는 멱등이라 재실행해도 같다. `ai_model_usage`는 정산용이라 지우지 않는다.
@@ -94,3 +128,49 @@ access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이�
    AI 테이블에서 가장 이르게 나타난 시각이 `--exported-at`보다 1시간 넘게 앞선 ID만 `to_purge_*`에 오른다. export 뒤에 생긴 ID와 시각 근거가 없는 ID는 `skipped_*`에 사유와 함께 남고 파기하지 않는다.
 
 3. `to_purge_workspaces`·`to_purge_users`(ID별 최초 확인 시각)가 의도한 목록인지 확인한 뒤 `--apply`를 붙여 실행한다.
+
+## 영구 삭제 기능 전에 지운 문서의 복사본 정리
+
+영구 삭제 기능(`document_purged`) 전에 core에서 지운 문서는 AI에 복사본이 남아 있다. 일회성 스크립트 `pipeline/reconcile_purged_documents.py`가 core에 없는 문서를 휴지통 표시(`wiki_source_tombstones`)로 찾아 기존 `purge_document`를 호출한다.
+
+`purge_document`는 `ai_document_purges` 요청 행을 먼저 커밋하고 한 번 시도한다. 진행 중 run, 잠금 실패, 저장소 실패로 끝내지 못한 문서는 agent worker가 1시간마다 다시 시도한다. 그래서 스크립트가 끝나도 `finished_at`이 빈 행이 남을 수 있다.
+
+1. core DB에서 **현재 존재하는** 문서 id를 내보내고 시각을 기록한다. 휴지통 문서는 행이 있어 포함되고 대상에서 빠진다.
+
+   ```sql
+   SELECT now();  -- 내보낸 시각. --exported-at에 시간대 포함 ISO-8601로 쓴다. 24시간이 지난 목록은 거부한다.
+   SELECT count(*) FROM documents;  -- --min-documents에 쓴다.
+   \copy (SELECT id FROM documents) TO 'document_ids.txt'
+   ```
+
+2. `pipeline/`에서 AI DB(`AI_DATABASE_URL`)와 S3 환경변수를 주입하고 읽기 전용 dry-run을 한다. 출력은 표별 건수뿐이다. id가 필요하면 `--ids-out`으로 권한 600 파일에 받는다.
+
+   ```bash
+   python reconcile_purged_documents.py --document-ids-file document_ids.txt \
+     --exported-at 2026-11-07T11:00:00+00:00 --min-documents <core 건수> --ids-out targets.tsv
+   ```
+
+   빈 파일, `--min-documents`보다 적은 목록, 활성 소스 페이지의 절반도 담지 못한 목록은 거부한다. 휴지통 표시가 `--exported-at`보다 `--min-age-hours`(기본 24시간) 넘게 앞선 문서만 `targets`에 오른다.
+
+   | 출력 | 뜻 |
+   |---|---|
+   | `targets`, `workspaces` | 지울 문서 수와 워크스페이스 수 |
+   | `skipped` | 뺀 문서 수. `exists_in_core`(슬러그가 같은 문서 포함), `workspace_purged`, `already_finished`, `other_workspace`, `too_recent` |
+   | `estimated` | 표별 예상 행 수와 S3 객체 수 |
+   | `storage_estimate_errors` | S3를 읽지 못해 S3 예상치에서 빠진 문서 수 |
+   | `missing_without_tombstone_not_targeted` | 휴지통 표시 없이 사라진 문서 수. 이 스크립트는 지우지 않는다 |
+
+3. 건수를 확인한 뒤 dry-run의 `targets`를 `--expected-count`로 주고 실행한다. 다르면 아무것도 하지 않는다.
+
+   ```bash
+   python reconcile_purged_documents.py --document-ids-file document_ids.txt \
+     --exported-at 2026-11-07T11:00:00+00:00 --min-documents <core 건수> --apply --expected-count <targets>
+   ```
+
+4. `outcomes`를 확인한다. `finished`가 아닌 문서는 worker가 잇는다. 다시 실행하면 끝난 문서는 `already_finished`로 빠진다.
+
+   ```sql
+   SELECT count(*) FILTER (WHERE finished_at IS NULL) AS pending, count(*) AS total FROM ai_document_purges;
+   ```
+
+지워지면 되돌릴 수 없다. core의 `wiki_page_versions` 본문은 `document_purge` 결과 event로 지우는데, 이 스크립트는 그 event를 보내지 않아 그대로 남는다.

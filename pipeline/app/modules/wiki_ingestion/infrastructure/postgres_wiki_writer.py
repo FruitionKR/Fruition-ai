@@ -6,6 +6,10 @@ import uuid
 import psycopg
 from minio.error import S3Error
 
+from app.modules.wiki_generation.domain.concept_identity import (
+    available_concept_slug,
+    concept_name_keys,
+)
 from app.modules.wiki_generation.domain.text_utils import name_key, slugify
 from app.modules.wiki_generation.infrastructure.ref_format import ref_label
 
@@ -394,6 +398,122 @@ def load_existing_concept_ids_by_slug(
         (workspace_id,),
     ).fetchall()
     return {row["slug"]: row["id"] for row in rows}
+
+
+def load_concept_identity_index(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    *,
+    include_deleted: bool = False,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, slug, title, summary, markdown_uri, status
+        FROM wiki_pages
+        WHERE page_type = 'concept'
+          AND workspace_id = %s
+          AND (status = 'active' OR (%s AND status <> 'active'))
+        ORDER BY slug, id
+        """,
+        (workspace_id, include_deleted),
+    ).fetchall()
+    aliases = conn.execute(
+        """
+        SELECT page_id, alias
+        FROM wiki_concept_identity_aliases
+        WHERE workspace_id = %s
+        ORDER BY page_id, alias
+        """,
+        (workspace_id,),
+    ).fetchall()
+    aliases_by_page: dict[str, list[str]] = {}
+    for row in aliases:
+        aliases_by_page.setdefault(str(row["page_id"]), []).append(str(row["alias"]))
+    return [
+        {**dict(row), "page_id": str(row["id"]), "identity_aliases": aliases_by_page.get(str(row["id"]), [])}
+        for row in rows
+    ]
+
+
+def resolve_concept_page_identity(
+    conn: psycopg.Connection,
+    user_id: str,
+    workspace_id: str,
+    *,
+    title: str,
+    identity_aliases: list[str],
+    preferred_slug: str,
+) -> tuple[str, str, str]:
+    """Return page id, final slug, and prior status under the common workspace allocation lock."""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"concept-persistence:{workspace_id}",),
+    )
+    if conn.execute(
+        """
+        SELECT 1 FROM ai_purged_scopes
+        WHERE (scope_type = 'workspace' AND scope_id = %s)
+           OR (scope_type = 'user' AND scope_id = %s)
+        """,
+        (workspace_id, user_id),
+    ).fetchone():
+        raise RuntimeError(f"workspace was purged: {workspace_id}")
+    index = load_concept_identity_index(conn, workspace_id, include_deleted=True)
+    incoming = {"title": title, "identity_aliases": identity_aliases}
+    active = [item for item in index if item["status"] == "active" and concept_name_keys(incoming) & concept_name_keys(item)]
+    deleted = [item for item in index if item["status"] == "deleted" and concept_name_keys(incoming) & concept_name_keys(item)]
+    if len(active) == 1:
+        return str(active[0]["id"]), str(active[0]["slug"]), "active"
+    if not active and len(deleted) == 1:
+        return str(deleted[0]["id"]), str(deleted[0]["slug"]), "deleted"
+    slug = available_concept_slug(preferred_slug, (str(item["slug"]) for item in index))
+    page_id = f"wiki_page_{uuid.uuid4()}"
+    conn.execute(
+        """
+        INSERT INTO wiki_pages (
+            id, page_type, title, slug, summary, markdown_uri,
+            user_id, workspace_id, status, created_at, updated_at
+        ) VALUES (%s, 'concept', %s, %s, NULL, NULL, %s, %s, 'draft', now(), now())
+        """,
+        (page_id, title, slug, user_id, workspace_id),
+    )
+    return page_id, slug, "new"
+
+
+def upsert_concept_identity_aliases(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    aliases: list[str],
+) -> None:
+    for alias in aliases:
+        if not str(alias).strip():
+            continue
+        conn.execute(
+            """
+            INSERT INTO wiki_concept_identity_aliases (page_id, workspace_id, alias, origin)
+            VALUES (%s, %s, %s, 'extracted')
+            ON CONFLICT (page_id, alias) DO NOTHING
+            """,
+            (page_id, workspace_id, str(alias).strip()),
+        )
+
+
+def replace_extracted_concept_identity_aliases(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    page_id: str,
+    aliases: list[str],
+) -> None:
+    """Replace the extracted aggregate after complete contribution replay; keep verified aliases."""
+    conn.execute(
+        """
+        DELETE FROM wiki_concept_identity_aliases
+        WHERE page_id = %s AND workspace_id = %s AND origin = 'extracted'
+        """,
+        (page_id, workspace_id),
+    )
+    upsert_concept_identity_aliases(conn, workspace_id, page_id, aliases)
 
 
 def resolve_or_create_wiki_page_id(

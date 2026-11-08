@@ -12,6 +12,8 @@ PlanToolName = Literal[
     "rename_document",
     "create_document",
     "apply_document_edit",
+    # MCP 외부 AI Skill 정의 저장 단일 operation. LLM 계획 도구(ALLOWED_PLAN_TOOLS)에는 넣지 않는다.
+    "publish_skill_definition",
 ]
 OperationStatus = Literal[
     "pending",
@@ -60,7 +62,7 @@ class AgentPlanOperation:
     id: str
     sequence: int
     tool_name: PlanToolName
-    target_type: Literal["folder", "document"]
+    target_type: Literal["folder", "document", "skill"]
     target_id: str | None
     base_version: int | None
     source_parent_id: str | None
@@ -74,6 +76,8 @@ class AgentPlanOperation:
     # warning은 {"type", "message"}이며, 중복 의심 작업은 suggested_selected=False로 기본 선택에서 뺀다.
     warning: dict[str, str] | None = None
     suggested_selected: bool = True
+    # Read projection only; receipt-confirmed replay identity is never part of the operation hash.
+    existing_result: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,9 @@ ApprovedBy = Literal["user", "auto:user-setting"]
 
 
 # 부분 승인에서 고르지 않은 작업의 상태 코드. 실패가 아니므로 run 결과 판정에서 뺀다.
+# 문서를 영구 삭제해 실행하거나 되돌릴 수 없는 작업·run의 코드. document-svc가 사용자 문구로 바꾼다.
+DOCUMENT_PURGED_ERROR_CODE = "document_purged"
+ROLLBACK_DOCUMENT_PURGED = "rollback_document_purged"
 NOT_SELECTED_ERROR_CODE = "not_selected"
 # 한 번에 부분 승인할 수 있는 작업 수 상한(계약: operation_ids 1~20개).
 MAX_SELECTED_OPERATIONS = 20

@@ -120,7 +120,12 @@ reason: 이미 쌓임
             user_id="user-1",
             workspace_id="workspace-1",
             concept_update_decisions=[],
-            core_concepts=[{"slug": "back-electromotive-force", "title": "역기전력", "aliases": ["Back EMF"]}],
+            core_concepts=[{
+                "slug": "back-electromotive-force",
+                "title": "역기전력",
+                "aliases": ["Back EMF"],
+                "identity_aliases": ["Back EMF"],
+            }],
         )
 
     # 근거가 덧붙은 클러스터 중 이미 승격 후보인 slot-opening은 다시 묻지 않고, 세부 항목이 P개 미만인

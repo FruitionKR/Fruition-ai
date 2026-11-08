@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.modules.agent_run.application.ports import ToolGatewayError
+from app.modules.agent_run.application.rollback_agent_run import RollbackAgentRunUseCase
 from app.modules.agent_run.domain.entities import AgentRun, AgentRunContext
 from app.modules.agent_run.domain.plan import AgentPlanOperation, build_agent_plan
 from app.modules.agent_run.infrastructure.agent_worker import AgentWorker
@@ -483,7 +484,8 @@ def test_postgres_cancel_job_and_compensation_authorization(monkeypatch):
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
-def test_document_edit_rollback_registers_original_content_and_verifies_hash():
+@pytest.mark.parametrize("mcp_outcome", [None, "COMMITTED", "NO_CHANGE"])
+def test_document_edit_rollback_registers_original_content_and_verifies_hash(mcp_outcome):
     import hashlib
     def digest(value):
         return hashlib.sha256(value.encode()).hexdigest()
@@ -496,12 +498,30 @@ def test_document_edit_rollback_registers_original_content_and_verifies_hash():
     )
     plan = replace(build_agent_plan("plan", "run", 1, "편집", (operation,)), status="approved")
     journal, artifacts, gateway = Journal(plan), MagicMock(), MagicMock()
+    if mcp_outcome:
+        from app.modules.agent_run.domain.entities import McpExecutionAttempt, McpExecutionIdentity
+
+        journal.run = replace(journal.run, origin="MCP_CLIENT")
+        journal.load_mcp_execution_identity = lambda *_: McpExecutionIdentity("approval", "grant", "client", 1)
+        journal.get_or_create_mcp_attempt = lambda *_: McpExecutionAttempt("attempt", 1, "started", True)
+        journal.finish_mcp_attempt = MagicMock()
     current = {"id": "doc-0", "markdown": original, "content_hash": digest(original), "edit_revision": 3}
     gateway.read.side_effect = lambda *args, **kwargs: deepcopy(current)
 
     def execute(tool, *, arguments, idempotency_key, **kwargs):
         assert tool == "apply_document_edit"
         assert arguments["base_version"] == current["edit_revision"]
+        if mcp_outcome and not idempotency_key.startswith("agent-undo:"):
+            if mcp_outcome == "COMMITTED":
+                current.update(markdown=changed, content_hash=digest(changed), edit_revision=4)
+            return {
+                "receipt_id": "receipt", "approval_id": "approval", "operation_id": "edit",
+                "attempt_id": "attempt", "workspace_id": journal.run.workspace_id,
+                "user_id": journal.run.user_id, "grant_id": "grant", "client_id": "client",
+                "tool_name": tool, "outcome": mcp_outcome, "changed": mcp_outcome == "COMMITTED",
+                "resource_type": "DOCUMENT", "resource_id": "doc-0", "before_version": 3,
+                "after_version": current["edit_revision"], "committed_at": "2026-11-08T00:00:00Z",
+            }
         markdown = artifacts.register_artifact.call_args.kwargs["markdown"] if idempotency_key.startswith("agent-undo:") else changed
         assert arguments["content_hash"] == "sha256:" + digest(markdown)
         current.update(markdown=markdown, content_hash=digest(markdown), edit_revision=current["edit_revision"] + 1)
@@ -514,6 +534,11 @@ def test_document_edit_rollback_registers_original_content_and_verifies_hash():
     worker._rollback.execute("run")
     assert current["markdown"] == original
     assert journal.run.status == "cancelled"
+    if mcp_outcome == "NO_CHANGE":
+        artifacts.register_artifact.assert_not_called()
+        assert gateway.execute.call_count == 1
+        assert current["edit_revision"] == 3
+        return
     assert artifacts.register_artifact.call_args.kwargs["base_version"] == 4
     assert artifacts.register_artifact.call_args.kwargs["content_hash"] == "sha256:" + digest(original)
     assert current["edit_revision"] == 5
@@ -542,6 +567,127 @@ def test_unstarted_or_definitively_rejected_step_still_restores_previous_steps(f
     worker._rollback.execute("run")
     assert journal.run.status == "cancelled"
     assert workspace.state() == before
+
+
+def test_rollback_marks_never_sent_running_step_cancelled():
+    """복구 기록도 실행 기록도 없는 running 단계는 서버에 보내지 않은 단계다."""
+    repository = MagicMock()
+    repository.mark_run_status.return_value = True
+    repository.load_context.return_value = AgentRunContext(
+        replace(Journal(organization()).run, status="rolling_back"), None, ())
+    repository.load_undo_records.return_value = [
+        dict(id=None, status=None, operation_id="move-1", forward_status=None)
+    ]
+    RollbackAgentRunUseCase(repository, MagicMock(), MagicMock()).execute("run")
+    repository.mark_operation.assert_called_once_with("move-1", ("running",), "cancelled")
+    repository.finish_rollback.assert_called_once()
+    run_id, *error_code = repository.finish_rollback.call_args.args
+    assert run_id == "run" and not any(error_code)
+
+
+@pytest.fixture
+def postgres_repositories(monkeypatch):
+    """TEST_AGENT_DATABASE_URL을 지정하면 격리 스키마의 실제 저장소를 돌려준다."""
+    import os
+    from uuid import uuid4
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+    from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
+    from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
+    from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
+
+    dsn = os.environ.get("TEST_AGENT_DATABASE_URL")
+    if not dsn:
+        pytest.skip("격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
+    schema = "test_agent_op_state_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-csearch_path={schema}")
+
+    with connect() as conn:
+        conn.execute(Path(__file__).resolve().parents[3].joinpath("db/ai_schema.sql").read_text())
+    monkeypatch.setattr(database, "connect_ai", connect)
+    try:
+        yield PostgresAgentRunRepository(), PostgresAgentJobRepository(), connect
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def _start_rename_run(runs, jobs, connect):
+    """문서 두 개 이름을 바꾸는 승인된 run을 만들고 실행 job을 잡는다."""
+    operations = tuple(
+        AgentPlanOperation(f"rename-{i}", i + 1, "rename_document", "document", f"doc-{i}", 1, None, None,
+                           {"document_id": f"doc-{i}", "display_name": f"새 이름 {i}", "base_version": 1}, "이름 정리")
+        for i in range(2)
+    )
+    plan = replace(build_agent_plan("plan", "run", 1, "이름을 정리합니다.", operations), status="approved")
+    run = runs.create_with_planning_job(replace(Journal(plan).run, status="queued"), "planning-job")
+    runs.save_plan(run.id, replace(plan, status="awaiting_approval"))
+    run, proposed = runs.get_current_plan_for_user("ws", "user", "run")
+    runs.approve_and_enqueue(run, proposed, "approval", "execution-job")
+    with connect() as conn:
+        conn.execute("UPDATE agent_jobs SET status = 'completed' WHERE id = 'planning-job'")
+    return jobs.claim_next("test-worker")
+
+
+def _operation_states(connect):
+    with connect() as conn:
+        rows = conn.execute("SELECT id, status FROM agent_plan_operations ORDER BY sequence").fetchall()
+    return {row["id"]: row["status"] for row in rows}
+
+
+def test_postgres_cancel_while_preparing_second_step_cancels_that_step(postgres_repositories):
+    runs, jobs, connect = postgres_repositories
+    workspace = Workspace()
+    before = workspace.state()
+    worker_read = workspace.read
+
+    def cancel_while_snapshotting(tool, *, arguments, **kwargs):
+        # 첫 작업 저장 직후, 둘째 작업이 running인 채 복구용 이전 값을 읽는 동안 취소가 들어온다.
+        if tool == "get_document_metadata" and arguments["document_id"] == "doc-1":
+            assert _operation_states(connect)["rename-1"] == "running"
+            runs.cancel("ws", "user", "run")
+        return worker_read(tool, arguments=arguments, **kwargs)
+
+    workspace.read = cancel_while_snapshotting
+    worker = AgentWorker(jobs, runs, workspace, MagicMock())
+    worker.process(_start_rename_run(runs, jobs, connect))
+    assert runs.get_for_user("ws", "user", "run").status == "cancel_requested"
+    worker.process(jobs.claim_next("test-worker"))
+    workspace.read = worker_read
+    final = runs.get_for_user("ws", "user", "run")
+    assert final.status == "cancelled", final.error_code
+    assert _operation_states(connect) == {"rename-0": "rolled_back", "rename-1": "cancelled"}
+    assert workspace.state() == before
+    # 둘째 작업은 서버에 보낸 적이 없다.
+    assert [key for _, _, key in workspace.calls].count("agent:run:plan:rename-1") == 0
+
+
+def test_postgres_cancel_with_unknown_save_outcome_keeps_step_unresolved(postgres_repositories):
+    runs, jobs, connect = postgres_repositories
+    workspace = Workspace()
+    worker_execute = workspace.execute
+
+    def lose_response_then_cancel(tool, *, idempotency_key, **kwargs):
+        response = worker_execute(tool, idempotency_key=idempotency_key, **kwargs)
+        if idempotency_key == "agent:run:plan:rename-1":
+            # 서버는 저장했지만 응답을 받지 못한 채 취소가 들어온다.
+            runs.cancel("ws", "user", "run")
+            raise ToolGatewayError(503, True)
+        return response
+
+    workspace.execute = lose_response_then_cancel
+    worker = AgentWorker(jobs, runs, workspace, MagicMock())
+    worker.process(_start_rename_run(runs, jobs, connect))
+    worker.process(jobs.claim_next("test-worker"))
+    final = runs.get_for_user("ws", "user", "run")
+    assert final.status == "rollback_failed"
+    assert final.error_code == "rollback_forward_outcome_unknown:rename-1"
+    assert _operation_states(connect)["rename-1"] == "running"
 
 
 @pytest.mark.parametrize("crash", [False, True], ids=["before-delivery", "worker-hung"])

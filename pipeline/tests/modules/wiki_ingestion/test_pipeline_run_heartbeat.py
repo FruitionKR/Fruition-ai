@@ -55,13 +55,14 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
     run_cursor.fetchone.return_value = {
         "document_id": "doc-1",
         "workspace_id": "ws-1",
+        "user_id": "user-1",
     }
     active_cursor = Mock()
     active_cursor.fetchone.return_value = {"status": "running"}
     connection.execute.side_effect = [run_cursor, active_cursor, Mock(), Mock(), Mock()]
 
     with (
-        patch.object(database, "connect", return_value=connection),
+        patch.object(database, "connect", return_value=connection) as connect,
         patch.object(database, "concept_write_lock", return_value=nullcontext()),
         patch.object(
             database,
@@ -70,11 +71,18 @@ def test_finish_pipeline_run_writes_only_ai_owned_tables() -> None:
         ) as persist_outputs,
         patch.object(database, "_stored_manifest", side_effect=lambda manifest: manifest),
         patch.object(database, "_mark_derived_state_ingested") as mark_derived,
+        patch.object(database, "_active_manual_source_markdown", return_value=None),
+        patch.object(database, "prepare_publication") as prepare,
+        patch.object(database, "finalize_publication", side_effect=lambda _conn, **kwargs: {"result": kwargs["result"]}) as finalize,
+        patch.object(database, "record_pending_contributions"),
     ):
-        manifest = {"post_ingest": {"cluster_normalized": {}}}
+        manifest = {"operation_id": "op-1", "post_ingest": {"cluster_normalized": {}}}
         database.finish_pipeline_run("run-1", manifest, "sha256:expected")
 
     persist_outputs.assert_called_once()
+    prepare.assert_called_once_with("op-1", "ws-1", "user-1", "INGEST", database_connect=connect)
+    assert finalize.call_args.args == (connection,)
+    assert finalize.call_args.kwargs["user_id"] == "user-1"
     assert manifest["post_ingest"]["page_ids"] == ["page-1"]
     mark_derived.assert_called_once_with("doc-1", "sha256:expected")
     sql = " ".join(call.args[0] for call in connection.execute.call_args_list)
@@ -93,7 +101,7 @@ def test_finish_pipeline_run_records_pending_contributions_in_commit() -> None:
     connection.__enter__ = Mock(return_value=connection)
     connection.__exit__ = Mock(return_value=False)
     run_cursor = Mock()
-    run_cursor.fetchone.return_value = {"document_id": "doc-1", "workspace_id": "ws-1"}
+    run_cursor.fetchone.return_value = {"document_id": "doc-1", "workspace_id": "ws-1", "user_id": "user-1"}
     active_cursor = Mock()
     active_cursor.fetchone.return_value = {"status": "running"}
     connection.execute.side_effect = [run_cursor, active_cursor, Mock(), Mock(), Mock()]
@@ -111,10 +119,15 @@ def test_finish_pipeline_run_records_pending_contributions_in_commit() -> None:
         patch.object(database, "_stored_manifest", side_effect=lambda manifest: manifest),
         patch.object(database, "_mark_derived_state_ingested"),
         patch.object(database, "record_pending_contributions") as record,
+        patch.object(database, "prepare_publication"),
+        patch.object(database, "finalize_publication", side_effect=lambda _conn, **kwargs: {"result": kwargs["result"]}),
     ):
         database.finish_pipeline_run("run-1", {"operation_id": "op-1"}, "sha256:expected")
 
-    record.assert_called_once_with(connection, "ws-1", "op-1", "doc-1", artifacts)
+    record.assert_called_once_with(
+        connection, "ws-1", "op-1", "doc-1", artifacts,
+        publication_id=database.publication_id("op-1"),
+    )
 
 
 def test_derived_state_marks_only_the_expected_hash() -> None:
@@ -658,11 +671,16 @@ def test_finish_rejects_inactive_run_before_persisting_outputs(status):
     with (patch.object(database, "connect", return_value=connection),
           patch.object(database, "concept_write_lock", return_value=nullcontext()),
           patch.object(database, "_persist_wiki_outputs") as persist,
+          patch.object(database, "_active_manual_source_markdown", return_value=None),
+          patch.object(database, "prepare_publication") as prepare,
+          patch.object(database, "finalize_publication") as finalize,
           patch.object(database, "_mark_derived_state_ingested") as derived):
         with pytest.raises(PipelineRunCancelledError):
-            database.finish_pipeline_run("run", {})
+            database.finish_pipeline_run("run", {"operation_id": "op-1"})
     persist.assert_not_called()
     derived.assert_not_called()
+    prepare.assert_not_called()
+    finalize.assert_not_called()
 
 
 def _restore_connection(page_type: str) -> Mock:

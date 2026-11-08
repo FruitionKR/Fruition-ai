@@ -32,6 +32,15 @@ def entry_document_ids(entry_changes: list[dict[str, Any]]) -> list[str]:
 def replay_concept_entries(
     operation_artifacts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    entries, _supporting_operations = replay_concept_entries_with_support(
+        operation_artifacts
+    )
+    return entries
+
+
+def replay_concept_entries_with_support(
+    operation_artifacts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[str]]:
     """한 페이지의 기여를 적용 순서대로 받아 남은 하위 항목을 돌려준다.
 
     - add: 없으면 만들고, 있으면 근거만 더한다(이름·정의·상위 항목은 처음 추가한 기여를 따른다). 원래 개념 slug·별칭·태그는
@@ -45,7 +54,10 @@ def replay_concept_entries(
     """
     entries: dict[str, dict[str, Any]] = {}
     removed: dict[str, dict[str, Any]] = {}
+    supporters: dict[str, list[str]] = {}
+    removed_supporters: dict[str, list[str]] = {}
     for artifact in operation_artifacts:
+        operation_id = str(artifact.get("operation_id") or "")
         for change in artifact.get("entry_changes", []):
             if not isinstance(change, dict) or not change.get("entry_id"):
                 continue
@@ -53,6 +65,7 @@ def replay_concept_entries(
             parent_id = change.get("parent_entry_id") or None
             op = change.get("op")
             if op == "add":
+                is_new = entry_id not in entries
                 entry = entries.setdefault(
                     entry_id,
                     {
@@ -63,6 +76,10 @@ def replay_concept_entries(
                         **{field: [] for field in (*ENTRY_EVIDENCE_FIELDS, *ENTRY_IDENTITY_FIELDS)},
                     },
                 )
+                if is_new:
+                    supporters[entry_id] = []
+                if operation_id and operation_id not in supporters[entry_id]:
+                    supporters[entry_id].append(operation_id)
                 for field in ENTRY_EVIDENCE_FIELDS:
                     entry[field] = list(dict.fromkeys([*entry[field], *change.get(field, [])]))
                 entry["slugs"] = list(dict.fromkeys([*entry["slugs"], *([change["slug"]] if change.get("slug") else [])]))
@@ -74,14 +91,20 @@ def replay_concept_entries(
             elif op == "remove":
                 for removed_id in [item for item in entries if entry_id in _ancestors(entries, item)]:
                     removed[removed_id] = entries.pop(removed_id)
+                    removed_supporters[removed_id] = supporters.pop(removed_id)
             elif op == "revive" and entry_id in removed and entry_id not in entries:
                 pool = {**removed, **entries}
                 for revived in [item for item in removed if entry_id in _ancestors(pool, item)]:
                     entries[revived] = removed.pop(revived)
+                    supporters[revived] = removed_supporters.pop(revived)
     for entry_id, entry in entries.items():
         if entry["parent_entry_id"] not in entries or entry_id in _ancestors(entries, entry["parent_entry_id"]):
             entry["parent_entry_id"] = None
-    return list(entries.values())
+    return list(entries.values()), {
+        operation_id
+        for entry_id in entries
+        for operation_id in supporters[entry_id]
+    }
 
 
 def render_entry_index(

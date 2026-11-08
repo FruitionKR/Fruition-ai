@@ -1339,6 +1339,28 @@ class AnswerQueryUseCaseTest(unittest.TestCase):
         self.assertTrue(result.answer.content.startswith("제공된 근거에서 질문에 직접 답할 내용을 찾지 못했습니다."))
         self.assertNotIn("망원경 설정은 이 문서에 있습니다.", result.answer.content)
 
+    def test_evaluator_preserves_privacy_refusal_without_sources(self) -> None:
+        page = source_page("source:insurance", "가입내역 확인서")
+        content = "요청하신 발급번호는 개인정보 보호를 위해 AI에 전달되지 않아 답변해 드릴 수 없습니다."
+        use_case = AnswerQueryUseCase(
+            wiki_repository=InMemoryWikiRepository([page], []),
+            embedding_search=ScoreSearch({"가입내역 확인서": 0.9}),
+            text_search=EmptyTextSearch(),
+            answer_generator=RecordingAnswerGenerator(content),
+            markdown_reader=FakeMarkdownReader({
+                page.markdown_uri: "---\ndocument_id: doc_insurance\n---\n\n발급번호: [NUMERIC_PERSONAL_DATA] [B0001]",
+            }),
+            query_evaluator=FakeQueryEvaluator(QueryEvaluation(
+                route="unsupported", reason="개인정보 보호로 전달되지 않은 값입니다.",
+                unsupported_refusal_accuracy=1.0,
+            )),
+        )
+
+        result = use_case.execute("가입내역 확인서 발급번호 알려줘", workspace_id="ws_test")
+
+        self.assertEqual(result.answer.content, content)
+        self.assertEqual(result.evidence_snippets, [])
+
     def test_supported_internal_evidence_stays_internal_with_web_enabled(self) -> None:
         page = source_page("source:telescope", "Telescope Setup")
         web_search = FakeWebSearch([])
