@@ -39,7 +39,7 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 | `markdown_edit`·`markdown_create`·`workspace_workflow` | `skill_off` | 결과 메시지 끝에 "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."(`skill_mode=off`일 때만) |
 
 - 실행기가 찾을 수 있는 정보(열린 문서 내용, 설명에 맞는 문서, 폴더 위치)는 묻지 않는다. 되물은 뒤 사용자가 판단을 맡기면 원래 작업을 진행한다.
-- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`·`product_help`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
+- 첨부(`reference_document_ids`)가 없는 작업 탭에서 답변 갈래(`chat_answer`·`conversation_reply`)가 나오면 `clarify` + `chat_tab`으로 바꾼다.
 - 첨부가 있는 작업 탭은 답변 갈래를 그대로 실행한다. 첨부 UI가 작업 탭에만 있어 채팅 탭 안내로는 답을 얻을 수 없기 때문이다. 라우터가 그래도 `clarify`(`chat_tab` 또는 안내 종류 없음, 문서 동작 없음, Skill 후보 없음)를 고르면 `chat_answer`(`retrieval_source=workspace`)로 바꾼다. 응답·기록은 채팅 탭의 답변 갈래와 같다. 첨부를 읽지 못하면 답변하지 않고 읽기 실패 이유를 담은 `clarify`로 끝나며 `chat_tab`이 아니다.
 - Jev 라우팅도 같은 계약에서 선택지를 만든다(작업 탭 clarify 3종, reject 4종, `skill_mode=off`일 때 문서 작업의 `skill_off`). 첨부 턴은 LLM 라우터가 처리하므로 `attachment_target`은 Jev 선택지에 없다.
 
@@ -1649,7 +1649,10 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 ## Fruition 사용법 안내 (`product_help`)
 
 로그인한 사용자가 Fruition 자체의 사용법·화면 위치·설정을 물으면 기존 라우터가
-`product_help`를 선택한다. 일반 LLM과 Jev 모두 같은 계약을 사용하며 별도의 분류 호출은 없다.
+`product_help`를 선택한다. Agent에서는 일반 LLM과 Jev 모두 같은 계약을 사용한다.
+일반 채팅의 Query command는 짧은 의도 분류를 먼저 실행한다. Fruition 사용법은 번들 가이드로, 모호한 앱 지칭은 확인 질문으로 답하고, 그 외에는 기존 Query 검색을 그대로 실행한다. Agent가 이미 선택한 Query 및 품질 평가는 재분류하지 않는다.
+작업 탭에서도 `product_help`를 허용하며, 서버는 비변경 결과로 저장하고 프런트는 작업 탭에 안내 본문을 표시한다.
+Query 안내는 기존 Query 응답/저장 계약을 사용하므로 새 action 전송이 필요 없다.
 `retrieval_source=none`, `document_operation=none`, `persist=false`이고 Skill은 선택하지 않는다.
 응답 본문은 `message`에 들어간다. 클라이언트는 새 action을 답변으로 표시해야 한다.
 문서 변경, 검색, 승인 작업이나 음성 답변용 `chat_answer` 이벤트는 생성하지 않는다.
@@ -1663,7 +1666,7 @@ curl -X GET "$PIPELINE/internal/agent/runs/<value>?workspace_id=<value>&user_id=
 “이 앱”의 대상이 모호하면 `conversation_reply`에서 한 번 확인한다. 사용자 앱이나 문서를
 가리키면 기존 경로를 유지한다. 도움말 후속 질문은 문맥으로 이어가지만 새로운 작업 요청을
 도움말로 고정하지 않는다. 새 매뉴얼 작성·저장은 문서 작업이며 이미 제공된 도움말 답변을
-자료로 사용할 수 있다. 첨부 없는 작업 탭에서는 기존 답변 제한대로 `clarify/chat_tab`을 반환한다.
+자료로 사용할 수 있다. 작업 탭의 Fruition 사용법 질문에는 첨부 없이도 안내 본문을 반환한다.
 
 가이드에 없는 기능·정책·오류 원인은 추측하지 않고 확인할 수 없다고 안내한다.
 사용자의 화면·권한·작업 상태를 실제로 확인한 것처럼 답하거나 조작을 완료했다고 말하지 않는다.

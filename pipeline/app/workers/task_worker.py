@@ -21,6 +21,8 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener, TopicPartition
 
+from app.modules.query.infrastructure.product_help import build_query_product_help
+
 from app.core.failure_codes import INPUT_REJECTED, INTERNAL_ERROR, failure_code, stored_code
 from app.core.kafka_security import kafka_security_options
 from app.core.response_language import (
@@ -186,6 +188,9 @@ def _handle_query(
     if not isinstance(command["allow_web_search"], bool):
         raise ValueError("allow_web_search must be a boolean")
     result = build_answer_query_use_case(
+        product_help=build_query_product_help(
+            provider=str(command["provider"]).strip(), model=str(command["model"]).strip(),
+        ),
         provider=str(command["provider"]).strip(),
         model=str(command["model"]).strip(),
         allow_web_search=command["allow_web_search"],

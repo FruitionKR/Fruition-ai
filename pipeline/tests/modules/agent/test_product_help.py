@@ -21,9 +21,10 @@ from tests.modules.agent.test_jev_turn_router import ChoosingJev, RecordingRoute
 HELP_ROUTE = AgentTurnRoute(action="product_help", confidence=0.9, reason="Fruition UI question")
 
 
-def test_help_executes_without_search_edit_or_reference_reads():
+@pytest.mark.parametrize("mode,document_ids", [(None, ("unrelated-document",)), ("task", ()), ("task", ("unrelated-document",))])
+def test_help_executes_without_search_edit_or_reference_reads(mode, document_ids):
     request = AgentTurnRequest(
-        message="그 버튼은 어디 있어?", reference_document_ids=("unrelated-document",),
+        message="그 버튼은 어디 있어?", mode=mode, reference_document_ids=document_ids,
         conversation_context=AgentConversationContext(recent_messages=(
             ConversationMessage(role="assistant", content="PDF를 Markdown으로 변환하세요.", action="product_help"),
         )),
@@ -81,8 +82,8 @@ def test_task_tab_rules_also_apply_to_help():
     request = AgentTurnRequest(message="Fruition 사용법", mode="task")
     client = SequenceJsonClient([route_response("product_help")])
     route = ChatCompletionsTurnRouter(client, "system").route(request)
-    assert route.action == "clarify" and route.notice_kind == "chat_tab"
-    assert not any(option["action"] == "product_help" for option in route_options(request))
+    assert route.action == "product_help" and route.notice_kind is None
+    assert any(option["action"] == "product_help" for option in route_options(request))
     assert any(option["action"] == "product_help" for option in route_options(replace(request, reference_document_ids=("doc",))))
 
 

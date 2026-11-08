@@ -24,6 +24,12 @@ from tests.modules.query.test_answer_query import (
 )
 
 
+@pytest.fixture(autouse=True)
+def stub_product_help_builder():
+    with patch.object(task_worker, "build_query_product_help", return_value=None):
+        yield
+
+
 def test_event_uses_common_command_envelope() -> None:
     command = {
         "run_id": "run-1",
@@ -188,6 +194,7 @@ def test_query_command_passes_runtime_model_and_web_search_flag(
         result = task_worker._handle_query(command)
 
     build_use_case.assert_called_once_with(
+        product_help=None,
         provider="openai",
         model="gpt-5-nano",
         allow_web_search=allow_web_search,

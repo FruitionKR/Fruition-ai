@@ -1,7 +1,10 @@
 from typing import Protocol, runtime_checkable
 
 from app.modules.query.domain.entities import (
+    ConversationContext,
     ConversationMessage,
+    OutputLanguage,
+    ResponseLength,
     EvidenceSnippet,
     GeneratedAnswer,
     QueryContext,
@@ -132,4 +135,17 @@ class QueryEvaluatorGraphPort(Protocol):
 
 class QueryEventPublisherPort(Protocol):
     def publish(self, stage: str, message: str, data: dict[str, object] | None = None) -> None:
+        ...
+
+
+class ProductHelpPort(Protocol):
+    def reply(
+        self,
+        question: str,
+        *,
+        conversation_context: ConversationContext | None,
+        output_language: OutputLanguage | None,
+        response_length: ResponseLength | None,
+    ) -> str | None:
+        """Return guide help/subject clarification, or None to keep the normal query path."""
         ...
