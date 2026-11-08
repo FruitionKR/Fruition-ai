@@ -210,6 +210,7 @@ class PostgresMcpWikiDraftRepository:
                     policy_version=lint_limits.policy_version,
                     max_structural_changes=lint_limits.max_structural_changes,
                     max_deletes=lint_limits.max_deletes,
+                    infer_page_moves=True,
                 )
             except PreviewCalculationError as exc:
                 message = str(exc)
