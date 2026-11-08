@@ -21,7 +21,7 @@ from app.modules.skill.domain.entities import (
     SkillTool,
     SkillVersion,
 )
-from app.modules.skill.domain.exceptions import SkillRequestRejectedError
+from app.modules.skill.domain.exceptions import SkillRequestRejectedError, SkillVersionConflictError
 from app.modules.skill.domain.policy import (
     CAPABILITY_TOOLS,
     DOCUMENT_SKILL_CAPABILITIES,
@@ -834,3 +834,114 @@ def _reject_reference_literals(values: tuple[str, ...], literals: tuple[str, ...
     output = "\n".join(values).casefold()
     if any(literal.strip() and literal.strip().casefold() in output for literal in literals):
         raise ValueError("Generated Skill contains a fixed reference value.")
+
+
+def accept_external_skill_definition(
+    manager: ManageSkillUseCase,
+    *,
+    workspace_id: str,
+    user_id: str,
+    skill_id: str | None,
+    expected_version: int | None,
+    scope_type: SkillScopeType | None,
+    name: str,
+    description: str,
+    instructions_markdown: str,
+    capabilities: tuple[SkillCapability, ...] | None,
+    targets: tuple[SkillTarget, ...] | None = None,
+    result_mode: SkillResultMode | None = None,
+    requires_source: bool | None = None,
+    publish: bool = False,
+) -> SkillAuthoringResult:
+    """외부 MCP 클라이언트 AI가 작성한 Skill 정의를 LLM 없이 검증하고, publish면 저장한다.
+
+    게시·수정(publish/update)과 같은 결정적 규칙(이름·길이·안전 검사·capabilities·targets·result_mode·
+    requires_source)을 쓰고 LLM 검토·크레딧 예약은 하지 않는다. skill_id가 없으면 생성, 있으면 expected_version
+    기준 수정이다. 제안 시점(publish=False)과 웹 승인 뒤 실행 시점(publish=True)에 같은 함수를 불러 같은 결과를 얻는다.
+    """
+    if (skill_id is None) != (expected_version is None):
+        raise ValueError("skill_id and expected_version must be sent together.")
+    previous = None
+    capabilities_sent = capabilities is not None
+    if skill_id is None:
+        if scope_type not in ("personal", "team"):
+            raise ValueError("scope_type is required to create a Skill.")
+        manager.require_manage_scope(workspace_id, user_id, scope_type)
+    else:
+        skill = manager.get_manageable(workspace_id, user_id, skill_id)
+        if scope_type is not None and scope_type != skill.scope_type:
+            raise ValueError("scope_type cannot be changed.")
+        scope_type = skill.scope_type
+        manager.require_manage_scope(workspace_id, user_id, scope_type)
+        previous = skill.latest_version or skill.enabled_version
+        if previous is None or previous.version != expected_version:
+            raise SkillVersionConflictError()
+    try:
+        name = validate_skill_name(name)
+    except ValueError as exc:
+        raise SkillRequestRejectedError("invalid_name", str(exc)) from exc
+    description = description.strip()
+    if not description or len(description) > MAX_DESCRIPTION_CHARS:
+        raise ValueError(f"description must contain 1-{MAX_DESCRIPTION_CHARS} characters.")
+    instructions = instructions_markdown.strip()
+    if not instructions or len(instructions) > MAX_INSTRUCTIONS_CHARS:
+        raise SkillRequestRejectedError(
+            "invalid_instruction_length", f"instruction must contain 1-{MAX_INSTRUCTIONS_CHARS} characters."
+        )
+    if len(instructions.splitlines()) > MAX_INSTRUCTIONS_LINES:
+        raise SkillRequestRejectedError(
+            "invalid_instruction_length", f"Skill instructions support at most {MAX_INSTRUCTIONS_LINES} lines."
+        )
+    if capabilities is not None:
+        allowed_tools = _published_allowed_tools(capabilities, ())
+    elif previous is not None:
+        capabilities = previous.capabilities
+        allowed_tools = previous.allowed_tools or canonical_allowed_tools(capabilities)
+    else:
+        raise SkillRequestRejectedError("invalid_capabilities", "capabilities must not be empty.")
+    proposal = SkillAuthoringProposal(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        scope_type=scope_type,
+        name=name,
+        description=description,
+        instructions_markdown=instructions,
+        capabilities=capabilities,
+        allowed_tools=allowed_tools,
+    )
+    issues = (
+        _tag_issues(inspect_skill_instructions(name), "name")
+        + _tag_issues(inspect_skill_instructions(description), "description")
+        + _tag_issues(inspect_skill_instructions(instructions), "instruction")
+        + _tag_issues(inspect_skill_output_links(instructions), "instruction")
+    )
+    if issues:
+        return SkillAuthoringResult(status="blocked", proposal=proposal, issues=issues)
+    if previous is None:
+        targets, result_mode = validate_execution_options(capabilities, targets, result_mode)
+        resolved_source = resolve_requires_source(capabilities, result_mode, instructions, explicit=requires_source)
+    else:
+        targets, result_mode = _updated_execution_options(
+            previous, capabilities, targets, result_mode, capabilities_changed=capabilities_sent
+        )
+        resolved_source = _updated_requires_source(previous, proposal, result_mode, requires_source)
+    proposal = replace(proposal, requires_source=resolved_source)
+    if not publish:
+        return SkillAuthoringResult(status="proposal_ready", proposal=proposal)
+    common = dict(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        name=name,
+        description=description,
+        instructions_markdown=instructions,
+        capabilities=capabilities,
+        allowed_tools=allowed_tools,
+        targets=targets,
+        result_mode=result_mode,
+        requires_source=resolved_source,
+    )
+    if skill_id is None:
+        saved = manager.create_published(scope_type=scope_type, slug=name, **common)
+    else:
+        saved = manager.update_published(skill_id=skill_id, expected_version=expected_version, **common)
+    return SkillAuthoringResult(status="published", proposal=proposal, skill=saved)

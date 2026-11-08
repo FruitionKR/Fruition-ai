@@ -12,6 +12,15 @@ class SkillDisabledError(ValueError):
         super().__init__(f"Skill is disabled: {skill_id}")
 
 
+class SkillVersionConflictError(ValueError):
+    """외부 정의 수정의 expected_version이 현재 최신 버전과 다르다."""
+
+    code = "SKILL_VERSION_CONFLICT"
+
+    def __init__(self) -> None:
+        super().__init__("Skill version changed and must be reviewed again.")
+
+
 class ReferenceDocumentTooLargeError(Exception):
     code = "REFERENCE_DOCUMENT_TOO_LARGE"
 

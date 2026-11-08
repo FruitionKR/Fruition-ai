@@ -10,6 +10,7 @@ from app.core.pipeline_control import PipelineRunCancelledError
 
 from app.modules.skill.application.ports import ManageSkillRepositoryPort, SkillRepositoryPort
 from app.modules.skill.domain.entities import Skill, SkillVersion
+from app.modules.skill.domain.exceptions import SkillVersionConflictError
 from app.modules.skill.domain.policy import effective_targets, legacy_requires_source
 from app.modules.skill.infrastructure.workspace_authorization import can_manage_team_skills, get_workspace_role
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
@@ -182,7 +183,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             raise ValueError("Published Skill could not be loaded.")
         return saved
 
-    def save_published_version(self, skill: Skill, version: SkillVersion) -> Skill:
+    def save_published_version(
+        self, skill: Skill, version: SkillVersion, expected_version: int | None = None
+    ) -> Skill:
         team_manager = _can_manage_team(skill.workspace_id, version.created_by or "")
         with database.connect_ai() as conn:
             self._lock_parent(conn, version.created_by or "")
@@ -197,6 +200,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             before = (conn.execute("SELECT to_jsonb(s) AS snapshot FROM skills s WHERE id = %s",
                                    (skill.id,)).fetchone()["snapshot"] if self._parent_run_id is not None else None)
             version = _with_next_version(conn, version)
+            # 행 잠금 안에서 비교하므로 승인 사이에 다른 수정이 끼면 덮어쓰지 않는다.
+            if expected_version is not None and version.version != expected_version + 1:
+                raise SkillVersionConflictError()
             _lock_slug_scope(conn, skill, version.name)
             _ensure_slug_available(conn, skill, version.name, exclude_skill_id=skill.id)
             _insert_version(conn, version)
