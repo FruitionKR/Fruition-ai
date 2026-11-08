@@ -5,6 +5,7 @@ from functools import lru_cache
 
 import httpx
 
+from app.core.failure_codes import AiServiceStartingError
 from app.modules.query.application.ports import EmbeddingSearchPort
 from app.modules.query.domain.entities import SemanticQueryEmbedding
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
@@ -92,7 +93,7 @@ class StoredWikiPageEmbeddingSearch(EmbeddingSearchPort):
             return scores
         try:
             vectors = self._embedding_model.embed([documents[index] for index in indexes])
-        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+        except (httpx.TransportError, httpx.HTTPStatusError, AiServiceStartingError) as exc:
             # 즉석 임베딩은 저장 벡터가 아직 없는 문서를 메우는 보조 신호다. 임베딩 서버가 늦거나 닿지 않거나
             # 재시도 뒤에도 5xx(재기동·예열 중 503 등)면 질의 전체를 실패시키지 않고, 상한을 넘는 긴 문서처럼
             # 임베딩 점수 0으로 두어 BM25·이름 일치에 맡긴다. 4xx는 요청 오류라 그대로 올린다.

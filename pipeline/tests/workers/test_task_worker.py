@@ -670,7 +670,8 @@ def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
             "checkpoint_pipeline_run",
             side_effect=lambda *_args: calls.append("checkpoint"),
         ),
-        patch.object(task_worker.database, "update_pipeline_run_post_ingest"),
+        patch.object(task_worker.database, "update_pipeline_run_post_ingest",
+                     side_effect=lambda _run_id, values: calls.append("search_ready") if "embedding" in values else None),
         patch.object(task_worker.database, "update_pipeline_run_cluster_contribution"),
         patch.object(
             task_worker,
@@ -707,6 +708,7 @@ def test_post_ingest_embeds_ingest_pages_alongside_cluster_judgment(
     assert persist.call_args.args == ("document-1", "workspace-1", artifact, "ingest-run-1")
     assert calls.index("cluster") < calls.index("persist")
     assert calls.index("persist") < calls.index("quality")
+    assert calls.index("search_ready") < calls.index("quality")
     if runs_embedding:
         # 편입이 저장한 페이지만 임베딩한다. 클러스터 반영은 위키 페이지를 바꾸지 않는다.
         assert calls.index(("embedding", ("page-1",))) < calls.index("quality")

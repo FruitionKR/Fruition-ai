@@ -270,7 +270,9 @@ class StoredWikiPageEmbeddingSearchTest(unittest.TestCase):
     def test_online_embedding_failure_scores_only_stored_vectors(self) -> None:
         stored = "저장 벡터가 있는 페이지"
         stored_hash = hashlib.sha256(stored.encode("utf-8")).hexdigest()
-        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("down"), _status_error(503)):
+        from app.core.failure_codes import AiServiceStartingError
+
+        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("down"), _status_error(503), AiServiceStartingError("loading")):
             search = StoredWikiPageEmbeddingSearch(embedding_model=FailingDocumentEmbeddingModel(error))
 
             with patch(

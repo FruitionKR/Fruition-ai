@@ -21,12 +21,19 @@ ingest 결과 이벤트(`kind=document`·`chat_wiki` 등 ingest worker 발행)�
 
 `kind=post_ingest` 결과 이벤트는 원본 command(`request`)를 싣지 않는 대신, 어느 편입의 후속인지 알 수 있게 부모 편입 run id를 최상위 `ingest_run_id`에 담습니다.
 
+검색 인덱스 생성이 끝나면 후속 품질 평가 전에 부모 pipeline run의 `manifest.post_ingest.embedding`에
+`target_count`, `embedded_count`, `skipped_count`, `failed_count`를 기록합니다. Document는 이 상태를 조회해
+문서를 `completed`로 바꾸고 편입 완료 알림을 냅니다. 기존 완료 결과의 `post_ingest.result.embedding`도 같은 의미입니다.
+`quality_status=needs_review`만으로 검색 준비 실패로 판단하지 않습니다. 실패 없이 대상 전체를 처리한 임베딩 결과가
+없고 post-ingest가 종료됐다면 검색 준비 실패입니다.
+
 `ai.task.event`의 실패 이벤트 `error`, `agent_runs.error_code`, `pipeline_runs.error`, ingest·post_ingest 실패 payload의 `summary`는 예외 원문이 아니라 코드만 담습니다. 사용자에게 보이는 문구는 Document가 코드별로 정하며, 예외 원문은 AI 로그에만 남습니다.
 
 | 코드 | 의미 |
 |---|---|
 | `provider_rate_limited` | 모델 공급사 429·rate limit |
 | `provider_unavailable` | 공급사 5xx·시간 초과·연결 오류·과부하 |
+| `ai_service_starting` | 내부 임베딩 서버가 모델을 적재 중이라고 명시적으로 응답함. 503의 `detail.code`로 구분하며, 연결 오류·일반 5xx·적재 실패·기동 5분 초과에는 사용하지 않음 |
 | `input_rejected` | 검증 실패·`ValueError` 등 처리할 수 없는 입력 |
 | `deadline_exceeded` | 호출자가 기다리는 시간 초과 |
 | `cancelled` | 취소 요청·대상 비활성화·파기된 범위 |

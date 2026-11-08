@@ -5,6 +5,7 @@ import os
 
 import httpx
 
+from app.core.failure_codes import AI_SERVICE_STARTING, AiServiceStartingError
 from app.core.pipeline_control import DeadlineExceededError, remaining_seconds
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 
@@ -27,6 +28,7 @@ class RemoteEmbeddingModel(EmbeddingModelPort):
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         attempts: int = 2,
         transport: httpx.BaseTransport | None = None,
+        startup_status_url: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._timeout_seconds = timeout_seconds
@@ -36,6 +38,11 @@ class RemoteEmbeddingModel(EmbeddingModelPort):
             headers={"X-Internal-Token": token},
             timeout=timeout_seconds,
             transport=transport,
+        )
+        # 준비되지 않은 Pod는 일반 Service에서 빠진다. 별도 내부 상태 경로로 기동 여부만 확인한다.
+        self._startup_client = (
+            httpx.Client(base_url=startup_status_url.rstrip("/"), timeout=2, transport=transport)
+            if startup_status_url else None
         )
 
     @classmethod
@@ -48,6 +55,7 @@ class RemoteEmbeddingModel(EmbeddingModelPort):
             token,
             model_name=os.environ.get("EMBEDDING_MODEL_NAME") or DEFAULT_MODEL_NAME,
             timeout_seconds=timeout_seconds_from_env(),
+            startup_status_url=os.environ.get("EMBEDDING_STARTUP_STATUS_URL"),
         )
 
     @property
@@ -84,16 +92,37 @@ class RemoteEmbeddingModel(EmbeddingModelPort):
             try:
                 response = self._client.post("/embeddings", json={"texts": texts}, timeout=timeout)
                 if response.status_code < 500 or attempt == self._attempts:
+                    if response.status_code == 503:
+                        try:
+                            body = response.json()
+                        except ValueError:
+                            body = None
+                        detail = body.get("detail") if isinstance(body, dict) else None
+                        if isinstance(detail, dict) and detail.get("code") == AI_SERVICE_STARTING:
+                            raise AiServiceStartingError("Embedding service is starting.")
                     response.raise_for_status()
                     return response.json()
             except httpx.ConnectError:
                 if attempt == self._attempts:
+                    self._check_startup(remaining_seconds())
                     raise
             except httpx.TimeoutException:
                 if remaining is not None and remaining_seconds() <= 0:
                     raise DeadlineExceededError("Request deadline exceeded.") from None
                 raise
         raise AssertionError("unreachable")
+
+    def _check_startup(self, remaining: float | None) -> None:
+        if self._startup_client is None or (remaining is not None and remaining <= 0):
+            return
+        try:
+            response = self._startup_client.get("/health", timeout=min(2, remaining) if remaining is not None else 2)
+            body = response.json()
+        except (httpx.HTTPError, ValueError):
+            return
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if response.status_code == 503 and isinstance(detail, dict) and detail.get("code") == AI_SERVICE_STARTING:
+            raise AiServiceStartingError("Embedding service is starting.")
 
 
 def timeout_seconds_from_env() -> float:

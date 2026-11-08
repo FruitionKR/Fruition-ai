@@ -968,6 +968,12 @@ def _handle_post_ingest(command: dict[str, Any]) -> dict[str, Any]:
         if embedding_future is not None and embedding_error is not None:
             raise embedding_error
 
+        # 화면의 편입 완료는 검색 준비 완료를 뜻한다. 후속 품질 검토가 끝나기 전에도
+        # 부모 run을 조회하는 document가 인덱스 준비를 확인할 수 있게 한다.
+        database.update_pipeline_run_post_ingest(
+            str(command["ingest_run_id"]), {"embedding": state["embedding"]}
+        )
+
         evaluations = _run_post_ingest_wiki_quality_evaluation(command, state)
         quality_required = bool(command.get("quality_required", True))
         generation_ready = (
