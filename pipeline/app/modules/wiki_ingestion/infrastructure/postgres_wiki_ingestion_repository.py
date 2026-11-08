@@ -2932,7 +2932,11 @@ def _plan_page_moves(
     page_rows, _entry_rows, heads, head_pages = (
         _part_of_heads(conn, workspace_id) if candidate_heads is None else candidate_heads
     )
-    vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
+    vectors = _stored_concept_vectors(
+        conn, workspace_id, embedding_model.model_name,
+        page_ids=None if candidate_heads is None else [str(row["id"]) for row in page_rows],
+        entry_ids=None if candidate_heads is None else [key for key in heads if head_pages[key][1] is not None],
+    )
     fresh = [key for key in heads if head_pages[key][0] in changed and (head_pages[key][1] is None or key not in vectors)]
     try:
         embedded = cached_embeddings(embedding_model, [concept_text(heads[key]) for key in fresh])
@@ -3088,7 +3092,10 @@ def _part_of_heads_from_rows(page_rows, entry_rows):
     return page_rows, entry_rows, heads, head_pages
 
 
-def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embedding_model: str) -> dict[str, array]:
+def _stored_concept_vectors(
+    conn: psycopg.Connection, workspace_id: str, embedding_model: str,
+    *, page_ids: list[str] | None = None, entry_ids: list[str] | None = None,
+) -> dict[str, array]:
     """활성 개념 페이지(slug)와 하위 항목(entry_id)의 저장된 벡터. 아직 임베딩하지 않은 것은 빠진다."""
     rows = conn.execute(
         """
@@ -3097,6 +3104,7 @@ def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embeddi
         JOIN wiki_pages page ON page.id = embedding.page_id
         WHERE page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
           AND embedding.embedding_model = %s AND embedding.status = 'completed'
+          AND (%s::text[] IS NULL OR page.id = ANY(%s))
         UNION ALL
         SELECT DISTINCT ON (unit.entry_id) unit.entry_id, vector.embedding_vector
         FROM wiki_embedding_units unit
@@ -3104,8 +3112,11 @@ def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embeddi
         JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
         WHERE page.workspace_id = %s AND page.status = 'active' AND unit.unit_type = 'sub_entry'
           AND vector.embedding_model = %s AND vector.status = 'completed'
+          AND (%s::text[] IS NULL OR page.id = ANY(%s))
+          AND (%s::text[] IS NULL OR unit.entry_id = ANY(%s))
         """,
-        (workspace_id, embedding_model, workspace_id, embedding_model),
+        (workspace_id, embedding_model, page_ids, page_ids,
+         workspace_id, embedding_model, page_ids, page_ids, entry_ids, entry_ids),
     ).fetchall()
     return {str(row["key"]): array("f", row["embedding_vector"]) for row in rows}
 
