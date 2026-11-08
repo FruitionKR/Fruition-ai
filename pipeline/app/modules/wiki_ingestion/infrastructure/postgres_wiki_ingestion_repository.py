@@ -938,6 +938,8 @@ AI_DB_REQUIRED_TABLES = (
     "mcp_wiki_window_submissions",
     "mcp_wiki_drafts",
     "mcp_wiki_draft_idempotency",
+    "mcp_pdf_conversions",
+    "mcp_pdf_conversion_submissions",
     *AGENT_REQUIRED_TABLES,
 )
 

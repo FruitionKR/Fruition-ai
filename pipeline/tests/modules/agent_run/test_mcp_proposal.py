@@ -423,13 +423,28 @@ def _source_bound_pdf_plan(*, drop: str | None = None) -> dict[str, object]:
 def test_mcp_plan_keeps_pdf_source_binding_in_approved_arguments() -> None:
     body = _source_bound_pdf_plan()
     body["request_hash"] = mcp_proposal_request_hash(command(body))
-    repository = MemoryRepository()
+    repository, checked = MemoryRepository(), []
 
-    CreateMcpProposalUseCase(repository, ContextReader()).execute(command(body))
+    CreateMcpProposalUseCase(
+        repository, ContextReader(), finalized_conversion=lambda *values: checked.append(values) or True
+    ).execute(command(body))
 
     arguments = repository.created[0]["plan"].operations[0].arguments
     assert arguments["source_document_id"] == "doc_pdf"
     assert arguments["source_content_hash"] == "sha256:" + "a" * 64
+    assert checked == [("workspace-1", checked[0][1], "doc_pdf", "sha256:" + "a" * 64, arguments["content_hash"])]
+
+
+def test_mcp_plan_rejects_pdf_source_binding_that_is_not_a_finalized_conversion() -> None:
+    body = _source_bound_pdf_plan()
+    body["request_hash"] = mcp_proposal_request_hash(command(body))
+    repository = MemoryRepository()
+
+    with pytest.raises(McpProposalError, match="finalized conversion"):
+        CreateMcpProposalUseCase(
+            repository, ContextReader(), finalized_conversion=lambda *values: False
+        ).execute(command(body))
+    assert repository.created == []
 
 
 @pytest.mark.parametrize("drop", ["source_document_id", "source_content_hash"])

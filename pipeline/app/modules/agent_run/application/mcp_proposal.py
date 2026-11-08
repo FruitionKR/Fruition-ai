@@ -74,14 +74,22 @@ def mcp_proposal_request_hash(command: McpProposalCommand) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def _finalized_conversion(*args: str) -> bool:
+    from app.modules.mcp_pdf_conversion.service import finalized_conversion_exists
+    return finalized_conversion_exists(*args)
+
+
 class CreateMcpProposalUseCase:
     def __init__(
         self,
         repository: McpProposalRepositoryPort,
         context_reader: McpDocumentEditContextPort,
+        finalized_conversion=None,
     ) -> None:
         self._repository = repository
         self._context_reader = context_reader
+        # 원본 연결 create_document가 이 사용자의 MCP PDF 변환 조립 결과 그대로인지 확인한다.
+        self._finalized_conversion = finalized_conversion or _finalized_conversion
 
     def execute(self, command: McpProposalCommand) -> McpProposalResult:
         if command.actor.tool_name == "propose_plan":
@@ -301,7 +309,16 @@ class CreateMcpProposalUseCase:
                 raise McpProposalError(400, "INVALID_INPUT", "Artifact content_hash does not match raw Markdown.")
             preview_json = None
             if operation["tool_name"] == "create_document":
-                markdown = sanitize_ai_markdown(raw, keep_urls=set())
+                if "source_document_id" in arguments:
+                    # PDF 변환본은 서버가 기존 조립·sanitize로 만든 결과만 받는다. 클라이언트가 쓴 Markdown은 받지 않는다.
+                    if not self._finalized_conversion(
+                        command.actor.workspace_id, command.actor.user_id, str(arguments["source_document_id"]),
+                        str(arguments["source_content_hash"]), raw_hash,
+                    ):
+                        raise McpProposalError(400, "INVALID_INPUT", "PDF conversion artifact is not a finalized conversion.")
+                    markdown = raw
+                else:
+                    markdown = sanitize_ai_markdown(raw, keep_urls=set())
                 if markdown != raw:
                     raise McpProposalError(400, "INVALID_INPUT", "Artifact Markdown violates the storage contract.")
                 document_id = base_version = target = None

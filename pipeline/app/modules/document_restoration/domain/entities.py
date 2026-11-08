@@ -3,6 +3,8 @@ from enum import Enum
 
 class RestorationMode(str, Enum):
     CROP_FIRST = "crop-first"
+    # MCP 외부 AI 변환: AnyDoc 전처리(PREPARE_CROP_FIRST)까지만 한다. 복원·그림 설명은 외부 AI, 조립은 finalize가 한다.
+    CROP_FIRST_PREPARE = "crop-first-prepare"
     DOCLING_ONLY = "docling-only"
     SELECTIVE_REPAIR = "selective-repair"
     FULL_REPAIR = "full-repair"

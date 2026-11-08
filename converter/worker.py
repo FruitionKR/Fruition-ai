@@ -40,9 +40,20 @@ SOURCE_KEY = re.compile(r"sources/documents/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/or
 SAFE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
+# MCP 외부 AI 변환(restoration=external)의 batch run_id. document가 첫 batch를 발행하고 이후 batch는 worker가 잇는다.
+EXTERNAL_RUN_ID = re.compile(r"mcpconvert:([0-9a-f-]{36}):(\d+)")
+
+
 def parse_command(command: dict[str, Any]) -> dict[str, Any]:
     """command를 검증한다. 잘못된 값은 ValueError이며 input_rejected로 알린다."""
-    for field in ("run_id", "parent_run_id", "workspace_id", "user_id", "document_id", "source_key", "provider", "model"):
+    external = command.get("restoration", "internal")
+    if external not in {"internal", "external"}:
+        raise ValueError("restoration must be internal or external")
+    external = external == "external"
+    # 외부 변환은 공급사를 부르지 않으므로 provider·model이 없다.
+    required = ("run_id", "parent_run_id", "workspace_id", "user_id", "document_id", "source_key",
+                *(() if external else ("provider", "model")))
+    for field in required:
         if not isinstance(command.get(field), str) or not command[field].strip():
             raise ValueError(f"convert command requires: {field}")
     if command.get("kind") != "convert_batch":
@@ -60,7 +71,62 @@ def parse_command(command: dict[str, Any]) -> dict[str, Any]:
     # 선택 필드다. 이전 document-svc는 보내지 않으므로 없으면 false다.
     if type(command.get("describe_figures", False)) is not bool:
         raise ValueError("describe_figures must be a boolean")
+    if external:
+        match = EXTERNAL_RUN_ID.fullmatch(command["run_id"])
+        if (match is None or int(match.group(2)) != start or command.get("conversion_id") != match.group(1)
+                or command["parent_run_id"] != f"mcpconvert:{match.group(1)}"):
+            raise ValueError("external conversion run identity is invalid")
     return command
+
+
+def external_prefix(command: dict[str, Any], start: int) -> str:
+    return f"tmp/convert/mcp/{command['workspace_id']}/{command['conversion_id']}/{start}/"
+
+
+def next_external_command(command: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+    """외부 변환 batch가 끝났고 남은 쪽이 있으면 다음 batch command다. 재전달·재생 때도 같은 값이라 멱등이다."""
+    if command.get("restoration") != "external" or result.get("page_end", 0) >= result.get("total_pages", 0):
+        return None
+    start = int(result["page_end"])
+    return {**command, "run_id": f"mcpconvert:{command['conversion_id']}:{start}", "start_page": start}
+
+
+def prepare_external_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[str, Any]:
+    """AnyDoc 전처리 결과와 외부 AI 창을 tmp/convert/mcp/ 아래에 올린다. PDF 사본은 올리지 않는다."""
+    storage, bucket = client(), bucket_name()
+    size = _source_size(storage, bucket, command)
+    stream = converter_app.StorageRangeReader(storage, bucket, command["source_key"], size, cancelled)
+
+    def upload(start: int, end: int, output_dir, windows: int) -> dict[str, Any]:
+        prefix = external_prefix(command, start)
+        for path in sorted(output_dir.rglob("*")):
+            if path.is_file() and path.suffix.lower() != ".pdf":
+                data = path.read_bytes()
+                storage.put_object(bucket, prefix + path.relative_to(output_dir).as_posix(), BytesIO(data),
+                                   length=len(data))
+        return {"page_start": start + 1, "page_end": end, "prefix": prefix, "window_count": windows}
+
+    try:
+        reader, total = converter_app.open_pdf(stream)
+        start = command["start_page"]
+        if start >= total:
+            raise ValueError("start_page is beyond the last page")
+        end = min(start + command["page_count"], total)
+        segments = converter_app.prepare_pages(reader, start, end, cancelled,
+                                               command.get("describe_figures", False), upload)
+    finally:
+        stream.close()
+    return {"conversion_id": command["conversion_id"], "page_start": start + 1, "page_end": end,
+            "total_pages": total, "segments": segments}
+
+
+def _source_size(storage: Any, bucket: str, command: dict[str, Any]) -> int:
+    try:
+        return storage.stat_object(bucket, command["source_key"]).size
+    except S3Error as error:
+        if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+            raise ValueError("source object does not exist") from error
+        raise
 
 
 def result_key(command: dict[str, Any]) -> str:
@@ -72,13 +138,10 @@ def convert_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[s
     command = parse_command(command)
     if missing := converter_app.missing_commands():
         raise RuntimeError(f"Missing converter commands: {', '.join(missing)}")
+    if command.get("restoration") == "external":
+        return prepare_external_batch(command, cancelled)
     storage, bucket = client(), bucket_name()
-    try:
-        size = storage.stat_object(bucket, command["source_key"]).size
-    except S3Error as error:
-        if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
-            raise ValueError("source object does not exist") from error
-        raise
+    size = _source_size(storage, bucket, command)
     stream = converter_app.StorageRangeReader(storage, bucket, command["source_key"], size, cancelled)
     try:
         reader, total = converter_app.open_pdf(stream)
@@ -220,6 +283,9 @@ async def consume() -> None:
                     try:
                         result = await asyncio.to_thread(run_command, command)
                         event = _event(command, "succeeded", payload=result)
+                        # 다음 batch를 결과 이벤트·커밋보다 먼저 보낸다. 커밋 전에 죽으면 재전달이 같은 command를 다시 보낸다.
+                        if follow := next_external_command(command, result):
+                            await producer.send_and_wait(COMMAND_TOPIC, follow, key=follow["run_id"].encode("utf-8"))
                     except journal.TaskAlreadyExecutingError:
                         # 리밸런스로 재전달된 실행 중 run이다. 해당 offset으로 되돌아가 원래 worker가 끝나기를 기다린다.
                         logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", command.get("run_id"), message.offset)
