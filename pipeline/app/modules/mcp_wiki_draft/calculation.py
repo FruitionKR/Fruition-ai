@@ -40,6 +40,10 @@ class PreviewCalculationError(RuntimeError):
     pass
 
 
+class SemanticMergeError(PreviewCalculationError):
+    pass
+
+
 def _hash(value: object) -> str:
     return "sha256:" + hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -102,6 +106,17 @@ def _allocate_identities(
     occupied = {str(item["slug"]) for item in index}
     allocated: dict[str, dict[str, str]] = {}
     for concept in sorted(concepts, key=lambda item: (name_key(item["concept_name"]), item["concept_name"])):
+        merge_target = concept.get("merge_target_page_id")
+        if merge_target is not None:
+            matches = [item for item in index if str(item["id"]) == merge_target and item["status"] == "active"]
+            if len(matches) != 1:
+                raise SemanticMergeError("semantic merge target is no longer an active workspace concept")
+            target = matches[0]
+            allocated[name_key(concept["concept_name"])] = {
+                "page_id": str(target["id"]), "slug": str(target["slug"]),
+                "prior_status": "active", "title": str(target["title"]),
+            }
+            continue
         incoming = {"title": concept["concept_name"], "identity_aliases": []}
         active = [
             item for item in index
@@ -138,6 +153,11 @@ def _combined_concepts(submissions: list[dict[str, Any]]) -> list[dict[str, Any]
             target = combined.setdefault(key, {
                 "concept_name": concept["concept_name"], "statements": [], "links": [],
             })
+            merge_target = concept.get("merge_target_page_id")
+            if merge_target is not None:
+                if target.get("merge_target_page_id", merge_target) != merge_target:
+                    raise SemanticMergeError("conflicting semantic merge targets for the same concept")
+                target["merge_target_page_id"] = merge_target
             statement_ids = {
                 item["statement_id"]: f"{window}:{item['statement_id']}"
                 for item in concept["statements"]
@@ -187,7 +207,7 @@ def _normalized(
             source_key_points.append({"text": statement["text"], "anchor_reference_ids": statement_refs})
         unique_refs = list(dict.fromkeys(refs))
         ledger.append({
-            "title": concept["concept_name"],
+            "title": identity["title"],
             "slug": identity["slug"],
             "definition": concept["statements"][0]["text"],
             "why_page_worthy": "",
@@ -346,6 +366,8 @@ def calculate_ingest_preview(
         target = by_page.setdefault(page_id, {
             "concept_name": concept["concept_name"], "statements": [], "links": [],
         })
+        if concept.get("merge_target_page_id") is not None:
+            target["concept_name"] = concept["concept_name"]
         target["statements"].extend(concept["statements"])
         target["links"].extend(concept["links"])
     concepts = list(by_page.values())

@@ -144,8 +144,16 @@ class LinkRequest(ExactModel):
 
 class ContributionRequest(ExactModel):
     concept_name: str
+    merge_target_page_id: str | None = None
     statements: list[StatementRequest]
     links: list[LinkRequest]
+
+    @field_validator("merge_target_page_id")
+    @classmethod
+    def merge_target(cls, value: str | None) -> str | None:
+        if value is not None and not _BLOCK_ID.fullmatch(value):
+            raise ValueError("merge_target_page_id has an invalid format")
+        return value
 
 
 class SubmitWindowRequest(ExactModel):

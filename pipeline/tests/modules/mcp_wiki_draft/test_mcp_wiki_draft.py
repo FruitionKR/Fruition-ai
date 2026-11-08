@@ -151,7 +151,7 @@ def _start_payload(grant_id: str, document_id: str = "doc_1", key: str = "start-
     })
 
 
-def _submission(grant_id: str, start: dict, window: dict, *, key="submit-1", concept="Alpha", text="Alpha concept has evidence.", quote="Alpha concept has evidence.", block_id="B0001"):
+def _submission(grant_id: str, start: dict, window: dict, *, key="submit-1", concept="Alpha", text="Alpha concept has evidence.", quote="Alpha concept has evidence.", block_id="B0001", merge_target=None):
     actor = McpWikiActorRequest.model_validate(_actor("submit_window", grant_id))
     contributions = [{
         "concept_name": concept, "statements": [{
@@ -159,6 +159,8 @@ def _submission(grant_id: str, start: dict, window: dict, *, key="submit-1", con
             "evidence": [{"snapshot_id": start["source_snapshot"]["snapshot_id"], "block_id": block_id, "quote": quote}],
         }], "links": [],
     }]
+    if merge_target is not None:
+        contributions[0]["merge_target_page_id"] = merge_target
     mapping = [{
         "snapshot_id": start["source_snapshot"]["snapshot_id"], "document_id": "doc_1",
         "source_version": 7, "source_content_hash": start["source_snapshot"]["source_content_hash"],
@@ -1296,6 +1298,47 @@ def test_apply_upload_failure_keeps_old_public_state_and_same_pair_retry_commits
     with _connect() as conn:
         assert conn.execute("SELECT count(*) AS count FROM wiki_publication_outbox").fetchone()["count"] == 1
         assert conn.execute("SELECT count(*) AS count FROM mcp_wiki_publication_outbox").fetchone()["count"] == 1
+
+
+@pytest.mark.parametrize("target_deleted", [False, True])
+def test_client_semantic_merge_survives_preview_and_apply(monkeypatch, target_deleted):
+    ledger, _, _ = _seed_lint_page("auth-page", "authentication")
+    monkeypatch.setattr(calculation, "read_contributions", lambda *_args: [ledger])
+    grant = str(uuid4())
+    intake = _intake()
+    started = intake.start(_start_payload(grant))
+    for ordinal, name, text in (
+        (1, "Login", "Alpha concept has evidence."),
+        (2, "Sign in", "Beta concept has support."),
+    ):
+        window = intake.read_window(started["run_id"], McpWikiActorRequest.model_validate(_actor("get_window", grant)), ordinal)
+        intake.submit(started["run_id"], window["window_id"], _submission(
+            grant, started, window, key=f"submit-{ordinal}", concept=name, text=text, quote=text,
+            block_id=f"B000{ordinal}", merge_target="auth-page",
+        ))
+    finalized = intake.finalize(started["run_id"], _finalize_payload(grant, started))
+    preview = intake.preview(started["draft_id"], 1, "workspace-1", "user-1")
+    statements = [item for item in preview["changes"] if item["kind"] == "CONCEPT_STATEMENT" and item["action"] == "ADD"]
+    assert len(statements) == 2
+    assert {item["page_id"] for item in statements} == {"auth-page"}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO document_derived_state(document_id,workspace_id,last_edit_revision,last_edit_hash,last_edited_at) "
+            "VALUES ('doc_1','workspace-1',7,%s,now())",
+            (started["source_snapshot"]["source_content_hash"].removeprefix("sha256:"),),
+        )
+        if target_deleted:
+            conn.execute("UPDATE wiki_pages SET status='deleted',updated_at=now() WHERE id='auth-page'")
+    payload = _apply_payload(grant, finalized, operation_id=f"semantic-merge-{uuid4()}")
+    result = McpWikiDraftApply(PostgresMcpWikiApplyRepository(), _ValidApprovalAuthority()).apply(payload.draft_id, payload)
+    assert result["state"] == ("CONFLICTED" if target_deleted else "PUBLISHED")
+    with _connect() as conn:
+        concepts = conn.execute("SELECT id,title,markdown_uri FROM wiki_pages WHERE page_type='concept'").fetchall()
+    assert len(concepts) == 1 and concepts[0]["id"] == "auth-page"
+    assert concepts[0]["title"] == "Authentication"
+    if not target_deleted:
+        body = read_text_object(concepts[0]["markdown_uri"])
+        assert "Alpha concept has evidence." in body and "Beta concept has support." in body
 
 
 def test_finalize_combines_same_concept_and_local_statement_id_across_windows():

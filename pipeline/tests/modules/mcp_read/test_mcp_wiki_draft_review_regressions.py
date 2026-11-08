@@ -57,13 +57,51 @@ def start_payload(actor, document="doc_review"):
     return StartIngestRequest(**{**command, "actor": actor}, idempotency_key=document, request_hash=app.canonical_hash(command))
 
 
-def submission(repo, actor, run_id, window):
+def submission(repo, actor, run_id, window, merge_target=None):
     actor = actor.model_copy(update={"tool_name": "submit_window"})
     context = repo.resume(run_id, actor, window_id=window["window_id"])
     block = window["blocks"][0]
     contributions = [{"concept_name": "Concept", "statements": [{"statement_id": "s1", "text": block["text"], "evidence": [{"snapshot_id": window["snapshot_id"], "block_id": block["block_id"], "quote": block["text"]}]}], "links": []}]
+    if merge_target is not None:
+        contributions[0]["merge_target_page_id"] = merge_target
     command = {"schema_version": "mcp.wiki-draft.v1", "actor": app.request_actor(actor), "run_id": run_id, "window_id": window["window_id"], "snapshot_id": window["snapshot_id"], "window_hash": window["window_hash"], "source_snapshots": [{key: context[key] for key in ("snapshot_id", "document_id", "source_version", "source_content_hash")}], "contributions": contributions}
     return SubmitWindowRequest(schema_version=command["schema_version"], actor=actor, idempotency_key=window["window_id"], request_hash=app.canonical_hash(command), snapshot_id=window["snapshot_id"], window_hash=window["window_hash"], contributions=contributions)
+
+
+@pytest.mark.parametrize("workspace,status,page_type,accepted", [
+    ("workspace", "active", "concept", True),
+    ("other", "active", "concept", False),
+    ("workspace", "deleted", "concept", False),
+    ("workspace", "active", "source", False),
+])
+def test_semantic_merge_target_scope_and_submission_hash(intake, workspace, status, page_type, accepted):
+    service, repo, actor, connect, _, _ = intake
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_pages(id,page_type,title,slug,user_id,workspace_id,status,created_at,updated_at) VALUES ('target',%s,'Different name','target','user',%s,%s,now(),now())",
+            (page_type, workspace, status),
+        )
+    run = service.start(start_payload(actor))["run_id"]
+    window = service.read_window(run, actor.model_copy(update={"tool_name": "get_window"}), 1)
+    assert window["concept_resolution"]["mode"] == "CLIENT_LLM_SEMANTIC"
+    payload = submission(repo, actor, run, window, merge_target="target")
+    legacy = submission(repo, actor, run, window)
+    assert payload.request_hash != legacy.request_hash
+    if not accepted:
+        with pytest.raises(app.McpWikiDraftError) as error:
+            service.submit(run, window["window_id"], payload)
+        assert error.value.code == "MERGE_TARGET_CHANGED"
+        with connect() as conn:
+            assert conn.execute("SELECT count(*) AS n FROM mcp_wiki_window_submissions").fetchone()["n"] == 0
+        return
+    result = service.submit(run, window["window_id"], payload)
+    assert service.submit(run, window["window_id"], payload) == result
+    with connect() as conn:
+        stored = conn.execute("SELECT contributions FROM mcp_wiki_window_submissions").fetchone()["contributions"]
+    assert stored[0]["merge_target_page_id"] == "target"
+    with pytest.raises(app.McpWikiDraftError) as error:
+        service.submit(run, window["window_id"], legacy)
+    assert error.value.code == "IDEMPOTENCY_CONFLICT"
 
 
 def test_submit_retry_revalidates_original_window_before_and_after_completion(intake):

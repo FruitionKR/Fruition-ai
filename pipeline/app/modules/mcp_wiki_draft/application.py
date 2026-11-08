@@ -419,6 +419,8 @@ def _validate_contributions(
             seen_links.add(identity)
             links.append({"source_statement_id": source_id, "target_concept_name": target, "relation": link.relation})
         normalized.append({"concept_name": name, "statements": statements, "links": links})
+        if contribution.merge_target_page_id is not None:
+            normalized[-1]["merge_target_page_id"] = contribution.merge_target_page_id
     return normalized
 
 
