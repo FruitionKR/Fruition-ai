@@ -6,6 +6,7 @@ from app.modules.query.application.answer_query import AnswerQueryUseCase
 from app.modules.query.application.build_query_context import BuildQueryContextUseCase
 from app.modules.query.application.evidence_selector import EvidenceSelector
 from app.modules.query.application.ports import (
+    ProductHelpPort,
     QueryEventPublisherPort,
     WikiRepositoryPort,
 )
@@ -37,6 +38,7 @@ def build_answer_query_use_case(
     require_evaluator: bool = False,
     evaluator_mode: str | None = None,
     wiki_repository: WikiRepositoryPort | None = None,
+    product_help: ProductHelpPort | None = None,
 ) -> AnswerQueryUseCase:
     text_search = Bm25Searcher()
     answer_generator = build_query_chat_answer_generator(provider=provider, model=model)
@@ -57,6 +59,7 @@ def build_answer_query_use_case(
     wiki_repository = wiki_repository or PostgresWikiRepository()
     embedding_search = _build_embedding_search(text_search)
     return AnswerQueryUseCase(
+        product_help=product_help,
         wiki_repository=wiki_repository,
         markdown_reader=MinioWikiMarkdownReader(),
         event_publisher=event_publisher or NoOpQueryEventPublisher(),

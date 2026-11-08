@@ -15,6 +15,7 @@ from langgraph.types import Command, interrupt
 from langsmith import tracing_context
 
 from app.core.failure_codes import failure_code
+from app.core.response_language import localized, response_language_scope
 from app.modules.agent_run.application.rollback_agent_run import RollbackAgentRunUseCase
 from app.modules.agent_run.application.ports import (
     AgentJobRepositoryPort,
@@ -266,7 +267,7 @@ class AgentWorker:
         with tracing_context(enabled=False), usage_scope({
             "run_id": job.run_id, "workspace_id": run.workspace_id,
             "user_id": run.user_id, "kind": "agent_" + job.job_type,
-        }):
+        }), response_language_scope(run.response_language):
             self._graph.invoke(graph_input, config=config, durability="sync")
 
     def _plan_node(self, state: AgentRunGraphState) -> AgentRunGraphState:
@@ -407,7 +408,10 @@ class AgentWorker:
                 str(uuid4()),
                 context.run.id,
                 self._repository.next_plan_version(context.run.id),
-                f"아직 바꾸지 않았습니다. 승인하면 문서 {len(operations)}개를 수정합니다.",
+                localized(
+                    f"아직 바꾸지 않았습니다. 승인하면 문서 {len(operations)}개를 수정합니다.",
+                    f"Nothing has changed yet. Approve to edit {len(operations)} documents.",
+                ),
                 operations,
             ),
         )
@@ -510,7 +514,7 @@ class AgentWorker:
         with tracing_context(enabled=False), usage_scope({
             "run_id": job.run_id, "workspace_id": run.workspace_id,
             "user_id": run.user_id, "kind": "agent_execution",
-        }):
+        }), response_language_scope(run.response_language):
             self._graph.invoke(
                 {"run_id": job.run_id, "event": "execution"},
                 config={

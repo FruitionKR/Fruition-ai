@@ -1,4 +1,5 @@
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.response_language import localized
 from app.modules.meeting_notes.application.ports import MeetingNotesGeneratorPort
 from app.modules.meeting_notes.domain.entities import (
     InvalidMeetingNotesError,
@@ -48,7 +49,7 @@ class GenerateMeetingNotes:
             raise InvalidMeetingNotesError("회의 요약이 비어 있습니다.")
         discussion = _discussion(result.get("discussion", []), ids)
         names = _attendees((*attendees, *_names(result.get("attendees", []))))
-        title = display_name.strip() or "회의록"
+        title = display_name.strip() or localized("회의록", "Meeting notes")
         date = (meeting_date or "").strip() or None
         return {
             "display_name": title,
@@ -140,36 +141,43 @@ def _render(
     discussion: list[dict],
 ) -> str:
     """Figma 회의록 시안 구성. 근거 구간 ID는 본문에 싣지 않고 항목 배열로만 돌려준다."""
+    unknown = localized(UNKNOWN, "Not confirmed")
     lines = [
         f"# {title}",
         "",
-        f"- 날짜: {meeting_date or UNKNOWN}",
-        f"- 참석자: {', '.join(attendees) if attendees else UNKNOWN}",
+        f"- {localized('날짜', 'Date')}: {meeting_date or unknown}",
+        f"- {localized('참석자', 'Attendees')}: {', '.join(attendees) if attendees else unknown}",
         "",
-        "### 회의 요약",
+        f"### {localized('회의 요약', 'Summary')}",
         *_bullets(sections["summary"]),
         "",
-        "### 주요 논의",
+        f"### {localized('주요 논의', 'Discussion')}",
     ]
     if not discussion:
-        lines.append(EMPTY_LINE)
+        lines.append(_empty_line())
     for index, topic in enumerate(discussion):
         if index:
             lines.append("")
         lines.extend([f"#### {topic['topic']}", *_bullets(topic["items"])])
-    lines.extend(["", "### 결정 사항", *_bullets(sections["decisions"])])
-    lines.extend(["", "### 해야 할 일", *_action_lines(sections["action_items"])])
-    lines.extend(["", "### 다음 일정", *_bullets(sections["next_schedule"])])
+    lines.extend(["", f"### {localized('결정 사항', 'Decisions')}", *_bullets(sections["decisions"])])
+    lines.extend(["", f"### {localized('해야 할 일', 'Action items')}", *_action_lines(sections["action_items"])])
+    lines.extend(["", f"### {localized('다음 일정', 'Next steps')}", *_bullets(sections["next_schedule"])])
     return "\n".join(lines)
 
 
+def _empty_line() -> str:
+    return localized(EMPTY_LINE, "- Nothing confirmed")
+
+
 def _bullets(items: list[dict]) -> list[str]:
-    return [f"- {_single_line(item['text'])}" for item in items] or [EMPTY_LINE]
+    return [f"- {_single_line(item['text'])}" for item in items] or [_empty_line()]
 
 
 def _action_lines(items: list[dict]) -> list[str]:
     """`- [ ] 할 일 · 담당자 · 기한`. 발언으로 확인되지 않은 담당자·기한은 미정으로 둔다."""
+    no_owner = localized("담당자 미정", "Owner TBD")
+    no_due = localized("기한 미정", "Due date TBD")
     return [
-        f"- [ ] {_single_line(item['text'])} · {item['owner'] or '담당자 미정'} · {item['due'] or '기한 미정'}"
+        f"- [ ] {_single_line(item['text'])} · {item['owner'] or no_owner} · {item['due'] or no_due}"
         for item in items
-    ] or [EMPTY_LINE]
+    ] or [_empty_line()]

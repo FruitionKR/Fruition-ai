@@ -2,6 +2,7 @@ import hashlib
 from uuid import uuid4
 
 from app.core.llm_env import resolve_llm_selection
+from app.core.response_language import current_response_language
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent_run.application.ports import AgentRunRepositoryPort, AgentRunStarterPort
 from app.modules.agent_run.domain.entities import (
@@ -35,6 +36,8 @@ class StartAgentRunUseCase(AgentRunStarterPort):
             model=model,
             target_folder_id=request.target_folder_id,
             rule_summary=(request.rule_summary or "").strip() or None,
+            # 승인 대기·수정 요청은 나중에 agent worker가 처리하므로 시작한 턴의 언어를 run에 남긴다.
+            response_language=current_response_language(),
         )
         contents = (request.content, *request.contents) if request.content is not None else request.contents
         saved = self._repository.create_with_planning_job(

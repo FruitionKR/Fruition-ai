@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
+from app.core.failure_codes import AiServiceStartingError, failure_code
 from app.core.pipeline_control import DeadlineExceededError, request_deadline
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import (
     MAX_TEXTS_PER_REQUEST,
@@ -17,6 +18,55 @@ def _model(handler) -> RemoteEmbeddingModel:
 
 
 class RemoteEmbeddingModelTest(unittest.TestCase):
+    def test_not_ready_service_uses_explicit_startup_health_without_sending_token(self) -> None:
+        paths = []
+
+        def handler(request):
+            paths.append((request.url.host, request.url.path))
+            if request.url.host == "embedding-server":
+                raise httpx.ConnectError("no ready endpoint")
+            self.assertNotIn("X-Internal-Token", request.headers)
+            self.assertLessEqual(request.extensions["timeout"]["read"], 2)
+            return httpx.Response(503, json={"detail": {"code": "ai_service_starting"}})
+
+        model = RemoteEmbeddingModel("http://embedding-server:8000", "secret", transport=httpx.MockTransport(handler),
+                                     startup_status_url="http://embedding-server-startup:8000")
+        with self.assertRaises(AiServiceStartingError):
+            model.embed(["질문"])
+        self.assertEqual(paths, [("embedding-server", "/embeddings"), ("embedding-server", "/embeddings"),
+                                 ("embedding-server-startup", "/health")])
+
+    def test_unknown_failed_or_ready_health_does_not_relabel_connection_failure(self) -> None:
+        for health in (httpx.ConnectError("no pod"), httpx.Response(200, json={"status": "ok"}),
+                       httpx.Response(503, json={"detail": {"code": "provider_unavailable"}}),
+                       httpx.Response(503, text="unavailable")):
+            def handler(request):
+                if request.url.host == "embedding-server":
+                    raise httpx.ConnectError("original connection failure")
+                if isinstance(health, Exception):
+                    raise health
+                return health
+
+            model = RemoteEmbeddingModel("http://embedding-server:8000", "secret", transport=httpx.MockTransport(handler),
+                                         startup_status_url="http://embedding-server-startup:8000")
+            with self.subTest(health=health), self.assertRaisesRegex(httpx.ConnectError, "original connection failure"):
+                model.embed(["질문"])
+
+    def test_only_explicit_internal_startup_response_uses_preparation_code(self) -> None:
+        model = _model(lambda request: httpx.Response(503, json={"detail": {"code": "ai_service_starting"}}))
+        with self.assertRaises(AiServiceStartingError) as caught:
+            model.embed(["질문"])
+        self.assertEqual(failure_code(caught.exception), "ai_service_starting")
+        for response in (
+            httpx.Response(503, json={"detail": {"code": "provider_unavailable"}}),
+            httpx.Response(503, text="Service unavailable"),
+            httpx.Response(503, json={"detail": "Internal token authentication is not configured."}),
+            httpx.Response(500, json={"detail": {"code": "ai_service_starting"}}),
+        ):
+            with self.subTest(response=response), self.assertRaises(httpx.HTTPStatusError) as caught:
+                _model(lambda request: response).embed(["질문"])
+            self.assertEqual(failure_code(caught.exception), "provider_unavailable")
+
     def test_posts_texts_with_internal_token(self) -> None:
         seen = {}
 

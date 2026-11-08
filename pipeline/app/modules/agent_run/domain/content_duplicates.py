@@ -10,6 +10,8 @@ import logging
 import re
 import unicodedata
 
+from app.core.response_language import localized
+
 logger = logging.getLogger(__name__)
 
 # 정규화한 본문 3-gram Jaccard가 이 값 이상이면 내용이 거의 같은 문서로 본다.
@@ -27,6 +29,9 @@ _NON_WORD = re.compile(r"[\W_]+")
 # 계획 summary에 덧붙이는 안내. 프론트가 문장을 그대로 찾아 따로 보여 줄 수 있게 형식을 고정한다.
 UNPLANNED_DUPLICATE_NOTE = "계획에 없는 문서 중 내용이 거의 같은 문서가 있어요: {pairs}."
 UNCHECKED_DOCUMENTS_NOTE = "문서 {count}개는 내용 중복을 확인하지 못했어요."
+# 영어 요청의 같은 안내. 형식을 고정한다.
+UNPLANNED_DUPLICATE_NOTE_EN = "Some documents not in the plan have nearly identical content: {pairs}."
+UNCHECKED_DOCUMENTS_NOTE_EN = "Couldn't check {count} documents for duplicate content."
 
 
 @dataclass(frozen=True)
@@ -158,14 +163,19 @@ def content_review_summary(summary: str, review: ContentReview, planned_document
     """작업이 없어 승인 화면 줄로 보여 줄 수 없는 중복과, 확인하지 못한 문서 수를 summary 끝에 덧붙인다."""
     notes: list[str] = []
     unplanned = [
-        f"'{duplicate.document_name}'와(과) '{duplicate.original_name}'"
+        localized(
+            f"'{duplicate.document_name}'와(과) '{duplicate.original_name}'",
+            f"'{duplicate.document_name}' and '{duplicate.original_name}'",
+        )
         for duplicate in review.duplicates.values()
         if duplicate.document_id not in planned_document_ids
     ]
     if unplanned:
-        notes.append(UNPLANNED_DUPLICATE_NOTE.format(pairs=", ".join(unplanned)))
+        note = localized(UNPLANNED_DUPLICATE_NOTE, UNPLANNED_DUPLICATE_NOTE_EN)
+        notes.append(note.format(pairs=", ".join(unplanned)))
     if review.unchecked_documents > 0:
-        notes.append(UNCHECKED_DOCUMENTS_NOTE.format(count=review.unchecked_documents))
+        note = localized(UNCHECKED_DOCUMENTS_NOTE, UNCHECKED_DOCUMENTS_NOTE_EN)
+        notes.append(note.format(count=review.unchecked_documents))
     return " ".join([summary.strip(), *notes]).strip()
 
 

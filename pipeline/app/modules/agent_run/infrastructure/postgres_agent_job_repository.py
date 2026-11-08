@@ -291,7 +291,7 @@ class PostgresAgentJobRepository:
             if row["child_status"] == "rollback_failed" and row["child_error_code"] == ROLLBACK_DOCUMENT_PURGED:
                 return ROLLBACK_DOCUMENT_PURGED
             return None if row["child_status"] == "cancelled" else "rollback_child_incomplete"
-        if result.get("action") in {"chat_answer", "conversation_reply", "markdown_edit", "markdown_create", "clarify", "reject"}:
+        if result.get("action") in {"chat_answer", "conversation_reply", "product_help", "markdown_edit", "markdown_create", "clarify", "reject"}:
             return None
         # 이 경로의 변경은 자식 생성 또는 Skill 저장과 같은 트랜잭션에 기록된다.
         # 실행 job이 종료된 뒤에도 두 기록이 없으면 취소 시점까지 저장한 변경이 없다.

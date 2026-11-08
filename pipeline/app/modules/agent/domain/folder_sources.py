@@ -6,6 +6,8 @@
 
 from dataclasses import dataclass
 
+from app.core.response_language import localized
+
 MAX_FOLDER_SOURCE_DOCUMENTS = 20
 # 새 문서 생성 payload에 싣는 원문 합계 상한. 위키 근거 질문 생성의 원문 상한(MAX_QUESTION_SOURCE_CHARS)과 같다.
 MAX_FOLDER_SOURCE_CHARS = 60_000
@@ -90,8 +92,13 @@ def folder_source_notice(sources: SelectedFolderSources) -> str | None:
     if not sources.is_partial:
         return None
     if sources.read_documents < sources.total_documents:
-        return (
+        return localized(
             f"폴더 문서 {sources.total_documents}개 중 최근 수정한 {sources.read_documents}개만 읽었어요."
-            " 나머지 문서는 초안에 반영되지 않았어요."
+            " 나머지 문서는 초안에 반영되지 않았어요.",
+            f"I only read the {sources.read_documents} most recently modified of {sources.total_documents} documents"
+            " in the folder. The other documents aren't reflected in the draft.",
         )
-    return "폴더 문서가 길어 일부 내용만 읽었어요. 뒷부분은 초안에 반영되지 않았어요."
+    return localized(
+        "폴더 문서가 길어 일부 내용만 읽었어요. 뒷부분은 초안에 반영되지 않았어요.",
+        "The folder documents are long, so I only read part of them. The rest isn't reflected in the draft.",
+    )

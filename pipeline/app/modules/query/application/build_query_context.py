@@ -82,6 +82,7 @@ class BuildQueryContextUseCase:
                 evidence_snippets=evidence_snippets,
                 original_question=original_question,
                 answer_mode=answer_mode,
+                output_language=output_language,
             ),
             workspace_id=workspace_id,
             user_id=user_id,

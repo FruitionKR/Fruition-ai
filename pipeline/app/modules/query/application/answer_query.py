@@ -10,6 +10,7 @@ from app.modules.query.application.ports import (
     AnswerGeneratorPort,
     ConversationSummarizerPort,
     EmbeddingSearchPort,
+    ProductHelpPort,
     QueryEventPublisherPort,
     QueryEvaluatorGraphPort,
     QueryEvaluatorPort,
@@ -118,7 +119,9 @@ class AnswerQueryUseCase:
         graph_expansion_depth: int = 3,
         max_evidence_snippets: int = 8,
         conversation_summarizer: ConversationSummarizerPort | None = None,
+        product_help: ProductHelpPort | None = None,
     ) -> None:
+        self._product_help = product_help
         self._wiki_repository = wiki_repository
         self._embedding_search = embedding_search
         self._text_search = text_search
@@ -260,6 +263,24 @@ class AnswerQueryUseCase:
         query = Question(question)
         web_search_telemetry = WebSearchTelemetry()
         self._publish(event_publisher, "query_started", "질의 처리를 시작했습니다.", {"question": query.normalized})
+        if self._product_help is not None and not pinned_evidence:
+            help_answer = self._product_help.reply(
+                query.normalized,
+                conversation_context=conversation_context,
+                output_language=output_language,
+                response_length=response_length,
+            )
+            if help_answer is not None:
+                self._publish(event_publisher, "answer_generated", "답변 생성을 완료했습니다.")
+                return QueryAnswer(
+                    answer=GeneratedAnswer(content=help_answer),
+                    related_pages=[], evidence_snippets=[], graph_context=GraphContext(),
+                    traversal_paths=[],
+                    retrieval_summary=build_retrieval_summary(
+                        related_pages=[], source_candidate_count=0, concept_candidate_count=0,
+                        stop_reason="product_help",
+                    ),
+                )
         contextual_question = contextualize_question(query.normalized, conversation_context)
         if contextual_question != query.normalized:
             self._publish(
@@ -788,6 +809,15 @@ class AnswerQueryUseCase:
             return answer, evidence_snippets, "query_evaluator_internal_supported"
         if evaluation.route not in {"unsupported", "revise_answer"}:
             return answer, evidence_snippets, stop_reason
+
+        # 평가기가 안전한 거절로 판정한 출처 없는 안내는 일반 근거 부족 문구로 덮어쓰지 않는다.
+        if (
+            evaluation.route == "unsupported"
+            and evaluation.unsupported_refusal_accuracy == 1.0
+            and not evidence_snippets
+            and answer.content.strip()
+        ):
+            return answer, [], "query_evaluator_unsupported"
 
         unsupported = self._unsupported_answer(evidence_snippets, output_language, question)
         unsupported, evidence_snippets = self._query_answer_assembler.renumber_used_evidence(

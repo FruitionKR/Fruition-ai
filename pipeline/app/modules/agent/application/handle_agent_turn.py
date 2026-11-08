@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from app.core.pipeline_control import PipelineRunCancelledError, ensure_task_active
+from app.core.response_language import current_response_language, localized, register_en
 from app.modules.agent.application.ports import (
     AgentTurnRouterPort,
     ConversationReplierPort,
@@ -122,67 +123,136 @@ from app.modules.skill.domain.safety import inspect_skill_instructions
 
 logger = logging.getLogger(__name__)
 
-CLARIFY_MARKDOWN_TARGET_MESSAGE = "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요."
-CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요."
+CLARIFY_MARKDOWN_TARGET_MESSAGE = register_en(
+    "수정할 Markdown 범위를 선택한 뒤 다시 요청해 주세요.",
+    "Select the Markdown range to edit, then try again.",
+)
+CLARIFY_MARKDOWN_DOCUMENT_MESSAGE = register_en(
+    "수정할 Markdown 문서를 연 뒤 다시 요청해 주세요.",
+    "Open the Markdown document to edit, then try again.",
+)
 # 편집 버전을 주지 않는 구 document-svc이거나, 열린 문서 없이 첨부를 근거로 문서를 고치라는 요청일 때의 안내다.
-CLARIFY_REFERENCE_EDIT_MESSAGE = "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요."
-REFERENCE_NOT_ACCESSIBLE_MESSAGE = (
-    "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. 첨부를 확인한 뒤 다시 요청해 주세요."
+CLARIFY_REFERENCE_EDIT_MESSAGE = register_en(
+    "첨부한 문서는 참고 자료로만 읽어요. 첨부한 문서를 고치려면 그 문서를 연 뒤 다시 요청해 주세요.",
+    "Attached documents are only read as references. To edit an attached document, open it and try again.",
 )
-REFERENCE_READ_FAILED_MESSAGE = "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요."
-REFERENCE_ALL_TOO_LONG_MESSAGE = (
-    "첨부한 문서가 너무 길어 읽지 못했어요. 문서를 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+REFERENCE_NOT_ACCESSIBLE_MESSAGE = register_en(
+    "첨부한 문서 중 삭제되었거나 권한이 없어 읽을 수 없는 문서가 있어요. 첨부를 확인한 뒤 다시 요청해 주세요.",
+    "Some attached documents were deleted or you don't have permission to read them. Check the attachments and try again.",
 )
-CLARIFY_TASK_MODE_QUESTION_MESSAGE = (
+REFERENCE_READ_FAILED_MESSAGE = register_en(
+    "첨부한 문서를 읽지 못했어요. 잠시 후 다시 시도해 주세요.",
+    "Couldn't read the attached documents. Please try again in a moment.",
+)
+REFERENCE_ALL_TOO_LONG_MESSAGE = register_en(
+    "첨부한 문서가 너무 길어 읽지 못했어요. 문서를 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요.",
+    "The attached documents are too long to read. Add them to the wiki, then ask again based on the wiki content.",
+)
+CLARIFY_TASK_MODE_QUESTION_MESSAGE = register_en(
     "작업 탭에서는 문서 편집, 폴더 정리, 스킬 실행을 요청할 수 있어요. "
-    "위키 내용에 대한 질문은 채팅 탭에서 해 주세요."
+    "위키 내용에 대한 질문은 채팅 탭에서 해 주세요.",
+    "In the Task tab, you can ask to edit documents, organize folders, or run skills. Please ask questions about wiki content in the Chat tab.",
 )
 _DOCUMENT_REQUIRED_MESSAGES = frozenset({CLARIFY_MARKDOWN_DOCUMENT_MESSAGE, CLARIFY_REFERENCE_EDIT_MESSAGE})
-CLARIFY_DETAILS_FALLBACK_MESSAGE = "작업에 필요한 내용을 조금 더 알려 주세요."
-CLARIFY_WEB_DISABLED_MESSAGE = "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요."
-REJECT_MESSAGES = {
-    "sensitive_data": "비밀번호·개인정보 같은 민감한 값은 문서에 넣어 드릴 수 없어요. 꼭 필요하면 직접 입력해 주세요.",
-    "unsupported": "메일 발송처럼 워크스페이스 밖에서 일어나는 작업은 아직 지원하지 않아요.",
-    "display_unsupported": "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요.",
-    "policy": "규칙을 우회하거나 권한을 바꾸는 요청은 처리할 수 없어요.",
-}
-REJECT_DEFAULT_MESSAGE = "요청한 작업은 현재 지원 범위에서 처리할 수 없습니다."
-SKILL_OFF_NOTICE = "스킬 사용이 꺼져 있어 스킬 없이 처리했어요."
-# 문서 작업 결과에 메시지가 없을 때 document-svc가 채우는 기본 문구와 같다.
-WORKFLOW_DEFAULT_MESSAGE = "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요."
-DEFERRED_TEMPLATE_MESSAGE = "template 기반 전체 문서 재구성은 이후 단계에서 다루겠습니다. 현재는 선택 영역, 현재 섹션, 또는 문서 전체의 일반 편집만 지원합니다."
-CLARIFY_INSERT_AFTER_TARGET_MESSAGE = "내용을 추가할 현재 섹션을 선택한 뒤 다시 요청해 주세요."
-CLARIFY_SKILL_MESSAGE = "이 요청에 적용할 Skill을 선택하거나 Skill 없이 계속해 주세요."
-CLARIFY_INCOMPATIBLE_SKILL_MESSAGE = (
-    "선택한 Skill이 요청한 모든 작업을 지원하지 않습니다. "
-    "다른 Skill을 선택하거나 요청 범위를 줄여 주세요."
+CLARIFY_DETAILS_FALLBACK_MESSAGE = register_en(
+    "작업에 필요한 내용을 조금 더 알려 주세요.",
+    "Please tell me a bit more about what you need for this task.",
 )
-CLARIFY_SKILL_SELECTION_MESSAGE = "이 Skill은 선택한 부분에만 적용돼요. 수정할 부분을 선택한 뒤 다시 요청해 주세요."
-CLARIFY_SKILL_RESULT_MODE_MESSAGE = (
+CLARIFY_WEB_DISABLED_MESSAGE = register_en(
+    "웹 검색이 꺼져 있어요. 입력창에서 웹 검색을 켠 뒤 다시 요청해 주세요.",
+    "Web search is turned off. Turn on web search in the input box and try again.",
+)
+REJECT_MESSAGES = {
+    "sensitive_data": register_en(
+        "비밀번호·개인정보 같은 민감한 값은 문서에 넣어 드릴 수 없어요. 꼭 필요하면 직접 입력해 주세요.",
+        "I can't put sensitive values like passwords or personal information into documents. If you really need them, please enter them yourself.",
+    ),
+    "unsupported": register_en(
+        "메일 발송처럼 워크스페이스 밖에서 일어나는 작업은 아직 지원하지 않아요.",
+        "Tasks that happen outside the workspace, like sending email, aren't supported yet.",
+    ),
+    "display_unsupported": register_en(
+        "표 너비·글꼴·글자 색처럼 화면에 보이는 모양은 Markdown에 저장되지 않아 AI가 바꿀 수 없어요.",
+        "On-screen styling such as table width, fonts, or text color isn't saved in Markdown, so AI can't change it.",
+    ),
+    "policy": register_en(
+        "규칙을 우회하거나 권한을 바꾸는 요청은 처리할 수 없어요.",
+        "I can't process requests that bypass rules or change permissions.",
+    ),
+}
+REJECT_DEFAULT_MESSAGE = register_en(
+    "요청한 작업은 현재 지원 범위에서 처리할 수 없습니다.",
+    "The requested task isn't supported right now.",
+)
+SKILL_OFF_NOTICE = register_en(
+    "스킬 사용이 꺼져 있어 스킬 없이 처리했어요.",
+    "Skills are turned off, so this was handled without a skill.",
+)
+# 문서 작업 결과에 메시지가 없을 때 document-svc가 채우는 기본 문구와 같다.
+WORKFLOW_DEFAULT_MESSAGE = register_en(
+    "작업 계획을 만들었습니다. 미리보기에서 확인해 주세요.",
+    "I've created a task plan. Please review it in the preview.",
+)
+DEFERRED_TEMPLATE_MESSAGE = register_en(
+    "template 기반 전체 문서 재구성은 이후 단계에서 다루겠습니다. 현재는 선택 영역, 현재 섹션, 또는 문서 전체의 일반 편집만 지원합니다.",
+    "Rebuilding a whole document from a template will come in a later step. For now, only regular edits to a selection, the current section, or the whole document are supported.",
+)
+CLARIFY_INSERT_AFTER_TARGET_MESSAGE = register_en(
+    "내용을 추가할 현재 섹션을 선택한 뒤 다시 요청해 주세요.",
+    "Select the section to add content to, then try again.",
+)
+CLARIFY_SKILL_MESSAGE = register_en(
+    "이 요청에 적용할 Skill을 선택하거나 Skill 없이 계속해 주세요.",
+    "Choose a skill for this request, or continue without a skill.",
+)
+CLARIFY_INCOMPATIBLE_SKILL_MESSAGE = register_en(
+    "선택한 Skill이 요청한 모든 작업을 지원하지 않습니다. "
+    "다른 Skill을 선택하거나 요청 범위를 줄여 주세요.",
+    "The selected skill doesn't support everything you asked for. Choose another skill or narrow the request.",
+)
+CLARIFY_SKILL_SELECTION_MESSAGE = register_en(
+    "이 Skill은 선택한 부분에만 적용돼요. 수정할 부분을 선택한 뒤 다시 요청해 주세요.",
+    "This skill only applies to a selection. Select the part to edit, then try again.",
+)
+CLARIFY_SKILL_RESULT_MODE_MESSAGE = register_en(
     "이 Skill은 새 문서로 만들 수도, 지금 문서를 수정할 수도 있어요. "
-    "새 문서로 만들까요, 지금 문서를 수정할까요?"
+    "새 문서로 만들까요, 지금 문서를 수정할까요?",
+    "This skill can create a new document or edit the current one. Should I create a new document or edit the current one?",
 )
 # result_mode=auto Skill에서 라우터 확신도가 이보다 낮으면 새 문서/수정을 되묻는다.
 AUTO_RESULT_MODE_MIN_CONFIDENCE = 0.7
 # 문서 생성·편집을 할 수 있는 Skill 기능. template은 둘 다 포함한다.
 CREATE_CAPABILITIES = frozenset({"template", "document-create"})
 EDIT_CAPABILITIES = frozenset({"template", "document-edit"})
-EMPTY_FOLDER_SOURCE_MESSAGE = (
-    "이 폴더 바로 아래에 읽을 수 있는 Markdown 문서가 없어요. 문서가 있는 폴더나 문서를 골라 다시 실행해 주세요."
+EMPTY_FOLDER_SOURCE_MESSAGE = register_en(
+    "이 폴더 바로 아래에 읽을 수 있는 Markdown 문서가 없어요. 문서가 있는 폴더나 문서를 골라 다시 실행해 주세요.",
+    "There are no readable Markdown documents directly in this folder. Choose a folder or document that has documents and run it again.",
 )
 # 열린 문서를 LLM payload에 싣는 상한. 편집은 편집 범위, 새 문서는 참고로 싣는 열린 문서 전체에 적용한다.
 MAX_ACTIVE_DOCUMENT_CHARS = 30_000
-CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = (
+CLARIFY_EDIT_SCOPE_TOO_LONG_MESSAGE = register_en(
     f"편집할 범위가 {MAX_ACTIVE_DOCUMENT_CHARS:,}자를 넘어 한 번에 편집할 수 없어요. "
-    "수정할 부분을 선택하거나 현재 섹션을 고른 뒤 다시 요청해 주세요."
+    "수정할 부분을 선택하거나 현재 섹션을 고른 뒤 다시 요청해 주세요.",
+    f"The range to edit exceeds {MAX_ACTIVE_DOCUMENT_CHARS:,} characters, so it can't be edited at once. "
+    "Select the part to edit or choose the current section, then try again.",
 )
-ACTIVE_DOCUMENT_TOO_LONG_NOTICE = (
+ACTIVE_DOCUMENT_TOO_LONG_NOTICE = register_en(
     "열린 문서가 길어 초안에 참고하지 않았어요. "
-    "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요."
+    "이 문서를 바탕으로 만들려면 위키에 올린 뒤 위키 내용을 기준으로 다시 요청해 주세요.",
+    "The open document is long, so it wasn't used for the draft. To build on this document, add it to the wiki and ask again based on the wiki content.",
 )
-CLARIFY_PREVIEW_MESSAGE = "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요."
-NO_CHANGES_MESSAGE = "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다."
-BLOCKED_SKILL_AUTHORING_MESSAGE = "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요."
+CLARIFY_PREVIEW_MESSAGE = register_en(
+    "저장할 이전 미리보기를 확인할 수 없어 미리보기를 다시 만들어 주세요.",
+    "Couldn't find the previous preview to save. Please create the preview again.",
+)
+NO_CHANGES_MESSAGE = register_en(
+    "원문에서 변경할 내용이 없어 저장 작업을 만들지 않았습니다.",
+    "There was nothing to change in the original, so no save task was created.",
+)
+BLOCKED_SKILL_AUTHORING_MESSAGE = register_en(
+    "보안 문제가 있는 내용을 제거하거나 수정한 뒤 다시 시도해 주세요.",
+    "Remove or fix the content with security issues and try again.",
+)
 TITLE_REVISION_PATTERN = re.compile(
     r"(?:제목|이름|커맨드|식별자)(?:을|를)?\s*(?:[\"“「](.+?)[\"”」]|(.+?))\s*(?:로|으로)\s*(?:바꿔|변경|수정)"
 )
@@ -217,7 +287,9 @@ class HandleAgentTurnUseCase:
         on_chat_answer: Callable[[], None] | None = None,
         task_clarifier: TaskClarifierPort | None = None,
         reference_reader: SkillReferenceReaderPort | None = None,
+        product_help_replier: ConversationReplierPort | None = None,
     ) -> None:
+        self._product_help_replier = product_help_replier
         self._task_clarifier = task_clarifier
         self._reference_reader = reference_reader
         self._on_chat_answer = on_chat_answer
@@ -273,6 +345,7 @@ class HandleAgentTurnUseCase:
             "markdown_create": "새 문서 작성 요청으로 확인했어요.",
             "chat_answer": "질문에 답할 근거를 찾고 있어요.",
             "conversation_reply": "대화 맥락에 맞는 답변을 작성하고 있어요.",
+            "product_help": "Fruition 사용 방법을 안내하고 있어요.",
             "folder_organize": "폴더 정리 계획을 준비하고 있어요.",
             "folder_lookup": "폴더 내용을 확인하고 있어요.",
             "workspace_workflow": "문서 작업 계획을 준비하고 있어요.",
@@ -328,7 +401,7 @@ class HandleAgentTurnUseCase:
                 return AgentTurnResult(
                     action="clarify",
                     route=route,
-                    message="Skill로 만들 완료 작업을 선택해 주세요.",
+                    message=localized("Skill로 만들 완료 작업을 선택해 주세요.", "Choose the completed tasks to turn into a skill."),
                 )
             if (
                 self._skill_draft_proposer is None
@@ -342,7 +415,10 @@ class HandleAgentTurnUseCase:
                 return AgentTurnResult(
                     action="clarify",
                     route=route,
-                    message="개인 스킬로 만들까요, 현재 팀 스킬로 만들까요?",
+                    message=localized(
+                        "개인 스킬로 만들까요, 현재 팀 스킬로 만들까요?",
+                        "Should I make this a personal skill or a skill for the current team?",
+                    ),
                 )
             proposal = self._skill_draft_proposer.execute(
                 source_runs=request.skill_draft_sources,
@@ -383,7 +459,10 @@ class HandleAgentTurnUseCase:
                 if scope_type is None:
                     authored = SkillAuthoringResult(
                         status="clarification_required",
-                        question="개인 스킬로 만들까요, 현재 팀 스킬로 만들까요?",
+                        question=localized(
+                            "개인 스킬로 만들까요, 현재 팀 스킬로 만들까요?",
+                            "Should I make this a personal skill or a skill for the current team?",
+                        ),
                     )
                 else:
                     authored = self._skill_authorer.execute(
@@ -603,6 +682,17 @@ class HandleAgentTurnUseCase:
                 message=REJECT_MESSAGES.get(route.notice_kind or "", REJECT_DEFAULT_MESSAGE),
             )
 
+        if route.action == "product_help":
+            if self._product_help_replier is None:
+                raise AgentConfigurationError("Product help is not configured.")
+            return AgentTurnResult(
+                action="product_help",
+                route=_non_mutating_route(route, action="product_help", reason=route.reason),
+                # 번들 가이드는 사용자 문서가 아니다. 문서 언어 설정으로 화면 언어를 덮어쓰지 않는다.
+                message=self._product_help_replier.reply(
+                    replace(request, output_language=None) if request.output_language == "document" else request
+                ),
+            )
         if route.action == "conversation_reply":
             return self._execute_conversation_reply(request, route)
 
@@ -725,7 +815,10 @@ class HandleAgentTurnUseCase:
             publish_query_event(
                 self._event_publisher,
                 "agent.generating",
-                f"문서 {position}/{len(documents)}의 수정안을 작성하고 있어요.",
+                localized(
+                    f"문서 {position}/{len(documents)}의 수정안을 작성하고 있어요.",
+                    f"Drafting an edit for document {position}/{len(documents)}.",
+                ),
             )
             try:
                 outcome = self._attached_edit_content(request, route, selected_skill, document, reference_context)
@@ -881,8 +974,10 @@ class HandleAgentTurnUseCase:
             "user_id": request.user_id,
             "conversation_context": _to_query_conversation_context(request),
         }
-        if request.output_language is not None:
-            query_kwargs["output_language"] = request.output_language
+        # 응답 언어 설정이 없으면 요청자 화면 언어(response_language)를 따른다. 둘 다 없으면 지금처럼 질문 언어다.
+        output_language = request.output_language or current_response_language()
+        if output_language is not None:
+            query_kwargs["output_language"] = output_language
         if request.response_length is not None:
             query_kwargs["response_length"] = request.response_length
         query_kwargs["allow_web_search"] = allow_web_search
@@ -974,7 +1069,10 @@ class HandleAgentTurnUseCase:
         except ReferenceDocumentUnavailableError as exc:
             return _clarify_document_change(route, str(exc))
         reference_context = _with_reference_documents(self._resolve_reference_context(request, route), references)
-        publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.")
+        publish_query_event(self._event_publisher, "agent.generating", localized(
+            f"{_markdown_basis(selected_skill)} 편집안을 작성하고 있어요.",
+            f"{_markdown_basis(selected_skill)}, drafting an edit.",
+        ))
         result = self._markdown_edit_use_case.execute(
             MarkdownEditRequest(
                 instruction=request.message,
@@ -1000,7 +1098,10 @@ class HandleAgentTurnUseCase:
             action="markdown_edit",
             route=resolved_route,
             edit=result.edit,
-            message=f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}{notice_text}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
+            message=localized(
+                f"{_markdown_basis(selected_skill)} 편집안을 작성했어요.\n\n{result.edit.summary}{notice_text}\n\n아직 문서에 적용하지 않았어요. 편집안을 확인하고 적용해 주세요.",
+                f"{_markdown_basis(selected_skill)}, I drafted an edit.\n\n{result.edit.summary}{notice_text}\n\nIt hasn't been applied to the document yet. Review the edit and apply it.",
+            ),
             source_markdown_sha256=_markdown_sha256(markdown_context.markdown),
         )
 
@@ -1107,14 +1208,20 @@ class HandleAgentTurnUseCase:
             create_request, source_notice = self._markdown_create_request(request, route, selected_skill, bare=bare)
         except (FolderSourceUnavailableError, ReferenceDocumentUnavailableError) as exc:
             return _clarify_document_change(route, str(exc))
-        publish_query_event(self._event_publisher, "agent.generating", f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.")
+        publish_query_event(self._event_publisher, "agent.generating", localized(
+            f"{_markdown_basis(selected_skill)} 문서 초안을 작성하고 있어요.",
+            f"{_markdown_basis(selected_skill)}, drafting a document.",
+        ))
         result = self._markdown_create_use_case.execute(create_request)
         notice = f"\n\n{source_notice}" if source_notice else ""
         return AgentTurnResult(
             action="markdown_create",
             route=route,
             generated_markdown=result.document,
-            message=f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}{notice}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
+            message=localized(
+                f"{_markdown_basis(selected_skill)} 문서 초안을 작성했어요.\n\n{result.document.summary}{notice}\n\n아직 문서를 만들지 않았어요. 초안을 확인하고 생성해 주세요.",
+                f"{_markdown_basis(selected_skill)}, I drafted a document.\n\n{result.document.summary}{notice}\n\nThe document hasn't been created yet. Review the draft and create it.",
+            ),
         )
 
     def _markdown_create_request(
@@ -1672,20 +1779,26 @@ def _reject_unsafe_workspace_mutation(route: AgentTurnRoute) -> AgentTurnResult:
             persist=False,
             attached_edit_targets=(),
         ),
-        message="보안상 위험한 지시나 민감정보를 Workspace에 추가하는 요청은 처리할 수 없습니다.",
+        message=localized(
+            "보안상 위험한 지시나 민감정보를 Workspace에 추가하는 요청은 처리할 수 없습니다.",
+            "I can't add unsafe instructions or sensitive information to the workspace.",
+        ),
     )
 
 
 def _skill_authoring_message(result: SkillAuthoringResult) -> str:
     if result.status == "published" and result.proposal is not None:
-        return f"게시했습니다: /{result.proposal.name}"
-    return "Skill 제안을 만들었습니다. Markdown과 보안 결과를 확인한 뒤 게시해 주세요."
+        return localized(f"게시했습니다: /{result.proposal.name}", f"Published: /{result.proposal.name}")
+    return localized(
+        "Skill 제안을 만들었습니다. Markdown과 보안 결과를 확인한 뒤 게시해 주세요.",
+        "I created a skill proposal. Review the Markdown and the security check, then publish it.",
+    )
 
 
 def _markdown_basis(skill: Skill | None) -> str:
     if skill is not None and skill.enabled_version is not None:
-        return f"‘{skill.enabled_version.name}’ 스킬을 사용해"
-    return "스킬 없이 요청 내용을 바탕으로"
+        return localized(f"‘{skill.enabled_version.name}’ 스킬을 사용해", f"Using the ‘{skill.enabled_version.name}’ skill")
+    return localized("스킬 없이 요청 내용을 바탕으로", "Based on your request without a skill")
 
 
 def _skill_instructions(
