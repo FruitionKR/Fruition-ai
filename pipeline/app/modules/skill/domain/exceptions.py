@@ -21,6 +21,14 @@ class SkillVersionConflictError(ValueError):
         super().__init__("Skill version changed and must be reviewed again.")
 
 
+class SkillPublicationReplayedError(Exception):
+    """같은 MCP operation이 이미 Skill을 저장했다. undo는 그때 남긴 저장 증거다."""
+
+    def __init__(self, undo: dict[str, object]) -> None:
+        super().__init__("Skill publication was already applied for this operation.")
+        self.undo = undo
+
+
 class ReferenceDocumentTooLargeError(Exception):
     code = "REFERENCE_DOCUMENT_TOO_LARGE"
 

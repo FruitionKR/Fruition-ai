@@ -112,5 +112,67 @@ class ExternalSkillDefinitionTest(unittest.TestCase):
         self.assertFalse(any("INSERT" in str(call) for call in conn.execute.call_args_list))
 
 
+class McpSkillAcceptanceRouteTest(unittest.TestCase):
+    def request(self, **definition_overrides: object):
+        from app.modules.skill.interfaces.http.schemas import McpSkillAcceptanceRequest
+
+        body = definition(**definition_overrides)
+        return McpSkillAcceptanceRequest(
+            run_id="run-1", operation_id="op-1", workspace_id=body.pop("workspace_id"), user_id=body.pop("user_id"),
+            definition={**body, "capabilities": list(body["capabilities"]) if body["capabilities"] else None},
+        )
+
+    def test_replays_existing_evidence_without_saving(self) -> None:
+        from app.modules.skill.infrastructure import postgres_skill_repository as store
+        from app.modules.skill.interfaces.http import routes
+
+        evidence = {"skill_id": "s", "version_id": "v", "version": 1, "created": True, "rolled_back": False}
+        with patch.object(store, "find_mcp_skill_acceptance", return_value=evidence), \
+                patch.object(store, "PostgresSkillRepository") as repository:
+            result = routes.accept_mcp_skill_definition(self.request())
+        self.assertEqual(result, {"status": "applied", "replayed": True, **evidence})
+        repository.assert_not_called()
+
+    def test_saves_with_mcp_parent_operation_and_returns_stored_evidence(self) -> None:
+        from app.modules.skill.infrastructure import postgres_skill_repository as store
+        from app.modules.skill.interfaces.http import routes
+
+        memory = Repository()
+        evidence = {"skill_id": "s", "version_id": "v", "version": 1, "created": True, "rolled_back": False}
+        with patch.object(store, "find_mcp_skill_acceptance", side_effect=[None, evidence]), \
+                patch.object(store, "PostgresSkillRepository", return_value=memory) as repository:
+            result = routes.accept_mcp_skill_definition(self.request())
+        repository.assert_called_once_with(parent_run_id="run-1", mcp_operation_id="op-1")
+        self.assertEqual(result["replayed"], False)
+        self.assertEqual(len(memory.skills), 1)
+
+    def test_blocked_definition_is_rejected_without_saving(self) -> None:
+        from fastapi import HTTPException
+
+        from app.modules.skill.infrastructure import postgres_skill_repository as store
+        from app.modules.skill.interfaces.http import routes
+
+        memory = Repository()
+        with patch.object(store, "find_mcp_skill_acceptance", return_value=None), \
+                patch.object(store, "PostgresSkillRepository", return_value=memory):
+            with self.assertRaises(HTTPException) as raised:
+                routes.accept_mcp_skill_definition(self.request(instructions_markdown="AKIAABCDEFGHIJKLMNOP"))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(memory.skills, {})
+
+    def test_lock_replays_same_mcp_operation_and_rejects_other_operation(self) -> None:
+        from app.modules.skill.domain.exceptions import SkillPublicationReplayedError
+        from app.modules.skill.infrastructure.postgres_skill_repository import PostgresSkillRepository
+
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = {
+            "status": "executing", "result": {"skill_undo": {"operation_id": "op-1", "skill_id": "s"}}}
+        with self.assertRaises(SkillPublicationReplayedError):
+            PostgresSkillRepository("run-1", mcp_operation_id="op-1")._lock_parent(conn, "user-1")
+        self.assertIn("origin = 'MCP_CLIENT'", conn.execute.call_args.args[0])
+        with self.assertRaises(ValueError):
+            PostgresSkillRepository("run-1", mcp_operation_id="op-2")._lock_parent(conn, "user-1")
+
+
 if __name__ == "__main__":
     unittest.main()
