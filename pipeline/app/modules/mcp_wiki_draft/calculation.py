@@ -10,6 +10,8 @@ from app.modules.wiki_generation.domain.concept_identity import (
     available_concept_slug,
     concept_name_keys,
 )
+from app.core.jev_client import JevUnavailable
+from app.modules.mcp_wiki_draft.application import McpWikiDraftError, load_submission_policy
 from app.modules.wiki_generation.domain.text_utils import name_key, slugify
 from app.modules.wiki_generation.infrastructure.assemble import SourcePageAssembler
 from app.modules.wiki_ingestion.application.concept_contribution import (
@@ -106,7 +108,17 @@ def _allocate_identities(
     occupied = {str(item["slug"]) for item in index}
     allocated: dict[str, dict[str, str]] = {}
     for concept in sorted(concepts, key=lambda item: (name_key(item["concept_name"]), item["concept_name"])):
-        merge_target = concept.get("merge_target_page_id")
+        incoming = {"title": concept["concept_name"], "identity_aliases": []}
+        active = [
+            item for item in index
+            if item["status"] == "active" and concept_name_keys(incoming) & concept_name_keys(item)
+        ]
+        # 웹 편입과 같은 순서: 이름 일치(코드) → 서버 판정기(Jev) → 외부 AI 판단(기존 LLM 자리). 판정기가 판정했으면
+        # 새 개념 판정이어도 외부 AI 대상은 쓰지 않는다.
+        merge_target = None
+        if len(active) != 1:
+            merge_target = (concept["server_merge_target_page_id"] if "server_merge_target_page_id" in concept
+                            else concept.get("merge_target_page_id"))
         if merge_target is not None:
             matches = [item for item in index if str(item["id"]) == merge_target and item["status"] == "active"]
             if len(matches) != 1:
@@ -117,11 +129,6 @@ def _allocate_identities(
                 "prior_status": "active", "title": str(target["title"]),
             }
             continue
-        incoming = {"title": concept["concept_name"], "identity_aliases": []}
-        active = [
-            item for item in index
-            if item["status"] == "active" and concept_name_keys(incoming) & concept_name_keys(item)
-        ]
         deleted = [
             item for item in index
             if item["status"] == "deleted" and concept_name_keys(incoming) & concept_name_keys(item)
@@ -158,6 +165,9 @@ def _combined_concepts(submissions: list[dict[str, Any]]) -> list[dict[str, Any]
                 if target.get("merge_target_page_id", merge_target) != merge_target:
                     raise SemanticMergeError("conflicting semantic merge targets for the same concept")
                 target["merge_target_page_id"] = merge_target
+            # finalize에서 서버 판정기(Jev)가 고정한 결과. 키가 있으면 판정했다는 뜻이고 값이 None이면 새 개념이다.
+            if "server_merge_target_page_id" in concept:
+                target["server_merge_target_page_id"] = concept["server_merge_target_page_id"]
             statement_ids = {
                 item["statement_id"]: f"{window}:{item['statement_id']}"
                 for item in concept["statements"]
@@ -184,6 +194,8 @@ def _normalized(
     ledger: list[dict[str, Any]] = []
     source_key_points: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
+    seen_links: set[frozenset[str]] = set()
+    existing_by_id = {str(item["id"]): item for item in identity_index if item["status"] == "active"}
     existing_by_name: dict[str, list[dict[str, Any]]] = {}
     for item in identity_index:
         if item["status"] == "active":
@@ -225,11 +237,19 @@ def _normalized(
         for link in concept["links"]:
             target_key = name_key(link["target_concept_name"])
             target = allocated.get(target_key)
+            if "server_target_page_id" in link:
+                target = existing_by_id.get(link["server_target_page_id"])
+                if target is None:
+                    raise SemanticMergeError("related target is no longer an active workspace concept")
             if target is None:
                 matches = existing_by_name.get(target_key, [])
                 if len(matches) != 1:
                     raise PreviewCalculationError("link target concept identity is unresolved or ambiguous")
                 target = {"slug": str(matches[0]["slug"])}
+            edge = frozenset((identity["slug"], target["slug"]))
+            if len(edge) != 2 or edge in seen_links:
+                continue
+            seen_links.add(edge)
             links.append({
                 "source": f"concept:{identity['slug']}",
                 "target": f"concept:{target['slug']}",
@@ -344,6 +364,89 @@ def _structural_rows(conn, workspace_id: str, page_ids: list[str]) -> dict[str, 
     }
 
 
+def freeze_server_concept_merges(
+    conn,
+    *,
+    workspace_id: str,
+    submissions: list[dict[str, Any]],
+    judge,
+) -> list[dict[str, Any]]:
+    """finalize에서 서버 개념 판정기(Jev)를 한 번 돌려 결과를 제출에 고정한다.
+
+    승인·적용은 고정된 제출로 다시 계산하므로 유료·비결정적 판정을 다시 부르지 않는다. 판정기가 없거나
+    호출할 수 없으면 제출을 그대로 돌려줘 외부 AI 판단으로 처리한다. 내부 LLM 대체 경로는 쓰지 않는다.
+    """
+    if judge is None:
+        return submissions
+    concepts = _combined_concepts(submissions)
+    index = [item for item in load_concept_identity_index(conn, workspace_id) if item["status"] == "active"]
+    by_slug = {str(item["slug"]): item for item in index}
+    pool = [
+        {"slug": str(item["slug"]), "title": str(item["title"]), "identity_aliases": item["identity_aliases"],
+         "aliases": item["identity_aliases"], "definition": str(item.get("summary") or "")}
+        for item in index
+    ]
+    incoming = [
+        # MCP 기여에는 정의 칸이 없어 앞 문장들을 정의로 쓴다. ponytail: 고정 500자, 정의 칸이 생기면 그걸 쓴다.
+        {"slug": f"mcp-incoming-{position}", "title": concept["concept_name"], "identity_aliases": [], "aliases": [],
+         "definition": " ".join(item["text"] for item in concept["statements"][:3])[:500], "key": name_key(concept["concept_name"])}
+        for position, concept in enumerate(concepts)
+    ]
+    try:
+        resolutions = judge.judge_concepts(incoming, pool)
+    except JevUnavailable:
+        return submissions
+    decided: dict[str, str | None] = {}
+    related: dict[str, list[dict[str, str]]] = {}
+    for concept, submitted in zip(incoming, concepts, strict=True):
+        resolution = resolutions.get(concept["slug"])
+        target = by_slug.get(str(resolution.get("canonical_slug"))) if resolution and resolution.get("decision") == "merge_into" else None
+        # 판정 대상이 된 개념만 고정한다. 정의가 없거나 후보가 없어 묻지 않은 개념은 외부 AI 판단으로 남긴다.
+        if target is not None or concept["slug"] in resolutions or judge_asked(concept, pool):
+            decided[concept["key"]] = str(target["id"]) if target is not None else None
+        if resolution and resolution.get("decision") == "link_to":
+            targets = list(dict.fromkeys(resolution.get("link_targets") or [resolution.get("canonical_slug")]))
+            if any(target not in by_slug for target in targets):
+                raise SemanticMergeError("related judgment target is outside active workspace concepts")
+            # Provenance records definition inputs, not a statement-level Jev judgment.
+            offset = 0
+            for statement in submitted["statements"][:3]:
+                if offset < 500 and statement["text"]:
+                    related.setdefault(concept["key"], []).extend({
+                        "source_statement_id": statement["statement_id"],
+                        "server_target_page_id": str(by_slug[target]["id"]),
+                        "target_concept_name": str(by_slug[target]["title"]),
+                        "relation": "concept_related_to",
+                    } for target in targets)
+                offset += len(statement["text"]) + 1
+    if not decided:
+        return submissions
+    frozen = []
+    max_links = load_submission_policy().max_links if related else None
+    for submission in submissions:
+        contributions = []
+        for contribution in submission["contributions"]:
+            key = name_key(contribution["concept_name"])
+            prefix = f"{submission['window_ordinal']}:"
+            local_ids = {item["statement_id"] for item in contribution["statements"]}
+            links = list(contribution["links"])
+            links.extend({**link, "source_statement_id": link["source_statement_id"][len(prefix):]}
+                         for link in related.get(key, [])
+                         if link["source_statement_id"].startswith(prefix)
+                         and link["source_statement_id"][len(prefix):] in local_ids)
+            contributions.append({**contribution, "links": links,
+                                  **({"server_merge_target_page_id": decided[key]} if key in decided else {})})
+        if max_links is not None and sum(len(item["links"]) for item in contributions) > max_links:
+            raise McpWikiDraftError(413, "PREVIEW_TOO_LARGE", "Server judgments exceed the configured link bound.")
+        frozen.append({**submission, "contributions": contributions})
+    return frozen
+
+
+def judge_asked(concept: dict[str, Any], pool: list[dict[str, Any]]) -> bool:
+    """Jev가 이 개념을 실제로 물었는지. judge_concepts는 정의가 있는 개념과 정의 있는 후보가 있을 때만 묻는다."""
+    return bool(concept["definition"].strip()) and any(str(item.get("definition") or "").strip() for item in pool)
+
+
 def calculate_ingest_preview(
     conn,
     *,
@@ -366,7 +469,7 @@ def calculate_ingest_preview(
         target = by_page.setdefault(page_id, {
             "concept_name": concept["concept_name"], "statements": [], "links": [],
         })
-        if concept.get("merge_target_page_id") is not None:
+        if concept.get("server_merge_target_page_id", concept.get("merge_target_page_id")) is not None:
             target["concept_name"] = concept["concept_name"]
         target["statements"].extend(concept["statements"])
         target["links"].extend(concept["links"])

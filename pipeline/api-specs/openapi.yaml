@@ -1029,6 +1029,140 @@ components:
       - next_cursor
       title: McpOwnedRunsResponse
       type: object
+    McpSkillAcceptanceLookupRequest:
+      additionalProperties: false
+      properties:
+        operation_id:
+          maxLength: 255
+          minLength: 1
+          title: Operation Id
+          type: string
+        run_id:
+          maxLength: 255
+          minLength: 1
+          title: Run Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+      required:
+      - run_id
+      - operation_id
+      - user_id
+      title: McpSkillAcceptanceLookupRequest
+      type: object
+    McpSkillAcceptanceRequest:
+      additionalProperties: false
+      description: 승인된 MCP operation 실행. run_id·operation_id는 Document가 확인한 불변 operation 식별자다.
+      properties:
+        definition:
+          $ref: '#/components/schemas/McpSkillDefinition'
+        operation_id:
+          maxLength: 255
+          minLength: 1
+          title: Operation Id
+          type: string
+        run_id:
+          maxLength: 255
+          minLength: 1
+          title: Run Id
+          type: string
+        user_id:
+          minLength: 1
+          title: User Id
+          type: string
+        workspace_id:
+          minLength: 1
+          title: Workspace Id
+          type: string
+      required:
+      - run_id
+      - operation_id
+      - workspace_id
+      - user_id
+      - definition
+      title: McpSkillAcceptanceRequest
+      type: object
+    McpSkillDefinition:
+      additionalProperties: false
+      description: 외부 MCP 클라이언트 AI가 작성한 Skill 정의. allowed_tools·actor·승인 값은 받지 않는다.
+      properties:
+        capabilities:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Capabilities
+        description:
+          maxLength: 500
+          minLength: 1
+          title: Description
+          type: string
+        expected_version:
+          anyOf:
+          - minimum: 1.0
+            type: integer
+          - type: 'null'
+          title: Expected Version
+        instructions_markdown:
+          maxLength: 30000
+          minLength: 1
+          title: Instructions Markdown
+          type: string
+        name:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+          title: Name
+          type: string
+        requires_source:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Requires Source
+        result_mode:
+          anyOf:
+          - enum:
+            - create
+            - edit
+            - auto
+            type: string
+          - type: 'null'
+          title: Result Mode
+        scope_type:
+          anyOf:
+          - enum:
+            - personal
+            - team
+            type: string
+          - type: 'null'
+          title: Scope Type
+        skill_id:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            type: string
+          - type: 'null'
+          title: Skill Id
+        targets:
+          anyOf:
+          - items:
+              enum:
+              - current_document
+              - selection
+              type: string
+            maxItems: 2
+            type: array
+          - type: 'null'
+          title: Targets
+      required:
+      - name
+      - description
+      - instructions_markdown
+      title: McpSkillDefinition
+      type: object
     McpWikiEvidenceResponse:
       additionalProperties: false
       properties:
@@ -3390,6 +3524,171 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
+  /internal/mcp/pdf-conversions:
+    post:
+      operationId: start_internal_mcp_pdf_conversions_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Start
+      tags:
+      - mcp-pdf-conversion
+  /internal/mcp/pdf-conversions/{conversion_id}/finalize:
+    post:
+      operationId: finalize_internal_mcp_pdf_conversions__conversion_id__finalize_post
+      parameters:
+      - in: path
+        name: conversion_id
+        required: true
+        schema:
+          title: Conversion Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Finalize
+      tags:
+      - mcp-pdf-conversion
+  /internal/mcp/pdf-conversions/{conversion_id}/status:
+    post:
+      operationId: status_internal_mcp_pdf_conversions__conversion_id__status_post
+      parameters:
+      - in: path
+        name: conversion_id
+        required: true
+        schema:
+          title: Conversion Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Status
+      tags:
+      - mcp-pdf-conversion
+  /internal/mcp/pdf-conversions/{conversion_id}/windows/read:
+    post:
+      operationId: read_window_internal_mcp_pdf_conversions__conversion_id__windows_read_post
+      parameters:
+      - in: path
+        name: conversion_id
+        required: true
+        schema:
+          title: Conversion Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read Window
+      tags:
+      - mcp-pdf-conversion
+  /internal/mcp/pdf-conversions/{conversion_id}/windows/{window_id}/submissions:
+    post:
+      operationId: submit_internal_mcp_pdf_conversions__conversion_id__windows__window_id__submissions_post
+      parameters:
+      - in: path
+        name: conversion_id
+        required: true
+        schema:
+          title: Conversion Id
+          type: string
+      - in: path
+        name: window_id
+        required: true
+        schema:
+          title: Window Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Submit
+      tags:
+      - mcp-pdf-conversion
   /internal/mcp/wiki/drafts/{draft_id}/apply:
     post:
       operationId: apply_draft_internal_mcp_wiki_drafts__draft_id__apply_post
@@ -3955,6 +4254,85 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Propose Skill Draft
+      tags:
+      - skills
+  /skills/mcp-acceptances:
+    post:
+      description: '웹에서 승인된 MCP operation의 Skill 정의를 LLM 없이 검증해 저장하고 재생 가능한 저장 증거를 돌려준다.
+
+
+        저장 증거는 Skill 저장과 같은 트랜잭션에서 MCP run의 result.skill_undo에 남는다(취소 시 되돌리기에도 쓴다).
+
+        같은 operation을 다시 부르면 저장하지 않고 그 증거를 replayed=true로 돌려준다.'
+      operationId: accept_mcp_skill_definition_skills_mcp_acceptances_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpSkillAcceptanceRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Accept Mcp Skill Definition Skills Mcp Acceptances Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Accept Mcp Skill Definition
+      tags:
+      - skills
+  /skills/mcp-acceptances/lookup:
+    post:
+      description: 결과를 모르는 실행을 Document가 정리할 때 쓴다. 저장 증거가 없으면 absent다.
+      operationId: lookup_mcp_skill_acceptance_skills_mcp_acceptances_lookup_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpSkillAcceptanceLookupRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Lookup Mcp Skill Acceptance Skills Mcp Acceptances Lookup Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lookup Mcp Skill Acceptance
       tags:
       - skills
   /skills/preview:

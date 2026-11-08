@@ -938,6 +938,8 @@ AI_DB_REQUIRED_TABLES = (
     "mcp_wiki_window_submissions",
     "mcp_wiki_drafts",
     "mcp_wiki_draft_idempotency",
+    "mcp_pdf_conversions",
+    "mcp_pdf_conversion_submissions",
     *AGENT_REQUIRED_TABLES,
 )
 
@@ -2914,6 +2916,8 @@ def _plan_page_moves(
     load: Callable[[list[dict[str, Any]]], None],
     judge_part_of: PartOfJudge,
     embedding_model: EmbeddingModelPort,
+    *,
+    candidate_heads: tuple | None = None,
 ) -> None:
     """바뀐 페이지와 바뀐 페이지 가까이의 페이지를 다른 페이지나 그 항목 아래 하위 항목으로 통째로 옮긴다(ADR 0042 4의 이동).
 
@@ -2922,10 +2926,17 @@ def _plan_page_moves(
     판정기의 part_of만 따른다. 벡터는 저장된 페이지·`sub_entry` 벡터를 쓰고, 바뀐 페이지(와 벡터가 없는 그 하위 항목)만
     지금 "이름: 정의"로 임베딩한다. 그래서 임베딩 요청은 바뀐 만큼이고, 벡터가 아직 없는 다른 페이지·항목은 후보가 아니다.
     다른 판정이 바꾸는 페이지와 이어진 이동, 이동의 연쇄는 다음 lint로 미룬다.
+    candidate_heads를 주는 호출자는 pages의 inbound-reference closure를 먼저 검증해야 한다.
     """
     busy = set(plan.page_changes)
-    page_rows, _entry_rows, heads, head_pages = _part_of_heads(conn, workspace_id)
-    vectors = _stored_concept_vectors(conn, workspace_id, embedding_model.model_name)
+    page_rows, _entry_rows, heads, head_pages = (
+        _part_of_heads(conn, workspace_id) if candidate_heads is None else candidate_heads
+    )
+    vectors = _stored_concept_vectors(
+        conn, workspace_id, embedding_model.model_name,
+        page_ids=None if candidate_heads is None else [str(row["id"]) for row in page_rows],
+        entry_ids=None if candidate_heads is None else [key for key in heads if head_pages[key][1] is not None],
+    )
     fresh = [key for key in heads if head_pages[key][0] in changed and (head_pages[key][1] is None or key not in vectors)]
     try:
         embedded = cached_embeddings(embedding_model, [concept_text(heads[key]) for key in fresh])
@@ -2984,7 +2995,7 @@ def _plan_page_moves(
     load([row for row in page_rows
           if str(row["id"]) in {target for page_id, _, _ in moves for target, _ in parents[page_id]} - set(pages)])
     # 옮길 페이지의 항목을 가리키는 참조를 낸 페이지도 읽는다. 그 참조는 대상 페이지를 가리키게 바꾼다.
-    if moves:
+    if moves and candidate_heads is None:
         load([
             row for row in conn.execute(
                 """
@@ -3059,6 +3070,11 @@ def _part_of_heads(
         """,
         (workspace_id,),
     ).fetchall()
+    return _part_of_heads_from_rows(page_rows, entry_rows)
+
+
+def _part_of_heads_from_rows(page_rows, entry_rows):
+    """Build the same heads from database rows or authoritative selected-target views."""
     heads: dict[str, dict[str, Any]] = {}
     head_pages: dict[str, tuple[str, str | None]] = {}
     for row in page_rows:
@@ -3076,7 +3092,10 @@ def _part_of_heads(
     return page_rows, entry_rows, heads, head_pages
 
 
-def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embedding_model: str) -> dict[str, array]:
+def _stored_concept_vectors(
+    conn: psycopg.Connection, workspace_id: str, embedding_model: str,
+    *, page_ids: list[str] | None = None, entry_ids: list[str] | None = None,
+) -> dict[str, array]:
     """활성 개념 페이지(slug)와 하위 항목(entry_id)의 저장된 벡터. 아직 임베딩하지 않은 것은 빠진다."""
     rows = conn.execute(
         """
@@ -3085,6 +3104,7 @@ def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embeddi
         JOIN wiki_pages page ON page.id = embedding.page_id
         WHERE page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
           AND embedding.embedding_model = %s AND embedding.status = 'completed'
+          AND (%s::text[] IS NULL OR page.id = ANY(%s))
         UNION ALL
         SELECT DISTINCT ON (unit.entry_id) unit.entry_id, vector.embedding_vector
         FROM wiki_embedding_units unit
@@ -3092,8 +3112,11 @@ def _stored_concept_vectors(conn: psycopg.Connection, workspace_id: str, embeddi
         JOIN wiki_embedding_vectors vector ON vector.id = unit.embedding_vector_id
         WHERE page.workspace_id = %s AND page.status = 'active' AND unit.unit_type = 'sub_entry'
           AND vector.embedding_model = %s AND vector.status = 'completed'
+          AND (%s::text[] IS NULL OR page.id = ANY(%s))
+          AND (%s::text[] IS NULL OR unit.entry_id = ANY(%s))
         """,
-        (workspace_id, embedding_model, workspace_id, embedding_model),
+        (workspace_id, embedding_model, page_ids, page_ids,
+         workspace_id, embedding_model, page_ids, page_ids, entry_ids, entry_ids),
     ).fetchall()
     return {str(row["key"]): array("f", row["embedding_vector"]) for row in rows}
 

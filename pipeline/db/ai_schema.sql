@@ -237,6 +237,45 @@ ALTER TABLE mcp_wiki_draft_idempotency ADD CONSTRAINT mcp_wiki_draft_idempotency
     tool_name IN ('start_ingest','submit_window','finalize_ingest','submit_lint_changes')
 );
 
+-- MCP 외부 AI PDF 변환 세션. 전처리(AnyDoc)는 converter journal(ai_task_runs, run_id mcpconvert:<id>:<start>)과
+-- tmp/convert/mcp/ 묶음에 있고, 여기에는 요청자 신원·원본·창 결과와 조립한 Markdown hash만 둔다.
+CREATE TABLE IF NOT EXISTS mcp_pdf_conversions (
+    conversion_id uuid PRIMARY KEY,
+    workspace_id text NOT NULL,
+    user_id text NOT NULL,
+    grant_id uuid NOT NULL,
+    client_id text NOT NULL,
+    policy_generation bigint NOT NULL,
+    idempotency_key varchar(255) NOT NULL,
+    request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    document_id text NOT NULL,
+    source_key text NOT NULL,
+    source_content_hash varchar(71) NOT NULL CHECK (source_content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    page_count integer NOT NULL CHECK (page_count BETWEEN 1 AND 50),
+    describe_figures boolean NOT NULL,
+    final_markdown_hash varchar(71) CHECK (final_markdown_hash ~ '^sha256:[0-9a-f]{64}$'),
+    final_response jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    finalized_at timestamptz,
+    UNIQUE (workspace_id, user_id, grant_id, client_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS mcp_pdf_conversions_final_idx
+    ON mcp_pdf_conversions (workspace_id, user_id, document_id, final_markdown_hash)
+    WHERE final_markdown_hash IS NOT NULL;
+CREATE TABLE IF NOT EXISTS mcp_pdf_conversion_submissions (
+    conversion_id uuid NOT NULL REFERENCES mcp_pdf_conversions(conversion_id) ON DELETE CASCADE,
+    window_id uuid NOT NULL,
+    attempt integer NOT NULL CHECK (attempt BETWEEN 1 AND 2),
+    window_hash varchar(71) NOT NULL,
+    idempotency_key varchar(255) NOT NULL,
+    request_hash varchar(71) NOT NULL,
+    result jsonb NOT NULL,
+    response jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (conversion_id, window_id, attempt),
+    UNIQUE (conversion_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS wiki_pages (
     id varchar(255) PRIMARY KEY,
     page_type varchar(255) NOT NULL CHECK (page_type IN ('source', 'concept')),
@@ -775,7 +814,7 @@ BEGIN
             origin IS DISTINCT FROM 'MCP_CLIENT' OR (
                 grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
                 AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
-                AND tool_name IN ('propose_document_edit', 'propose_plan')
+                AND tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')
                 AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
             )
         );
@@ -954,7 +993,7 @@ CREATE TABLE IF NOT EXISTS agent_mcp_tool_attempts (
     operation_id text NOT NULL REFERENCES agent_plan_operations(id) ON DELETE CASCADE,
     tool_name text NOT NULL CHECK (tool_name IN (
         'create_folder', 'rename_folder', 'move_folder', 'move_document',
-        'rename_document', 'create_document', 'apply_document_edit'
+        'rename_document', 'create_document', 'apply_document_edit', 'publish_skill_definition'
     )),
     create_identity jsonb,
     attempt integer NOT NULL CHECK (attempt > 0),
@@ -970,7 +1009,7 @@ ALTER TABLE agent_mcp_tool_attempts DROP CONSTRAINT IF EXISTS agent_mcp_tool_att
 ALTER TABLE agent_mcp_tool_attempts ADD CONSTRAINT agent_mcp_tool_attempts_tool_name_check CHECK (
     tool_name IN (
         'create_folder', 'rename_folder', 'move_folder', 'move_document',
-        'rename_document', 'create_document', 'apply_document_edit'
+        'rename_document', 'create_document', 'apply_document_edit', 'publish_skill_definition'
     )
 );
 CREATE INDEX IF NOT EXISTS idx_agent_mcp_tool_attempts_reconcile
@@ -1005,7 +1044,7 @@ CREATE TABLE IF NOT EXISTS agent_mcp_proposal_requests (
     grant_id text NOT NULL,
     user_id text NOT NULL,
     workspace_id text NOT NULL,
-    tool_name text NOT NULL CHECK (tool_name IN ('propose_document_edit', 'propose_plan')),
+    tool_name text NOT NULL CHECK (tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')),
     idempotency_key text NOT NULL,
     request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
     invocation_id text NOT NULL,
@@ -1024,7 +1063,7 @@ ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_mcp_provenance_check CHECK (
     origin IS DISTINCT FROM 'MCP_CLIENT' OR (
         grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
         AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
-        AND tool_name IN ('propose_document_edit', 'propose_plan')
+        AND tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')
         AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
     )
 );
@@ -1032,7 +1071,7 @@ ALTER TABLE agent_mcp_proposal_requests
     DROP CONSTRAINT IF EXISTS agent_mcp_proposal_requests_tool_name_check;
 ALTER TABLE agent_mcp_proposal_requests
     ADD CONSTRAINT agent_mcp_proposal_requests_tool_name_check
-    CHECK (tool_name IN ('propose_document_edit', 'propose_plan'));
+    CHECK (tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_personal_command
     ON skills (owner_user_id, command) WHERE scope_type = 'personal';

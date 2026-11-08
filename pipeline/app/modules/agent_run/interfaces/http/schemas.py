@@ -13,6 +13,7 @@ from app.modules.agent_run.domain.entities import (
     McpProposalCommand,
 )
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation, ApprovedBy
+from app.modules.skill.interfaces.http.schemas import McpSkillDefinition
 
 
 class AgentRunActorRequest(BaseModel):
@@ -45,7 +46,7 @@ class McpProposalActorRequest(_McpExactModel):
     policy_generation: StrictInt = Field(ge=1, le=_MAX_SIGNED_LONG)
     origin: Literal["MCP_CLIENT"]
     spec_version: Literal["2025-11-25"]
-    tool_name: Literal["propose_document_edit", "propose_plan"]
+    tool_name: Literal["propose_document_edit", "propose_plan", "propose_skill_definition"]
 
     @field_validator("invocation_id", "grant_id")
     @classmethod
@@ -233,6 +234,10 @@ _PLAN_ARGUMENT_KEYS = {
         "document_id", "base_version", "target", "content_artifact_id", "content_hash",
     },
 }
+# PDF 변환본 생성: 원본 PDF 문서와 그 hash를 둘 다 지정한 create_document. 하나만 오면 거절한다.
+_SOURCE_BOUND_CREATE_DOCUMENT_KEYS = _PLAN_ARGUMENT_KEYS["create_document"] | {
+    "source_document_id", "source_content_hash",
+}
 
 
 def _folder_id(value: object, *, nullable: bool = True) -> str | None:
@@ -283,8 +288,19 @@ class McpPlanOperationRequest(_McpExactModel):
 
     @model_validator(mode="after")
     def exact_tool_contract(self):
-        if set(self.arguments) != _PLAN_ARGUMENT_KEYS[self.tool_name]:
+        source_bound = (
+            self.tool_name == "create_document"
+            and set(self.arguments) == _SOURCE_BOUND_CREATE_DOCUMENT_KEYS
+        )
+        if not source_bound and set(self.arguments) != _PLAN_ARGUMENT_KEYS[self.tool_name]:
             raise ValueError("operation arguments do not match the tool contract")
+        if source_bound:
+            source_id = self.arguments["source_document_id"]
+            if not isinstance(source_id, str) or not _DOCUMENT_ID.fullmatch(source_id):
+                raise ValueError("source_document_id has an invalid format")
+            source_hash = self.arguments["source_content_hash"]
+            if not isinstance(source_hash, str) or not _HASH.fullmatch(source_hash):
+                raise ValueError("source_content_hash must be a lowercase sha256 digest")
         folder_tool = self.tool_name in {"create_folder", "rename_folder", "move_folder"}
         if self.target_type != ("folder" if folder_tool else "document"):
             raise ValueError("target_type does not match tool_name")
@@ -416,12 +432,24 @@ class McpPlanProposalRequest(_McpExactModel):
         return self
 
 
+class McpSkillProposalRequest(_McpExactModel):
+    """외부 AI가 작성한 Skill 정의 하나를 웹 승인 대상으로 올린다."""
+
+    request_summary: str
+    definition: McpSkillDefinition
+
+    @field_validator("request_summary")
+    @classmethod
+    def summary_bound(cls, value: str) -> str:
+        return _bounded_nonblank(value, "request_summary", 1000)
+
+
 class McpAgentProposalRequest(_McpExactModel):
     schema_version: Literal["mcp.agent-proposal.v1"]
     actor: McpProposalActorRequest
     idempotency_key: str
     request_hash: str
-    proposal: McpEditProposalRequest | McpPlanProposalRequest
+    proposal: McpEditProposalRequest | McpPlanProposalRequest | McpSkillProposalRequest
 
     @field_validator("idempotency_key")
     @classmethod
@@ -437,7 +465,9 @@ class McpAgentProposalRequest(_McpExactModel):
 
     @model_validator(mode="after")
     def matching_tool(self):
-        if (self.actor.tool_name == "propose_plan") != isinstance(self.proposal, McpPlanProposalRequest):
+        expected = {"propose_document_edit": McpEditProposalRequest, "propose_plan": McpPlanProposalRequest,
+                    "propose_skill_definition": McpSkillProposalRequest}[self.actor.tool_name]
+        if type(self.proposal) is not expected:
             raise ValueError("actor tool_name does not match proposal shape")
         return self
 

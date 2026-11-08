@@ -56,6 +56,15 @@ class RollbackAgentRunUseCase:
                         # 복구 기록을 남기기 전에 취소돼 running으로 멈춘 단계다.
                         self._repository.mark_operation(record["operation_id"], ("running",), "cancelled")
                     continue
+                if record["tool_name"] == "publish_skill_definition":
+                    # 저장 여부는 실행 응답이 아니라 저장 증거(skill_undo)로 판정한다. 증거가 없으면 저장하지 않았다.
+                    error = self._repository.parent_rollback_error(run_id)
+                    if error is not None:
+                        self._repository.finish_rollback(run_id, f"{error}:{record['operation_id']}")
+                        return
+                    if record["id"] is not None:
+                        self._repository.complete_undo(record["id"], {})
+                    continue
                 if (record["forward_status"] == "failed" and record.get("forward_attempt") == 1
                         and record.get("forward_error_code") in {"tool_http_400", "tool_http_401", "tool_http_403", "tool_http_404", "tool_http_409", "tool_http_422"}):
                     self._repository.complete_undo(record["id"], {})
@@ -136,7 +145,8 @@ class RollbackAgentRunUseCase:
         return restored
 
     def _snapshot(self, context: AgentRunContext, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if tool in {"create_folder", "create_document"}:
+        # Skill 저장은 AI 수락 API가 같은 트랜잭션에 run.result.skill_undo로 되돌릴 증거를 남긴다.
+        if tool in {"create_folder", "create_document", "publish_skill_definition"}:
             return {}
         if tool == "apply_document_edit":
             before = self._read(context, "get_document_content", {"document_id": arguments["document_id"]})

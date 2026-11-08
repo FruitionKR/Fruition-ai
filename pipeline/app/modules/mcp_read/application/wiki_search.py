@@ -65,6 +65,10 @@ class WikiSearchCandidate:
     evidence_count: int
     materialized_bytes: int
     semantic_score: float = 0.0
+    # snippet을 만든 embedding unit. Jev 근거 판정 후보에 그대로 쓴다.
+    unit_id: str | None = None
+    unit_type: str = ""
+    unit_weight: float = 1.0
 
 
 class WikiSearchRepositoryPort(Protocol):
@@ -92,6 +96,12 @@ class WikiSearchTextPort(Protocol):
     def score(self, query: str, documents: list[str]) -> list[float]: ...
 
 
+class WikiSearchEvidencePort(Protocol):
+    def select(self, actor: WikiSearchActor, query: str, candidates: list[WikiSearchCandidate]) -> list[str]:
+        """근거로 고른 후보 page ID를 고른 순서로 돌려준다. 쓸 수 없으면 빈 목록이다."""
+        ...
+
+
 class WikiSearchError(RuntimeError):
     def __init__(self, status_code: int, code: str, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
@@ -114,6 +124,7 @@ class SearchWikiUseCase:
         cursor_key: bytes,
         query_embedding_model: str,
         track_query_embedding: Callable[[WikiSearchActor, str, str], AbstractContextManager] | None = None,
+        evidence_selector: WikiSearchEvidencePort | None = None,
     ) -> None:
         self._repository = repository
         self._embedding_search = embedding_search
@@ -122,6 +133,7 @@ class SearchWikiUseCase:
         self._cursor_key = cursor_key
         self._query_embedding_model = query_embedding_model
         self._track_query_embedding = track_query_embedding or (lambda _actor, _model, _query: nullcontext())
+        self._evidence_selector = evidence_selector
 
     def execute(self, request: WikiSearchRequest) -> dict[str, object]:
         self._validate_request(request)
@@ -151,7 +163,11 @@ class SearchWikiUseCase:
                     vector_dimension_limit=self.limits.max_vector_dimensions,
                 )
                 self._validate_prefetch(candidates)
-                ranked = self._rank(request.query, candidates)
+                if cursor is None:
+                    ranked = self._selected_first(request, self._rank(request.query, candidates))
+                else:
+                    # 이어지는 요청은 Jev를 다시 부르지 않고 cursor에 고정한 순서를 현재 후보와 대조해 쓴다.
+                    ranked = self._frozen_order(cursor, candidates)
                 ensure_task_active()
         except WikiSearchError:
             raise
@@ -163,11 +179,7 @@ class SearchWikiUseCase:
             raise
 
         snapshot = [self._cursor_item(candidate) for candidate in ranked]
-        offset = 0
-        if cursor is not None:
-            if cursor.get("items") != snapshot:
-                raise WikiSearchError(409, "STALE_CURSOR", "Wiki search results changed; start a new search.")
-            offset = int(cursor["offset"])
+        offset = int(cursor["offset"]) if cursor is not None else 0
 
         selected = ranked[offset:offset + request.page_size]
         next_offset = offset + len(selected)
@@ -248,6 +260,28 @@ class SearchWikiUseCase:
             for candidate, lexical in zip(candidates, text_scores, strict=True)
         }
         return sorted(candidates, key=lambda candidate: (-scores[candidate.page_id], -candidate.version, candidate.page_id))
+
+    def _selected_first(self, request: WikiSearchRequest, ranked: list[WikiSearchCandidate]) -> list[WikiSearchCandidate]:
+        if self._evidence_selector is None or not ranked:
+            return ranked
+        ensure_task_active()
+        selected_ids = self._evidence_selector.select(request.actor, request.query, ranked)
+        by_id = {candidate.page_id: candidate for candidate in ranked}
+        # 후보에 없는 ID는 버려, 판정 결과가 새 page를 만들어내지 못하게 한다.
+        front = [by_id[page_id] for page_id in dict.fromkeys(selected_ids) if page_id in by_id]
+        chosen = {candidate.page_id for candidate in front}
+        return front + [candidate for candidate in ranked if candidate.page_id not in chosen]
+
+    def _frozen_order(self, cursor: dict[str, object], candidates: list[WikiSearchCandidate]) -> list[WikiSearchCandidate]:
+        items = cursor["items"]
+        by_id = {candidate.page_id: candidate for candidate in candidates}
+        ordered = [by_id.get(item.get("page_id")) if isinstance(item, dict) else None for item in items]
+        if len(candidates) != len(items) or any(
+            candidate is None or self._cursor_item(candidate) != item
+            for candidate, item in zip(ordered, items, strict=True)
+        ):
+            raise WikiSearchError(409, "STALE_CURSOR", "Wiki search results changed; start a new search.")
+        return ordered
 
     def _evidence(self, candidate: WikiSearchCandidate) -> list[dict[str, str]]:
         refs = source_references_from_ids(list(candidate.block_refs), candidate.source_document_id)

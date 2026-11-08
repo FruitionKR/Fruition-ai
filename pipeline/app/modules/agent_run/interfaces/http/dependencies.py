@@ -27,7 +27,10 @@ def get_approve_mcp_agent_plan_use_case() -> ApproveMcpAgentPlanUseCase:
 
 @lru_cache(maxsize=1)
 def get_create_mcp_proposal_use_case() -> CreateMcpProposalUseCase:
+    from app.modules.skill.interfaces.http.dependencies import get_manage_skill_use_case
+
     return CreateMcpProposalUseCase(
         get_agent_run_repository(),
         build_mcp_document_edit_context_reader(),
+        get_manage_skill_use_case(),
     )

@@ -12,7 +12,7 @@ from app.core.pipeline_control import (
 )
 from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.model_usage.interfaces.http.dependencies import RequestId
-from app.modules.skill.application.author_skill import AuthorSkillUseCase
+from app.modules.skill.application.author_skill import AuthorSkillUseCase, accept_external_skill_definition
 from app.modules.markdown_edit.domain.entities import MarkdownEditTarget
 from app.modules.skill.application.manage_skill import ManageSkillUseCase
 from app.modules.skill.application.skill_test_run import require_test_runnable, skill_test_run_command
@@ -21,8 +21,10 @@ from app.modules.skill.application.ports import SkillRepositoryPort
 from app.modules.skill.domain.exceptions import (
     SKILL_REJECTION_CODES,
     ReferenceDocumentTooLargeError,
+    SkillPublicationReplayedError,
     SkillRequestRejectedError,
     SkillTestRunUnsupportedError,
+    SkillVersionConflictError,
 )
 from app.modules.skill.interfaces.http.dependencies import (
     get_author_skill_use_case,
@@ -33,6 +35,8 @@ from app.modules.skill.interfaces.http.dependencies import (
 )
 from app.modules.skill.interfaces.http.schemas import (
     SkillTaskRequest,
+    McpSkillAcceptanceLookupRequest,
+    McpSkillAcceptanceRequest,
     PublishAuthoredSkillRequest,
     SkillAuthoringRequest,
     SkillAuthoringResponse,
@@ -355,3 +359,66 @@ def _set_enabled(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SkillResponse.from_domain(skill)
+
+
+@router.post("/mcp-acceptances")
+def accept_mcp_skill_definition(payload: McpSkillAcceptanceRequest) -> dict[str, object]:
+    """웹에서 승인된 MCP operation의 Skill 정의를 LLM 없이 검증해 저장하고 재생 가능한 저장 증거를 돌려준다.
+
+    저장 증거는 Skill 저장과 같은 트랜잭션에서 MCP run의 result.skill_undo에 남는다(취소 시 되돌리기에도 쓴다).
+    같은 operation을 다시 부르면 저장하지 않고 그 증거를 replayed=true로 돌려준다.
+    """
+    from app.modules.skill.infrastructure import postgres_skill_repository as skill_store
+
+    def replay(evidence: dict[str, object]) -> dict[str, object]:
+        return {"status": "applied", "replayed": True, **evidence}
+
+    existing = skill_store.find_mcp_skill_acceptance(payload.run_id, payload.user_id, payload.operation_id)
+    if existing is not None:
+        return replay(existing)
+    definition = payload.definition
+    manager = ManageSkillUseCase(skill_store.PostgresSkillRepository(
+        parent_run_id=payload.run_id, mcp_operation_id=payload.operation_id))
+    try:
+        result, _ = accept_external_skill_definition(
+            manager,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            skill_id=definition.skill_id,
+            expected_version=definition.expected_version,
+            scope_type=definition.scope_type,
+            name=definition.name,
+            description=definition.description,
+            instructions_markdown=definition.instructions_markdown,
+            capabilities=tuple(definition.capabilities) if definition.capabilities is not None else None,
+            targets=tuple(definition.targets) if definition.targets is not None else None,
+            result_mode=definition.result_mode,
+            requires_source=definition.requires_source,
+            publish=True,
+        )
+    except SkillPublicationReplayedError as exc:
+        found = skill_store.find_mcp_skill_acceptance(payload.run_id, payload.user_id, payload.operation_id)
+        return replay(found if found is not None else skill_store.mcp_acceptance_evidence(exc.undo, None))
+    except SkillVersionConflictError as exc:
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)}) from exc
+    except PipelineRunCancelledError as exc:
+        raise HTTPException(409, {"code": "run_not_executing", "message": str(exc)}) from exc
+    except SkillRequestRejectedError as exc:
+        raise HTTPException(400, {"code": exc.code, "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, {"code": "skill_request_invalid", "message": str(exc)}) from exc
+    if result.status != "published" or result.skill is None:
+        raise HTTPException(422, {"code": "skill_definition_blocked", "message": "Skill definition has safety issues."})
+    evidence = skill_store.find_mcp_skill_acceptance(payload.run_id, payload.user_id, payload.operation_id)
+    if evidence is None:
+        raise HTTPException(500, {"code": "skill_acceptance_evidence_missing", "message": "Acceptance evidence is missing."})
+    return {"status": "applied", "replayed": False, **evidence}
+
+
+@router.post("/mcp-acceptances/lookup")
+def lookup_mcp_skill_acceptance(payload: McpSkillAcceptanceLookupRequest) -> dict[str, object]:
+    """결과를 모르는 실행을 Document가 정리할 때 쓴다. 저장 증거가 없으면 absent다."""
+    from app.modules.skill.infrastructure import postgres_skill_repository as skill_store
+
+    evidence = skill_store.find_mcp_skill_acceptance(payload.run_id, payload.user_id, payload.operation_id)
+    return {"status": "absent"} if evidence is None else {"status": "applied", **evidence}

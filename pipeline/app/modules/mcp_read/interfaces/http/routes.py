@@ -16,7 +16,10 @@ from app.modules.mcp_read.application.wiki_search import (
     WikiSearchError,
     WikiSearchLimits,
 )
+from app.core.jev_client import JEV_EVIDENCE_ENABLED_ENV, build_jev_client
+from app.core.llm_env import int_env
 from app.modules.mcp_read.infrastructure.bounded_wiki_page_repository import BoundedWikiPageRepository
+from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
 from app.modules.mcp_read.infrastructure.postgres_wiki_search_repository import PostgresMcpWikiSearchRepository
 from app.modules.model_usage.infrastructure.usage_ledger import track_call, usage_scope
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
@@ -135,6 +138,8 @@ def get_search_use_case() -> SearchWikiUseCase:
         raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "Remote embedding service is not configured.", retryable=True)
     model = RemoteEmbeddingModel.from_env()
     embedding_search = StoredWikiPageEmbeddingSearch(model).without_live_embedding()
+    # 웹 질의와 같은 설정·키로 Jev 근거 판정을 쓴다. 꺼져 있거나 키가 없으면 하이브리드 순서만 쓴다.
+    jev_client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV, interactive=True)
     return SearchWikiUseCase(
         repository=PostgresMcpWikiSearchRepository(),
         embedding_search=embedding_search,
@@ -143,6 +148,11 @@ def get_search_use_case() -> SearchWikiUseCase:
         cursor_key=cursor_key,
         query_embedding_model=model.model_name,
         track_query_embedding=_query_embedding_usage,
+        evidence_selector=(
+            JevWikiSearchEvidence(jev_client, max_selected=int_env("QUERY_EVIDENCE_LIMIT", 8))
+            if jev_client is not None
+            else None
+        ),
     )
 
 

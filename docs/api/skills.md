@@ -21,8 +21,10 @@ Skill 조회·작성·게시·설정 내부 API다. 공개 Gateway 계약은
 | [`DELETE /skills/{skill_id}`](#delete-skill) | Skill과 버전을 삭제하고 실행 기록을 보존합니다. |
 | [`POST /skills/{skill_id}/disable`](#summary-post-skills-skill-id-disable) | Skill을 비활성화합니다. |
 | [`POST /skills/{skill_id}/enable`](#summary-post-skills-skill-id-enable) | Skill을 활성화합니다. |
+| [`POST /skills/mcp-acceptances`](#mcp-skill-acceptance) | 웹에서 승인된 MCP operation의 외부 AI Skill 정의를 LLM 없이 검증·저장합니다. |
+| [`POST /skills/mcp-acceptances/lookup`](#mcp-skill-acceptance) | 그 operation의 저장 증거를 조회합니다. |
 
-실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 8개 API는
+실행 결과 기반 초안 API는 `AGENT_SKILLS_ENABLED=true`, 나머지 10개 API는
 `SKILL_API_ENABLED=true`일 때 노출된다. 모두 `X-Agent-Service-Token`으로 보호한다.
 Skill 작성 분류는 완성된 동작에 필요한 capability를 모두 반환하며, 서버가 각 capability의
 canonical Tool 집합을 합쳐 `allowed_tools`를 확정한다. 따라서 문서 편집 후 이동처럼 복합적인
@@ -1486,3 +1488,43 @@ PostgreSQL 권한·삭제 검증: `SKILL_TEST_DSN`을 지정하고
 `created_by`를 비교해 `is_creator`를 계산합니다. 아직 게시되지 않은 제안은 `created_by=null`입니다.
 
 `skill_created`는 AI가 최초 스킬 게시 트랜잭션에서만 기록합니다. Document 프록시에서 중복 기록하지 않습니다.
+
+
+<a id="mcp-skill-acceptance"></a>
+## MCP 외부 AI Skill 정의 수락
+
+외부 MCP 클라이언트 AI가 작성한 Skill 정의를 **웹 승인 뒤에만** 저장하는 내부 API다. Document가 현재 승인·grant·policy·
+`skill.author`를 확인한 뒤 불변 operation 식별자(`run_id`, `operation_id`)와 함께 부른다. LLM 생성기·크레딧 예약을 쓰지 않는다.
+
+`POST /skills/mcp-acceptances` 요청(알 수 없는 필드 거절):
+
+```json
+{"run_id":"<MCP run>","operation_id":"<op>","workspace_id":"<ws>","user_id":"<user>",
+ "definition":{"skill_id":null,"expected_version":null,"scope_type":"personal","name":"meeting-notes",
+  "description":"...","instructions_markdown":"...","capabilities":["document-edit"],
+  "targets":null,"result_mode":null,"requires_source":null}}
+```
+
+- `skill_id`가 없으면 생성(`scope_type` 필수), 있으면 `expected_version`(필수) 기준 수정이다. 수정에서 생략한 값은
+  `PATCH` 수정과 같이 기존 값을 이어받는다. `allowed_tools`는 받지 않고 capabilities로 계산한다.
+- 검증은 게시·수정과 같은 결정적 규칙(`accept_external_skill_definition`: 이름·길이·안전 검사·링크 검사·capabilities·
+  targets·result_mode·requires_source)만 쓴다. 팀 Skill은 관리 권한을 저장 잠금 안에서 다시 확인한다.
+- 부모 MCP run(`action=workspace_workflow`, `origin=MCP_CLIENT`, `status=executing`)을 잠그고, Skill 저장과 같은 트랜잭션에
+  `agent_runs.result.skill_undo`(`operation_id` 포함)를 남긴다. 이 증거는 재실행 판정과 기존 Skill 되돌리기에 쓴다.
+- `expected_version`은 Skill 행 잠금 안에서 최신 버전과 다시 비교한다.
+
+응답 `200`: `{"status":"applied","replayed":false,"skill_id","version_id","version","created","rolled_back"}`.
+같은 operation을 다시 부르면 저장하지 않고 같은 증거를 `replayed:true`로 돌려준다.
+
+| HTTP | code | 의미 |
+|---|---|---|
+| `400` | `invalid_*`, `skill_request_invalid` | 정의 검증 실패, 관리 권한 없음, 같은 run의 다른 operation이 이미 저장함 |
+| `409` | `SKILL_VERSION_CONFLICT` | `expected_version`이 최신 버전과 다름 |
+| `409` | `run_not_executing` | 부모 MCP run이 실행 중이 아님 |
+| `422` | `skill_definition_blocked` | 안전 검사에서 막힘(저장하지 않음) |
+
+`POST /skills/mcp-acceptances/lookup` 요청 `{"run_id","operation_id","user_id"}` → `{"status":"absent"}` 또는
+`{"status":"applied", ...증거}`. 결과를 모르는 실행을 Document가 정리할 때 쓴다.
+
+구현: `pipeline/app/modules/skill/interfaces/http/routes.py`, `application/author_skill.py`
+(`accept_external_skill_definition`), `infrastructure/postgres_skill_repository.py`.

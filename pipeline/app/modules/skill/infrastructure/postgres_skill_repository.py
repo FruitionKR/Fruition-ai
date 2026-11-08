@@ -10,6 +10,7 @@ from app.core.pipeline_control import PipelineRunCancelledError
 
 from app.modules.skill.application.ports import ManageSkillRepositoryPort, SkillRepositoryPort
 from app.modules.skill.domain.entities import Skill, SkillVersion
+from app.modules.skill.domain.exceptions import SkillPublicationReplayedError, SkillVersionConflictError
 from app.modules.skill.domain.policy import effective_targets, legacy_requires_source
 from app.modules.skill.infrastructure.workspace_authorization import can_manage_team_skills, get_workspace_role
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
@@ -64,19 +65,26 @@ SKILL_SELECT = """
 
 
 class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
-    def __init__(self, parent_run_id: str | None = None) -> None:
+    def __init__(self, parent_run_id: str | None = None, mcp_operation_id: str | None = None) -> None:
+        """mcp_operation_id가 있으면 부모는 승인된 MCP 실행(run)이고, 같은 operation의 저장 증거로 재실행을 막는다."""
         self._parent_run_id = parent_run_id
+        self._mcp_operation_id = mcp_operation_id
 
     def _lock_parent(self, conn: Any, actor_id: str) -> None:
         if self._parent_run_id is None:
             return
+        scope = ("AND action = 'workspace_workflow' AND origin = 'MCP_CLIENT'" if self._mcp_operation_id is not None
+                 else "AND action = 'markdown_turn'")
         parent = conn.execute(
-            "SELECT status, result FROM agent_runs WHERE id = %s AND user_id = %s "
-            "AND action = 'markdown_turn' FOR UPDATE", (self._parent_run_id, actor_id),
+            "SELECT status, result FROM agent_runs WHERE id = %s AND user_id = %s " + scope + " FOR UPDATE",
+            (self._parent_run_id, actor_id),
         ).fetchone()
         if parent is None or parent["status"] != "executing":
             raise PipelineRunCancelledError("Parent turn no longer accepts a Skill change.")
-        if (parent["result"] or {}).get("skill_undo"):
+        undo = (parent["result"] or {}).get("skill_undo")
+        if undo:
+            if self._mcp_operation_id is not None and undo.get("operation_id") == self._mcp_operation_id:
+                raise SkillPublicationReplayedError(undo)
             raise ValueError("Parent turn already published a Skill.")
 
     def _record_publication(self, conn: Any, skill_id: str, version_id: str, before: dict | None) -> None:
@@ -86,7 +94,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
         conn.execute(
             "UPDATE agent_runs SET result = COALESCE(result, '{}'::jsonb) || %s::jsonb WHERE id = %s",
             (Json({"skill_undo": {"skill_id": skill_id, "version_id": version_id, "before": before,
-                                  "after": after, "done": False}}), self._parent_run_id),
+                                  "after": after, "done": False,
+                                  **({"operation_id": self._mcp_operation_id}
+                                     if self._mcp_operation_id is not None else {})}}), self._parent_run_id),
         )
 
     def list_accessible_enabled(self, workspace_id: str, user_id: str) -> list[Skill]:
@@ -182,7 +192,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             raise ValueError("Published Skill could not be loaded.")
         return saved
 
-    def save_published_version(self, skill: Skill, version: SkillVersion) -> Skill:
+    def save_published_version(
+        self, skill: Skill, version: SkillVersion, expected_version: int | None = None
+    ) -> Skill:
         team_manager = _can_manage_team(skill.workspace_id, version.created_by or "")
         with database.connect_ai() as conn:
             self._lock_parent(conn, version.created_by or "")
@@ -197,6 +209,9 @@ class PostgresSkillRepository(SkillRepositoryPort, ManageSkillRepositoryPort):
             before = (conn.execute("SELECT to_jsonb(s) AS snapshot FROM skills s WHERE id = %s",
                                    (skill.id,)).fetchone()["snapshot"] if self._parent_run_id is not None else None)
             version = _with_next_version(conn, version)
+            # 행 잠금 안에서 비교하므로 승인 사이에 다른 수정이 끼면 덮어쓰지 않는다.
+            if expected_version is not None and version.version != expected_version + 1:
+                raise SkillVersionConflictError()
             _lock_slug_scope(conn, skill, version.name)
             _ensure_slug_available(conn, skill, version.name, exclude_skill_id=skill.id)
             _insert_version(conn, version)
@@ -438,3 +453,29 @@ def _row_to_version(row: dict[str, Any], prefix: str) -> SkillVersion | None:
         created_at=row[f"{prefix}_created_at"],
         published_at=row[f"{prefix}_published_at"],
     )
+
+
+def find_mcp_skill_acceptance(run_id: str, user_id: str, operation_id: str) -> dict[str, object] | None:
+    """승인된 MCP operation이 Skill을 저장했는지 저장 증거(agent_runs.result.skill_undo)로 확인한다."""
+    with database.connect_ai() as conn:
+        row = conn.execute(
+            "SELECT result->'skill_undo' AS undo FROM agent_runs WHERE id = %s AND user_id = %s "
+            "AND action = 'workspace_workflow' AND origin = 'MCP_CLIENT'",
+            (run_id, user_id),
+        ).fetchone()
+        undo = row["undo"] if row is not None else None
+        if not undo or undo.get("operation_id") != operation_id:
+            return None
+        version = conn.execute("SELECT version FROM skill_versions WHERE id = %s",
+                               (undo["version_id"],)).fetchone()
+    return mcp_acceptance_evidence(undo, version["version"] if version is not None else None)
+
+
+def mcp_acceptance_evidence(undo: dict[str, object], version: int | None) -> dict[str, object]:
+    return {
+        "skill_id": undo["skill_id"],
+        "version_id": undo["version_id"],
+        "version": version,
+        "created": undo.get("before") is None,
+        "rolled_back": bool(undo.get("done")),
+    }

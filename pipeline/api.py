@@ -33,6 +33,7 @@ from app.modules.wiki_schema.interfaces.http.routes import router as wiki_schema
 from app.modules.mcp_read.interfaces.http.routes import router as mcp_wiki_read_router
 from app.modules.mcp_wiki_draft.interfaces.http.routes import router as mcp_wiki_draft_router
 from app.modules.mcp_wiki_draft.interfaces.http.apply_routes import router as mcp_wiki_apply_router
+from app.modules.mcp_pdf_conversion.routes import router as mcp_pdf_conversion_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,7 @@ app.include_router(agent_mcp_proposal_router, dependencies=agent_service_depende
 app.include_router(agent_approval_router, dependencies=agent_service_dependencies)
 app.include_router(mcp_wiki_draft_router, dependencies=agent_service_dependencies)
 app.include_router(mcp_wiki_apply_router, dependencies=agent_service_dependencies)
+app.include_router(mcp_pdf_conversion_router, dependencies=agent_service_dependencies)
 if AGENT_SKILLS_ENABLED:
     # agent run API는 내부 토큰이 아니라 agent service token으로만 보호한다.
     app.include_router(agent_run_router, dependencies=agent_service_dependencies)
