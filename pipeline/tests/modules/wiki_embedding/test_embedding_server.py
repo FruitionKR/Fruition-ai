@@ -19,6 +19,9 @@ class EmbeddingServerTest(unittest.TestCase):
         self.model = patch.object(embedding_server, "_model", FakeModel())
         self.model.start()
         embedding_server._ready.set()
+        embedding_server._load_failed.clear()
+        self.clock = patch.object(embedding_server, "_loading_started_at", embedding_server.time.monotonic())
+        self.clock.start()
         self.env = patch.dict(os.environ, {"INTERNAL_CALLBACK_TOKEN": "secret"})
         self.env.start()
         self.client = TestClient(embedding_server.app)
@@ -26,8 +29,10 @@ class EmbeddingServerTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.env.stop()
+        self.clock.stop()
         self.model.stop()
         embedding_server._ready.clear()
+        embedding_server._load_failed.clear()
 
     def test_embeds_texts_with_model_name(self) -> None:
         response = self.client.post("/embeddings", json={"texts": ["가나", "abc"]}, headers=self.headers)
@@ -59,10 +64,24 @@ class EmbeddingServerTest(unittest.TestCase):
         embedding_server._ready.clear()
 
         self.assertEqual(self.client.get("/health").status_code, 503)
-        self.assertEqual(self.client.post("/embeddings", json={"texts": ["a"]}, headers=self.headers).status_code, 503)
+        response = self.client.post("/embeddings", json={"texts": ["a"]}, headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"]["code"], "ai_service_starting")
+        self.assertEqual(response.headers["Retry-After"], "30")
 
         embedding_server._ready.set()
         self.assertEqual(self.client.get("/health").json(), {"status": "ok", "model": "BAAI/bge-m3"})
+
+    def test_failed_or_overdue_startup_is_not_reported_as_starting(self) -> None:
+        embedding_server._ready.clear()
+        with patch.object(embedding_server._model, "embed", side_effect=RuntimeError("load failed")):
+            embedding_server._load_model()
+        self.assertEqual(self.client.get("/health").json()["detail"]["code"], "provider_unavailable")
+        embedding_server._load_failed.clear()
+        with patch.object(embedding_server, "_loading_started_at", embedding_server.time.monotonic() - 301):
+            response = self.client.post("/embeddings", json={"texts": ["a"]}, headers=self.headers)
+        self.assertEqual(response.json()["detail"]["code"], "provider_unavailable")
+        self.assertNotIn("Retry-After", response.headers)
 
     def test_startup_warms_up_with_one_inference_before_reporting_healthy(self) -> None:
         embedding_server._ready.clear()

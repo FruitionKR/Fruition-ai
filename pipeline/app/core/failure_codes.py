@@ -11,6 +11,7 @@ from app.core.pipeline_control import PipelineRunCancelledError
 # 예외 원문은 ai 로그에만 남긴다.
 PROVIDER_RATE_LIMITED = "provider_rate_limited"
 PROVIDER_UNAVAILABLE = "provider_unavailable"
+AI_SERVICE_STARTING = "ai_service_starting"
 INPUT_REJECTED = "input_rejected"
 DEADLINE_EXCEEDED = "deadline_exceeded"
 CANCELLED = "cancelled"
@@ -21,6 +22,12 @@ _CODE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 _UNAVAILABLE_NAMES = {"APIConnectionError", "APITimeoutError", "ServerError", "OverloadedError"}
 _STORED = re.compile(r"[A-Za-z][A-Za-z0-9_:.-]{0,80}")
 _CHAIN_LIMIT = 5
+
+
+class AiServiceStartingError(RuntimeError):
+    """내부 서비스가 명시적으로 준비 중임을 알린 경우에만 사용한다."""
+
+    code = AI_SERVICE_STARTING
 
 
 def _is_requests_transport(names: set[str]) -> bool:
