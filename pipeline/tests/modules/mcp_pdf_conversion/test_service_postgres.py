@@ -70,7 +70,7 @@ def test_session_follows_existing_preprocessing_and_assembles_only_validated_res
     monkeypatch.setattr(service, "client", lambda: storage)
     started = service.create(actor(), "key-1", HASH, "doc_pdf", "sources/documents/doc_pdf/original", HASH, 10, False)
     conversion = started["conversion_id"]
-    assert (started["state"], started["needs_dispatch"]) == ("PREPARING", True)
+    assert (started["state"], started["dispatch_start_page"]) == ("PREPARING", 0)
     with pytest.raises(service.McpPdfConversionError) as conflict:
         service.create(actor(), "key-1", "sha256:" + "b" * 64, "doc_pdf", "sources/documents/doc_pdf/original",
                        HASH, 10, False)
@@ -87,10 +87,17 @@ def test_session_follows_existing_preprocessing_and_assembles_only_validated_res
     with connect() as conn:
         conn.execute("INSERT INTO ai_task_runs(id, workspace_id, user_id, kind, status, result) "
                      "VALUES (%s, 'ws_1', 'user_1', 'convert_batch', 'completed', %s)",
-                     (service.run_id(conversion, 0), Jsonb({"page_end": 1, "total_pages": 1, "segments": [
+                     (service.run_id(conversion, 0), Jsonb({"page_end": 1, "total_pages": 2, "segments": [
                          {"page_start": 1, "page_end": 1, "prefix": prefix, "window_count": len(windows)}]})))
+    # 첫 batch가 끝나면 document가 넣을 다음 batch 시작 쪽을 알려 준다.
+    assert service.status(conversion, actor())["dispatch_start_page"] == 1
+    with connect() as conn:
+        conn.execute("INSERT INTO ai_task_runs(id, workspace_id, user_id, kind, status, result) "
+                     "VALUES (%s, 'ws_1', 'user_1', 'convert_batch', 'completed', %s)",
+                     (service.run_id(conversion, 1), Jsonb({"page_end": 2, "total_pages": 2, "segments": []})))
 
     assert service.status(conversion, actor())["state"] == "READY"
+    assert service.status(conversion, actor())["dispatch_start_page"] is None
     with pytest.raises(service.McpPdfConversionError):
         service.status(conversion, actor(grant_id="00000000-0000-4000-8000-000000000002"))
     window = service.read_window(conversion, actor(), 1)

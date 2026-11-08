@@ -330,7 +330,7 @@ class ExternalPrepareTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             worker.parse_command(command(restoration="internal", provider=""))
 
-    def test_external_batch_uploads_bundle_without_pdf_copies_and_chains_next_batch(self):
+    def test_external_batch_uploads_bundle_without_pdf_copies(self):
         storage = FakeStorage(pdf_bytes(25))
         storage.put_object = lambda bucket, key, data, length, **_: storage.puts.__setitem__(key, data.read())
 
@@ -352,7 +352,3 @@ class ExternalPrepareTest(unittest.TestCase):
         prefix = f"tmp/convert/mcp/ws_1/{CONVERSION}/0/"
         self.assertEqual(set(storage.puts), {prefix + "external/windows.json"})
         self.assertEqual(result["segments"], [{"page_start": 1, "page_end": 10, "prefix": prefix, "window_count": 0}])
-        follow = worker.next_external_command(external_command(), result)
-        self.assertEqual((follow["run_id"], follow["start_page"]), (f"mcpconvert:{CONVERSION}:10", 10))
-        self.assertIsNone(worker.next_external_command(external_command(20), {**result, "page_end": 25}))
-        self.assertIsNone(worker.next_external_command(command(), result))

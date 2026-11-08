@@ -110,29 +110,30 @@ def status(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
         return _status(conn, _owned(conn, conversion_id, actor))
 
 
-def _batches(conn, row: dict[str, Any]) -> tuple[str, list[dict[str, Any]], int | None, str | None, bool]:
-    """converter journal의 batch를 앞에서부터 따라가며 (상태, 준비된 묶음, 전체 쪽수, 실패 코드, 첫 batch 미등록)이다."""
+def _batches(conn, row: dict[str, Any]) -> tuple[str, list[dict[str, Any]], int | None, str | None, int | None]:
+    """converter journal의 batch를 앞에서부터 따라가며 (상태, 준비된 묶음, 전체 쪽수, 실패 코드, 아직 journal에 없는 다음
+    batch 시작 쪽)이다. 다음 batch는 document가 기존 outbox로 넣는다(converter는 command를 발행하지 않는다)."""
     segments: list[dict[str, Any]] = []
     start, total = 0, None
     while True:
         task = conn.execute("SELECT status, result, error_code FROM ai_task_runs WHERE id = %s",
                             (run_id(str(row["conversion_id"]), start),)).fetchone()
         if task is None:
-            return "PREPARING", segments, total, None, start == 0
+            return "PREPARING", segments, total, None, start
         if task["status"] == "failed" or task["status"] in {"cancelled", "rollback_failed"}:
-            return "FAILED", segments, total, task["error_code"] or "task_failed", False
+            return "FAILED", segments, total, task["error_code"] or "task_failed", None
         if task["status"] != "completed":
-            return "PREPARING", segments, total, None, False
+            return "PREPARING", segments, total, None, None
         result = task["result"] or {}
         segments.extend(result.get("segments") or [])
         total = int(result["total_pages"])
         start = int(result["page_end"])
         if start >= total:
-            return "READY", segments, total, None, False
+            return "READY", segments, total, None, None
 
 
 def _status(conn, row: dict[str, Any]) -> dict[str, Any]:
-    state, segments, total, error, needs_dispatch = _batches(conn, row)
+    state, segments, total, error, next_start = _batches(conn, row)
     if row["final_markdown_hash"] is not None:
         state = "FINALIZED"
     windows = sum(int(segment["window_count"]) for segment in segments) if state in {"READY", "FINALIZED"} else None
@@ -141,10 +142,8 @@ def _status(conn, row: dict[str, Any]) -> dict[str, Any]:
         "source_document_id": row["document_id"], "source_content_hash": row["source_content_hash"],
         "total_pages": total, "prepared_pages": max((int(s["page_end"]) for s in segments), default=0),
         "window_count": windows, "error_code": error,
-        # document가 첫 batch command를 다시 넣어야 하는지. 이후 batch는 converter가 잇는다.
-        "needs_dispatch": needs_dispatch,
-        "first_batch": {"run_id": run_id(str(row["conversion_id"]), 0), "source_key": row["source_key"],
-                        "page_count": row["page_count"], "describe_figures": row["describe_figures"]},
+        # document가 넣어야 할 다음 전처리 batch 시작 쪽(0부터). 없으면 null. 다시 넣어도 journal이 한 번만 실행한다.
+        "dispatch_start_page": next_start if row["final_markdown_hash"] is None else None,
     }
 
 

@@ -40,7 +40,7 @@ SOURCE_KEY = re.compile(r"sources/documents/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/or
 SAFE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
-# MCP 외부 AI 변환(restoration=external)의 batch run_id. document가 첫 batch를 발행하고 이후 batch는 worker가 잇는다.
+# MCP 외부 AI 변환(restoration=external)의 batch run_id. batch마다 document가 기존 outbox로 발행한다.
 EXTERNAL_RUN_ID = re.compile(r"mcpconvert:([0-9a-f-]{36}):(\d+)")
 
 
@@ -81,14 +81,6 @@ def parse_command(command: dict[str, Any]) -> dict[str, Any]:
 
 def external_prefix(command: dict[str, Any], start: int) -> str:
     return f"tmp/convert/mcp/{command['workspace_id']}/{command['conversion_id']}/{start}/"
-
-
-def next_external_command(command: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
-    """외부 변환 batch가 끝났고 남은 쪽이 있으면 다음 batch command다. 재전달·재생 때도 같은 값이라 멱등이다."""
-    if command.get("restoration") != "external" or result.get("page_end", 0) >= result.get("total_pages", 0):
-        return None
-    start = int(result["page_end"])
-    return {**command, "run_id": f"mcpconvert:{command['conversion_id']}:{start}", "start_page": start}
 
 
 def prepare_external_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[str, Any]:
@@ -283,9 +275,6 @@ async def consume() -> None:
                     try:
                         result = await asyncio.to_thread(run_command, command)
                         event = _event(command, "succeeded", payload=result)
-                        # 다음 batch를 결과 이벤트·커밋보다 먼저 보낸다. 커밋 전에 죽으면 재전달이 같은 command를 다시 보낸다.
-                        if follow := next_external_command(command, result):
-                            await producer.send_and_wait(COMMAND_TOPIC, follow, key=follow["run_id"].encode("utf-8"))
                     except journal.TaskAlreadyExecutingError:
                         # 리밸런스로 재전달된 실행 중 run이다. 해당 offset으로 되돌아가 원래 worker가 끝나기를 기다린다.
                         logger.info("[실행 중 run 재전달 대기] run_id=%s offset=%s", command.get("run_id"), message.offset)

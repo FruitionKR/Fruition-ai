@@ -91,13 +91,13 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 converter는 기존 batch·journal·쪽 나눔 재시도로 AnyDoc 전처리(`--mode crop-first-prepare`)만 하고, 기존 복원 요청을 창
 (`external/windows.json`과 PNG)으로 만들어 `tmp/convert/mcp/{workspace_id}/{conversion_id}/{묶음 시작 쪽}/`에 PDF 사본 없이 올린다.
 결과 `payload`는 `{conversion_id, page_start, page_end, total_pages, segments:[{page_start, page_end, prefix, window_count}]}`다.
-남은 쪽이 있으면 같은 `page_count`로 다음 batch command를 결과 이벤트·커밋보다 먼저 `ai.convert.command`에 보낸다(재전달·재생도 같은 값).
+converter는 command를 발행하지 않는다. 다음 batch는 세션 상태의 `dispatch_start_page`를 보고 document가 기존 outbox로 넣는다.
 
 **세션 API**(`/internal/mcp/pdf-conversions`, Agent 서비스 토큰, `schema_version: mcp.pdf-conversion.v1`, 요청에 MCP `actor`):
 
 | 경로 | 동작 |
 |---|---|
-| `POST /` | `{idempotency_key, request_hash, document_id, source_key, source_content_hash, page_count, describe_figures}`로 세션을 만들거나 같은 키의 세션을 돌려준다. 다른 `request_hash`면 409 `IDEMPOTENCY_CONFLICT`. 응답 `needs_dispatch`가 true면 document가 첫 batch를 넣는다 |
+| `POST /` | `{idempotency_key, request_hash, document_id, source_key, source_content_hash, page_count, describe_figures}`로 세션을 만들거나 같은 키의 세션을 돌려준다. 다른 `request_hash`면 409 `IDEMPOTENCY_CONFLICT`. 응답 `dispatch_start_page`(0부터, 없으면 null)가 있으면 document가 그 batch를 넣는다 |
 | `POST /{id}/status` | journal의 batch를 따라 `PREPARING·READY·FAILED·FINALIZED`를 돌려준다 |
 | `POST /{id}/windows/read` | `{window_ordinal}`. 기존 복원 prompt·payload·`result_schema`와 묶음 안 이미지 key. `READY` 전이면 409 `CONVERSION_NOT_READY` |
 | `POST /{id}/windows/{window_id}/submissions` | `{idempotency_key, request_hash, window_hash, result}`. 기존 검증(`valid_replacement`, `clean_description`)에서 떨어진 block id를 돌려준다. 창당 2번까지(409 `ATTEMPTS_EXHAUSTED`) |
