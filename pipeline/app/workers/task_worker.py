@@ -138,6 +138,8 @@ POST_INGEST_AUDIT_LIMIT = 3
 EMBEDDING_RECOVERY_INTERVAL_SECONDS = 600
 # Existing outbox retries become eligible after five seconds.
 PUBLICATION_RECONCILIATION_INTERVAL_SECONDS = 5
+# Document가 MCP 위키 발행을 받은 뒤 ai.maintenance.command로 보내는 임베딩 깨우기 command.
+MCP_PUBLICATION_INDEX_KIND = "mcp_publication_index"
 
 
 def _required(command: dict[str, Any], *fields: str) -> None:
@@ -1525,6 +1527,11 @@ async def consume() -> None:
         """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
         # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
         command = message.value if isinstance(message.value, dict) else {}
+        if command.get("kind") == MCP_PUBLICATION_INDEX_KIND:
+            # MCP 발행 뒤 Document가 보내는 깨우기 command다. 실행 기록·과금·결과 이벤트 없이 누락 임베딩만 만든다.
+            # 끝난 뒤에 offset을 커밋해 lag이 남아 있는 동안 KEDA가 이 worker를 0으로 줄이지 않는다.
+            await _run_blocking(executor, get_wiki_embedding_job().recover, str(command.get("run_id") or "mcp-publication-index"))
+            return True
         try:
             while True:
                 try:

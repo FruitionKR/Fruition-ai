@@ -2254,7 +2254,7 @@ def test_title_flow_stays_when_flag_is_true_missing_or_invalid(fields, result, f
     release.assert_called_once_with("call-1")
 
 
-def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
+def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None, job=None, then=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
@@ -2264,12 +2264,17 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
         consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=3, offset=42, value=command or {"kind": kind, "run_id": "run-1"})
+        batch = [message]
+        if then is not None:
+            # 같은 key(같은 workspace)로 뒤따르는 command. 앞 메시지가 끝나야 실행된다.
+            message.key = b"w"
+            batch.append(SimpleNamespace(topic="t", partition=3, offset=43, key=b"w", value=then))
         delivered = []
 
         async def getmany(**kwargs):
             if not delivered:
                 delivered.append(True)
-                return {"partition": [message]}
+                return {"partition": batch}
             if not handled:
                 stop_callbacks[0]()
             await asyncio.sleep(0)
@@ -2291,6 +2296,8 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
             if function is task_worker.generate_chat_session_title:
                 titles.append(args[0]["run_id"])
                 return "제목"
+            if job is not None and function is job.recover:
+                return function(*args)
             return None
 
         consumer.getmany = getmany
@@ -2302,12 +2309,57 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
                 patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(task_worker, "get_wiki_embedding_job", return_value=job), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
             await asyncio.wait_for(task_worker.consume(), timeout=1)
         return consumer, events, titles
 
     return asyncio.run(run_test())
+
+
+_INDEX_WAKE = {"kind": "mcp_publication_index", "run_id": "mcp-index:event-1", "workspace_id": "w"}
+
+
+def test_mcp_publication_wake_recovers_embeddings_before_commit_without_task_event() -> None:
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    order = []
+    job.recover.side_effect = lambda run_id: order.append(("recover", run_id))
+    emitted = []
+
+    consumer, events, _ = _run_consume([], command=_INDEX_WAKE, emitted=emitted, job=job)
+
+    # 실행 기록·결과 이벤트 없이 임베딩 복구를 끝낸 뒤에만 offset을 커밋한다.
+    assert order == [("recover", "mcp-index:event-1")]
+    assert events == [] and emitted == []
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
+
+
+def test_mcp_publication_wake_failure_leaves_offset_uncommitted() -> None:
+    job = MagicMock()
+    job.recover.side_effect = RuntimeError("wiki page embedding recovery failed")
+
+    with pytest.raises(RuntimeError, match="recovery failed"):
+        _run_consume([], command=_INDEX_WAKE, job=job)
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+
+
+def test_mcp_publication_wake_with_failed_page_lets_next_same_key_command_run() -> None:
+    # 페이지별 실패만 남은 복구는 recover가 정상 반환하므로, 같은 partition·key의 다음 command가 이어서 처리되고 둘 다 커밋된다.
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    job.recover.return_value = None
+    consumer, events, _ = _run_consume(
+        [{"answer": "ok"}], command=_INDEX_WAKE, job=job, then={"kind": "query", "run_id": "run-2"},
+    )
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+    assert "succeeded" in events
+    assert consumer.commit.await_args_list[-1].args[0] == {TopicPartition("t", 3): 44}
 
 
 def test_redelivered_running_task_waits_in_place_without_seek() -> None:
