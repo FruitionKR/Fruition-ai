@@ -1025,8 +1025,10 @@ class AgentWorker:
         }
         if not isinstance(value, dict) or set(value) != fields:
             raise ValueError("MCP receipt shape mismatch.")
-        resource_type = "FOLDER" if operation.target_type == "folder" else "DOCUMENT"
-        created = operation.tool_name in {"create_folder", "create_document"}
+        resource_type = {"folder": "FOLDER", "document": "DOCUMENT", "skill": "SKILL"}[operation.target_type]
+        # Skill 정의 저장은 skill_id가 없을 때 생성이다(수정은 expected_version이 base_version).
+        created = operation.tool_name in {"create_folder", "create_document"} or (
+            operation.tool_name == "publish_skill_definition" and operation.target_id is None)
         resource_id = value.get("resource_id")
         if (
             value["approval_id"] != identity.approval_id or value["operation_id"] != operation.id

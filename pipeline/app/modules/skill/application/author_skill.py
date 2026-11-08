@@ -852,12 +852,13 @@ def accept_external_skill_definition(
     result_mode: SkillResultMode | None = None,
     requires_source: bool | None = None,
     publish: bool = False,
-) -> SkillAuthoringResult:
+) -> tuple[SkillAuthoringResult, dict[str, object] | None]:
     """외부 MCP 클라이언트 AI가 작성한 Skill 정의를 LLM 없이 검증하고, publish면 저장한다.
 
     게시·수정(publish/update)과 같은 결정적 규칙(이름·길이·안전 검사·capabilities·targets·result_mode·
     requires_source)을 쓰고 LLM 검토·크레딧 예약은 하지 않는다. skill_id가 없으면 생성, 있으면 expected_version
     기준 수정이다. 제안 시점(publish=False)과 웹 승인 뒤 실행 시점(publish=True)에 같은 함수를 불러 같은 결과를 얻는다.
+    두 번째 값은 이어받은 값까지 확정한 저장 정의(승인 화면에 보이고 operation_hash로 묶이는 값)이며 막히면 None이다.
     """
     if (skill_id is None) != (expected_version is None):
         raise ValueError("skill_id and expected_version must be sent together.")
@@ -916,7 +917,7 @@ def accept_external_skill_definition(
         + _tag_issues(inspect_skill_output_links(instructions), "instruction")
     )
     if issues:
-        return SkillAuthoringResult(status="blocked", proposal=proposal, issues=issues)
+        return SkillAuthoringResult(status="blocked", proposal=proposal, issues=issues), None
     if previous is None:
         targets, result_mode = validate_execution_options(capabilities, targets, result_mode)
         resolved_source = resolve_requires_source(capabilities, result_mode, instructions, explicit=requires_source)
@@ -926,8 +927,21 @@ def accept_external_skill_definition(
         )
         resolved_source = _updated_requires_source(previous, proposal, result_mode, requires_source)
     proposal = replace(proposal, requires_source=resolved_source)
+    canonical: dict[str, object] = {
+        "skill_id": skill_id,
+        "expected_version": expected_version,
+        "scope_type": scope_type,
+        "name": name,
+        "description": description,
+        "instructions_markdown": instructions,
+        "capabilities": list(capabilities),
+        "allowed_tools": list(allowed_tools),
+        "targets": list(targets),
+        "result_mode": result_mode,
+        "requires_source": resolved_source,
+    }
     if not publish:
-        return SkillAuthoringResult(status="proposal_ready", proposal=proposal)
+        return SkillAuthoringResult(status="proposal_ready", proposal=proposal), canonical
     common = dict(
         workspace_id=workspace_id,
         user_id=user_id,
@@ -944,4 +958,4 @@ def accept_external_skill_definition(
         saved = manager.create_published(scope_type=scope_type, slug=name, **common)
     else:
         saved = manager.update_published(skill_id=skill_id, expected_version=expected_version, **common)
-    return SkillAuthoringResult(status="published", proposal=proposal, skill=saved)
+    return SkillAuthoringResult(status="published", proposal=proposal, skill=saved), canonical

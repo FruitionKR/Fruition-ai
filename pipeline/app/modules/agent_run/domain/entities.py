@@ -113,7 +113,7 @@ class McpProposalActor:
     policy_generation: int
     origin: Literal["MCP_CLIENT"]
     spec_version: Literal["2025-11-25"]
-    tool_name: Literal["propose_document_edit", "propose_plan"]
+    tool_name: Literal["propose_document_edit", "propose_plan", "propose_skill_definition"]
 
 
 @dataclass(frozen=True)

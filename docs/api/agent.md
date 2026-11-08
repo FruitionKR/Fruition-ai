@@ -28,6 +28,15 @@ artifact의 document/base/target/id/raw UTF-8 `sha256:` hash는 모두 같아야
 operation은 `create_folder|rename_folder|move_folder|move_document|rename_document|create_document|apply_document_edit`
 중 하나이고 unknown field, 잘못된 result reference/dependency, 오래된 hierarchy/version, 범위 밖 대상은 거절한다.
 
+`propose_skill_definition`의 `proposal`은 `{request_summary, definition}`이고 `definition`은
+`POST /skills/mcp-acceptances`의 정의와 같은 필드를 모두(생략 값은 `null`) 보낸다. AI는 LLM 없이
+`accept_external_skill_definition(publish=False)`로 검증하고(팀 Skill 관리 권한, `expected_version`이 다르면
+`409 SOURCE_CHANGED`, 안전 검사·형식 오류는 `400 INVALID_INPUT`), artifact 없이 operation 하나
+(`tool_name:"publish_skill_definition"`, `target_type:"skill"`, `target_id`=skill_id 또는 null,
+`base_version`=expected_version, `arguments`=이어받은 값까지 확정한 저장 정의 + 계산한 `allowed_tools`)만 저장한다.
+승인 뒤 실행은 기존 tool gateway로 document-svc가 받아 `POST /skills/mcp-acceptances`를 부르고, AI는 resource_type
+`SKILL` 영수증을 검증한다(생성은 before_version null). 취소 시 되돌리기는 저장 증거 `skill_undo`로 한다.
+
 Response는 정확히 다음 shape이며 LLM planning job은 만들지 않는다.
 
 ```json

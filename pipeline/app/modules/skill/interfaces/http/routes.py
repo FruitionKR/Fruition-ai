@@ -380,7 +380,7 @@ def accept_mcp_skill_definition(payload: McpSkillAcceptanceRequest) -> dict[str,
     manager = ManageSkillUseCase(skill_store.PostgresSkillRepository(
         parent_run_id=payload.run_id, mcp_operation_id=payload.operation_id))
     try:
-        result = accept_external_skill_definition(
+        result, _ = accept_external_skill_definition(
             manager,
             workspace_id=payload.workspace_id,
             user_id=payload.user_id,

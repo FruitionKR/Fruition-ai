@@ -15,6 +15,10 @@ from app.modules.agent_run.application.ports import (
 from app.modules.agent_run.domain.edit_preview import build_edit_preview
 from app.modules.agent_run.domain.content_duplicates import find_content_duplicates
 from app.modules.agent_run.domain.plan_review import review_content_duplicates, review_duplicate_names
+from app.modules.agent_run.domain.plan import AgentPlanOperation, build_agent_plan
+from app.modules.skill.application.author_skill import accept_external_skill_definition
+from app.modules.skill.application.manage_skill import ManageSkillUseCase
+from app.modules.skill.domain.exceptions import SkillVersionConflictError
 from app.modules.agent_run.domain.entities import (
     AgentRun,
     ContentArtifactReference,
@@ -79,13 +83,17 @@ class CreateMcpProposalUseCase:
         self,
         repository: McpProposalRepositoryPort,
         context_reader: McpDocumentEditContextPort,
+        skill_manager: ManageSkillUseCase | None = None,
     ) -> None:
         self._repository = repository
         self._context_reader = context_reader
+        self._skill_manager = skill_manager
 
     def execute(self, command: McpProposalCommand) -> McpProposalResult:
         if command.actor.tool_name == "propose_plan":
             return self._execute_plan(command)
+        if command.actor.tool_name == "propose_skill_definition":
+            return self._execute_skill_definition(command)
         operation, submitted_artifact = _single_edit(command)
         document_id = str(operation["target_id"])
         base_version = int(operation["base_version"])
@@ -242,6 +250,90 @@ class CreateMcpProposalUseCase:
             run=run,
             plan=plan,
             artifacts=(artifact,),
+            actor=command.actor,
+            idempotency_key=command.idempotency_key,
+            request_hash=expected_request_hash,
+        )
+
+    def _execute_skill_definition(self, command: McpProposalCommand) -> McpProposalResult:
+        """Skill 정의 하나를 LLM 없이 검증해 publish_skill_definition 단일 operation으로 승인 대기에 올린다.
+
+        operation arguments는 이어받은 값까지 확정한 저장 정의이고 operation_hash로 승인에 묶인다.
+        실행은 Document가 현재 승인·grant·policy·skill.author를 확인한 뒤 /skills/mcp-acceptances로 한다.
+        """
+        if self._skill_manager is None:
+            raise McpProposalError(503, "DEPENDENCY_UNAVAILABLE", "Skill management is unavailable.")
+        expected_request_hash = mcp_proposal_request_hash(command)
+        if command.request_hash != expected_request_hash:
+            raise McpProposalError(400, "INVALID_INPUT", "request_hash does not match the proposal body.")
+        definition = dict(command.proposal["definition"])  # type: ignore[arg-type]
+        try:
+            result, canonical = accept_external_skill_definition(
+                self._skill_manager,
+                workspace_id=command.actor.workspace_id,
+                user_id=command.actor.user_id,
+                skill_id=definition["skill_id"],  # type: ignore[arg-type]
+                expected_version=definition["expected_version"],  # type: ignore[arg-type]
+                scope_type=definition["scope_type"],  # type: ignore[arg-type]
+                name=str(definition["name"]),
+                description=str(definition["description"]),
+                instructions_markdown=str(definition["instructions_markdown"]),
+                capabilities=_optional_tuple(definition["capabilities"]),  # type: ignore[arg-type]
+                targets=_optional_tuple(definition["targets"]),  # type: ignore[arg-type]
+                result_mode=definition["result_mode"],  # type: ignore[arg-type]
+                requires_source=definition["requires_source"],  # type: ignore[arg-type]
+            )
+        except SkillVersionConflictError as exc:
+            raise McpProposalError(409, "SOURCE_CHANGED", "Skill version changed.") from exc
+        except ValueError as exc:
+            # 관리 권한 없음·존재하지 않는 Skill도 같은 거절로 숨긴다.
+            raise McpProposalError(400, "INVALID_INPUT", "Skill definition is invalid.") from exc
+        if canonical is None or result.status != "proposal_ready":
+            raise McpProposalError(400, "INVALID_INPUT", "Skill definition has safety issues.")
+        existing = self._repository.find_mcp_proposal(
+            command.actor, command.idempotency_key, expected_request_hash
+        )
+        if existing is not None:
+            return existing
+        run_id = str(uuid4())
+        plan_id = str(uuid4())
+        summary = str(command.proposal["request_summary"]).strip()
+        plan = build_agent_plan(plan_id, run_id, 1, summary, (
+            AgentPlanOperation(
+                id=f"{plan_id}-op-1",
+                sequence=1,
+                tool_name="publish_skill_definition",
+                target_type="skill",
+                target_id=canonical["skill_id"],  # type: ignore[arg-type]
+                base_version=canonical["expected_version"],  # type: ignore[arg-type]
+                source_parent_id=None,
+                destination_parent_id=None,
+                arguments=canonical,
+                reason=summary,
+            ),
+        ))
+        run = AgentRun(
+            id=run_id,
+            workspace_id=command.actor.workspace_id,
+            user_id=command.actor.user_id,
+            action="workspace_workflow",
+            skill_version_id=None,
+            status="awaiting_approval",
+            request_summary=summary,
+            current_plan_id=plan_id,
+            origin=command.actor.origin,
+            grant_id=command.actor.grant_id,
+            client_id=command.actor.client_id,
+            policy_generation=command.actor.policy_generation,
+            invocation_id=command.actor.invocation_id,
+            spec_version=command.actor.spec_version,
+            tool_name=command.actor.tool_name,
+            proposal_request_hash=expected_request_hash,
+        )
+        return self._repository.create_mcp_proposal(
+            run=run,
+            plan=plan,
+            artifacts=(),
             actor=command.actor,
             idempotency_key=command.idempotency_key,
             request_hash=expected_request_hash,
@@ -619,3 +711,7 @@ def _validate_context(command, operation, artifact, context) -> None:
     current_hash = "sha256:" + hashlib.sha256(context.current_markdown.encode("utf-8")).hexdigest()
     if context.content_hash != current_hash:
         raise McpProposalError(503, "DEPENDENCY_UNAVAILABLE", "Document context hash is inconsistent.", retryable=True)
+
+
+def _optional_tuple(value: object) -> tuple[str, ...] | None:
+    return None if value is None else tuple(value)  # type: ignore[arg-type]

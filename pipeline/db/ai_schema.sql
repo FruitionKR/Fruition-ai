@@ -775,7 +775,7 @@ BEGIN
             origin IS DISTINCT FROM 'MCP_CLIENT' OR (
                 grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
                 AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
-                AND tool_name IN ('propose_document_edit', 'propose_plan')
+                AND tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')
                 AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
             )
         );
@@ -954,7 +954,7 @@ CREATE TABLE IF NOT EXISTS agent_mcp_tool_attempts (
     operation_id text NOT NULL REFERENCES agent_plan_operations(id) ON DELETE CASCADE,
     tool_name text NOT NULL CHECK (tool_name IN (
         'create_folder', 'rename_folder', 'move_folder', 'move_document',
-        'rename_document', 'create_document', 'apply_document_edit'
+        'rename_document', 'create_document', 'apply_document_edit', 'publish_skill_definition'
     )),
     create_identity jsonb,
     attempt integer NOT NULL CHECK (attempt > 0),
@@ -970,7 +970,7 @@ ALTER TABLE agent_mcp_tool_attempts DROP CONSTRAINT IF EXISTS agent_mcp_tool_att
 ALTER TABLE agent_mcp_tool_attempts ADD CONSTRAINT agent_mcp_tool_attempts_tool_name_check CHECK (
     tool_name IN (
         'create_folder', 'rename_folder', 'move_folder', 'move_document',
-        'rename_document', 'create_document', 'apply_document_edit'
+        'rename_document', 'create_document', 'apply_document_edit', 'publish_skill_definition'
     )
 );
 CREATE INDEX IF NOT EXISTS idx_agent_mcp_tool_attempts_reconcile
@@ -1005,7 +1005,7 @@ CREATE TABLE IF NOT EXISTS agent_mcp_proposal_requests (
     grant_id text NOT NULL,
     user_id text NOT NULL,
     workspace_id text NOT NULL,
-    tool_name text NOT NULL CHECK (tool_name IN ('propose_document_edit', 'propose_plan')),
+    tool_name text NOT NULL CHECK (tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')),
     idempotency_key text NOT NULL,
     request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
     invocation_id text NOT NULL,
@@ -1024,7 +1024,7 @@ ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_mcp_provenance_check CHECK (
     origin IS DISTINCT FROM 'MCP_CLIENT' OR (
         grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
         AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
-        AND tool_name IN ('propose_document_edit', 'propose_plan')
+        AND tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition')
         AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
     )
 );
@@ -1032,7 +1032,7 @@ ALTER TABLE agent_mcp_proposal_requests
     DROP CONSTRAINT IF EXISTS agent_mcp_proposal_requests_tool_name_check;
 ALTER TABLE agent_mcp_proposal_requests
     ADD CONSTRAINT agent_mcp_proposal_requests_tool_name_check
-    CHECK (tool_name IN ('propose_document_edit', 'propose_plan'));
+    CHECK (tool_name IN ('propose_document_edit', 'propose_plan', 'propose_skill_definition'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_personal_command
     ON skills (owner_user_id, command) WHERE scope_type = 'personal';

@@ -12,6 +12,8 @@ PlanToolName = Literal[
     "rename_document",
     "create_document",
     "apply_document_edit",
+    # MCP 외부 AI Skill 정의 저장 단일 operation. LLM 계획 도구(ALLOWED_PLAN_TOOLS)에는 넣지 않는다.
+    "publish_skill_definition",
 ]
 OperationStatus = Literal[
     "pending",
@@ -60,7 +62,7 @@ class AgentPlanOperation:
     id: str
     sequence: int
     tool_name: PlanToolName
-    target_type: Literal["folder", "document"]
+    target_type: Literal["folder", "document", "skill"]
     target_id: str | None
     base_version: int | None
     source_parent_id: str | None

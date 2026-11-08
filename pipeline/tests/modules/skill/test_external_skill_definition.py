@@ -43,11 +43,13 @@ class ExternalSkillDefinitionTest(unittest.TestCase):
         repository = Repository()
         manager = ManageSkillUseCase(repository)
 
-        checked = accept_external_skill_definition(manager, **definition())
+        checked, canonical = accept_external_skill_definition(manager, **definition())
         self.assertEqual(checked.status, "proposal_ready")
         self.assertEqual(repository.skills, {})
 
-        published = accept_external_skill_definition(manager, **definition(), publish=True)
+        published, saved = accept_external_skill_definition(manager, **definition(), publish=True)
+        self.assertEqual(canonical, saved)
+        self.assertEqual(canonical["targets"], ["current_document"])
         self.assertEqual(published.status, "published")
         version = published.skill.enabled_version
         self.assertEqual(version.capabilities, ("document-edit",))
@@ -63,19 +65,20 @@ class ExternalSkillDefinitionTest(unittest.TestCase):
 
     def test_safety_issues_block_without_storing(self) -> None:
         repository = Repository()
-        result = accept_external_skill_definition(
+        result, canonical = accept_external_skill_definition(
             ManageSkillUseCase(repository),
             **definition(instructions_markdown="키 AKIAABCDEFGHIJKLMNOP 를 넣는다."),
             publish=True,
         )
         self.assertEqual(result.status, "blocked")
+        self.assertIsNone(canonical)
         self.assertTrue(result.issues)
         self.assertEqual(repository.skills, {})
 
     def test_update_requires_current_expected_version_and_keeps_capabilities(self) -> None:
         repository = Repository()
         manager = ManageSkillUseCase(repository)
-        skill = accept_external_skill_definition(manager, **definition(), publish=True).skill
+        skill = accept_external_skill_definition(manager, **definition(), publish=True)[0].skill
 
         with self.assertRaises(SkillVersionConflictError):
             accept_external_skill_definition(
@@ -89,7 +92,7 @@ class ExternalSkillDefinitionTest(unittest.TestCase):
             **definition(skill_id=skill.id, expected_version=1, scope_type=None, capabilities=None,
                          description="결정 사항만 정리한다."),
             publish=True,
-        ).skill
+        )[0].skill
         self.assertEqual(repository.expected_versions, [1])
         self.assertEqual(updated.enabled_version.capabilities, ("document-edit",))
         self.assertEqual(updated.enabled_version.description, "결정 사항만 정리한다.")

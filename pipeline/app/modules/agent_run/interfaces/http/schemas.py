@@ -13,6 +13,7 @@ from app.modules.agent_run.domain.entities import (
     McpProposalCommand,
 )
 from app.modules.agent_run.domain.plan import AgentPlan, AgentPlanOperation, ApprovedBy
+from app.modules.skill.interfaces.http.schemas import McpSkillDefinition
 
 
 class AgentRunActorRequest(BaseModel):
@@ -45,7 +46,7 @@ class McpProposalActorRequest(_McpExactModel):
     policy_generation: StrictInt = Field(ge=1, le=_MAX_SIGNED_LONG)
     origin: Literal["MCP_CLIENT"]
     spec_version: Literal["2025-11-25"]
-    tool_name: Literal["propose_document_edit", "propose_plan"]
+    tool_name: Literal["propose_document_edit", "propose_plan", "propose_skill_definition"]
 
     @field_validator("invocation_id", "grant_id")
     @classmethod
@@ -416,12 +417,24 @@ class McpPlanProposalRequest(_McpExactModel):
         return self
 
 
+class McpSkillProposalRequest(_McpExactModel):
+    """외부 AI가 작성한 Skill 정의 하나를 웹 승인 대상으로 올린다."""
+
+    request_summary: str
+    definition: McpSkillDefinition
+
+    @field_validator("request_summary")
+    @classmethod
+    def summary_bound(cls, value: str) -> str:
+        return _bounded_nonblank(value, "request_summary", 1000)
+
+
 class McpAgentProposalRequest(_McpExactModel):
     schema_version: Literal["mcp.agent-proposal.v1"]
     actor: McpProposalActorRequest
     idempotency_key: str
     request_hash: str
-    proposal: McpEditProposalRequest | McpPlanProposalRequest
+    proposal: McpEditProposalRequest | McpPlanProposalRequest | McpSkillProposalRequest
 
     @field_validator("idempotency_key")
     @classmethod
@@ -437,7 +450,9 @@ class McpAgentProposalRequest(_McpExactModel):
 
     @model_validator(mode="after")
     def matching_tool(self):
-        if (self.actor.tool_name == "propose_plan") != isinstance(self.proposal, McpPlanProposalRequest):
+        expected = {"propose_document_edit": McpEditProposalRequest, "propose_plan": McpPlanProposalRequest,
+                    "propose_skill_definition": McpSkillProposalRequest}[self.actor.tool_name]
+        if type(self.proposal) is not expected:
             raise ValueError("actor tool_name does not match proposal shape")
         return self
 
