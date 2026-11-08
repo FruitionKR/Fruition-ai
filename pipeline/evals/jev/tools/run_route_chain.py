@@ -76,7 +76,7 @@ def main() -> None:
             route = dataclasses.asdict(task_mode_route(router.route(request), request))
         except Exception as exc:  # 계약 실패도 결과로 남긴다.
             return {**row, "ok": False, "got": None, "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-                    "route_seconds": round(time.monotonic() - started, 3)}
+                    "route_seconds": round(time.monotonic() - started, 3), "fallback_calls": fallback.calls}
         got = comparable(route)
         expected = [comparable(case["expected"])] + [comparable(alt) for alt in case.get("acceptable") or []]
         row.update(ok=got in expected, got=got, route_seconds=round(time.monotonic() - started, 3),
