@@ -18,7 +18,7 @@ def contribution(name, target=None):
     return value
 
 
-def test_semantic_target_overrides_name_match_and_preserves_canonical_title(monkeypatch):
+def test_name_match_precedes_client_target_and_target_preserves_canonical_title(monkeypatch):
     index = [
         {"id": "canonical", "title": "Authentication", "slug": "authentication", "status": "active"},
         {"id": "homonym", "title": "Login", "slug": "login", "status": "active"},
@@ -34,11 +34,11 @@ def test_semantic_target_overrides_name_match_and_preserves_canonical_title(monk
     allocated, _ = calculation._allocate_identities(
         None, draft_id=str(uuid4()), workspace_id="workspace", concepts=concepts,
     )
-    assert {item["page_id"] for item in allocated.values()} == {"canonical"}
-    assert {item["title"] for item in allocated.values()} == {"Authentication"}
-    normalized, _ = calculation._normalized({"document_id": "doc_1"}, concepts, allocated, index)
-    assert {item["title"] for item in normalized["concept_ledger"]} == {"Authentication"}
-    assert {item["related_concept_slugs"][0] for item in normalized["evidence_units"]} == {"authentication"}
+    # 웹 편입과 같이 코드 이름 일치가 먼저다. 이름이 맞지 않는 개념에만 외부 AI 대상을 쓴다.
+    assert allocated[calculation.name_key("Login")]["page_id"] == "homonym"
+    assert allocated[calculation.name_key("Sign in")] == {
+        "page_id": "canonical", "slug": "authentication", "prior_status": "active", "title": "Authentication",
+    }
 
 
 @pytest.mark.parametrize("index", [[], [{"id": "target", "title": "Target", "slug": "target", "status": "deleted"}]])
@@ -69,3 +69,43 @@ def test_target_schema_is_bounded_and_legacy_contribution_remains_valid():
     for invalid in ("", " padded", "https://example.com", "a" * 256, 123):
         with pytest.raises(ValidationError):
             ContributionRequest(**value, merge_target_page_id=invalid)
+
+
+class FakeJudge:
+    def __init__(self, resolutions=None, error=None):
+        self.resolutions, self.error, self.calls = resolutions or {}, error, []
+
+    def judge_concepts(self, concepts, pool):
+        self.calls.append(([item["title"] for item in concepts], [item["slug"] for item in pool]))
+        if self.error:
+            raise self.error
+        return self.resolutions
+
+
+def test_jev_decision_is_frozen_once_and_outranks_client_target(monkeypatch):
+    index = [{"id": "auth", "title": "Authentication", "slug": "authentication", "status": "active",
+              "summary": "Verifying identity", "identity_aliases": []},
+             {"id": "other", "title": "Other", "slug": "other", "status": "active", "summary": "x", "identity_aliases": []}]
+    monkeypatch.setattr(calculation, "load_concept_identity_index", lambda *_args, **_kwargs: index)
+    submissions = [{"window_ordinal": 1, "contributions": [contribution("Sign in", "other"), contribution("Totally new")]}]
+    judge = FakeJudge({"mcp-incoming-0": {"incoming_slug": "mcp-incoming-0", "decision": "merge_into",
+                                          "canonical_slug": "authentication"}})
+
+    frozen = calculation.freeze_server_concept_merges(None, workspace_id="w", submissions=submissions, judge=judge)
+
+    assert len(judge.calls) == 1
+    by_name = {item["concept_name"]: item for item in frozen[0]["contributions"]}
+    assert by_name["Sign in"]["server_merge_target_page_id"] == "auth"
+    assert by_name["Totally new"]["server_merge_target_page_id"] is None, "asked and judged new: client target unused"
+    # 적용 단계는 고정된 제출로 계산하며 판정기를 다시 부르지 않는다(판정기 인자가 없다).
+    allocated, _ = calculation._allocate_identities(
+        None, draft_id=str(uuid4()), workspace_id="w", concepts=calculation._combined_concepts(frozen))
+    assert allocated[calculation.name_key("Sign in")]["page_id"] == "auth"
+    assert allocated[calculation.name_key("Totally new")]["prior_status"] == "new"
+
+
+@pytest.mark.parametrize("judge", [None, FakeJudge(error=calculation.JevUnavailable("402"))])
+def test_unavailable_jev_keeps_client_judgment_without_internal_llm(monkeypatch, judge):
+    monkeypatch.setattr(calculation, "load_concept_identity_index", lambda *_args, **_kwargs: [])
+    submissions = [{"window_ordinal": 1, "contributions": [contribution("Sign in", "auth")]}]
+    assert calculation.freeze_server_concept_merges(None, workspace_id="w", submissions=submissions, judge=judge) == submissions
