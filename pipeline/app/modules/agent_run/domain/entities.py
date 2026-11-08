@@ -22,6 +22,7 @@ AgentRunStatus = Literal[
     "rolling_back",
     "rollback_failed",
     "cancelled",
+    "halted",
 ]
 
 
@@ -91,6 +92,117 @@ class AgentRun:
     rule_summary: str | None = None
     # run을 시작한 턴의 요청자 화면 언어("ko"|"en"). 계획 요약·되묻기 문구에 쓴다. None이면 기존 동작이다.
     response_language: str | None = None
+    # MCP proposal provenance. Legacy web runs keep these fields null.
+    origin: str | None = None
+    grant_id: str | None = None
+    client_id: str | None = None
+    policy_generation: int | None = None
+    invocation_id: str | None = None
+    spec_version: str | None = None
+    tool_name: str | None = None
+    proposal_request_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class McpProposalActor:
+    invocation_id: str
+    grant_id: str
+    user_id: str
+    workspace_id: str
+    client_id: str
+    policy_generation: int
+    origin: Literal["MCP_CLIENT"]
+    spec_version: Literal["2025-11-25"]
+    tool_name: Literal["propose_document_edit", "propose_plan"]
+
+
+@dataclass(frozen=True)
+class McpProposalCommand:
+    actor: McpProposalActor
+    idempotency_key: str
+    request_hash: str
+    proposal: dict[str, object]
+
+
+@dataclass(frozen=True)
+class McpDocumentEditContext:
+    document_id: str
+    workspace_id: str
+    current_version: int
+    content_hash: str
+    current_markdown: str
+    display_name: str
+    parent_folder_id: str | None
+
+
+@dataclass(frozen=True)
+class McpPlanEditDocument:
+    document_id: str
+    current_version: int
+    content_hash: str
+    current_markdown: str
+    display_name: str
+    parent_folder_id: str | None
+
+
+@dataclass(frozen=True)
+class McpPlanContext:
+    workspace_id: str
+    target_folder_id: str | None
+    hierarchy: tuple[dict[str, object], ...]
+    edit_documents: tuple[McpPlanEditDocument, ...]
+
+
+@dataclass(frozen=True)
+class McpProposalResult:
+    run_id: str
+    plan_id: str
+    plan_version: int
+    operation_hash: str
+    status: Literal["awaiting_approval"] = "awaiting_approval"
+
+
+@dataclass(frozen=True)
+class McpApprovalCommand:
+    run_id: str
+    workspace_id: str
+    user_id: str
+    plan_version: int
+    operation_hash: str
+    operation_ids: tuple[str, ...]
+    approval_id: str
+    approval_mode: Literal["EXPLICIT_WEB"]
+    grant_id: str
+    client_id: str
+    policy_generation: int
+    schema_version: Literal["mcp.agent-approval.v1"] = "mcp.agent-approval.v1"
+
+
+@dataclass(frozen=True)
+class McpApprovalStatus:
+    status: str
+    reason: str | None
+    lifecycle_status: str | None
+    forward_status: str | None
+    settlement_status: str | None
+
+
+@dataclass(frozen=True)
+class McpExecutionIdentity:
+    approval_id: str
+    grant_id: str
+    client_id: str
+    policy_generation: int
+    operation_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class McpExecutionAttempt:
+    attempt_id: str
+    attempt: int
+    status: str
+    created: bool = False
+    receipt: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

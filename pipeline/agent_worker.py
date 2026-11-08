@@ -17,6 +17,7 @@ from app.modules.agent_run.infrastructure.expired_artifact_cleanup import (
     delete_expired_artifacts,
 )
 from app.modules.agent_run.infrastructure.postgres_agent_job_repository import PostgresAgentJobRepository
+from app.modules.agent_run.infrastructure.mcp_attempt_reconciliation import reconcile_mcp_attempts
 from app.modules.agent_run.infrastructure.postgres_agent_run_repository import PostgresAgentRunRepository
 from app.modules.data_purge.infrastructure.document_copy_purge import purge_pending_documents
 from app.modules.data_purge.infrastructure.postgres_purge import delete_run_objects
@@ -138,6 +139,16 @@ def _fail_exhausted_leases_if_due(
     return now + _EXHAUSTED_LEASE_SWEEP_INTERVAL_SECONDS
 
 
+def _reconcile_mcp_attempts_if_due(repository, gateway, next_check_at: float, now: float) -> float:
+    if now < next_check_at:
+        return next_check_at
+    try:
+        reconcile_mcp_attempts(repository, gateway)
+    except Exception as exc:
+        logger.warning("MCP receipt reconciliation unavailable: type=%s", type(exc).__name__)
+    return now + 60
+
+
 def _delete_expired_artifacts_if_due(grace_seconds: float, next_cleanup_at: float, now: float) -> float:
     if now < next_cleanup_at:
         return next_cleanup_at
@@ -196,7 +207,11 @@ def main(shutdown: ShutdownRequest | None = None) -> None:
         next_sweep_at = 0.0
         next_artifact_cleanup_at = 0.0
         next_document_purge_retry_at = 0.0
+        next_mcp_reconciliation_at = 0.0
         while not shutdown.requested:
+            next_mcp_reconciliation_at = _reconcile_mcp_attempts_if_due(
+                repository, tool_gateway, next_mcp_reconciliation_at, time.monotonic(),
+            )
             next_cleanup_at = _cleanup_expired_runs_if_due(
                 repository,
                 checkpointer,
@@ -253,13 +268,15 @@ def _process_job(
         plan_generator = None
         if job.job_type != "rollback":
             context = repository.load_context(job.run_id)
-            if context.run.provider is None or context.run.model is None:
+            mcp_execution = job.job_type == "execution" and context.run.origin == "MCP_CLIENT"
+            if not mcp_execution and (context.run.provider is None or context.run.model is None):
                 repository.fail(job, "missing_llm_selection")
                 return
-            plan_generator = build_plan_generator(
-                provider=context.run.provider,
-                model=context.run.model,
-            )
+            if not mcp_execution:
+                plan_generator = build_plan_generator(
+                    provider=context.run.provider,
+                    model=context.run.model,
+                )
         worker = AgentWorker(
             repository=repository,
             run_repository=run_repository,

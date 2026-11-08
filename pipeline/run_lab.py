@@ -63,6 +63,7 @@ from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
     with_jev_concept_merge,
 )
 from app.modules.wiki_generation.infrastructure.concept_resolution import (
+    allocate_concept_slugs,
     apply_concept_resolutions,
     load_existing_concept_index,
     normalize_hint_resolution_output,
@@ -77,7 +78,7 @@ from app.modules.wiki_generation.infrastructure.prompt_io import collect_concept
 from app.modules.wiki_generation.infrastructure.source_context_merge import (
     active_source_artifact,
     source_context_blocks,
-    source_page_context_normalized,
+    source_page_context_parts,
 )
 from app.modules.wiki_ingestion.application.concept_contribution import (
     build_concept_contributions,
@@ -492,6 +493,10 @@ def _resolve_pipeline_concepts(
     out: Path,
     log: PipelineLog,
 ) -> dict[str, Any]:
+    concept_index = existing_concepts
+    existing_concepts = [
+        concept for concept in concept_index if concept.get("status", "active") == "active"
+    ]
     assembler = MeaningClusterArtifactAssembler()
     concept_update_candidates = assembler.candidate_claims(normalized)
     concepts = [*normalized.get("concept_ledger", []), *existing_concepts]
@@ -554,6 +559,7 @@ def _resolve_pipeline_concepts(
         existing_concepts,
         hint_resolutions,
     )
+    resolved = allocate_concept_slugs(resolved, concept_index)
     resolved_candidates = assembler.candidate_claims(resolved)
     resolved["concept_update_decisions"] = normalize_concept_update_decisions(
         {"concept_update_decisions": concept_update_decisions},
@@ -873,6 +879,7 @@ def _prepare_post_ingest_clusters(
             "slug": concept.get("slug"),
             "title": concept.get("title"),
             "aliases": list(concept.get("aliases") or []),
+            "identity_aliases": list(concept.get("identity_aliases") or []),
             "definition": concept.get("definition") or "",
         }
         for concept in normalized.get("concept_ledger", [])
@@ -1073,7 +1080,7 @@ def run_pipeline(
             )
         contribution_normalized = resolved
         if args.reingest:
-            resolved = source_page_context_normalized(
+            resolved, contribution_normalized = source_page_context_parts(
                 resolved,
                 existing_source_artifact,
             )

@@ -759,14 +759,27 @@ def test_missing_source_snapshot_prevents_concept_changes_and_deletion() -> None
     assert embedding_job.calls == []
 
 
-def test_ingest_restore_skips_purged_source_page_and_still_restores_concepts() -> None:
+def test_ingest_restore_skips_purged_source_page_and_still_restores_concepts(monkeypatch) -> None:
     """영구 삭제한 문서의 스냅샷은 객체가 없다. 그 때문에 같은 작업의 개념 페이지 복구까지 실패하면 안 된다."""
+    from app.modules.wiki_ingestion.application import restore_wiki_pages
+
+    monkeypatch.setattr(restore_wiki_pages, "prepare_publication", lambda *_args: None)
     store = ArtifactStore({
         "wiki/ws-1/pages/C3/ops/A.json": _payload("A", "C3", "남은 근거"),
     })
-    base = _restore(store)
+    reads = []
+
+    def read_text(key):
+        reads.append(key)
+        return store.read_text(key)
+
+    def apply_state(operation, workspace, pages, links, replace, deleted, publication, pending):
+        skipped = store.apply_current_state_and_cleanup(operation, workspace, pages, links, replace, deleted)
+        publication["event"] = {"result": publication["result"]}
+        return skipped
+
     adapter = ObjectStorageWikiPageRestore(
-        base._read_text, base._write_text, base._apply_current_state_and_cleanup, base._restore_archived_clusters,
+        read_text, None, apply_state, store.restore_archived_clusters,
         lambda workspace_id, page_id: (workspace_id, page_id) == ("ws-1", "S1"),
     )
     command = IngestOperationRestoreCommand(
@@ -781,10 +794,12 @@ def test_ingest_restore_skips_purged_source_page_and_still_restores_concepts() -
         deleted_pages=(),
     )
 
-    result = RestoreWikiPagesUseCase(adapter, EmbeddingJob()).execute_ingest(command)
+    result = RestoreWikiPagesUseCase(adapter, EmbeddingJob()).execute_ingest(command, user_id="user-1")
 
     assert [page["page_id"] for page in result["changed_pages"]] == ["C3"]
-    assert not any("/S1/" in key for key, *_ in store.writes)
+    assert [page["page_id"] for page in store.current_states[0][1]] == ["C3"]
+    assert "남은 근거" in store.current_states[0][1][0]["markdown"]
+    assert not any("/S1/" in key for key in reads)
 
 
 def test_ingest_restore_does_not_report_source_page_of_deleted_document() -> None:

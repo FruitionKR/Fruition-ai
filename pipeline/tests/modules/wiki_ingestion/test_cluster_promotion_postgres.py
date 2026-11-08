@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from psycopg.types.json import Json
 
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver
 from app.modules.wiki_ingestion.application.models import WikiMaintenanceCommand
 from app.modules.wiki_ingestion.domain.concept_entries import new_entry_id
 from app.modules.wiki_ingestion.domain.concept_split_rules import MIN_CLUSTER_SUBCATEGORIES
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from app.modules.wiki_ingestion.interfaces.http.schemas import WikiLintOut
 from tests.modules.wiki_ingestion.test_concept_page_move_postgres import FakeModel, _store_page_vectors
+from tests.modules.wiki_generation.test_jev_concept_resolver import AngleEmbedder, PairJev
 from tests.modules.wiki_ingestion.test_concept_entry_lint_postgres import (  # noqa: F401
     WS,
     World,
@@ -61,6 +63,25 @@ class PlacementJudge:
                 "part_of": self.answers.get((head["slug"], detail["slug"]), 0.1) >= 0.9,
                 "probability": self.answers.get((head["slug"], detail["slug"]), 0.1),
             }
+            for head, detail in pairs
+        }
+
+
+class AmbiguousPromotionJudge:
+    def __init__(self) -> None:
+        self.client = PairJev()
+        self.resolver = JevConceptResolver(self.client, None, AngleEmbedder())
+        self.model = FakeModel()
+
+    def judge_concepts(self, concepts, pool):
+        return self.resolver.judge_concepts(concepts, pool)
+
+    def judge_related(self, _concept, _candidates):
+        return None
+
+    def judge_part_of(self, pairs):
+        return {
+            (head["slug"], detail["slug"]): {"part_of": False, "probability": 0.0}
             for head, detail in pairs
         }
 
@@ -283,6 +304,31 @@ def test_promotion_without_a_confident_parent_stays_a_new_page(world: World, mon
 
     assert [item["concept_slug"] for item in result["materialized_promotions"]] == ["rollout"]
     assert result["merged_promotions"] == []
+
+
+def test_ambiguous_promotion_aliases_skip_jev_and_allocate_a_new_page(world: World, monkeypatch) -> None:
+    world.ingest("op-one", "doc-one", {
+        "one": {"title": "One", "identity_aliases": ["Shared"], "evidence": ["B1"]},
+    })
+    world.ingest("op-two", "doc-two", {
+        "two": {"title": "Two", "identity_aliases": ["Shared"], "evidence": ["B1"]},
+    })
+    with world.connect() as conn:
+        row = conn.execute(
+            "UPDATE wiki_pages SET summary = '' WHERE workspace_id = %s AND slug = 'two' RETURNING markdown_uri",
+            (WS,),
+        ).fetchone()
+    world.write(row["markdown_uri"], "# Two\n\n## Definition\n\n")
+    judge = AmbiguousPromotionJudge()
+
+    result = _lint(world, monkeypatch, "lint-shared", _cluster("shared", TERMS), judge)
+
+    assert judge.client.requests == []
+    assert result["materialized_promotions"] == [{
+        "cluster_id": "shared", "concept_slug": "shared", "page_id": world.page_id("shared"),
+    }]
+    assert result["merged_promotions"] == []
+    assert set(world.state()["pages"]) >= {"one", "two", "shared"}
 
 
 def test_promotion_keeps_all_accepted_parents_and_restore_removes_references(world: World, monkeypatch) -> None:

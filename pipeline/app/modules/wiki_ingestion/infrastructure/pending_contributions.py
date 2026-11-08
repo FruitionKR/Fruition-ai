@@ -17,30 +17,95 @@ def record_pending_contributions(
     operation_id: str,
     document_id: str,
     artifacts: list[dict[str, Any]],
+    publication_id: str | None = None,
 ) -> None:
     """이번 편입이 기여 JSON을 남긴 개념 페이지를 대기 행으로 남긴다. 편입 커밋과 같은 트랜잭션에서 부른다."""
     rows = [
-        (str(item["page_id"]), operation_id, workspace_id, document_id, str(item["contribution_key"]))
+        {
+            "page_id": str(item["page_id"]),
+            "operation_id": operation_id,
+            "document_id": document_id,
+            "object_key": str(item["contribution_key"]),
+            "active": True,
+        }
         for item in artifacts
         if item.get("contribution_key")
     ]
-    if not rows:
-        return
-    with conn.cursor() as cursor:
-        cursor.executemany(
+    record_pending_deltas(conn, workspace_id, rows, publication_id=publication_id)
+
+
+def record_pending_deltas(
+    conn: psycopg.Connection,
+    workspace_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    publication_id: str | None = None,
+) -> None:
+    """Persist exact desired Document ledger rows in the publication transaction."""
+    for item in rows:
+        transition = publication_id or "legacy"
+        conn.execute(
             """
-            INSERT INTO wiki_pending_contributions (page_id, operation_id, workspace_id, document_id, object_key)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (page_id, operation_id) DO NOTHING
+            UPDATE wiki_pending_contributions
+            SET superseded_at = clock_timestamp()
+            WHERE page_id = %s AND operation_id = %s
+              AND publication_id <> %s AND superseded_at IS NULL
             """,
-            rows,
+            (str(item["page_id"]), str(item["operation_id"]), transition),
         )
+        values = (
+            str(item["page_id"]),
+            str(item["operation_id"]),
+            workspace_id,
+            item.get("document_id"),
+            str(item["object_key"]),
+            bool(item.get("active", True)),
+            item.get("sequence_revision"),
+            item.get("linked_by_operation_id"),
+            transition,
+        )
+        stored = conn.execute(
+            """
+            INSERT INTO wiki_pending_contributions (
+                page_id, operation_id, workspace_id, document_id, object_key,
+                active, sequence_revision, linked_by_operation_id, publication_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (page_id, operation_id, publication_id) DO NOTHING
+            RETURNING page_id
+            """,
+            values,
+        ).fetchone()
+        if stored is None:
+            existing = conn.execute(
+                """
+                SELECT workspace_id, document_id, object_key, active, sequence_revision,
+                       linked_by_operation_id, publication_id
+                FROM wiki_pending_contributions
+                WHERE page_id = %s AND operation_id = %s AND publication_id = %s
+                """,
+                (values[0], values[1], transition),
+            ).fetchone()
+            expected = {
+                "workspace_id": workspace_id,
+                "document_id": item.get("document_id"),
+                "object_key": str(item["object_key"]),
+                "active": bool(item.get("active", True)),
+                "sequence_revision": item.get("sequence_revision"),
+                "linked_by_operation_id": item.get("linked_by_operation_id"),
+                "publication_id": transition,
+            }
+            if existing is None or dict(existing) != expected:
+                raise RuntimeError(
+                    f"pending contribution conflicts: {item['page_id']}:{item['operation_id']}"
+                )
 
 
 def with_pending_contributions(
     conn: psycopg.Connection,
     ledger: list[dict[str, Any]],
     page_ids: list[str],
+    *,
+    cleanup_resolved: bool = True,
 ) -> list[dict[str, Any]]:
     """원장 행 뒤에 원장에 아직 없는 대기 기여를 활성 행으로 붙인다. 원장에 오른 대기 행은 지운다."""
     # ponytail: 원장에 오른 행은 그 페이지를 다시 읽을 때만 지운다. 다시 읽히지 않는 페이지의 행은 남지만 결과에는 영향이 없다.
@@ -50,6 +115,9 @@ def with_pending_contributions(
     pending = conn.execute(
         """
         SELECT pending.page_id, pending.operation_id, pending.document_id, pending.object_key,
+               pending.publication_id,
+               pending.active, pending.sequence_revision, pending.linked_by_operation_id,
+               outbox.receiver_disposition, outbox.receiver_rejection_reason,
                EXISTS (
                    SELECT 1 FROM wiki_source_tombstones tombstone
                    WHERE tombstone.workspace_id = pending.workspace_id
@@ -57,37 +125,74 @@ def with_pending_contributions(
                      AND tombstone.deleted_at > pending.created_at
                ) AS trashed
         FROM wiki_pending_contributions pending
-        WHERE pending.page_id = ANY(%s)
+        LEFT JOIN wiki_publication_outbox outbox USING (publication_id)
+        WHERE pending.page_id = ANY(%s) AND pending.superseded_at IS NULL
         ORDER BY pending.created_at, pending.operation_id
         """,
         (list(page_ids),),
     ).fetchall()
     if not pending:
         return ledger
-    ledgered = {(str(item.get("page_id")), str(item.get("ingest_operation_id"))) for item in ledger}
-    resolved = [row for row in pending if (str(row["page_id"]), str(row["operation_id"])) in ledgered]
-    for row in resolved:
-        conn.execute(
-            "DELETE FROM wiki_pending_contributions WHERE page_id = %s AND operation_id = %s",
-            (row["page_id"], row["operation_id"]),
+    remote = {
+        (str(item.get("page_id")), str(item.get("ingest_operation_id"))): item
+        for item in ledger
+    }
+    resolved = []
+    for row in pending:
+        key = (str(row["page_id"]), str(row["operation_id"]))
+        if row["receiver_disposition"] == "REJECTED_CONFLICT":
+            raise RuntimeError(
+                f"publication was rejected by receiver: {key[0]}:{key[1]}:"
+                f"{row['receiver_rejection_reason']}"
+            )
+        actual = remote.get(key)
+        if actual is None:
+            continue
+        actual_sequence = actual.get("sequence_revision")
+        if (
+            not isinstance(actual_sequence, int)
+            or isinstance(actual_sequence, bool)
+            or actual_sequence <= 0
+        ):
+            raise RuntimeError(
+                f"remote contribution has invalid sequence: {key[0]}:{key[1]}"
+            )
+        exact = (
+            actual.get("source_document_id") == row["document_id"]
+            and bool(actual.get("active")) == bool(row["active"] and not row["trashed"])
+            and str(actual.get("object_key") or "") == str(row["object_key"])
+            and actual.get("lint_operation_id") == row["linked_by_operation_id"]
+            and (
+                row["sequence_revision"] is None
+                or actual_sequence == int(row["sequence_revision"])
+            )
         )
-    sequence: dict[str, int] = {}
-    for item in ledger:
-        page_id = str(item.get("page_id"))
-        sequence[page_id] = max(sequence.get(page_id, 0), int(item.get("sequence_revision") or 0))
+        if not exact:
+            raise RuntimeError(f"remote contribution contradicts pending state: {key[0]}:{key[1]}")
+        resolved.append(row)
+    if cleanup_resolved:
+        for row in resolved:
+            conn.execute(
+                "DELETE FROM wiki_pending_contributions WHERE page_id = %s AND operation_id = %s AND publication_id = %s",
+                (row["page_id"], row["operation_id"], row["publication_id"]),
+            )
     merged = list(ledger)
     for row in pending:
         page_id = str(row["page_id"])
-        if (page_id, str(row["operation_id"])) in ledgered:
+        if (page_id, str(row["operation_id"])) in remote:
             continue
-        sequence[page_id] = sequence.get(page_id, 0) + 1
+        local_sequence = row["sequence_revision"]
+        if local_sequence is None:
+            raise RuntimeError(
+                f"pending contribution sequence is unresolved: {page_id}:{row['operation_id']}"
+            )
         merged.append({
             "page_id": page_id,
             "ingest_operation_id": str(row["operation_id"]),
             "source_document_id": row["document_id"],
-            "sequence_revision": sequence[page_id],
-            # 반영 전에 휴지통으로 옮긴 문서의 기여는 document-svc도 꺼진 행으로 넣는다.
-            "active": not row["trashed"],
+            "sequence_revision": int(local_sequence),
+            "active": bool(row["active"] and not row["trashed"]),
             "object_key": row["object_key"],
+            "lint_operation_id": row["linked_by_operation_id"],
         })
     return merged

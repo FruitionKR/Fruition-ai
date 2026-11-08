@@ -10,7 +10,7 @@ from app.modules.wiki_generation.domain.text_utils import clean_concept_tags
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
 from app.modules.wiki_ingestion.domain.concept_entries import (
     render_entry_index,
-    replay_concept_entries,
+    replay_concept_entries_with_support,
 )
 from app.modules.wiki_ingestion.domain.contribution_identity import (
     CONCEPT_REFERENCE_FIELDS,
@@ -47,10 +47,36 @@ class RebuiltConceptPage:
     title: str | None
     summary: str | None
     source_document_ids: tuple[str, ...]
+    # Complete aggregate from surviving generated contributions. Verified DB aliases are not part of this value.
+    identity_aliases: tuple[str, ...]
     # 기여 재생으로 남은 하위 항목. 이 페이지가 집이다(ADR 0042).
     entries: tuple[dict[str, Any], ...]
     # 재생 결과 페이지가 없다. 나머지 값은 비어 있다(ADR 0042).
     deleted: bool = False
+
+
+def prune_dangling_entry_references(
+    markdown: str,
+    entries: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    supported_links: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    live_entries: set[tuple[str, str]],
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply the common entry-reference cascade without persisting any state."""
+    removed = [
+        link
+        for link in supported_links
+        if link.get("relation") == "entry_reference"
+        and (
+            str(link.get("target") or "").removeprefix("concept:"),
+            str(link.get("entry_id") or ""),
+        )
+        not in live_entries
+    ]
+    if not removed:
+        return markdown, list(supported_links), []
+    removed_ids = {id(link) for link in removed}
+    kept = [link for link in supported_links if id(link) not in removed_ids]
+    return render_entry_index(markdown, list(entries), kept), kept, removed
 
 
 def load_concept_contributions(
@@ -101,6 +127,139 @@ def load_concept_contributions(
     return loaded
 
 
+def contribution_cites(contribution: dict[str, Any], refs: set[str]) -> bool:
+    """Whether a generated contribution cites one of the invalidated source refs."""
+    if contribution.get("artifact_type") in ("manual", INVALIDATION):
+        return False
+    item = globalize_contribution_identity(contribution)
+    cited = [
+        *(ref for field in CONCEPT_REFERENCE_FIELDS for ref in (item.get("concept") or {}).get(field, [])),
+        *(ref for unit in item.get("evidence_units", []) for ref in unit.get("anchor_reference_ids", [])),
+        *(ref for point in item.get("source_key_points", []) for ref in point.get("anchor_reference_ids", [])),
+        *(
+            ref
+            for change in item.get("entry_changes", [])
+            if change.get("op") == "add"
+            for ref in change.get("anchor_reference_ids", [])
+        ),
+    ]
+    return bool(refs.intersection(cited))
+
+
+def replay_concept_page_with_operation(
+    *,
+    workspace_id: str,
+    page_id: str,
+    operation_id: str,
+    ledger: list[dict[str, Any]],
+    contribution: dict[str, Any],
+    read_text: Callable[[str], str],
+    load_contributions: Callable[..., list[PageContribution]] | None = None,
+    rebuild_page: Callable[[list[PageContribution]], RebuiltConceptPage] | None = None,
+    required_citations: set[str] | None = None,
+    allow_empty: bool = False,
+) -> tuple[list[PageContribution], RebuiltConceptPage] | None:
+    """Plan the exact common replay used by publication and immutable preview."""
+    load_contributions = load_contributions or load_concept_contributions
+    rebuild_page = rebuild_page or rebuild_concept_page
+    kept = [
+        item
+        for item in ledger
+        if str(item.get("page_id")) == page_id
+        and item.get("active")
+        and str(item.get("ingest_operation_id")) != operation_id
+    ]
+    if any(
+        not isinstance(item.get("sequence_revision"), int)
+        or isinstance(item.get("sequence_revision"), bool)
+        or int(item["sequence_revision"]) <= 0
+        for item in kept
+    ):
+        raise ConceptContributionError("concept contribution ledger sequence is unresolved")
+    kept.sort(key=lambda item: int(item["sequence_revision"]))
+    if not kept and not allow_empty:
+        return None
+    loaded = load_contributions(
+        workspace_id=workspace_id,
+        page_id=page_id,
+        keep_contributions=[
+            {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]}
+            for item in kept
+        ],
+        read_text=read_text,
+    )
+    if required_citations is not None and not any(
+        contribution_cites(item.contribution or {}, required_citations)
+        for item in loaded
+    ):
+        return None
+    appended = {**contribution, "page_id": page_id}
+    sequence = max((item.sequence for item in loaded), default=0) + 1
+    return loaded, rebuild_page([
+        *loaded,
+        PageContribution(page_id, "concept", operation_id, sequence, "", appended),
+    ])
+
+
+def rebuild_active_concept_page_from_ledger(
+    *,
+    workspace_id: str,
+    page_id: str,
+    ledger: list[dict[str, Any]],
+    read_text: Callable[[str], str],
+    load_contributions: Callable[..., list[PageContribution]] | None = None,
+    rebuild_page: Callable[[list[PageContribution]], RebuiltConceptPage] | None = None,
+) -> tuple[list[PageContribution], RebuiltConceptPage] | None:
+    """Replay one active authoritative ledger with the same validation in every caller."""
+    load_contributions = load_contributions or load_concept_contributions
+    rebuild_page = rebuild_page or rebuild_concept_page
+    kept = [
+        item for item in ledger
+        if str(item.get("page_id")) == page_id and item.get("active")
+    ]
+    if any(
+        not isinstance(item.get("sequence_revision"), int)
+        or isinstance(item.get("sequence_revision"), bool)
+        or int(item["sequence_revision"]) <= 0
+        for item in kept
+    ):
+        raise ConceptContributionError("concept contribution ledger sequence is unresolved")
+    kept.sort(key=lambda item: int(item["sequence_revision"]))
+    if not kept:
+        return None
+    loaded = load_contributions(
+        workspace_id=workspace_id,
+        page_id=page_id,
+        keep_contributions=[
+            {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]}
+            for item in kept
+        ],
+        read_text=read_text,
+    )
+    return loaded, rebuild_page(loaded)
+
+
+def surviving_evidence_units(
+    contributions: tuple[PageContribution, ...] | list[PageContribution],
+) -> dict[str, dict[str, Any]]:
+    """Return the exact evidence identity set used by common contribution replay."""
+    ordered = sorted(contributions, key=lambda item: item.sequence)
+    last_delete = max((index for index, item in enumerate(ordered) if _is_delete(item)), default=-1)
+    artifacts = [
+        item.contribution if _is_manual(item) else globalize_contribution_identity(item.contribution or {})
+        for item in ordered[last_delete + 1:]
+    ]
+    artifacts, _stale = _without_invalidated(artifacts)
+    result: dict[str, dict[str, Any]] = {}
+    for artifact in artifacts:
+        for unit in artifact.get("evidence_units", []):
+            evidence_id = str(unit.get("evidence_id") or "")
+            if not evidence_id or evidence_id in result:
+                raise ConceptContributionError("evidence identity is missing or duplicated")
+            result[evidence_id] = dict(unit)
+    return result
+
+
 def rebuild_concept_page(
     contributions: tuple[PageContribution, ...] | list[PageContribution],
 ) -> RebuiltConceptPage:
@@ -146,7 +305,10 @@ def rebuild_concept_page(
         raise ConceptContributionError("concept contribution has neither concept nor entry changes")
     # 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생해야 사람이 지운 edge가 되살아나지 않는다.
     supported_links = tuple(replay_supported_links(artifacts))
-    entries = tuple(replay_concept_entries(artifacts))
+    replayed_entries, entry_support_operations = replay_concept_entries_with_support(
+        artifacts
+    )
+    entries = tuple(replayed_entries)
     # 남은 유효 근거가 없으면 페이지도 없다. lint 메타데이터(분리·링크 기록)만으로 존속시키지 않는다(ADR 0042 결정 3).
     if not (manual or entries or any(
         _supports_page(before, after) for before, after in zip(original_json, contribution_json, strict=True)
@@ -190,6 +352,14 @@ def rebuild_concept_page(
         contribution_json = [_without_moved_citations(item, dropped_refs, dropped_claims) for item in contribution_json]
     # 문서 연결(그리고 소스 → 개념 자동 링크)은 최종 생존 근거로 정한다(ADR 0042 결정 5).
     source_document_ids = tuple(_source_document_ids(original_json, contribution_json, entries))
+    identity_aliases = tuple(_unique(
+        alias
+        for before, item in zip(original_json, contribution_json, strict=True)
+        if _supports_page(before, item)
+        or str(item.get("operation_id") or "") in entry_support_operations
+        for alias in (item.get("concept") or {}).get("identity_aliases", [])
+        if str(alias).strip()
+    ))
     if manual:
         # 사람이 마지막으로 고친 본문을 기준으로 삼는다. 그 전 AI 기여는 사람이 본 본문에 이미
         # 들어 있으므로, 그 뒤 AI 기여의 근거만 재편입과 같은 방식으로 덧붙인다.
@@ -218,6 +388,7 @@ def rebuild_concept_page(
             title=None,
             summary=None,
             source_document_ids=source_document_ids,
+            identity_aliases=identity_aliases,
             entries=entries,
         )
 
@@ -252,6 +423,7 @@ def rebuild_concept_page(
             or ""
         ),
         source_document_ids=source_document_ids,
+        identity_aliases=identity_aliases,
         entries=entries,
     )
 
@@ -281,7 +453,7 @@ def _without_moved_citations(
 def _deleted_page(page_id: str) -> RebuiltConceptPage:
     return RebuiltConceptPage(
         page_id=page_id, markdown="", operation_ids=(), supported_links=(), title=None, summary=None,
-        source_document_ids=(), entries=(), deleted=True,
+        source_document_ids=(), identity_aliases=(), entries=(), deleted=True,
     )
 
 
@@ -314,12 +486,17 @@ def _without_invalidated(
     추가는 뺀다. 무효화 전용 기록은 재생 내용이 없어 결과 목록에서 뺀다. 사람이 쓴 기록은 손대지 않는다.
     """
     stale_by_operation: dict[str, set[str]] = {}
+    invalidated_claims_by_operation: dict[str, set[str]] = {}
     later: set[str] = set()
+    later_claims: set[str] = set()
     for item in reversed(artifacts):
         if later and item.get("artifact_type") != "manual":
             stale_by_operation[str(item.get("operation_id") or "")] = set(later)
+        if later_claims and item.get("artifact_type") != "manual":
+            invalidated_claims_by_operation[str(item.get("operation_id") or "")] = set(later_claims)
         later |= set(item.get("invalidated_reference_ids", []))
-    if not stale_by_operation:
+        later_claims |= set(item.get("invalidated_evidence_ids", []))
+    if not stale_by_operation and not invalidated_claims_by_operation:
         return [item for item in artifacts if not _is_invalidation(item)], {}
     dropped_claims = {
         str(unit.get("evidence_id"))
@@ -327,7 +504,7 @@ def _without_invalidated(
         for unit in item.get("evidence_units", [])
         if isinstance(unit, dict)
         and stale_by_operation.get(str(item.get("operation_id") or ""), set()) & set(unit.get("anchor_reference_ids", []))
-    }
+    } | set().union(*invalidated_claims_by_operation.values())
     return [
         _without_stale(item, stale_by_operation.get(str(item.get("operation_id") or ""), set()), dropped_claims)
         for item in artifacts
@@ -344,6 +521,20 @@ def _without_stale(contribution: dict[str, Any], stale: set[str], dropped_claims
     concept["evidence_claim_ids"] = [
         claim_id for claim_id in concept.get("evidence_claim_ids", []) if claim_id not in dropped_claims
     ]
+    dropped_units = [
+        unit for unit in contribution.get("evidence_units", [])
+        if str(unit.get("evidence_id")) in dropped_claims
+    ]
+    surviving_unit_refs = {
+        ref for unit in contribution.get("evidence_units", [])
+        if str(unit.get("evidence_id")) not in dropped_claims
+        for ref in unit.get("anchor_reference_ids", [])
+    }
+    claim_only_refs = {
+        ref for unit in dropped_units for ref in unit.get("anchor_reference_ids", [])
+    } - surviving_unit_refs
+    for field in CONCEPT_REFERENCE_FIELDS:
+        concept[field] = [ref for ref in concept.get(field, []) if ref not in claim_only_refs]
     result = {
         **contribution,
         "concept": concept,
@@ -354,6 +545,11 @@ def _without_stale(contribution: dict[str, Any], stale: set[str], dropped_claims
         "source_key_points": [
             item for item in contribution.get("source_key_points", [])
             if not stale & set(item.get("anchor_reference_ids", []))
+            and not any(
+                str(item.get("text") or "") == str(unit.get("claim") or "")
+                and set(item.get("anchor_reference_ids", [])) == set(unit.get("anchor_reference_ids", []))
+                for unit in dropped_units
+            )
         ],
     }
     if "entry_changes" in contribution:
@@ -405,6 +601,7 @@ def _merge_contributions(
     merged_concept = dict(concepts[0])
     list_fields = (
         "aliases",
+        "identity_aliases",
         "anchor_reference_ids",
         "mention_reference_ids",
         "display_reference_ids",

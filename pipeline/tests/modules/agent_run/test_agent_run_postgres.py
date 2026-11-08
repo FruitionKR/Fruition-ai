@@ -8,7 +8,12 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.agent_run.domain.entities import AgentRun
+from app.modules.agent_run.domain.entities import (
+    AgentRun,
+    McpApprovalCommand,
+    McpProposalActor,
+    StartAgentRunArtifact,
+)
 from app.modules.agent_run.domain.plan import AgentPlanOperation, build_agent_plan
 
 
@@ -454,3 +459,479 @@ def test_rollback_skips_operation_whose_snapshot_read_failed(repositories, stora
         conn.execute("UPDATE agent_plan_operations SET status = 'failed', error_code = 'tool_http_404' WHERE id = 'op-1'")
 
     assert jobs.load_undo_records("edit-run") == []
+
+
+def _mcp_persist_values(
+    run_id: str | None = None,
+    invocation_id: str | None = None,
+    idempotency_key: str = "request-1",
+):
+    import hashlib
+    import json
+
+    run_id = run_id or str(uuid4())
+    plan_id = str(uuid4())
+    artifact_id = f"{run_id}-artifact-1"
+    markdown = "# changed"
+    digest = "sha256:" + hashlib.sha256(markdown.encode()).hexdigest()
+    target = {"type": "whole_document", "start_line": 1, "end_line": 1}
+    operation = AgentPlanOperation(
+        id=f"{plan_id}-op-1",
+        sequence=1,
+        tool_name="apply_document_edit",
+        target_type="document",
+        target_id="doc_1",
+        base_version=1,
+        source_parent_id=None,
+        destination_parent_id=None,
+        arguments={
+            "document_id": "doc_1",
+            "base_version": 1,
+            "target": target,
+            "content_artifact_id": artifact_id,
+            "content_hash": digest,
+        },
+        reason="Fix title",
+    )
+    plan = build_agent_plan(plan_id, run_id, 1, "Fix title", (operation,))
+    actor = McpProposalActor(
+        invocation_id=invocation_id or str(uuid4()),
+        grant_id="00000000-0000-4000-8000-000000000001",
+        user_id="user-1",
+        workspace_id="workspace-1",
+        client_id="https://client.example/metadata",
+        policy_generation=1,
+        origin="MCP_CLIENT",
+        spec_version="2025-11-25",
+        tool_name="propose_document_edit",
+    )
+    run = AgentRun(
+        id=run_id,
+        workspace_id=actor.workspace_id,
+        user_id=actor.user_id,
+        action="workspace_workflow",
+        skill_version_id=None,
+        status="awaiting_approval",
+        request_summary="Fix title",
+        current_plan_id=plan_id,
+        origin=actor.origin,
+        grant_id=actor.grant_id,
+        client_id=actor.client_id,
+        policy_generation=actor.policy_generation,
+        invocation_id=actor.invocation_id,
+        spec_version=actor.spec_version,
+        tool_name=actor.tool_name,
+        proposal_request_hash="sha256:" + "a" * 64,
+    )
+    artifact = StartAgentRunArtifact(
+        id=artifact_id,
+        content_hash=digest,
+        markdown=markdown,
+        purpose="apply_document_edit",
+        document_id="doc_1",
+        base_version=1,
+        target=target,
+        display_name="Document",
+        summary="Fix title",
+        preview_json=json.dumps({"changed": True}),
+    )
+    return {
+        "run": run,
+        "plan": plan,
+        "artifacts": (artifact,),
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "request_hash": "sha256:" + "a" * 64,
+    }
+
+
+def test_mcp_proposal_is_atomic_awaiting_approval_without_planning_job(repositories, storage) -> None:
+    runs, _, connect = repositories
+    values = _mcp_persist_values()
+
+    result = runs.create_mcp_proposal(**values)
+
+    assert (result.run_id, result.plan_id, result.status) == (
+        values["run"].id,
+        values["plan"].id,
+        "awaiting_approval",
+    )
+    with connect() as conn:
+        stored = conn.execute(
+            "SELECT status, origin, grant_id, client_id, policy_generation, invocation_id "
+            "FROM agent_runs WHERE id = %s",
+            (result.run_id,),
+        ).fetchone()
+        counts = conn.execute(
+            "SELECT (SELECT count(*) FROM agent_plans) AS plans, "
+            "(SELECT count(*) FROM agent_plan_operations) AS operations, "
+            "(SELECT count(*) FROM agent_run_artifacts) AS artifacts, "
+            "(SELECT count(*) FROM agent_jobs) AS jobs"
+        ).fetchone()
+    assert stored == {
+        "status": "awaiting_approval",
+        "origin": "MCP_CLIENT",
+        "grant_id": values["actor"].grant_id,
+        "client_id": values["actor"].client_id,
+        "policy_generation": 1,
+        "invocation_id": values["actor"].invocation_id,
+    }
+    assert counts == {"plans": 1, "operations": 1, "artifacts": 1, "jobs": 0}
+    assert len(storage) == 2
+
+
+def test_mcp_same_key_is_concurrent_single_creation_and_different_hash_conflicts(
+    repositories, storage
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from app.modules.agent_run.application.mcp_proposal import McpProposalError
+
+    runs, _, connect = repositories
+    first = _mcp_persist_values()
+    second = _mcp_persist_values(invocation_id=str(uuid4()))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda values: runs.create_mcp_proposal(**values), (first, second)))
+
+    assert len({result.run_id for result in results}) == 1
+    assert len(storage) == 2
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS count FROM agent_runs").fetchone()["count"] == 1
+    with pytest.raises(McpProposalError) as raised:
+        runs.find_mcp_proposal(first["actor"], "request-1", "sha256:" + "b" * 64)
+    assert raised.value.code == "IDEMPOTENCY_CONFLICT"
+
+
+def test_mcp_object_failure_and_purge_fence_leave_no_rows_or_objects(
+    repositories, storage, monkeypatch
+) -> None:
+    from app.core.pipeline_control import ScopePurgedError
+    from app.modules.agent_run.infrastructure import postgres_agent_run_repository as module
+
+    runs, _, connect = repositories
+    values = _mcp_persist_values()
+    original_insert = module._insert_plan
+    monkeypatch.setattr(module, "_insert_plan", lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        runs.create_mcp_proposal(**values)
+    assert storage == {}
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS count FROM agent_runs").fetchone()["count"] == 0
+        conn.execute("INSERT INTO ai_purged_scopes(scope_type, scope_id) VALUES ('workspace', 'workspace-1')")
+    monkeypatch.setattr(module, "_insert_plan", original_insert)
+    with pytest.raises(ScopePurgedError):
+        runs.create_mcp_proposal(**_mcp_persist_values())
+    assert storage == {}
+
+
+def test_mcp_provenance_is_immutable_and_legacy_approval_and_revise_are_denied(
+    repositories, storage
+) -> None:
+    runs, _, connect = repositories
+    values = _mcp_persist_values()
+    runs.create_mcp_proposal(**values)
+    with connect() as conn, pytest.raises(Exception):
+        conn.execute("UPDATE agent_runs SET invocation_id = %s WHERE id = %s", (str(uuid4()), values["run"].id))
+    with pytest.raises(ValueError, match="legacy approval"):
+        runs.approve_and_enqueue(values["run"], values["plan"], "approval-1", "job-1")
+    with pytest.raises(ValueError, match="cannot be revised"):
+        runs.revise("workspace-1", "user-1", values["run"].id, "again", "job-2")
+
+
+def _mcp_approval(values, approval_id: str | None = None) -> McpApprovalCommand:
+    operation_id = values["plan"].operations[0].id
+    return McpApprovalCommand(
+        run_id=values["run"].id,
+        workspace_id=values["actor"].workspace_id,
+        user_id=values["actor"].user_id,
+        plan_version=values["plan"].version,
+        operation_hash=values["plan"].operation_hash,
+        operation_ids=(operation_id,),
+        approval_id=approval_id or str(uuid4()),
+        approval_mode="EXPLICIT_WEB",
+        grant_id=values["actor"].grant_id,
+        client_id=values["actor"].client_id,
+        policy_generation=values["actor"].policy_generation,
+    )
+
+
+def _mcp_create_values(key: str):
+    import hashlib
+
+    values = _mcp_persist_values(idempotency_key=key)
+    run_id, plan_id = values["run"].id, values["plan"].id
+    markdown = "same body"
+    digest = "sha256:" + hashlib.sha256(markdown.encode()).hexdigest()
+    operation = AgentPlanOperation(
+        id=f"{plan_id}-op-1", sequence=1, tool_name="create_document",
+        target_type="document", target_id=None, base_version=None,
+        source_parent_id=None, destination_parent_id=None,
+        arguments={
+            "display_name": "Same.md", "folder_id": None,
+            "content_artifact_id": f"{run_id}-artifact-1", "content_hash": digest,
+        },
+        reason="Create document",
+    )
+    plan = build_agent_plan(plan_id, run_id, 1, "Create document", (operation,))
+    actor = replace(values["actor"], tool_name="propose_plan", invocation_id=str(uuid4()))
+    artifact = StartAgentRunArtifact(
+        id=f"{run_id}-artifact-1", content_hash=digest, markdown=markdown,
+        purpose="create_document", display_name="Same.md", summary="Create document",
+    )
+    return {
+        **values,
+        "actor": actor,
+        "run": replace(values["run"], current_plan_id=plan_id, tool_name="propose_plan"),
+        "plan": plan,
+        "artifacts": (artifact,),
+        "request_hash": "sha256:" + key[-1] * 64,
+    }
+
+
+def test_mcp_multi_artifact_proposal_and_partial_selection_are_atomic(repositories, storage) -> None:
+    runs, _, connect = repositories
+    values = _mcp_persist_values()
+    first = values["plan"].operations[0]
+    second_artifact = replace(
+        values["artifacts"][0], id=values["run"].id + "-artifact-2",
+        document_id="doc_2", markdown="second",
+        content_hash="sha256:" + __import__("hashlib").sha256(b"second").hexdigest(),
+    )
+    second = replace(
+        first, id=values["plan"].id + "-op-2", sequence=2, target_id="doc_2",
+        arguments={
+            **first.arguments, "document_id": "doc_2",
+            "content_artifact_id": second_artifact.id,
+            "content_hash": second_artifact.content_hash,
+        },
+    )
+    plan = build_agent_plan(
+        values["plan"].id, values["run"].id, 1, "Two edits", (first, second)
+    )
+    values = {
+        **values, "plan": plan, "artifacts": (*values["artifacts"], second_artifact),
+    }
+
+    runs.create_mcp_proposal(**values)
+    command = replace(_mcp_approval(values), operation_ids=(second.id,))
+    runs.approve_mcp_and_enqueue(command, plan, "multi-execution-job")
+
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS count FROM agent_run_artifacts WHERE run_id = %s", (values["run"].id,)
+        ).fetchone()["count"] == 2
+        rows = conn.execute(
+            "SELECT id,status,error_code FROM agent_plan_operations WHERE plan_id = %s ORDER BY sequence",
+            (plan.id,),
+        ).fetchall()
+    assert [(row["id"], row["status"], row["error_code"]) for row in rows] == [
+        (first.id, "skipped", "not_selected"), (second.id, "pending", None),
+    ]
+
+
+def test_mcp_concurrent_matching_creates_cannot_both_start(repositories, storage) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    runs, jobs, _ = repositories
+    first, second = _mcp_create_values("request-1"), _mcp_create_values("request-2")
+    for values in (first, second):
+        runs.create_mcp_proposal(**values)
+        operation = values["plan"].operations[0]
+        runs.approve_mcp_and_enqueue(_mcp_approval(values), values["plan"], str(uuid4()))
+        assert jobs.mark_operation(operation.id, ("pending",), "running")
+
+    def start(values):
+        operation = values["plan"].operations[0]
+        assert jobs.prepare_undo(values["run"].id, values["plan"].id, operation.id,
+                                 operation.tool_name, operation.arguments, {})
+        return jobs.get_or_create_mcp_attempt(
+            values["run"].id, values["plan"].id, operation.id,
+            operation.tool_name, operation.arguments,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempts = list(pool.map(start, (first, second)))
+    assert sorted(attempt.status for attempt in attempts) == ["held", "started"]
+    started = next(attempt for attempt in attempts if attempt.status == "started")
+    started_values = (first, second)[attempts.index(started)]
+    held_values = (first, second)[1 - attempts.index(started)]
+    jobs.finish_mcp_attempt(started.attempt_id, "unknown", None, "timeout")
+    assert start(held_values).status == "held"
+    jobs.finish_mcp_attempt(
+        started.attempt_id, "committed",
+        {"receipt_id": "receipt-existing", "resource_type": "DOCUMENT",
+         "resource_id": "doc_existing", "after_version": 1},
+        None,
+    )
+    replay = start(started_values)
+    assert replay.attempt_id == started.attempt_id and not replay.created
+    assert replay.status == "committed"
+    assert start(held_values).status == "existing"
+    held_actor = held_values["actor"]
+    held_plan = runs.get_current_plan_for_user(
+        held_actor.workspace_id, held_actor.user_id, held_values["run"].id
+    )[1]
+    assert held_plan.operations[0].existing_result == {
+        "resource_type": "DOCUMENT", "resource_id": "doc_existing", "current_version": 1,
+    }
+    assert runs.get_current_plan_for_user("other", held_actor.user_id, held_values["run"].id) is None
+    assert runs.get_current_plan_for_user(held_actor.workspace_id, "other", held_values["run"].id) is None
+    third = _mcp_create_values("request-3")
+    runs.create_mcp_proposal(**third)
+    operation = third["plan"].operations[0]
+    runs.approve_mcp_and_enqueue(_mcp_approval(third), third["plan"], str(uuid4()))
+    assert jobs.mark_operation(operation.id, ("pending",), "running")
+    new_attempt = start(third)
+    assert new_attempt.status == "started" and new_attempt.created
+    assert new_attempt.attempt_id != started.attempt_id
+    assert start(held_values).status == "existing"
+
+
+def test_mcp_approval_is_atomic_stable_and_fenced(repositories, storage) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from app.core.pipeline_control import ScopePurgedError
+    from app.modules.agent_run.application.mcp_approval import McpApprovalError
+
+    runs, _, connect = repositories
+    values = _mcp_persist_values()
+    runs.create_mcp_proposal(**values)
+    command = _mcp_approval(values)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        approved, replay = list(pool.map(
+            lambda job_id: runs.approve_mcp_and_enqueue(command, values["plan"], job_id),
+            ("execution-job", "another-job"),
+        ))
+    assert approved.status == replay.status == "executing"
+    assert replay.id == approved.id
+    with connect() as conn:
+        counts = conn.execute(
+            "SELECT (SELECT count(*) FROM agent_approvals) approvals, "
+            "(SELECT count(*) FROM agent_jobs WHERE job_type = 'execution') jobs"
+        ).fetchone()
+    assert counts == {"approvals": 1, "jobs": 1}
+    with pytest.raises(McpApprovalError) as conflict:
+        runs.find_mcp_approval(replace(command, policy_generation=2))
+    assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+    with pytest.raises(McpApprovalError):
+        runs.find_mcp_approval(replace(command, workspace_id="other-workspace"))
+
+    other = _mcp_persist_values(idempotency_key="request-2")
+    runs.create_mcp_proposal(**other)
+    runs.cancel(other["actor"].workspace_id, other["actor"].user_id, other["run"].id)
+    with pytest.raises(McpApprovalError):
+        runs.approve_mcp_and_enqueue(_mcp_approval(other), other["plan"], "late-job")
+
+    purged = _mcp_persist_values(idempotency_key="request-3")
+    runs.create_mcp_proposal(**purged)
+    with connect() as conn:
+        conn.execute("INSERT INTO ai_purged_scopes(scope_type, scope_id) VALUES ('user', %s)",
+                     (purged["actor"].user_id,))
+    with pytest.raises(ScopePurgedError):
+        runs.approve_mcp_and_enqueue(_mcp_approval(purged), purged["plan"], "purged-job")
+
+
+def test_mcp_attempt_identity_is_persisted_and_required_by_authorization(repositories, storage) -> None:
+    runs, jobs, _ = repositories
+    values = _mcp_persist_values()
+    runs.create_mcp_proposal(**values)
+    command = _mcp_approval(values)
+    runs.approve_mcp_and_enqueue(command, values["plan"], "execution-job")
+    operation = values["plan"].operations[0]
+    assert jobs.mark_operation(operation.id, ("pending",), "running")
+    attempt = jobs.get_or_create_mcp_attempt(
+        values["run"].id, values["plan"].id, operation.id, operation.tool_name,
+        operation.arguments,
+    )
+    arguments = operation.arguments
+    common = dict(
+        run_id=values["run"].id, workspace_id=values["actor"].workspace_id,
+        user_id=values["actor"].user_id, plan_id=values["plan"].id,
+        plan_version=1, operation_hash=values["plan"].operation_hash,
+        operation_id=operation.id, tool_name=operation.tool_name, arguments=arguments,
+    )
+    assert not runs.authorize_tool_execute(**common)
+    assert runs.authorize_tool_execute(
+        **common, approval_id=command.approval_id, attempt_id=attempt.attempt_id,
+        grant_id=command.grant_id, client_id=command.client_id,
+        policy_generation=command.policy_generation,
+    )
+    assert not runs.authorize_tool_execute(
+        **common, approval_id=command.approval_id, attempt_id=str(uuid4()),
+        grant_id=command.grant_id, client_id=command.client_id,
+        policy_generation=command.policy_generation,
+    )
+
+
+def test_mcp_halted_run_can_use_existing_explicit_cancel_recovery(repositories, storage) -> None:
+    runs, jobs, connect = repositories
+    values = _mcp_persist_values()
+    runs.create_mcp_proposal(**values)
+    command = _mcp_approval(values)
+    runs.approve_mcp_and_enqueue(command, values["plan"], "execution-job")
+
+    jobs.halt_mcp_run(values["run"].id, "CLIENT_DISABLED")
+    assert runs.get_for_user("workspace-1", "user-1", values["run"].id).status == "halted"
+    recovered = runs.cancel("workspace-1", "user-1", values["run"].id)
+
+    assert recovered.status == "cancel_requested"
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS count FROM agent_jobs WHERE run_id = %s AND job_type = 'rollback'",
+            (values["run"].id,),
+        ).fetchone()["count"] == 1
+
+
+def test_mcp_owned_run_locator_is_bound_and_keyset_paginated(repositories, storage, monkeypatch) -> None:
+    runs, _, _ = repositories
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "test-agent-token")
+    first = _mcp_persist_values(idempotency_key="request-1")
+    second = _mcp_persist_values(idempotency_key="request-2")
+    runs.create_mcp_proposal(**first)
+    runs.create_mcp_proposal(**second)
+    page = runs.list_owned_mcp_runs("workspace-1", "user-1", first["actor"].grant_id, None, 1)
+    assert len(page["items"]) == 1 and page["next_cursor"]
+    tail = runs.list_owned_mcp_runs(
+        "workspace-1", "user-1", first["actor"].grant_id, page["next_cursor"], 1
+    )
+    assert len(tail["items"]) == 1 and tail["items"] != page["items"]
+    with pytest.raises(ValueError):
+        runs.list_owned_mcp_runs("workspace-1", "other-user", first["actor"].grant_id,
+                                 page["next_cursor"], 1)
+
+
+def test_legacy_web_run_approval_remains_unchanged(repositories) -> None:
+    runs, _, _ = repositories
+    run, plan = _awaiting_run(runs)
+    approved = runs.approve_and_enqueue(run, plan, "approval-1", "execution-job")
+    assert approved.status == "executing"
+
+
+def test_mcp_atomic_proposal_writes_the_exact_final_bytes_to_minio(
+    repositories, monkeypatch
+) -> None:
+    if not os.environ.get("S3_ENDPOINT"):
+        pytest.skip("isolated MinIO endpoint is not configured")
+    from minio.deleteobjects import DeleteObject
+    from app.modules.wiki_ingestion.infrastructure import object_storage
+
+    runs, _, connect = repositories
+    bucket = "mcp-proposal-" + uuid4().hex
+    monkeypatch.setenv("S3_BUCKET", bucket)
+    client = object_storage.client()
+    client.make_bucket(bucket)
+    values = _mcp_persist_values()
+    try:
+        result = runs.create_mcp_proposal(**values)
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT object_key, preview_object_key FROM agent_run_artifacts WHERE run_id = %s",
+                (result.run_id,),
+            ).fetchone()
+        assert object_storage.read_text_object(row["object_key"]) == values["artifacts"][0].markdown
+        assert object_storage.read_text_object(row["preview_object_key"]) == values["artifacts"][0].preview_json
+    finally:
+        errors = client.remove_objects(
+            bucket,
+            (DeleteObject(item.object_name) for item in client.list_objects(bucket, recursive=True)),
+        )
+        assert list(errors) == []
+        client.remove_bucket(bucket)

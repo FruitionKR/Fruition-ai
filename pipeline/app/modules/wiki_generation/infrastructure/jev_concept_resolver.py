@@ -38,7 +38,7 @@ from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import MAX_TEXT_CHARS, RemoteEmbeddingModel
 from app.modules.wiki_generation.application.ports import ConceptResolver, JsonDict
-from app.modules.wiki_generation.domain.text_utils import name_key
+from app.modules.wiki_generation.domain.concept_identity import concept_name_keys
 
 CONCEPT_PAIR_RULE = (
     "Judge each question's candidate against the incoming concept using only the supplied titles, aliases, "
@@ -113,12 +113,34 @@ class NameMatchConceptResolver(ConceptResolver):
         pool = [*incoming, *(concept for concept in existing_concepts if concept.get("slug"))]
         incoming_slugs = {concept["slug"] for concept in incoming}
         matched = {}
+        ambiguous = {}
         for concept in incoming:
             others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            name_matches = _exact_name_matches(concept, others)
+            if len(name_matches) > 1:
+                ambiguous[concept["slug"]] = {
+                    "incoming_slug": concept["slug"],
+                    "decision": "create_new",
+                    "canonical_slug": concept["slug"],
+                    "alias_to_add": None,
+                }
+                continue
             if target := _exact_name_match(concept, others, incoming_slugs):
                 matched[concept["slug"]] = _merge(concept["slug"], target)
-        rest = [concept for concept in incoming_concepts if concept.get("slug") not in matched]
-        raw = self.inner.resolve(rest, existing_concepts, missing_related_hints) if rest or missing_related_hints else {}
+        rest = [
+            concept
+            for concept in incoming_concepts
+            if concept.get("slug") not in matched and concept.get("slug") not in ambiguous
+        ]
+        # 같은 slug는 같은 identity가 아니다. 아직 최종 slug를 배정하기 전이므로 판정 후보에서 빼고 allocator가 처리한다.
+        colliding_slugs = incoming_slugs & {
+            concept["slug"] for concept in existing_concepts if concept.get("slug")
+        }
+        judge_existing = [
+            concept for concept in existing_concepts
+            if concept.get("slug") not in colliding_slugs
+        ]
+        raw = self.inner.resolve(rest, judge_existing, missing_related_hints) if rest or missing_related_hints else {}
         resolutions = list(raw.get("resolutions") or [])
         # 이름 일치 대상이 다시 병합되면(이름 일치끼리 또는 판정기에서) 연쇄가 생기므로 최종 대상으로 바로 잇는다.
         # 이름 일치는 기존 개념이나 slug가 앞선 개념만 가리켜 순환이 없다.
@@ -134,7 +156,7 @@ class NameMatchConceptResolver(ConceptResolver):
                 seen.add(target)
                 target = merged_to[target]
             item["canonical_slug"] = target
-        return {**raw, "resolutions": [*matched.values(), *resolutions]}
+        return {**raw, "resolutions": [*matched.values(), *ambiguous.values(), *resolutions]}
 
 
 def jev_concept_judge(fallback: ConceptResolver | None = None) -> JevConceptResolver | None:
@@ -225,6 +247,10 @@ class JevConceptResolver(ConceptResolver):
         incoming_slugs = {concept["slug"] for concept in concepts}
         for concept in concepts:
             others = [candidate for candidate in pool if candidate["slug"] != concept["slug"]]
+            if len(_exact_name_matches(concept, others)) > 1:
+                logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=create_new(이름 모호)",
+                            concept["slug"], len(others))
+                continue
             if target := _exact_name_match(concept, others, incoming_slugs):
                 resolutions[concept["slug"]] = _merge(concept["slug"], target)
                 logger.info("[Jev concept merge] %s 후보=%d 요청=0 결정=merge_into:%s(이름 일치)",
@@ -423,30 +449,28 @@ def cached_embeddings(model: EmbeddingModelPort, texts: list[str]) -> dict[str, 
 
 
 def _exact_name_match(concept: JsonDict, candidates: list[JsonDict], incoming_slugs: set[str]) -> str | None:
-    """제목·별칭이 후보의 slug·제목·별칭과 글자 그대로 같은 후보를 고른다.
+    """제목·출처가 확인된 별칭이 하나의 후보와만 같은 경우 그 후보를 고른다.
 
-    기존 개념을 먼저 고른다. 같은 편입의 개념끼리는 이름 일치가 양쪽으로 성립하므로, 서로 병합해
-    둘 다 남지 않도록 slug가 앞선 쪽만 정본으로 둔다.
+    slug와 legacy 출처 불명 별칭은 동일성 근거가 아니다. 같은 편입의 양방향 일치는 이름 키 순서가 앞선
+    개념만 정본으로 두며, 둘 이상과 일치하면 모호하므로 병합하지 않는다.
     """
-    names = _names(concept.get("title"), *(concept.get("aliases") or []))
-    matches = [
-        candidate["slug"]
-        for candidate in candidates
-        if names & _names(candidate["slug"], candidate.get("title"), *(candidate.get("aliases") or []))
-    ]
-    existing = [slug for slug in matches if slug not in incoming_slugs]
-    if existing:
-        return min(existing)
-    return min((slug for slug in matches if slug < concept["slug"]), default=None)
+    matches = _exact_name_matches(concept, candidates)
+    if len(matches) != 1:
+        return None
+    candidate = matches[0]
+    if candidate["slug"] not in incoming_slugs:
+        return str(candidate["slug"])
+    current_key = (min(concept_name_keys(concept), default=""), str(concept["slug"]))
+    candidate_key = (min(concept_name_keys(candidate), default=""), str(candidate["slug"]))
+    return str(candidate["slug"]) if candidate_key < current_key else None
+
+
+def _exact_name_matches(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:
+    return [candidate for candidate in candidates if concept_name_keys(concept) & concept_name_keys(candidate)]
 
 
 def _has_definition(concept: JsonDict) -> bool:
     return bool(str(concept.get("definition") or "").strip())
-
-
-def _names(*names: object) -> set[str]:
-    """대소문자·전각/반각·공백·하이픈만 맞춘 이름. 기호를 지우는 slugify로 비교하면 `C#`과 `C`가 같아진다."""
-    return {name_key(name) for name in names if name} - {"", "untitled"}
 
 
 def _shuffled(concept: JsonDict, candidates: list[JsonDict]) -> list[JsonDict]:

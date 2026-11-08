@@ -114,6 +114,26 @@ def test_quality_state_follows_latest_ingest_only(world: World) -> None:
         assert list_quality_review_candidates(conn, WS) == []
 
 
+def test_embedding_checkpoint_preserves_current_quality_review(world: World) -> None:
+    run_id = _ingest_run(world, "doc-ready")
+    _post_ingest(run_id, "running", [])
+    embedding = {"page_count": 1, "failed_count": 0}
+
+    database.update_pipeline_run_post_ingest(run_id, {"embedding": embedding})
+
+    with world.connect() as conn:
+        review = conn.execute(
+            "SELECT post_ingest_run_id, status, evaluations FROM document_quality_reviews "
+            "WHERE document_id = 'doc-ready'"
+        ).fetchone()
+        manifest = conn.execute(
+            "SELECT manifest FROM pipeline_runs WHERE id = %s", (run_id,)
+        ).fetchone()["manifest"]
+    assert review == {"post_ingest_run_id": f"post-{run_id}", "status": "running", "evaluations": []}
+    assert manifest["post_ingest"]["embedding"] == embedding
+    assert manifest["post_ingest"]["status"] == "running"
+
+
 def test_schema_backfills_quality_state_from_latest_run_manifest(world: World) -> None:
     from psycopg.types.json import Json
 

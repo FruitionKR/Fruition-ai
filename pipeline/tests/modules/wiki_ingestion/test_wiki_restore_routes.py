@@ -18,13 +18,16 @@ class RestoreUseCase:
         self.commands: list[
             IngestOperationRestoreCommand | LintOperationRestoreCommand
         ] = []
+        self.actors: list[str] = []
 
-    def execute_ingest(self, command: IngestOperationRestoreCommand) -> dict:
+    def execute_ingest(self, command: IngestOperationRestoreCommand, user_id: str) -> dict:
         self.commands.append(command)
+        self.actors.append(user_id)
         return {"operation_type": "ingest_restore", "status": "succeeded"}
 
-    def execute_lint(self, command: LintOperationRestoreCommand) -> dict:
+    def execute_lint(self, command: LintOperationRestoreCommand, user_id: str) -> dict:
         self.commands.append(command)
+        self.actors.append(user_id)
         return {"operation_type": "lint_restore", "status": "succeeded"}
 
 
@@ -45,6 +48,7 @@ def test_ingest_restore_route_preserves_source_and_contribution_order() -> None:
             restore_to_operation_id="A2",
             cancel_operation_ids=["A3", "A4", "A5"],
             workspace_id="ws-1",
+            user_id="user-1",
             source_page={"page_id": "S1", "document_id": "doc-source"},
             rebuild_pages=[
                 {
@@ -60,6 +64,7 @@ def test_ingest_restore_route_preserves_source_and_contribution_order() -> None:
     )
 
     command = use_case.commands[0]
+    assert use_case.actors == ["user-1"]
     assert result["operation_type"] == "ingest_restore"
     assert command.restore_to_operation_id == "A2"
     assert command.cancel_operation_ids == ("A3", "A4", "A5")
@@ -79,6 +84,7 @@ def test_restore_route_accepts_manual_contribution_without_document_id() -> None
             restore_to_operation_id="A2",
             cancel_operation_ids=["A3"],
             workspace_id="ws-1",
+            user_id="user-1",
             source_page={"page_id": "S1", "document_id": "doc-source"},
             rebuild_pages=[
                 {
@@ -110,6 +116,7 @@ def test_lint_restore_route_identifies_deleted_affected_pages() -> None:
             operation_id="restore-2",
             target_operation_id="lint-B",
             workspace_id="ws-1",
+            user_id="user-1",
             rebuild_pages=[],
             deleted_pages=["C9"],
         ),
@@ -117,6 +124,7 @@ def test_lint_restore_route_identifies_deleted_affected_pages() -> None:
     )
 
     command = use_case.commands[0]
+    assert use_case.actors == ["user-1"]
     assert result["operation_type"] == "lint_restore"
     assert command.target_operation_id == "lint-B"
     assert command.deleted_pages == ("C9",)
@@ -129,6 +137,7 @@ def test_operation_restore_rejects_cancelled_operation_as_active_input() -> None
             "restore_to_operation_id": "A2",
             "cancel_operation_ids": ["A3", "A4", "A5"],
             "workspace_id": "ws-1",
+            "user_id": "user-1",
             "source_page": {"page_id": "S1", "document_id": "doc-source"},
             "rebuild_pages": [
                 {
@@ -143,6 +152,7 @@ def test_operation_restore_rejects_cancelled_operation_as_active_input() -> None
             "operation_id": "restore-1",
             "target_operation_id": "lint-B",
             "workspace_id": "ws-1",
+            "user_id": "user-1",
             "rebuild_pages": [
                 {
                     "page_id": "C3",
@@ -179,6 +189,7 @@ def test_operation_restore_rejects_deleted_page_as_rebuild_target() -> None:
     common = {
         "operation_id": "restore-1",
         "workspace_id": "ws-1",
+        "user_id": "user-1",
         "rebuild_pages": [{"page_id": "C3", "keep_contributions": []}],
         "deleted_pages": ["C3"],
     }
@@ -209,6 +220,7 @@ def test_ingest_restore_rejects_restored_source_as_deleted() -> None:
         IngestOperationRestoreIn(
             operation_id="restore-1",
             workspace_id="ws-1",
+            user_id="user-1",
             restore_to_operation_id="A2",
             cancel_operation_ids=["A3"],
             source_page={"page_id": "S1", "document_id": "doc-source"},
@@ -227,6 +239,7 @@ def test_ingest_restore_rejects_source_as_rebuild_target() -> None:
             IngestOperationRestoreIn(
                 operation_id="restore-1",
                 workspace_id="ws-1",
+                user_id="user-1",
                 restore_to_operation_id=restore_to_operation_id,
                 cancel_operation_ids=["A3"],
                 source_page={"page_id": "C3", "document_id": "doc-source"},
@@ -247,6 +260,7 @@ def test_ingest_restore_allows_restore_point_contribution() -> None:
         restore_to_operation_id="A2",
         cancel_operation_ids=["A3", "A4", "A5"],
         workspace_id="ws-1",
+        user_id="user-1",
         source_page={"page_id": "S1", "document_id": "doc-source"},
         rebuild_pages=[
             {
@@ -269,6 +283,7 @@ def test_ingest_restore_rejects_invalid_cancel_range() -> None:
                 restore_to_operation_id="A2",
                 cancel_operation_ids=cancel_operation_ids,
                 workspace_id="ws-1",
+                user_id="user-1",
                 source_page={"page_id": "S1", "document_id": "doc-source"},
                 rebuild_pages=[],
             )
@@ -285,6 +300,7 @@ def test_ingest_restore_requires_new_restore_operation_id() -> None:
             restore_to_operation_id="A2",
             cancel_operation_ids=["A3"],
             workspace_id="ws-1",
+            user_id="user-1",
             source_page={"page_id": "S1", "document_id": "doc-source"},
             rebuild_pages=[],
         )

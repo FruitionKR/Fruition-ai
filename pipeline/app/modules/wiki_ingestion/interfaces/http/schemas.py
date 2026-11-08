@@ -126,6 +126,7 @@ class SourceSnapshotRestoreIn(BaseModel):
 class _OperationRestoreIn(BaseModel):
     operation_id: str
     workspace_id: str
+    user_id: str
     rebuild_pages: list[RebuildPageIn]
     deleted_pages: list[str] = Field(default_factory=list)
 

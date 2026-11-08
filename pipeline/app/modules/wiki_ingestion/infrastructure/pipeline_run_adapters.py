@@ -81,8 +81,13 @@ class PostgresPipelineRunRepository:
         workspace_id: str,
         *,
         use_cache: bool = True,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
-        return database.list_active_concept_index(workspace_id, use_cache=use_cache)
+        return database.list_active_concept_index(
+            workspace_id,
+            use_cache=use_cache,
+            include_deleted=include_deleted,
+        )
 
     def latest_source_page_context(
         self,

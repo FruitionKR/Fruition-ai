@@ -1,4 +1,5 @@
 import hashlib
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -6,20 +7,84 @@ from app.modules.agent_run.infrastructure.postgres_agent_run_repository import (
     PostgresAgentRunRepository,
     _canonical_json,
     _row_to_run,
+    _rows_to_plan,
     _validate_artifact_metadata,
     _validate_content_hash,
 )
-from app.modules.agent_run.domain.entities import AgentRun, StartAgentRunArtifact
+from app.modules.agent_run.domain.entities import AgentRun, McpProposalActor, StartAgentRunArtifact
+from app.modules.agent_run.domain.plan import AgentPlan
+from app.modules.agent_run.infrastructure import postgres_agent_run_repository as repository
+from app.modules.agent_run.interfaces.http.schemas import AgentPlanResponse
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
 
 
 class AgentRunRepositoryTest(unittest.TestCase):
+    def test_receipt_confirmed_existing_result_projects_exact_public_shape(self) -> None:
+        operation = {
+            "id": "op-1", "sequence": 1, "tool_name": "create_document",
+            "target_type": "document", "target_id": None, "base_version": None,
+            "source_parent_id": None, "destination_parent_id": None, "arguments": {},
+            "reason": "Create", "depends_on": [], "status": "succeeded", "error_code": None,
+            "existing_result_metadata": {
+                "existing_result": True, "id": "doc_existing", "current_version": 2,
+                "source_receipt_id": "receipt-1",
+            },
+            "existing_result_receipt": {
+                "receipt_id": "receipt-1", "resource_type": "DOCUMENT",
+                "resource_id": "doc_existing", "after_version": 2,
+            },
+        }
+        plan = _rows_to_plan(
+            {"id": "plan-1", "run_id": "run-1", "version": 1, "summary": "Create",
+             "operation_hash": "a" * 64, "status": "approved", "approved_by": "user"},
+            [operation],
+        )
+
+        projected = AgentPlanResponse.from_domain(plan).operations[0].existing_result
+
+        self.assertEqual(projected.model_dump(), {
+            "resource_type": "DOCUMENT", "resource_id": "doc_existing", "current_version": 2,
+        })
+        operation["existing_result_receipt"] = None
+        self.assertIsNone(AgentPlanResponse.from_domain(_rows_to_plan(
+            {"id": "plan-1", "run_id": "run-1", "version": 1, "summary": "Create",
+             "operation_hash": "a" * 64, "status": "approved", "approved_by": "user"},
+            [operation],
+        )).operations[0].existing_result)
+
+    def test_mcp_idempotency_lock_uses_postgres_text_safe_scoped_key(self) -> None:
+        actor = McpProposalActor("invocation", "grant", "user", "workspace", "https://client", 1,
+                                 "MCP_CLIENT", "2025-11-25", "propose_document_edit")
+        run = AgentRun("run", "workspace", "user", "workspace_workflow", None,
+                       "awaiting_approval", "Edit", current_plan_id="plan", origin="MCP_CLIENT")
+        plan = AgentPlan("plan", "run", 1, "Edit", "a" * 64, ())
+        artifact = StartAgentRunArtifact("artifact", "sha256:" + hashlib.sha256(b"text").hexdigest(), "text")
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        existing = {"request_hash": "hash", "run_id": "run", "plan_id": "plan",
+                    "plan_version": 1, "operation_hash": "a" * 64, "status": "awaiting_approval"}
+        with patch.object(database, "connect_ai", return_value=connection), \
+                patch.object(repository.journal, "lock_workspace_writes"), \
+                patch.object(repository.journal, "lock_user_writes"), \
+                patch.object(repository.journal, "reject_purged"), \
+                patch.object(repository, "_find_mcp_proposal", return_value=existing):
+            result = PostgresAgentRunRepository().create_mcp_proposal(
+                run=run, plan=plan, artifacts=(artifact,), actor=actor,
+                idempotency_key="request", request_hash="hash",
+            )
+        key = connection.execute.call_args.args[1][0]
+        self.assertNotIn("\x00", key)
+        self.assertEqual(json.loads(key.removeprefix("mcp-agent-proposal:")),
+                         ["grant", "user", "workspace", "propose_document_edit", "request"])
+        self.assertEqual(result.run_id, "run")
+
     def test_authorizes_only_exact_approved_running_operation_arguments(self) -> None:
         connection = MagicMock()
         operation_result = MagicMock()
         operation_result.fetchone.return_value = {
+            "origin": None,
             "arguments": {
                 "name": "하위 폴더",
                 "parent_folder_id": {
@@ -68,6 +133,7 @@ class AgentRunRepositoryTest(unittest.TestCase):
                 connection = MagicMock()
                 operation_result = MagicMock()
                 operation_result.fetchone.return_value = {
+                    "origin": None,
                     "arguments": {"name": "승인", "base_version": 1}
                 }
                 executions_result = MagicMock()

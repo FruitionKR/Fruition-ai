@@ -58,6 +58,11 @@ class TestEditPreview:
 
         assert set(preview) == {"added_lines", "removed_lines", "hunks"}
 
+    def test_new_document_diff_has_no_synthetic_deleted_empty_line(self) -> None:
+        preview = build_edit_preview("", "first\nsecond")
+
+        assert (preview["added_lines"], preview["removed_lines"]) == (2, 0)
+
 
 class TestStartRun:
     def test_contents_become_artifacts_in_order_with_preview_metadata(self) -> None:
@@ -138,7 +143,19 @@ class TestEditPreviewRoute:
                         "lines": [{"type": "delete", "text": "a"}, {"type": "insert", "text": "b"}],
                     }
                 ],
-            }
+            },
+            {
+                "operation_id": "op-2",
+                "tool_name": "create_document",
+                "document_id": None,
+                "display_name": "새 문서",
+                "base_version": None,
+                "summary": "생성",
+                "added_lines": 1,
+                "removed_lines": 0,
+                "hunks": [{"before_start": 0, "after_start": 1,
+                           "lines": [{"type": "insert", "text": "new"}]}],
+            },
         ],
         "expires_at": "2026-11-05T00:00:00+00:00",
     }
@@ -160,7 +177,11 @@ class TestEditPreviewRoute:
         assert response.status_code == 200
         body = response.json()
         assert body["items"][0]["hunks"][0]["lines"][1] == {"type": "insert", "text": "b"}
+        assert body["items"][0]["tool_name"] == "apply_document_edit"
         assert body["items"][0]["base_version"] == 7
+        assert body["items"][1]["tool_name"] == "create_document"
+        assert body["items"][1]["document_id"] is None and body["items"][1]["base_version"] is None
+        assert body["items"][1]["removed_lines"] == 0
         assert body["expires_at"].startswith("2026-11-05")
 
     @pytest.mark.parametrize(

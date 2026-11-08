@@ -17,6 +17,8 @@ from app.modules.data_purge.interfaces.http.routes import router as data_purge_r
 from app.modules.speech.interfaces.http.routes import router as speech_router
 from app.modules.agent_run.interfaces.http.routes import internal_router as agent_run_status_router
 from app.modules.agent_run.interfaces.http.routes import router as agent_run_router
+from app.modules.agent_run.interfaces.http.routes import proposal_router as agent_mcp_proposal_router
+from app.modules.agent_run.interfaces.http.routes import approval_router as agent_approval_router
 from app.modules.skill.interfaces.http.routes import agent_router as agent_skill_router
 from app.modules.skill.interfaces.http.routes import router as skill_router
 from app.modules.wiki_ingestion.interfaces.http.routes import router as pipeline_router
@@ -28,6 +30,9 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
     PipelineRunOut,
 )
 from app.modules.wiki_schema.interfaces.http.routes import router as wiki_schema_router
+from app.modules.mcp_read.interfaces.http.routes import router as mcp_wiki_read_router
+from app.modules.mcp_wiki_draft.interfaces.http.routes import router as mcp_wiki_draft_router
+from app.modules.mcp_wiki_draft.interfaces.http.apply_routes import router as mcp_wiki_apply_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 logger = logging.getLogger(__name__)
@@ -121,7 +126,13 @@ include_internal_router(task_cancellation_router, internal_token_dependencies)
 include_internal_router(data_purge_router, internal_token_dependencies)
 include_internal_router(wiki_schema_router, internal_token_dependencies)
 include_internal_router(agent_run_status_router, internal_token_dependencies)
+include_internal_router(mcp_wiki_read_router, internal_token_dependencies)
 agent_service_dependencies = [Depends(require_agent_service_token)]
+# MCP proposal creation is a service-only I4 boundary and is not controlled by the web Agent feature flag.
+app.include_router(agent_mcp_proposal_router, dependencies=agent_service_dependencies)
+app.include_router(agent_approval_router, dependencies=agent_service_dependencies)
+app.include_router(mcp_wiki_draft_router, dependencies=agent_service_dependencies)
+app.include_router(mcp_wiki_apply_router, dependencies=agent_service_dependencies)
 if AGENT_SKILLS_ENABLED:
     # agent run API는 내부 토큰이 아니라 agent service token으로만 보호한다.
     app.include_router(agent_run_router, dependencies=agent_service_dependencies)

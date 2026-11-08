@@ -600,7 +600,8 @@ def _stored_markdown(monkeypatch) -> dict[str, str]:
         stored[key] = markdown
         return key
 
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", write)
+    monkeypatch.setattr(persistence, "storage_uri", lambda key: key)
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: write(text, key))
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
     monkeypatch.setattr(persistence, "write_text_object", lambda key, text, *_args: write(text, key))
     return stored

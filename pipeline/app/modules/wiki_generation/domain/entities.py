@@ -43,6 +43,7 @@ class NormalizedConcept:
     slug: str
     title: str
     aliases: List[str]
+    identity_aliases: List[str]
     definition: str
     why_page_worthy: str
     anchor_reference_ids: List[str]

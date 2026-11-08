@@ -24,8 +24,9 @@ from app.modules.agent_run.infrastructure.postgres_agent_run_repository import (
 from app.modules.agent_run.interfaces.http.dependencies import (
     get_agent_run_repository,
     get_approve_agent_plan_use_case,
+    get_approve_mcp_agent_plan_use_case,
 )
-from app.modules.agent_run.interfaces.http.routes import router
+from app.modules.agent_run.interfaces.http.routes import approval_router, router
 from tests.modules.agent_run.test_agent_run_postgres import (  # noqa: F401
     _edit_artifact,
     _plan_for,
@@ -636,8 +637,10 @@ def test_routes_after_removal_return_200_with_past_expiry_and_409(repositories, 
     _cleanup()
     app = FastAPI()
     app.include_router(router)
+    app.include_router(approval_router)
     app.dependency_overrides[get_agent_run_repository] = lambda: runs
     app.dependency_overrides[get_approve_agent_plan_use_case] = lambda: ApproveAgentPlanUseCase(runs)
+    app.dependency_overrides[get_approve_mcp_agent_plan_use_case] = lambda: MagicMock()
     client = TestClient(app)
 
     previews = client.get(f"/agent/runs/{RUN_ID}/edit-previews", params={"workspace_id": "ws", "user_id": "user"})

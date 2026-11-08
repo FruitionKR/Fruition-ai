@@ -54,7 +54,11 @@ class RunPipelineUseCase:
                 self._ensure_current_source(command)
                 # 개념 판정은 잠금을 잡은 뒤의 개념 목록으로 한다. 동시에 편입한 문서가 먼저 저장한 개념도 본다.
                 manifest = build_manifest(
-                    self._repository.list_active_concept_index(command.workspace_id, use_cache=False)
+                    self._repository.list_active_concept_index(
+                        command.workspace_id,
+                        use_cache=False,
+                        include_deleted=True,
+                    )
                 )
                 self._ensure_active(run_id)
                 self._ensure_current_source(command)

@@ -36,6 +36,7 @@ from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
 from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import ConceptLockTimeout
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import relay_pending
 from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     get_deferred_pipeline_run_use_case,
     get_pipeline_run_repository,
@@ -121,6 +122,8 @@ def _build_payload(command: dict) -> PipelineRunIn | ChatWikiRunIn:
 
 
 def _result_payload(command: dict, manifest: dict | None, status: str, error: str | None = None) -> dict:
+    if status == "succeeded" and (manifest or {}).get("publication_result"):
+        return dict((manifest or {})["publication_result"])
     return {
         "operation_id": command.get("operation_id"),
         "operation_type": "ingest",
@@ -320,6 +323,8 @@ async def consume() -> None:
     )
     await consumer.start()
     await producer.start()
+    if os.environ.get("AI_DATABASE_URL"):
+        await relay_pending(producer, RESULT_TOPIC)
     logger.info("[worker 기동] topic=%s group=%s bootstrap=%s", TOPIC, GROUP_ID, BOOTSTRAP_SERVERS)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -395,6 +400,8 @@ async def consume() -> None:
                     await producer.send_and_wait(
                         RESULT_TOPIC, event, key=event["run_id"].encode("utf-8")
                     )
+                    if os.environ.get("AI_DATABASE_URL"):
+                        await relay_pending(producer, RESULT_TOPIC)
                     await consumer.commit()
     finally:
         await producer.stop()

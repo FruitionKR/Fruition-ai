@@ -7,6 +7,84 @@ Agent run·artifact·Tool 인가 내부 API다. 공개 Gateway 계약은
 `/agent/runs/**`와 artifact 조회·Tool 인가·상태 조회는 Backend가 내부 HTTP로 호출한다.
 `POST /internal/agent/runs/artifacts/register`는 현재 저장소 안에 운영 호출자가 없다.
 
+## MCP 문서 편집·다단계 계획 제안(I4/I6)
+
+`POST /agent/runs/mcp-proposals`는 `AGENT_SKILLS_ENABLED`와 무관하게 노출되는 서비스 간 API이며
+`X-Agent-Service-Token`이 필요하다. document-svc가 현재 `write_propose` grant와 문서 편집 권한을
+다시 확인한 뒤에만 호출한다. AI는 다시 document-svc
+`propose_document_edit`에는 `POST /internal/agent/mcp/document-edit-context`, `propose_plan`에는
+`POST /internal/agent/mcp/plan-context`를 호출해 현재 권한, workspace, hierarchy/version과 편집 대상의
+본문 hash/Markdown을 결합한다. MCP bearer나 client가 보낸 본문·계층은 신뢰하지 않는다.
+
+Request는 unknown field가 없는 `mcp.agent-proposal.v1`이다. `actor`는
+`{invocation_id, grant_id, user_id, workspace_id, client_id, policy_generation,
+origin:"MCP_CLIENT", spec_version:"2025-11-25", tool_name:"propose_document_edit"}`이고,
+그 밖의 top-level field는 `idempotency_key`, `request_hash`, `proposal`이다. I4의 `proposal`은 raw
+`instruction`, trim된 같은 값인 `request_summary`, `target_folder_id:null`, 정확히 하나의
+`apply_document_edit` operation과 정확히 하나의 `apply_document_edit` artifact만 받는다. operation과
+artifact의 document/base/target/id/raw UTF-8 `sha256:` hash는 모두 같아야 하며 selection line은 현재
+본문 범위 안이어야 한다. `propose_plan`은 `instruction:null`, trim된 `request_summary`, UUID 또는 null인
+`target_folder_id`, 정확한 v1 operation 1~20개와 각 문서 mutation이 한 번씩 참조하는 artifact를 받는다.
+operation은 `create_folder|rename_folder|move_folder|move_document|rename_document|create_document|apply_document_edit`
+중 하나이고 unknown field, 잘못된 result reference/dependency, 오래된 hierarchy/version, 범위 밖 대상은 거절한다.
+
+Response는 정확히 다음 shape이며 LLM planning job은 만들지 않는다.
+
+```json
+{"schema_version":"mcp.agent-proposal.v1","run_id":"<uuid>","plan_id":"<uuid>","plan_version":1,"operation_hash":"<64 lowercase hex>","status":"awaiting_approval"}
+```
+
+AI는 raw instruction을 보존하고 URL sanitizer·기존 Markdown output validator를 거친 실제 최종
+Markdown bytes로 artifact와 operation hash를 만든다. byte-identical 결과는 `OBVIOUS_NO_OP`로
+거절하며 아무 run/artifact/idempotency success도 저장하지 않는다. 같은
+`(grant,user,workspace,tool,idempotency_key)`와 같은 verified request hash는 기존 run/plan을 돌려주고,
+다른 hash는 `409 IDEMPOTENCY_CONFLICT`다. 인증·현재 문서 확인은 replay 조회보다 먼저다.
+
+run, 정규화한 plan, 모든 operation/artifact metadata, immutable actor provenance와 replay row는 한 DB transaction에서
+`awaiting_approval`로 저장된다. `agent_runs.origin='MCP_CLIENT'`인 run은 I5의 안정된 승인/예약/current-authz
+경로만 사용하며 legacy approve/auto-approve/revise는 거절된다. 확정 가능한 rename/move/edit no-op 하나라도
+있으면 제안 전체를 저장 전에 거절한다. 이름 중복 의심과 그 dependent는 warning과
+`suggested_selected=false`로 남기며 제안 자체는 성공한다. 공개 MCP write tool catalog 등록은 별도다.
+
+## MCP 명시 승인·실행(I5)
+
+`POST /agent/runs/{run_id}/approve`는 기존 web 승인 body를 그대로 지원하면서 service token으로 전달된
+정확한 `mcp.agent-approval.v1` body도 받는다. MCP body는
+`{schema_version,workspace_id,user_id,plan_version,operation_hash,operation_ids,approval_id,
+approval_mode:"EXPLICIT_WEB",grant_id,client_id,policy_generation}`만 허용하고 UUID는 canonical v4다.
+operation 1~20개의 유효한 부분집합을 plan 순서로 승인하며 dependency가 빠진 선택은 거절한다. Document 소유 가격은 AI로 보내지 않는다.
+AI는 저장된 provenance와 현재 plan/version/hash를 비교하고 document-svc
+`POST /internal/agent/mcp/approvals/lookup`이 같은 identity·selection에 대해 `VALID`이고 lifecycle이
+`RESERVED|FORWARDED`일 때만 run, plan, approval, execution job을 한 transaction으로 전환한다. 같은
+Document approval body retry는 기존 결과를 돌려주고 job을 다시 만들지 않으며 다른 body는 충돌한다.
+
+worker는 승인 행에서 전체 선택과 `approval_id,grant_id,client_id,policy_generation`을 읽고 operation별 UUIDv4
+`attempt_id`를 먼저 저장한 뒤 mutation execute endpoint로 모두 전달한다. 응답이 불명확하면 execute를 다시
+부르지 않고 `POST /internal/agent/mcp/receipts/lookup`의 body-free receipt만 조회한다. receipt의 actor,
+approval, operation, attempt, tool, resource와 before/after version, outcome/changed가 모두 맞아야 성공이다.
+folder tool receipt는 `resource_type=FOLDER`, document tool은 `DOCUMENT`다. create는 `before_version:null`,
+positive `after_version`, `COMMITTED/changed=true`만 허용하고 기존 target mutation은 persisted/resolved target과
+positive before version을 묶는다. COMMITTED는 after>before, NO_CHANGE는 before=after다.
+없는 receipt·timeout·5xx·in-progress는 미실행 증거로 간주하지 않고 unknown evidence를 보존한다. Document의
+`GRANT_INACTIVE`, `CLIENT_DISABLED`, `POLICY_DISABLED`, `POLICY_GENERATION_MISMATCH`, `PURGED` fence만
+run을 `halted`로 만들며 자동 rollback하지 않는다. 일반 권한 실패나 authz 장애는 admin halt로 오인하지 않는다.
+
+같은 workspace/user, create tool, 실제 resolved destination에서 normalized name 또는 content hash가 일치하는
+`started|unknown` create attempt는 advisory lock 아래 새 candidate 하나만 `mcp_create_pending_reconciliation`로
+건너뛴다. 다른 proposal/operation은 막지 않고 receipt-confirmed failure는 이후 실행 증거에서 제외한다.
+20-operation 실행은 기존 40-call budget과 step 집계를 쓰며, 시작하지 못한 operation은 이유를 붙여 skip하고
+unknown attempt는 재실행하지 않는다. MCP 실행은 clarification이나 server replan을 만들지 않는다.
+
+Agent worker는 기존 60초 maintenance에서 `started|unknown` 시도를 한 번에 최대 20개씩 읽기 전용
+영수증 조회로 대사한다. 조회 순서를 순환하며 실행 중인 run은 건너뛴다. 검증된 결과는 attempt와
+실행 증거에 함께 반영하지만 종료된 run이나 operation을 재실행하거나 성공 상태로 바꾸지 않는다.
+영수증 부재·잘못된 응답·통신 장애는 미확정으로 유지하고, 미확정 시도가 남은 run은 90일 정리에서 제외한다.
+
+`GET /agent/runs/mcp-owned?workspace_id&user_id&grant_id&cursor&limit`는 service-token 전용 locator다.
+저장된 MCP provenance로 owner/workspace/grant를 제한하고 `created_at DESC, run_id DESC` keyset pagination
+(limit 1..20)으로 `{items:[{run_id,status}],next_cursor}`만 반환한다. 과거 run 조회에는 현재 grant의 active
+여부를 요구하지 않는다.
+
 `ai.agent.command`의 선택 키 `folder_id`(document-svc가 검증한 폴더 UUID)는 작업 대상 폴더다. 지정하지 않은 턴은
 키를 싣지 않으며 기존처럼 워크스페이스 전체·최상위(루트)를 대상으로 한다. 지정하면 다음과 같이 쓴다.
 
