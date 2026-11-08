@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from app.modules.mcp_wiki_draft.calculation import (
@@ -13,7 +14,7 @@ from app.modules.mcp_wiki_draft.calculation import (
     _page_snapshot,
     _structural_rows,
 )
-from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryPage, plan_entry_lint
+from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryLintPlan, EntryPage, plan_entry_lint
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
     load_concept_contributions,
@@ -69,7 +70,7 @@ def _entry_page(row: dict[str, Any], loaded, rebuilt) -> EntryPage:
 
 
 def _has_change(change: dict[str, Any]) -> bool:
-    return any(change[field] for field in (
+    return any(change.get(field) for field in (
         "claims", "added_links", "removed_links", "invalidated_evidence_ids", "entry_changes"
     )) or change["content_action"] != "none"
 
@@ -94,6 +95,56 @@ def _replay_page(
     return rebuild_concept_page([*loaded, *additions]), contribution
 
 
+def _freeze_page_moves(conn, workspace_id, pages, rows, busy):
+    """Plan only within the already validated target closure; persist effects with the draft."""
+    from app.core.jev_client import JevUnavailable
+    from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
+        embedding_server_model, jev_concept_judge,
+    )
+    from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
+        _part_of_heads_from_rows, _plan_page_moves,
+    )
+
+    judge = jev_concept_judge(None)
+    model = embedding_server_model() if judge is not None else None
+    if judge is None or model is None:
+        return {}
+    plan = EntryLintPlan(page_changes={key: _change_record(rows[key]) for key in busy})
+    entry_rows = [
+        {**entry, "page_id": page.page_id, "title": page.title}
+        for page in pages.values() for entry in page.entries
+    ]
+
+    def load(candidates):
+        if any(str(row["id"]) not in pages for row in candidates):
+            raise PreviewCalculationError("move cascade is outside the frozen target set")
+
+    try:
+        _plan_page_moves(
+            conn, workspace_id, plan, pages, set(pages),
+            {key: str(row.get("summary") or "") for key, row in rows.items()},
+            load, judge.judge_part_of, model,
+            candidate_heads=_part_of_heads_from_rows(list(rows.values()), entry_rows),
+        )
+    except JevUnavailable:
+        logging.getLogger(__name__).info("Selected-target lint: Jev unavailable; no inferred moves")
+        return {}
+    deleted_refs = {pages[page_id].ref for page_id in plan.deleted_page_ids}
+    for page in pages.values():
+        if page.page_id in plan.deleted_page_ids:
+            continue
+        for link in page.links:
+            if link.get("target") in deleted_refs and link.get("relation") != "entry_reference":
+                change = plan.change(page.page_id, page.slug, page.title)
+                if link not in change["removed_links"]:
+                    change["removed_links"].append(link)
+    return _jsonable({
+        "page_changes": {key: value for key, value in plan.page_changes.items() if key not in busy or _has_change(value)},
+        "linked": plan.linked, "decisions": plan.decisions,
+        "deleted_page_ids": plan.deleted_page_ids,
+    })
+
+
 def calculate_lint_preview(
     conn,
     *,
@@ -105,6 +156,8 @@ def calculate_lint_preview(
     policy_version: str,
     max_structural_changes: int,
     max_deletes: int,
+    infer_page_moves: bool = False,
+    server_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_ids = sorted(str(item["page_id"]) for item in target_snapshot)
     rows = conn.execute(
@@ -274,6 +327,28 @@ def calculate_lint_preview(
                 raise PreviewCalculationError("orphan page content hash changed")
             orphan_checks.add(page_id)
 
+    if infer_page_moves:
+        pages = {
+            page_id: _entry_page(
+                row_by_id[page_id], loaded_by_id[page_id],
+                _replay_page(page_id, draft_id, loaded_by_id[page_id], changes_by_page[page_id], linked)[0],
+            )
+            for page_id in target_ids
+        }
+        server_effects = _freeze_page_moves(
+            conn, workspace_id, pages, row_by_id,
+            {key for key, value in changes_by_page.items() if _has_change(value)},
+        )
+    server_effects = server_effects or {}
+    for page_id, change in server_effects.get("page_changes", {}).items():
+        if page_id not in changes_by_page or change["slug"] != row_by_id[page_id]["slug"]:
+            raise PreviewCalculationError("server move target snapshot changed")
+        _merge_change(changes_by_page[page_id], change)
+    for contribution in server_effects.get("linked", []):
+        if str(contribution["page_id"]) not in changes_by_page:
+            raise PreviewCalculationError("server move contribution is outside the frozen target set")
+        linked.append(dict(contribution))
+
     planned: dict[str, dict[str, Any]] = {}
     rebuilt: dict[str, Any] = dict(current)
     for page_id, change in changes_by_page.items():
@@ -431,6 +506,7 @@ def calculate_lint_preview(
         "normalized_submissions": operations,
         "calculation_inputs": {
             "policy_version": policy_version,
+            "server_effects": server_effects,
             "reconciled_ledger": sorted(_jsonable(ledger), key=lambda item: (str(item.get("page_id")), int(item.get("sequence_revision") or 0))),
             "public_state": public_state,
         },

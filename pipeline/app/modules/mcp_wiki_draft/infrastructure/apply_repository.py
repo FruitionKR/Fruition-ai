@@ -426,6 +426,7 @@ def _recalculate(conn, draft: dict[str, Any]) -> tuple[dict[str, Any], list[dict
         policy_version=str(draft["calculation_inputs"]["policy_version"]),
         max_structural_changes=structural,
         max_deletes=deletes,
+        server_effects=draft["calculation_inputs"].get("server_effects", {}),
     )
     return calculation, []
 
