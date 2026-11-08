@@ -53,25 +53,25 @@ def _reingest_b(world: World, page_id: str) -> list[str]:
     return deleted
 
 
-def test_reingest_rebuild_keeps_committed_contribution_missing_from_ledger(world: World) -> None:
+def test_reingest_rebuild_waits_for_authoritative_pending_sequence_and_rolls_back(world: World) -> None:
     world.ingest("op-b1", "doc-b", {"pod": {"evidence": ["B5"]}})
     page_id = _lagged_ingest(world, "op-a1", "doc-a", ["B1"])
+    before = world.state()
 
-    # 대기 기여가 없으면 P에 B의 무효화된 근거만 남은 것으로 보고 페이지를 지웠다.
-    assert _reingest_b(world, page_id) == []
-    markdown = world.objects[f"wiki/{WS}/concepts/pod.md"]
-    assert "pod 근거 B5(doc-b)" not in markdown
-    assert "pod 근거 B1(doc-a)" in markdown
+    with pytest.raises(RuntimeError, match="pending contribution sequence is unresolved"):
+        _reingest_b(world, page_id)
+
+    assert world.state() == before
+    with world.connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM wiki_pending_contributions").fetchone()["n"] == 1
 
 
 def test_pending_row_is_dropped_once_ledger_has_it(world: World) -> None:
     world.ingest("op-b1", "doc-b", {"pod": {"evidence": ["B5"]}})
     page_id = _lagged_ingest(world, "op-a1", "doc-a", ["B1"])
     with world.connect() as conn:
-        merged = with_pending_contributions(conn, world.read_contributions([page_id], WS), [page_id])
-        assert [(row["ingest_operation_id"], row["sequence_revision"], row["active"]) for row in merged] == [
-            ("op-b1", 1, True), ("op-a1", 2, True),
-        ]
+        with pytest.raises(RuntimeError, match="pending contribution sequence is unresolved"):
+            with_pending_contributions(conn, world.read_contributions([page_id], WS), [page_id])
     # document-svc가 결과를 반영하면 원장 행만 쓰고 대기 행은 지운다.
     world._record(page_id, "op-a1", "doc-a")
     with world.connect() as conn:
@@ -80,11 +80,48 @@ def test_pending_row_is_dropped_once_ledger_has_it(world: World) -> None:
         assert conn.execute("SELECT count(*) AS n FROM wiki_pending_contributions").fetchone()["n"] == 0
 
 
+def test_contradictory_remote_pending_row_blocks_reconciliation(world: World) -> None:
+    world.ingest("op-b1", "doc-b", {"pod": {"evidence": ["B5"]}})
+    page_id = _lagged_ingest(world, "op-a1", "doc-a", ["B1"])
+    contradictory = {
+        "page_id": page_id,
+        "ingest_operation_id": "op-a1",
+        "source_document_id": "doc-a",
+        "sequence_revision": 2,
+        "active": True,
+        "object_key": "wrong-key",
+        "lint_operation_id": None,
+    }
+
+    with world.connect() as conn, pytest.raises(RuntimeError, match="contradicts pending state"):
+        with_pending_contributions(conn, [contradictory], [page_id])
+
+
+@pytest.mark.parametrize("sequence_revision", [None, 0, -1, True, 1.5, "2"])
+def test_remote_pending_row_requires_authoritative_sequence(world: World, sequence_revision: object) -> None:
+    page_id = _lagged_ingest(world, "op-a1", "doc-a", ["B1"])
+    remote = {
+        "page_id": page_id,
+        "ingest_operation_id": "op-a1",
+        "source_document_id": "doc-a",
+        "sequence_revision": sequence_revision,
+        "active": True,
+        "object_key": f"wiki/{WS}/pages/{page_id}/ops/op-a1.json",
+        "lint_operation_id": None,
+    }
+
+    with world.connect() as conn, pytest.raises(RuntimeError, match="invalid sequence"):
+        with_pending_contributions(conn, [remote], [page_id])
+
+
 def test_pending_contribution_of_trashed_document_is_inactive(world: World) -> None:
     world.ingest("op-b1", "doc-b", {"pod": {"evidence": ["B5"]}})
     page_id = _lagged_ingest(world, "op-a1", "doc-a", ["B1"])
     # 반영 전에 문서 A를 휴지통으로 옮기면 document-svc도 꺼진 행으로 넣는다.
     with world.connect() as conn:
+        conn.execute(
+            "UPDATE wiki_pending_contributions SET sequence_revision = 2 WHERE operation_id = 'op-a1'"
+        )
         conn.execute(
             "INSERT INTO wiki_source_tombstones (workspace_id, document_id, deleted_at) "
             "VALUES (%s, 'doc-a', clock_timestamp() + interval '1 second')",

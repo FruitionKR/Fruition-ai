@@ -838,6 +838,59 @@ class AgentWorkerTest(unittest.TestCase):
                 repository.fail.assert_called_once_with(job, expected_error)
                 worker.process.assert_not_called()
 
+    def test_process_job_executes_persisted_mcp_run_without_llm_selection(self) -> None:
+        repository = MagicMock()
+        job = MagicMock(id="job-1", run_id="run-1", job_type="execution")
+        repository.load_context.return_value = replace(
+            _executing_context(),
+            run=replace(
+                _executing_context().run,
+                origin="MCP_CLIENT",
+                provider=None,
+                model=None,
+            ),
+        )
+        worker = MagicMock()
+
+        with (
+            patch.object(agent_worker, "build_plan_generator") as plan_builder,
+            patch.object(agent_worker, "AgentWorker", return_value=worker) as worker_factory,
+        ):
+            agent_worker._process_job(
+                job,
+                repository=repository,
+                run_repository=MagicMock(),
+                tool_gateway=MagicMock(),
+                checkpointer=MagicMock(),
+                folder_content_reader=MagicMock(),
+            )
+
+        plan_builder.assert_not_called()
+        self.assertIsNone(worker_factory.call_args.kwargs["plan_generator"])
+        worker.process.assert_called_once_with(job)
+        repository.fail.assert_not_called()
+
+    def test_process_job_keeps_missing_llm_selection_guard_for_web_execution(self) -> None:
+        repository = MagicMock()
+        job = MagicMock(id="job-1", run_id="run-1", job_type="execution")
+        repository.load_context.return_value = replace(
+            _executing_context(),
+            run=replace(_executing_context().run, provider=None, model=None, origin=None),
+        )
+
+        with patch.object(agent_worker, "AgentWorker") as worker_factory:
+            agent_worker._process_job(
+                job,
+                repository=repository,
+                run_repository=MagicMock(),
+                tool_gateway=MagicMock(),
+                checkpointer=MagicMock(),
+                folder_content_reader=MagicMock(),
+            )
+
+        repository.fail.assert_called_once_with(job, "missing_llm_selection")
+        worker_factory.assert_not_called()
+
     def test_main_does_not_fail_again_when_process_raises(self) -> None:
         repository = MagicMock()
         job = MagicMock(id="job-1", run_id="run-1")

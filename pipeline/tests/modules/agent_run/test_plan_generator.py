@@ -2,10 +2,10 @@ import json
 import unittest
 from unittest.mock import MagicMock
 
+from app.modules.agent_run.application.plan_validation import normalize_plan_candidate
 from app.modules.agent_run.infrastructure.chat_completions_plan_generator import (
     ChatCompletionsPlanGenerator,
     DEFAULT_PLAN_PROMPT,
-    normalize_plan_candidate,
 )
 from app.modules.agent_run.domain.entities import ContentArtifactReference
 from app.core.failure_codes import failure_code

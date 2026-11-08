@@ -6,6 +6,14 @@ from app.modules.agent_run.domain.entities import (
     AgentRun,
     AgentRunContext,
     DocumentEditArtifact,
+    McpDocumentEditContext,
+    McpPlanContext,
+    McpApprovalCommand,
+    McpApprovalStatus,
+    McpExecutionAttempt,
+    McpExecutionIdentity,
+    McpProposalActor,
+    McpProposalResult,
     StartAgentRunArtifact,
     ContentArtifactReference,
     StartAgentRunRequest,
@@ -14,10 +22,11 @@ from app.modules.agent_run.domain.plan import AgentPlan
 
 
 class ToolGatewayError(RuntimeError):
-    def __init__(self, status_code: int | None, retryable: bool) -> None:
+    def __init__(self, status_code: int | None, retryable: bool, code: str | None = None) -> None:
         super().__init__(f"Agent tool gateway failed with status {status_code}.")
         self.status_code = status_code
         self.retryable = retryable
+        self.code = code
 
 
 class AgentRunRepositoryPort(Protocol):
@@ -33,6 +42,41 @@ class AgentRunRepositoryPort(Protocol):
         ...
 
 
+class McpProposalRepositoryPort(Protocol):
+    def find_mcp_proposal(
+        self, actor: McpProposalActor, idempotency_key: str, request_hash: str
+    ) -> McpProposalResult | None:
+        ...
+
+    def create_mcp_proposal(
+        self,
+        *,
+        run: AgentRun,
+        plan: AgentPlan,
+        artifacts: tuple[StartAgentRunArtifact, ...],
+        actor: McpProposalActor,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> McpProposalResult:
+        ...
+
+
+class McpDocumentEditContextPort(Protocol):
+    def read(
+        self, actor: McpProposalActor, document_id: str, base_version: int
+    ) -> McpDocumentEditContext:
+        ...
+
+    def read_plan(
+        self,
+        actor: McpProposalActor,
+        target_folder_id: str | None,
+        resources: tuple[dict[str, object], ...],
+        edit_documents: tuple[dict[str, object], ...],
+    ) -> McpPlanContext:
+        ...
+
+
 class AgentRunStarterPort(Protocol):
     def start(self, request: StartAgentRunRequest) -> tuple[str, str]:
         ...
@@ -42,6 +86,17 @@ class AgentApprovalRepositoryPort(Protocol):
     def get_current_plan_for_user(
         self, workspace_id: str, user_id: str, run_id: str
     ) -> tuple[AgentRun, AgentPlan] | None:
+        ...
+
+    def find_mcp_approval(self, command: McpApprovalCommand) -> AgentRun | None:
+        ...
+
+    def approve_mcp_and_enqueue(
+        self, command: McpApprovalCommand, plan: AgentPlan, job_id: str
+    ) -> AgentRun:
+        ...
+
+    def halt_mcp_run(self, run_id: str, reason: str) -> None:
         ...
 
     def approve_and_enqueue(
@@ -60,6 +115,12 @@ class AgentApprovalRepositoryPort(Protocol):
 
 class AgentRunManagementRepositoryPort(AgentApprovalRepositoryPort, Protocol):
     def get_for_user(self, workspace_id: str, user_id: str, run_id: str) -> AgentRun | None:
+        ...
+
+    def list_owned_mcp_runs(
+        self, workspace_id: str, user_id: str, grant_id: str,
+        cursor: str | None, limit: int,
+    ) -> dict[str, object]:
         ...
 
     def get_markdown_turn_status(
@@ -104,6 +165,11 @@ class AgentToolAuthorizationRepositoryPort(Protocol):
         operation_id: str,
         tool_name: str,
         arguments: dict[str, object],
+        approval_id: str | None = None,
+        attempt_id: str | None = None,
+        grant_id: str | None = None,
+        client_id: str | None = None,
+        policy_generation: int | None = None,
     ) -> bool:
         ...
 
@@ -197,6 +263,13 @@ class AgentToolGatewayPort(Protocol):
     ) -> dict[str, object]:
         ...
 
+    def lookup_mcp_approval(self, command: McpApprovalCommand) -> McpApprovalStatus:
+        ...
+
+    def lookup_mcp_receipt(self, identity: McpExecutionIdentity, operation_id: str,
+                           workspace_id: str, user_id: str) -> dict[str, object]:
+        ...
+
     def execute(
         self,
         tool_name: str,
@@ -210,6 +283,11 @@ class AgentToolGatewayPort(Protocol):
         operation_id: str,
         idempotency_key: str,
         arguments: dict[str, object],
+        approval_id: str | None = None,
+        attempt_id: str | None = None,
+        grant_id: str | None = None,
+        client_id: str | None = None,
+        policy_generation: int | None = None,
     ) -> dict[str, object]:
         ...
 
@@ -321,6 +399,26 @@ class AgentJobRepositoryPort(Protocol):
         response_metadata: dict[str, object],
         error_code: str | None,
     ) -> None:
+        ...
+
+    def load_mcp_execution_identity(
+        self, run_id: str, plan_id: str, operation_id: str
+    ) -> McpExecutionIdentity | None:
+        ...
+
+    def get_or_create_mcp_attempt(
+        self, run_id: str, plan_id: str, operation_id: str, tool_name: str,
+        arguments: dict[str, object],
+    ) -> McpExecutionAttempt:
+        ...
+
+    def finish_mcp_attempt(
+        self, attempt_id: str, status: str, receipt: dict[str, object] | None,
+        error_code: str | None,
+    ) -> None:
+        ...
+
+    def halt_mcp_run(self, run_id: str, reason: str) -> None:
         ...
 
     def load_operation_results(self, run_id: str, plan_id: str) -> dict[str, dict[str, object]]:

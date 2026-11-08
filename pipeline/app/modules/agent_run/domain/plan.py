@@ -74,6 +74,8 @@ class AgentPlanOperation:
     # warning은 {"type", "message"}이며, 중복 의심 작업은 suggested_selected=False로 기본 선택에서 뺀다.
     warning: dict[str, str] | None = None
     suggested_selected: bool = True
+    # Read projection only; receipt-confirmed replay identity is never part of the operation hash.
+    existing_result: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

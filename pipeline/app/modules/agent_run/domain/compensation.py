@@ -1,6 +1,13 @@
 from typing import Any
 
 
+def mcp_receipt_result(tool_name: str, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Expose validated receipt values to existing operation references and compensation."""
+    target_key = "document_id" if tool_name == "apply_document_edit" else "id"
+    return {**receipt, target_key: receipt.get("resource_id"),
+            "current_version": receipt.get("after_version")}
+
+
 def compensation_request(
     tool_name: str,
     before: dict[str, Any],

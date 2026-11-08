@@ -210,6 +210,12 @@ class EditEvaluationTest(unittest.TestCase):
         self.assertNotIn("proposal", client.calls[1][1])
         self.assertIn("proposal", client.calls[2][1])
 
+    def test_no_structurally_valid_attempt_still_raises(self):
+        client = ScriptedClient([proposal(""), proposal("")])
+        with self.assertRaises(MarkdownOutputContractError):
+            ChatCompletionsMarkdownEditor(client, "system").generate_edit(self.request())
+        self.assertEqual(len(client.calls), 2)
+
     def test_evaluator_transport_failure_does_not_accept_proposal(self):
         client = ScriptedClient([proposal(), RuntimeError("provider unavailable")])
         with self.assertRaisesRegex(RuntimeError, "provider unavailable"):

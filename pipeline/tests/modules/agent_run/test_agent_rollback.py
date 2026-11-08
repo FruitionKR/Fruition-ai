@@ -484,7 +484,8 @@ def test_postgres_cancel_job_and_compensation_authorization(monkeypatch):
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
-def test_document_edit_rollback_registers_original_content_and_verifies_hash():
+@pytest.mark.parametrize("mcp_outcome", [None, "COMMITTED", "NO_CHANGE"])
+def test_document_edit_rollback_registers_original_content_and_verifies_hash(mcp_outcome):
     import hashlib
     def digest(value):
         return hashlib.sha256(value.encode()).hexdigest()
@@ -497,12 +498,30 @@ def test_document_edit_rollback_registers_original_content_and_verifies_hash():
     )
     plan = replace(build_agent_plan("plan", "run", 1, "편집", (operation,)), status="approved")
     journal, artifacts, gateway = Journal(plan), MagicMock(), MagicMock()
+    if mcp_outcome:
+        from app.modules.agent_run.domain.entities import McpExecutionAttempt, McpExecutionIdentity
+
+        journal.run = replace(journal.run, origin="MCP_CLIENT")
+        journal.load_mcp_execution_identity = lambda *_: McpExecutionIdentity("approval", "grant", "client", 1)
+        journal.get_or_create_mcp_attempt = lambda *_: McpExecutionAttempt("attempt", 1, "started", True)
+        journal.finish_mcp_attempt = MagicMock()
     current = {"id": "doc-0", "markdown": original, "content_hash": digest(original), "edit_revision": 3}
     gateway.read.side_effect = lambda *args, **kwargs: deepcopy(current)
 
     def execute(tool, *, arguments, idempotency_key, **kwargs):
         assert tool == "apply_document_edit"
         assert arguments["base_version"] == current["edit_revision"]
+        if mcp_outcome and not idempotency_key.startswith("agent-undo:"):
+            if mcp_outcome == "COMMITTED":
+                current.update(markdown=changed, content_hash=digest(changed), edit_revision=4)
+            return {
+                "receipt_id": "receipt", "approval_id": "approval", "operation_id": "edit",
+                "attempt_id": "attempt", "workspace_id": journal.run.workspace_id,
+                "user_id": journal.run.user_id, "grant_id": "grant", "client_id": "client",
+                "tool_name": tool, "outcome": mcp_outcome, "changed": mcp_outcome == "COMMITTED",
+                "resource_type": "DOCUMENT", "resource_id": "doc-0", "before_version": 3,
+                "after_version": current["edit_revision"], "committed_at": "2026-11-08T00:00:00Z",
+            }
         markdown = artifacts.register_artifact.call_args.kwargs["markdown"] if idempotency_key.startswith("agent-undo:") else changed
         assert arguments["content_hash"] == "sha256:" + digest(markdown)
         current.update(markdown=markdown, content_hash=digest(markdown), edit_revision=current["edit_revision"] + 1)
@@ -515,6 +534,11 @@ def test_document_edit_rollback_registers_original_content_and_verifies_hash():
     worker._rollback.execute("run")
     assert current["markdown"] == original
     assert journal.run.status == "cancelled"
+    if mcp_outcome == "NO_CHANGE":
+        artifacts.register_artifact.assert_not_called()
+        assert gateway.execute.call_count == 1
+        assert current["edit_revision"] == 3
+        return
     assert artifacts.register_artifact.call_args.kwargs["base_version"] == 4
     assert artifacts.register_artifact.call_args.kwargs["content_hash"] == "sha256:" + digest(original)
     assert current["edit_revision"] == 5

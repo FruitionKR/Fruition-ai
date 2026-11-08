@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 from minio.credentials.providers import IamAwsProvider
+from urllib3 import PoolManager
 
 from app.modules.wiki_ingestion.infrastructure import object_storage as storage
 
@@ -60,11 +61,37 @@ def test_web_identity_uses_sdk_sts_provider(endpoint, tmp_path):
     with patch.dict(os.environ, {"S3_ENDPOINT":url,"S3_BUCKET":"test-bucket","S3_CREDENTIALS_MODE":"aws",
                                  "AWS_REGION":"ap-northeast-2", "AWS_WEB_IDENTITY_TOKEN_FILE":str(token),
                                  "AWS_ROLE_ARN":"arn:aws:iam::123456789012:role/pipeline"}, clear=True), \
-            patch.object(storage, "IamAwsProvider", lambda: IamAwsProvider(custom_endpoint=url)):
+            patch.object(
+                storage,
+                "IamAwsProvider",
+                lambda **kwargs: IamAwsProvider(custom_endpoint=url, **kwargs),
+            ):
         assert storage.read_text_object("pipeline-runs/run/pipeline.log") == "saved log"
         assert any("AssumeRoleWithWebIdentity" in body for body, _ in requests)
         assert "web-identity-access" in requests[-1][1]["Authorization"]
         assert requests[-1][1]["X-Amz-Security-Token"] == "web-identity-session"
+
+
+def test_explicit_http_client_is_shared_and_environment_credentials_win():
+    pool = PoolManager()
+    env = {
+        "S3_CREDENTIALS_MODE": "aws",
+        "AWS_REGION": "ap-northeast-2",
+        "AWS_ACCESS_KEY_ID": "environment-access",
+        "AWS_SECRET_ACCESS_KEY": "environment-secret",
+        "AWS_SESSION_TOKEN": "environment-session",
+    }
+    try:
+        with patch.dict(os.environ, env, clear=True), patch.object(
+            IamAwsProvider, "retrieve", side_effect=AssertionError("IAM called")
+        ) as retrieve:
+            client = storage.client(http_client=pool)
+            assert client._http is pool
+            assert client._provider._providers[1]._http_client is pool
+            assert client._provider.retrieve().access_key == "environment-access"
+            retrieve.assert_not_called()
+    finally:
+        pool.clear()
 
 
 def test_aws_never_uses_local_key_or_creates_bucket():

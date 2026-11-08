@@ -13,7 +13,7 @@ from typing import Any
 from app.modules.agent_run.application.ports import (
     AgentJobRepositoryPort, AgentPlanRepositoryPort, AgentToolGatewayPort, ToolGatewayError,
 )
-from app.modules.agent_run.domain.compensation import compensation_request
+from app.modules.agent_run.domain.compensation import compensation_request, mcp_receipt_result
 from app.modules.agent_run.domain.entities import AgentRunContext
 from app.modules.agent_run.domain.plan import ROLLBACK_DOCUMENT_PURGED, AgentPlan, AgentPlanOperation
 
@@ -70,6 +70,16 @@ class RollbackAgentRunUseCase:
                     # 응답이 없으면 요청이 서버에 반영됐는지 단정할 수 없다.
                     raise ValueError("rollback_forward_outcome_unknown")
                 response = record["forward_response"]
+                if response.get("existing_result") is True:
+                    self._repository.complete_undo(record["id"], {})
+                    continue
+                if context.run.origin == "MCP_CLIENT":
+                    if response.get("outcome") == "NO_CHANGE" and response.get("changed") is False:
+                        self._repository.complete_undo(record["id"], {})
+                        continue
+                    # Keep the authoritative receipt stored unchanged; adapt it for existing compensation.
+                    response = mcp_receipt_result(record["tool_name"], response)
+                    record = {**record, "forward_response": response}
                 target_type = "folder" if record["tool_name"].endswith("folder") else "document"
                 content_edit = record["tool_name"] == "apply_document_edit"
                 target = ("content" if content_edit else target_type, response.get("document_id" if content_edit else "id"))

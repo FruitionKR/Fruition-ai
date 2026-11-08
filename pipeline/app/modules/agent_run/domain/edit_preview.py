@@ -8,8 +8,8 @@ _CONTEXT_LINES = 3
 
 
 def build_edit_preview(before: str, after: str) -> dict[str, object]:
-    before_lines = _LINE_BREAK.split(before)
-    after_lines = _LINE_BREAK.split(after)
+    before_lines = [] if before == "" else _LINE_BREAK.split(before)
+    after_lines = [] if after == "" else _LINE_BREAK.split(after)
     # autojunk는 자주 나오는 줄(빈 줄 등)을 비교에서 빼 diff를 부풀리므로 끈다.
     matcher = SequenceMatcher(None, before_lines, after_lines, autojunk=False)
     added_lines = 0

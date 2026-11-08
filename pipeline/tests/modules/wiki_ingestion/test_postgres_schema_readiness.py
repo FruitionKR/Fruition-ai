@@ -54,6 +54,23 @@ def test_verify_schema_requires_source_block_snapshots() -> None:
         database.verify_schema()
 
 
+@pytest.mark.parametrize(
+    "missing_table",
+    ["wiki_publications", "wiki_publication_objects", "wiki_publication_outbox"],
+)
+def test_verify_schema_requires_publication_tables(missing_table: str) -> None:
+    existing_tables = tuple(
+        name for name in database.AI_DB_REQUIRED_TABLES if name != missing_table
+    )
+    connection = _connection_with_tables(existing_tables)
+
+    with (
+        patch.object(database, "connect_ai", return_value=connection),
+        pytest.raises(RuntimeError, match=f"missing tables: {missing_table}"),
+    ):
+        database.verify_schema()
+
+
 def test_verify_agent_schema_accepts_agent_and_checkpoint_tables() -> None:
     connection = _connection_with_tables(database.AGENT_REQUIRED_TABLES)
 

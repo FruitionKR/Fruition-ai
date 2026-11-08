@@ -30,7 +30,6 @@ from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repositor
 from app.modules.wiki_ingestion.infrastructure.object_storage import (
     pipeline_log_uri,
     read_text_object,
-    write_text_object,
 )
 from app.modules.wiki_ingestion.infrastructure.wiki_page_restore import (
     ObjectStorageWikiPageRestore,
@@ -70,7 +69,7 @@ def get_restore_wiki_pages_use_case() -> RestoreWikiPagesUseCase:
     return RestoreWikiPagesUseCase(
         ObjectStorageWikiPageRestore(
             read_text_object,
-            write_text_object,
+            None,
             apply_restored_wiki_state_and_cleanup,
             restore_archived_clusters,
             is_source_page_purged,

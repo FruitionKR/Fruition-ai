@@ -7,12 +7,13 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 
 | 도메인 | API 수 | 현재 Gateway 연결 |
 |---|---:|---|
-| [Agent](agent.md) | 11 | turn은 Kafka, run·artifact 조회·Tool 인가는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
+| [Agent](agent.md) | 13 | turn은 Kafka, run·artifact 조회·Tool 인가와 MCP proposal/approval/owned-run locator는 내부 HTTP; artifact register는 현재 운영 호출자 없음 |
 | [Wiki Ingest](pipeline.md) | 4 | ingest는 Kafka, run 상태는 내부 HTTP, 나머지는 운영용 |
 | [음성·회의록](speech.md) | HTTP 2 + WS 1 + Kafka | 전사·합성·실시간은 내부 HTTP/WS, 회의 녹음 전사·회의록은 Kafka `ai.maintenance.command`, 화면은 전부 미연동 |
 | [Skills](skills.md) | 9 | 작업 실행·테스트 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
 | [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
 | [AI 데이터 파기](purge.md) | 2 | 내부 HTTP, Document 쪽 호출 연결 전 |
+| [MCP 위키](mcp-wiki.md) | search 1 + ingest/preview 6 | read와 unpublished ingest full-preview 내부 HTTP; public write tool/approval/apply는 아직 꺼짐 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
 | [Wiki Schema](wiki-schema.md) | 5 | 내부 HTTP |
 | [임베딩 서버](embedding.md) | 2 | 별도 프로세스의 내부 HTTP, 배포 전 호출자 없음 |
@@ -74,6 +75,10 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `GET /usage/models` | `core/usage/service/ModelUsageService.java`:35-40 | |
 | `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
 | `POST /internal/ai/purge/workspaces`, `POST /internal/ai/purge/users` | **호출자 없음** | Document 파기 API 구현 전 |
+| `POST /internal/mcp/wiki/search` | **호출자 없음** | Document MCP transport/page-read I2 연결 전 |
+| `POST /internal/mcp/wiki/ingest-runs`, `.../{run_id}/resume`, `.../{run_id}/windows/read`, `.../{run_id}/windows/{window_id}/submissions`, `.../{run_id}/finalize`, `/internal/mcp/wiki/lint-drafts`; `GET /internal/mcp/wiki/drafts/{draft_id}/preview` | document-svc MCP wiki draft boundary | `X-Agent-Service-Token`; immutable INGEST intake와 closed structured LINT, owner-bound complete preview. public registration/LINT apply는 꺼짐 |
+| `POST /agent/runs/mcp-proposals` | document-svc MCP proposal boundary | `X-Agent-Service-Token`; I4 단일 편집과 I6 1~20 operation 계획, 공개 write catalog는 아직 꺼짐 |
+| `POST /agent/runs/{run_id}/approve`, `GET /agent/runs/mcp-owned` | document-svc MCP approval·web owner bridge | 안정된 Document approval identity와 저장된 MCP provenance를 사용 |
 
 ### 아웃바운드 (ai-svc → 외부)
 
@@ -86,6 +91,9 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`DOCUMENT_INTERNAL_BASE_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/folder-lookup/tree` (Agent turn의 폴더 내용 조회 `folder_lookup`) | `app/modules/agent/infrastructure/backend_folder_tree_reader.py` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (agent_worker의 폴더 정리 본문 중복 확인) | `pipeline/agent_worker.py`의 `_build_folder_content_reader` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}`, `POST /internal/agent/runs/{run_id}/plan-ready`(승인 대기·종료·되묻기 알림) | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:28,52,69 |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/mcp/document-edit-context` | `app/modules/agent_run/infrastructure/mcp_document_edit_context.py`; proposal 전에 현재 authz/version/body/hash/parent를 다시 확인 |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/documents/{document_id}/mcp-wiki-source` | `app/modules/mcp_wiki_draft/infrastructure/backend_source_reader.py`; 현재 `wiki.ingest`+read 판정 뒤 한 coherent source version/hash/ordered-block snapshot |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/mcp/approvals/lookup`, `POST /internal/agent/mcp/receipts/lookup` | enqueue 직전 예약 validity와 불명확한 실행의 body-free receipt를 fail-closed 조회 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
 | OpenAI | `/v1/audio/transcriptions`, `wss://.../v1/realtime?model=gpt-realtime-2.1-mini`(합성), `wss://.../v1/realtime?intent=transcription` | `app/modules/speech/infrastructure/openai_speech.py`:64,104,201 |

@@ -7,6 +7,7 @@ document-svc 기여 원장은 가짜다. lint 결과의 `ledger_contributions`�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import nullcontext
@@ -21,22 +22,30 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from app.modules.wiki_ingestion.application.models import (
+    IngestOperationRestoreCommand,
     LintOperationRestoreCommand,
     RebuildPageCommand,
     RestoreContributionCommand,
+    SourceSnapshotRestoreCommand,
     WikiMaintenanceCommand,
 )
 from app.modules.wiki_ingestion.application.restore_wiki_pages import RestoreWikiPagesUseCase
+from app.modules.wiki_ingestion.application import restore_wiki_pages
 from app.modules.wiki_ingestion.domain.operation_recovery import RestoreConflictError
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_ingestion_repository as database,
 )
+from app.modules.wiki_ingestion.infrastructure import (
+    postgres_wiki_output_persistence as persistence,
+)
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
+from app.modules.wiki_ingestion.infrastructure import wiki_publication
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
     load_concept_contributions,
     rebuild_concept_page,
 )
 from app.modules.wiki_ingestion.infrastructure.wiki_page_restore import ObjectStorageWikiPageRestore
+from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object as read_immutable_text
 from app.modules.wiki_ingestion.interfaces.http.schemas import WikiLintOut
 
 DSN = os.environ.get("TEST_AGENT_DATABASE_URL") or os.environ.get("CONCEPT_LOCK_TEST_DSN")
@@ -114,6 +123,21 @@ class World:
         monkeypatch.setattr(wiki_maintenance, "concept_write_lock", lambda *_args: nullcontext())
         monkeypatch.setattr(wiki_maintenance, "_snapshot_object", lambda _key: None)
         monkeypatch.setattr(wiki_maintenance, "_restore_object", lambda _key, _before: None)
+        # Publication 원자성은 test_wiki_publication에서 실제 저장소와 검증한다.
+        monkeypatch.setattr(wiki_maintenance, "prepare_publication", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(wiki_maintenance, "finalize_publication", lambda _conn, **kwargs: {"result": kwargs["result"]})
+        monkeypatch.setattr(restore_wiki_pages, "prepare_publication", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(database, "finalize_publication", lambda _conn, **kwargs: {"result": kwargs["result"]})
+        monkeypatch.setattr(
+            database, "write_publication_text",
+            lambda _operation, _page, key, text, content_type="text/markdown; charset=utf-8", **_kwargs: self.write(
+                key, text, content_type
+            ),
+        )
+        monkeypatch.setattr(
+            wiki_maintenance, "write_publication_text",
+            lambda _operation, _page, key, text, content_type, **_kwargs: self.write(key, text, content_type),
+        )
         self.restore = ObjectStorageWikiPageRestore(
             self.read,
             lambda key, text, _content_type: self.write(key, text),
@@ -136,7 +160,10 @@ class World:
         return key
 
     def read_contributions(self, page_ids: list[str], _workspace_id: str) -> list[dict]:
-        return [dict(row) for row in self.ledger if row["page_id"] in page_ids]
+        return [
+            {**row, "source_document_id": row["document_id"], "lint_operation_id": row["linked_by_operation_id"]}
+            for row in self.ledger if row["page_id"] in page_ids
+        ]
 
     def _record(self, page_id: str, operation_id: str, document_id: str | None, linked_by: str | None = None) -> None:
         self.ledger.append({"page_id": page_id, "ingest_operation_id": operation_id, "document_id": document_id,
@@ -192,6 +219,7 @@ class World:
             payload = {
                 "schema_version": 1, "operation_id": operation_id, "document_id": document_id, "page_id": page_id,
                 "concept": {"slug": slug, "title": data.get("title", slug.title()), "definition": f"{slug} 정의",
+                            "identity_aliases": data.get("identity_aliases", []),
                             "source_document_ids": [document_id],
                             "anchor_reference_ids": data.get("concept_refs", [])},
                 # evidence: 항목에 딸리지 않은 페이지 근거(블록 이름 목록).
@@ -264,6 +292,15 @@ class World:
             if predicate(row):
                 row["active"] = False
 
+    def _pending_deactivations(self, predicate) -> list[dict]:
+        return [
+            {"page_id": row["page_id"], "operation_id": row["ingest_operation_id"],
+             "document_id": row["document_id"], "object_key": row["object_key"],
+             "active": False, "sequence_revision": row["sequence_revision"],
+             "linked_by_operation_id": row["linked_by_operation_id"]}
+            for row in self.ledger if row["active"] and predicate(row)
+        ]
+
     def _supported(self, page_id: str, without: str) -> bool:
         """남은 활성 행이 있으면 재조립 대상이다. 페이지를 지울지는 ai 재생이 정한다(docs/api/wiki.md 복원 계약)."""
         return any(
@@ -285,6 +322,9 @@ class World:
             run, WS, changed,
             {"removed_links": [], "restored_links": [link for page in changed for link in page["supported_links"]]},
             True, deleted,
+            {"user_id": "user", "kind": "RESTORE", "outcome": "PUBLISHED",
+             "result": {"changed_pages": changed}},
+            self._pending_deactivations(lambda row: row["ingest_operation_id"] == operation_id),
         )
         self._deactivate(lambda row: row["ingest_operation_id"] == operation_id)
         self._run("restore_ingest", {"changed_pages": [{"page_id": page["page_id"]} for page in changed]})
@@ -304,7 +344,11 @@ class World:
                     for page_id in page_ids if self._supported(page_id, operation_id)
                 ),
                 deleted_pages=tuple(page_id for page_id in page_ids if not self._supported(page_id, operation_id)),
-            )
+            ),
+            user_id="user",
+            pending_deltas=self._pending_deactivations(
+                lambda row: operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"])
+            ),
         )
         self._deactivate(lambda row: operation_id in (row["ingest_operation_id"], row["linked_by_operation_id"]))
         self._run("restore_lint", {"changed_pages": result["changed_pages"]})
@@ -355,6 +399,137 @@ class World:
 
 
 ROLLOUT_STEPS = ["history", "undo", "pause", "resume", "status"]
+
+
+def test_restore_replaces_replayed_extracted_aliases_and_preserves_verified(world: World) -> None:
+    world.ingest("op-a", "doc-a", {
+        "canonical": {"title": "Canonical", "identity_aliases": ["Removed", "Shared"], "evidence": ["A1"]},
+    })
+    world.ingest("op-b", "doc-b", {
+        "canonical": {"title": "Canonical", "identity_aliases": ["Shared", "Surviving"], "evidence": ["B1"]},
+    })
+    page_id = world.page_id("canonical")
+    with world.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO wiki_concept_identity_aliases (page_id, workspace_id, alias, origin)
+            VALUES (%s, %s, 'Verified', 'verified')
+            """,
+            (page_id, WS),
+        )
+
+    world.restore_ingest("op-a")
+
+    with world.connect() as conn:
+        aliases = conn.execute(
+            "SELECT alias, origin FROM wiki_concept_identity_aliases WHERE page_id = %s ORDER BY alias",
+            (page_id,),
+        ).fetchall()
+    assert [(row["alias"], row["origin"]) for row in aliases] == [
+        ("Shared", "extracted"),
+        ("Surviving", "extracted"),
+        ("Verified", "verified"),
+    ]
+
+    world.restore_ingest("op-b")
+
+    with world.connect() as conn:
+        aliases = conn.execute(
+            "SELECT alias, origin FROM wiki_concept_identity_aliases WHERE page_id = %s ORDER BY alias",
+            (page_id,),
+        ).fetchall()
+    assert [(row["alias"], row["origin"]) for row in aliases] == [("Verified", "verified")]
+
+
+def test_reingest_invalidation_drops_unsupported_alias_and_keeps_other_scopes(
+    world: World,
+    monkeypatch,
+) -> None:
+    world.ingest("op-a", "doc-a", {
+        "canonical": {
+            "title": "Canonical", "identity_aliases": ["Old Alias"],
+            "concept_refs": ["A1"], "evidence": ["A1"],
+            "entry_changes": [{
+                "op": "add", "entry_id": "entry:shared", "name": "Old Entry",
+                "anchor_reference_ids": [],
+            }],
+        },
+    })
+    page_id = world.page_id("canonical")
+    remove = {
+        "schema_version": 1, "artifact_type": "lint", "operation_id": "lint-remove",
+        "document_id": "lint", "page_id": page_id, "concept": {}, "evidence_units": [], "links": [],
+        "entry_changes": [{"op": "remove", "entry_id": "entry:shared"}],
+    }
+    world.write(
+        f"wiki/{WS}/pages/{page_id}/ops/lint-remove.json",
+        json.dumps(remove, ensure_ascii=False),
+    )
+    world._record(page_id, "lint-remove", None)
+    world.ingest("op-b", "doc-b", {
+        "canonical": {
+            "title": "Canonical", "identity_aliases": ["New Alias"],
+            "concept_refs": ["B1"],
+            "entry_changes": [{
+                "op": "add", "entry_id": "entry:shared", "name": "New Entry",
+                "anchor_reference_ids": ["B1"],
+            }],
+        },
+    })
+    with world.connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_concept_identity_aliases (page_id, workspace_id, alias, origin) "
+            "VALUES (%s, %s, 'Verified', 'verified')",
+            (page_id, WS),
+        )
+        conn.execute(
+            "INSERT INTO wiki_pages "
+            "(id, page_type, title, slug, user_id, workspace_id, status, created_at, updated_at) "
+            "VALUES ('other-page', 'concept', 'Other', 'other', 'user', 'other-workspace', 'active', now(), now())"
+        )
+        conn.execute(
+            "INSERT INTO wiki_concept_identity_aliases (page_id, workspace_id, alias, origin) "
+            "VALUES ('other-page', 'other-workspace', 'Untouched', 'extracted')"
+        )
+
+    monkeypatch.setattr(persistence, "read_contributions", world.read_contributions)
+    monkeypatch.setattr(persistence, "read_text_object", world.read)
+    monkeypatch.setattr(persistence, "write_text_object", world.write)
+    with world.connect() as conn:
+        rebuilt, _invalidation_pages, deleted = persistence._rebuild_invalidated_pages(
+            conn,
+            "doc-a",
+            WS,
+            "op-reingest",
+            ["doc-a:A1"],
+            {"concept_contributions": {}, "concept_pages": []},
+            {"canonical": page_id},
+            [],
+            database._apply_restored_wiki_state,
+            None,
+            database._cleanup_deleted_wiki_pages,
+        )
+
+    assert set(rebuilt) == {page_id}
+    assert deleted == []
+    with world.connect() as conn:
+        aliases = conn.execute(
+            "SELECT alias, origin FROM wiki_concept_identity_aliases WHERE page_id = %s ORDER BY alias",
+            (page_id,),
+        ).fetchall()
+        other = conn.execute(
+            "SELECT alias, origin FROM wiki_concept_identity_aliases WHERE page_id = 'other-page'"
+        ).fetchall()
+        entries = conn.execute(
+            "SELECT entry_id, name FROM wiki_page_entries WHERE page_id = %s",
+            (page_id,),
+        ).fetchall()
+    assert [(row["alias"], row["origin"]) for row in aliases] == [
+        ("New Alias", "extracted"),
+        ("Verified", "verified"),
+    ]
+    assert [(row["alias"], row["origin"]) for row in other] == [("Untouched", "extracted")]
+    assert [(row["entry_id"], row["name"]) for row in entries] == [("entry:shared", "New Entry")]
 
 
 def _deployment_with_thick_rollout(world: World) -> None:
@@ -890,6 +1065,118 @@ def test_references_to_a_page_that_lost_its_last_entry_are_removed(world: World)
     state = world.state()
     assert world.contribution("kubectl", "lint-clean")["removed_links"][0]["entry_id"] == "e-scale"
     assert state["pages"]["kubectl"][2] == world.ledger_rebuild("kubectl").markdown
+
+
+@pytest.mark.parametrize("restore_kind", ["ingest", "lint"])
+def test_restore_publication_contains_pruned_third_page_and_immutable_body(
+    world: World,
+    monkeypatch,
+    restore_kind: str,
+) -> None:
+    target_operation = "op-remove-entry"
+    restore_operation = f"restore-{restore_kind}-{uuid4().hex}"
+    world.ingest("op-keep-page", "doc-keep", {"deployment": {"evidence": ["B2"]}})
+    deployment_id = world.page_id("deployment")
+    if restore_kind == "ingest":
+        world.ingest(target_operation, "doc-remove", {"deployment": {"entry_changes": [
+            _add("e-scale", "Scale", refs=["B1"]),
+        ]}})
+    else:
+        lint = {
+            "schema_version": 1,
+            "artifact_type": "lint",
+            "operation_id": target_operation,
+            "document_id": f"lint:{target_operation}",
+            "page_id": deployment_id,
+            "content_action": "none",
+            "concept": {"slug": "deployment", "title": "Deployment", "definition": "",
+                        "source_document_ids": [], "evidence_claim_ids": []},
+            "evidence_units": [],
+            "source_blocks": [],
+            "source_key_points": [],
+            "added_links": [],
+            "removed_links": [],
+            "entry_changes": [_add("e-scale", "Scale")],
+        }
+        world.write(
+            f"wiki/{WS}/pages/{deployment_id}/ops/{target_operation}.json",
+            json.dumps(lint, ensure_ascii=False),
+        )
+        world._record(deployment_id, target_operation, None)
+        changed = world._rebuild(f"sync-{target_operation}", deployment_id)
+        database.apply_restored_wiki_state(
+            WS, [changed], {"removed_links": [], "restored_links": changed["supported_links"]}, True,
+        )
+    world.ingest("op-reference", "doc-reference", {"kubectl": {"links": [
+        _reference("kubectl", "deployment", "e-scale", "Scale"),
+    ]}})
+    kubectl_id = world.page_id("kubectl")
+
+    monkeypatch.setenv("AI_DATABASE_URL", world.dsn)
+    monkeypatch.setenv("S3_BUCKET", f"wiki-i8-correction-{uuid4().hex}")
+    monkeypatch.setattr(restore_wiki_pages, "prepare_publication", wiki_publication.prepare_publication)
+    monkeypatch.setattr(database, "finalize_publication", wiki_publication.finalize_publication)
+    monkeypatch.setattr(database, "write_publication_text", wiki_publication.write_publication_text)
+    keep = world._keep(deployment_id, target_operation)
+    pending = world._pending_deactivations(
+        lambda row: target_operation in (row["ingest_operation_id"], row["linked_by_operation_id"])
+    )
+    use_case = RestoreWikiPagesUseCase(world.restore)
+    if restore_kind == "ingest":
+        result = use_case.execute_ingest(
+            IngestOperationRestoreCommand(
+                operation_id=restore_operation,
+                restore_to_operation_id=None,
+                cancel_operation_ids=(target_operation,),
+                workspace_id=WS,
+                source_page=SourceSnapshotRestoreCommand("source-doc-remove", "doc-remove"),
+                rebuild_pages=(RebuildPageCommand(deployment_id, keep),),
+            ),
+            user_id="user",
+            pending_deltas=pending,
+        )
+    else:
+        result = use_case.execute_lint(
+            LintOperationRestoreCommand(
+                operation_id=restore_operation,
+                target_operation_id=target_operation,
+                workspace_id=WS,
+                rebuild_pages=(RebuildPageCommand(deployment_id, keep),),
+            ),
+            user_id="user",
+            pending_deltas=pending,
+        )
+
+    c_page = next(page for page in result["changed_pages"] if page["page_id"] == kubectl_id)
+    c_key = f"wiki/{WS}/pages/{kubectl_id}/ops/{restore_operation}.md"
+    c_body = read_immutable_text(c_key)
+    expected_removed = {
+        "source": "concept:kubectl",
+        "target": "concept:deployment",
+        "relation": "entry_reference",
+    }
+    with world.connect() as conn:
+        page = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE id = %s", (kubectl_id,)).fetchone()
+        stored = conn.execute(
+            "SELECT content_hash, uploaded_at IS NOT NULL AS uploaded "
+            "FROM wiki_publication_objects WHERE publication_id = %s AND object_key = %s",
+            (wiki_publication.publication_id(restore_operation), c_key),
+        ).fetchone()
+        event = conn.execute(
+            "SELECT payload FROM wiki_publication_outbox WHERE publication_id = %s",
+            (wiki_publication.publication_id(restore_operation),),
+        ).fetchone()["payload"]
+    assert page["markdown_uri"].endswith(c_key)
+    assert c_page["content_hash"] == "sha256:" + hashlib.sha256(c_body.encode()).hexdigest()
+    assert stored == {"content_hash": c_page["content_hash"], "uploaded": True}
+    assert "[[deployment|" not in c_body
+    assert {page["page_id"] for page in event["result"]["changed_pages"]} == {deployment_id, kubectl_id}
+    assert next(
+        page for page in event["result"]["changed_pages"] if page["page_id"] == kubectl_id
+    )["content_hash"] == c_page["content_hash"]
+    assert all(page["contribution_stored"] is False for page in event["result"]["changed_pages"])
+    assert expected_removed in event["result"]["link_changes"]["removed_links"]
+    assert expected_removed not in event["result"]["link_changes"]["restored_links"]
 
 
 def test_split_drops_key_points_of_moved_entries_from_parent_body_and_units(world: World) -> None:

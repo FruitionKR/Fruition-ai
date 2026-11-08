@@ -27,6 +27,216 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_runs_document
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_workspace_status
     ON pipeline_runs (workspace_id, status, created_at DESC);
 
+-- MCP ingest snapshot/window intake and immutable full preview. Apply/publication remains a later gate.
+CREATE TABLE IF NOT EXISTS mcp_wiki_ingest_runs (
+    run_id uuid PRIMARY KEY,
+    draft_id uuid NOT NULL UNIQUE,
+    snapshot_id uuid NOT NULL UNIQUE,
+    document_id varchar(255) NOT NULL,
+    workspace_id varchar(255) NOT NULL,
+    user_id varchar(255) NOT NULL,
+    grant_id uuid NOT NULL,
+    client_id text NOT NULL,
+    policy_generation bigint NOT NULL CHECK (policy_generation > 0),
+    origin varchar(32) NOT NULL CHECK (origin = 'MCP_CLIENT'),
+    spec_version varchar(32) NOT NULL CHECK (spec_version = '2025-11-25'),
+    source_version bigint NOT NULL CHECK (source_version > 0),
+    source_content_hash varchar(71) NOT NULL CHECK (source_content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    source_block_count integer NOT NULL CHECK (source_block_count > 0),
+    source_bytes bigint NOT NULL CHECK (source_bytes > 0),
+    state varchar(32) NOT NULL CHECK (state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL','EXPIRED','CANCELLED','INVALIDATED')),
+    next_window_ordinal integer NOT NULL CHECK (next_window_ordinal > 0),
+    submitted_window_count integer NOT NULL DEFAULT 0 CHECK (submitted_window_count >= 0),
+    ttl_seconds integer NOT NULL CHECK (ttl_seconds > 0),
+    expires_at timestamptz NOT NULL,
+    last_activity_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE mcp_wiki_ingest_runs DROP CONSTRAINT IF EXISTS mcp_wiki_ingest_runs_state_check;
+ALTER TABLE mcp_wiki_ingest_runs ADD CONSTRAINT mcp_wiki_ingest_runs_state_check CHECK (
+    state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL','APPLYING','PUBLISHED','NO_CHANGE','CONFLICTED','HALTED','UNKNOWN','EXPIRED','CANCELLED','INVALIDATED')
+);
+DROP INDEX IF EXISTS uq_mcp_wiki_active_document;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mcp_wiki_active_document
+    ON mcp_wiki_ingest_runs(document_id)
+    WHERE state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL','APPLYING','UNKNOWN');
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_active_owner
+    ON mcp_wiki_ingest_runs(workspace_id,user_id,state,created_at);
+DROP INDEX IF EXISTS idx_mcp_wiki_expiry;
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_expiry
+    ON mcp_wiki_ingest_runs(expires_at)
+    WHERE state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL');
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_source_blocks (
+    snapshot_id uuid NOT NULL REFERENCES mcp_wiki_ingest_runs(snapshot_id) ON DELETE CASCADE,
+    block_id varchar(255) NOT NULL,
+    ordinal integer NOT NULL CHECK (ordinal > 0),
+    text text NOT NULL,
+    content_hash varchar(71) NOT NULL CHECK (content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    text_bytes integer NOT NULL CHECK (text_bytes > 0),
+    PRIMARY KEY (snapshot_id,block_id),
+    UNIQUE (snapshot_id,ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_windows (
+    window_id uuid PRIMARY KEY,
+    run_id uuid NOT NULL REFERENCES mcp_wiki_ingest_runs(run_id) ON DELETE CASCADE,
+    window_ordinal integer NOT NULL CHECK (window_ordinal > 0),
+    window_hash varchar(71) NOT NULL CHECK (window_hash ~ '^sha256:[0-9a-f]{64}$'),
+    blocks jsonb NOT NULL,
+    has_more boolean NOT NULL,
+    submitted_at timestamptz,
+    accepted_submission_hash varchar(71),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (run_id,window_ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_window_submissions (
+    window_id uuid PRIMARY KEY REFERENCES mcp_wiki_windows(window_id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES mcp_wiki_ingest_runs(run_id) ON DELETE CASCADE,
+    submission_hash varchar(71) NOT NULL CHECK (submission_hash ~ '^sha256:[0-9a-f]{64}$'),
+    contributions jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_drafts (
+    draft_id uuid PRIMARY KEY REFERENCES mcp_wiki_ingest_runs(draft_id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES mcp_wiki_ingest_runs(run_id) ON DELETE CASCADE,
+    draft_version integer NOT NULL CHECK (draft_version > 0),
+    draft_kind varchar(16) NOT NULL CHECK (draft_kind IN ('INGEST','LINT')),
+    workspace_id varchar(255) NOT NULL,
+    user_id varchar(255) NOT NULL,
+    finalize_request_hash varchar(71) NOT NULL CHECK (finalize_request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    draft_hash varchar(71) NOT NULL CHECK (draft_hash ~ '^sha256:[0-9a-f]{64}$'),
+    public_state_hash varchar(71) NOT NULL CHECK (public_state_hash ~ '^sha256:[0-9a-f]{64}$'),
+    source_snapshots jsonb NOT NULL,
+    target_pages jsonb NOT NULL,
+    normalized_submissions jsonb NOT NULL,
+    calculation_inputs jsonb NOT NULL,
+    changes jsonb NOT NULL,
+    preview jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (run_id,draft_version)
+);
+-- LINT drafts share the immutable draft/preview store without inventing an ingest run.
+ALTER TABLE mcp_wiki_drafts DROP CONSTRAINT IF EXISTS mcp_wiki_drafts_draft_id_fkey;
+ALTER TABLE mcp_wiki_drafts ALTER COLUMN run_id DROP NOT NULL;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS grant_id uuid;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS client_id text;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS policy_generation bigint;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS origin varchar(32);
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS spec_version varchar(32);
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS state varchar(32);
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS source_bytes bigint;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS ttl_seconds integer;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS last_activity_at timestamptz;
+ALTER TABLE mcp_wiki_drafts ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE mcp_wiki_drafts DROP CONSTRAINT IF EXISTS mcp_wiki_drafts_lint_lifecycle_check;
+ALTER TABLE mcp_wiki_drafts ADD CONSTRAINT mcp_wiki_drafts_lint_lifecycle_check CHECK (
+    draft_kind <> 'LINT' OR (
+        run_id IS NULL AND grant_id IS NOT NULL AND client_id IS NOT NULL
+        AND policy_generation > 0 AND origin = 'MCP_CLIENT' AND spec_version = '2025-11-25'
+        AND state IN ('AWAITING_WEB_APPROVAL','APPLYING','PUBLISHED','NO_CHANGE','CONFLICTED','HALTED','UNKNOWN','EXPIRED','CANCELLED','INVALIDATED')
+        AND source_bytes >= 0 AND ttl_seconds > 0 AND expires_at IS NOT NULL AND last_activity_at IS NOT NULL
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_draft_owner
+    ON mcp_wiki_drafts(workspace_id,user_id,draft_id,draft_version);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mcp_wiki_lint_intent
+    ON mcp_wiki_drafts(workspace_id,user_id,grant_id,client_id,finalize_request_hash)
+    WHERE draft_kind='LINT';
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_lint_expiry
+    ON mcp_wiki_drafts(expires_at) WHERE draft_kind='LINT' AND state='AWAITING_WEB_APPROVAL';
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_lint_source_blocks (
+    draft_id uuid NOT NULL REFERENCES mcp_wiki_drafts(draft_id) ON DELETE CASCADE,
+    snapshot_id uuid NOT NULL,
+    block_id varchar(255) NOT NULL,
+    ordinal integer NOT NULL CHECK (ordinal > 0),
+    text text NOT NULL,
+    content_hash varchar(71) NOT NULL CHECK (content_hash ~ '^sha256:[0-9a-f]{64}$'),
+    text_bytes integer NOT NULL CHECK (text_bytes > 0),
+    PRIMARY KEY (draft_id,snapshot_id,block_id),
+    UNIQUE (draft_id,snapshot_id,ordinal)
+);
+
+-- Explicitly-approved apply identity and body-free recovery result. These rows survive draft-body cleanup
+-- until the normal purge fence removes the owning scope.
+CREATE TABLE IF NOT EXISTS mcp_wiki_publication_results (
+    approval_id uuid PRIMARY KEY,
+    operation_id varchar(255) NOT NULL UNIQUE,
+    draft_id uuid NOT NULL,
+    draft_version integer NOT NULL CHECK (draft_version > 0),
+    apply_request_hash varchar(71) NOT NULL CHECK (apply_request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    workspace_id varchar(255) NOT NULL,
+    user_id varchar(255) NOT NULL,
+    grant_id uuid NOT NULL,
+    client_id text NOT NULL,
+    policy_generation bigint NOT NULL CHECK (policy_generation > 0),
+    draft_hash varchar(71) NOT NULL CHECK (draft_hash ~ '^sha256:[0-9a-f]{64}$'),
+    public_state_hash varchar(71) NOT NULL CHECK (public_state_hash ~ '^sha256:[0-9a-f]{64}$'),
+    state varchar(16) NOT NULL CHECK (state IN ('APPLYING','PUBLISHED','NO_CHANGE','CONFLICTED','HALTED','UNKNOWN')),
+    changed boolean,
+    event_id uuid,
+    published_reference_hash varchar(71),
+    committed_at timestamptz,
+    error_code varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (draft_id,draft_version),
+    CHECK ((state IN ('PUBLISHED','NO_CHANGE')) = (committed_at IS NOT NULL)),
+    CHECK (state NOT IN ('PUBLISHED','NO_CHANGE') OR (changed IS NOT NULL AND event_id IS NOT NULL AND published_reference_hash IS NOT NULL AND error_code IS NULL))
+);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'mcp_wiki_publication_results'
+          AND column_name = 'request_hash'
+    ) THEN
+        ALTER TABLE mcp_wiki_publication_results RENAME COLUMN request_hash TO apply_request_hash;
+    END IF;
+END $$;
+ALTER TABLE mcp_wiki_publication_results DROP CONSTRAINT IF EXISTS mcp_wiki_publication_result_changed_check;
+ALTER TABLE mcp_wiki_publication_results ADD CONSTRAINT mcp_wiki_publication_result_changed_check
+    CHECK ((state <> 'PUBLISHED' OR changed = true) AND (state <> 'NO_CHANGE' OR changed = false));
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_publication_result_owner
+    ON mcp_wiki_publication_results(workspace_id,user_id,approval_id,operation_id);
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_publication_outbox (
+    event_id uuid PRIMARY KEY,
+    approval_id uuid NOT NULL UNIQUE REFERENCES mcp_wiki_publication_results(approval_id) ON DELETE CASCADE,
+    operation_id varchar(255) NOT NULL UNIQUE,
+    payload jsonb NOT NULL,
+    state varchar(16) NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','sent')),
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    sent_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_wiki_publication_outbox_pending
+    ON mcp_wiki_publication_outbox(state,next_attempt_at,created_at);
+
+CREATE TABLE IF NOT EXISTS mcp_wiki_draft_idempotency (
+    workspace_id varchar(255) NOT NULL,
+    user_id varchar(255) NOT NULL,
+    grant_id uuid NOT NULL,
+    client_id text NOT NULL,
+    tool_name varchar(32) NOT NULL CHECK (tool_name IN ('start_ingest','submit_window','finalize_ingest')),
+    command_scope text NOT NULL,
+    idempotency_key varchar(255) NOT NULL,
+    request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    response jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id,user_id,grant_id,client_id,tool_name,command_scope,idempotency_key)
+);
+ALTER TABLE mcp_wiki_draft_idempotency DROP CONSTRAINT IF EXISTS mcp_wiki_draft_idempotency_tool_name_check;
+ALTER TABLE mcp_wiki_draft_idempotency ADD CONSTRAINT mcp_wiki_draft_idempotency_tool_name_check CHECK (
+    tool_name IN ('start_ingest','submit_window','finalize_ingest','submit_lint_changes')
+);
+
 CREATE TABLE IF NOT EXISTS wiki_pages (
     id varchar(255) PRIMARY KEY,
     page_type varchar(255) NOT NULL CHECK (page_type IN ('source', 'concept')),
@@ -69,6 +279,19 @@ CREATE INDEX IF NOT EXISTS idx_wiki_pages_workspace
     ON wiki_pages (workspace_id, status, updated_at DESC);
 
 ALTER TABLE wiki_pages ALTER COLUMN title TYPE text;
+
+-- 자동 동일성에 쓸 수 있다고 확인된 별칭만 둔다. 기존 Markdown 별칭은 출처 불명이라 이 표로 역채우지 않는다.
+CREATE TABLE IF NOT EXISTS wiki_concept_identity_aliases (
+    page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+    workspace_id varchar(255) NOT NULL,
+    alias text NOT NULL,
+    origin varchar(32) NOT NULL CHECK (origin IN ('extracted', 'verified')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (page_id, alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_concept_identity_aliases_workspace
+    ON wiki_concept_identity_aliases (workspace_id, page_id);
 
 CREATE TABLE IF NOT EXISTS document_wiki_links (
     document_id varchar(255) NOT NULL,
@@ -132,11 +355,102 @@ CREATE TABLE IF NOT EXISTS wiki_pending_contributions (
     page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
     operation_id varchar(255) NOT NULL,
     workspace_id varchar(255) NOT NULL,
-    document_id varchar(255) NOT NULL,
+    document_id varchar(255),
     object_key text NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    sequence_revision bigint,
+    linked_by_operation_id varchar(255),
+    publication_id varchar(255) NOT NULL DEFAULT 'legacy',
+    superseded_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (page_id, operation_id)
+    PRIMARY KEY (page_id, operation_id, publication_id)
 );
+ALTER TABLE wiki_pending_contributions ALTER COLUMN document_id DROP NOT NULL;
+ALTER TABLE wiki_pending_contributions ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+ALTER TABLE wiki_pending_contributions ADD COLUMN IF NOT EXISTS sequence_revision bigint;
+ALTER TABLE wiki_pending_contributions ADD COLUMN IF NOT EXISTS linked_by_operation_id varchar(255);
+ALTER TABLE wiki_pending_contributions ADD COLUMN IF NOT EXISTS publication_id varchar(255);
+ALTER TABLE wiki_pending_contributions ADD COLUMN IF NOT EXISTS superseded_at timestamptz;
+UPDATE wiki_pending_contributions SET publication_id = 'legacy' WHERE publication_id IS NULL;
+ALTER TABLE wiki_pending_contributions ALTER COLUMN publication_id SET DEFAULT 'legacy';
+ALTER TABLE wiki_pending_contributions ALTER COLUMN publication_id SET NOT NULL;
+ALTER TABLE wiki_pending_contributions DROP CONSTRAINT IF EXISTS wiki_pending_contributions_pkey;
+ALTER TABLE wiki_pending_contributions ADD PRIMARY KEY (page_id, operation_id, publication_id);
+
+-- Public wiki bodies are prepared under deterministic operation keys, then become visible only
+-- when the domain rows, typed result and mandatory outbox commit together.
+CREATE TABLE IF NOT EXISTS wiki_publications (
+    publication_id varchar(255) PRIMARY KEY,
+    operation_id varchar(255) NOT NULL,
+    workspace_id varchar(255) NOT NULL,
+    user_id varchar(255) NOT NULL,
+    kind varchar(32) NOT NULL CHECK (kind IN ('INGEST', 'MANUAL_EDIT', 'LINT', 'RESTORE', 'RECOVERY')),
+    request_hash varchar(64) NOT NULL,
+    state varchar(16) NOT NULL CHECK (state IN ('PREPARED', 'COMMITTED', 'ABANDONED')),
+    outcome varchar(16) CHECK (outcome IN ('PUBLISHED', 'NO_CHANGE')),
+    result jsonb,
+    result_hash varchar(64),
+    published_reference_hash varchar(71),
+    prepared_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    abandoned_at timestamptz,
+    committed_at timestamptz,
+    UNIQUE (workspace_id, operation_id, kind)
+);
+ALTER TABLE wiki_publications ADD COLUMN IF NOT EXISTS abandoned_at timestamptz;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'wiki_publications_state_check'
+          AND pg_get_constraintdef(oid) LIKE '%ABANDONED%'
+    ) THEN
+        ALTER TABLE wiki_publications DROP CONSTRAINT IF EXISTS wiki_publications_state_check;
+        ALTER TABLE wiki_publications ADD CONSTRAINT wiki_publications_state_check
+            CHECK (state IN ('PREPARED', 'COMMITTED', 'ABANDONED'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_wiki_publications_abandoned
+    ON wiki_publications (abandoned_at, publication_id) WHERE state = 'ABANDONED';
+
+CREATE TABLE IF NOT EXISTS wiki_publication_objects (
+    publication_id varchar(255) NOT NULL REFERENCES wiki_publications(publication_id) ON DELETE CASCADE,
+    page_id varchar(255) NOT NULL,
+    object_key text NOT NULL,
+    content_hash varchar(71) NOT NULL,
+    content_type text NOT NULL,
+    uploaded_at timestamptz,
+    deleted_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (publication_id, object_key),
+    UNIQUE (object_key)
+);
+ALTER TABLE wiki_publication_objects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS wiki_publication_outbox (
+    event_id varchar(255) PRIMARY KEY,
+    publication_id varchar(255) NOT NULL REFERENCES wiki_publications(publication_id) ON DELETE CASCADE,
+    payload jsonb NOT NULL,
+    state varchar(16) NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sent')),
+    attempts integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    sent_at timestamptz
+);
+ALTER TABLE wiki_publication_outbox ADD COLUMN IF NOT EXISTS receiver_disposition varchar(30);
+ALTER TABLE wiki_publication_outbox ADD COLUMN IF NOT EXISTS receiver_rejection_reason varchar(30);
+ALTER TABLE wiki_publication_outbox ADD COLUMN IF NOT EXISTS receiver_confirmed_at timestamptz;
+ALTER TABLE wiki_publication_outbox DROP CONSTRAINT IF EXISTS wiki_publication_outbox_receiver_check;
+ALTER TABLE wiki_publication_outbox ADD CONSTRAINT wiki_publication_outbox_receiver_check CHECK (
+    (receiver_disposition IS NULL AND receiver_rejection_reason IS NULL AND receiver_confirmed_at IS NULL)
+    OR (receiver_disposition = 'ACCEPTED' AND receiver_rejection_reason IS NULL AND receiver_confirmed_at IS NOT NULL)
+    OR (receiver_disposition = 'REJECTED_CONFLICT' AND receiver_rejection_reason = 'STALE_RESTORE'
+        AND receiver_confirmed_at IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_publication_outbox_pending
+    ON wiki_publication_outbox (next_attempt_at, created_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_wiki_publication_outbox_unconfirmed
+    ON wiki_publication_outbox (next_attempt_at, created_at)
+    WHERE state = 'sent' AND receiver_disposition IS NULL;
 
 CREATE TABLE IF NOT EXISTS wiki_page_links (
     from_page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
@@ -441,6 +755,63 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS target_folder_id text;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS rule_summary text;
 -- run을 시작한 턴의 요청자 화면 언어('ko'|'en'). 계획 요약·되묻기 문구의 언어다. NULL이면 기존 동작(한국어 고정 문구).
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS response_language text;
+-- Internal MCP proposal provenance. Legacy web runs intentionally keep these nullable.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS origin varchar(32);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS grant_id text;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS client_id text;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS policy_generation bigint;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS invocation_id text;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS spec_version text;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS tool_name text;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS proposal_request_hash varchar(71);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_runs_origin_check') THEN
+        ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_origin_check
+            CHECK (origin IS NULL OR origin IN ('MCP_CLIENT', 'WEB_AGENT', 'SYSTEM'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_runs_mcp_provenance_check') THEN
+        ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_mcp_provenance_check CHECK (
+            origin IS DISTINCT FROM 'MCP_CLIENT' OR (
+                grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
+                AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
+                AND tool_name IN ('propose_document_edit', 'propose_plan')
+                AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
+            )
+        );
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_runs_mcp_required_fields_check'
+                   AND conrelid = 'agent_runs'::regclass) THEN
+        ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_mcp_required_fields_check CHECK (
+            origin IS DISTINCT FROM 'MCP_CLIENT' OR (
+                policy_generation IS NOT NULL AND spec_version IS NOT NULL
+                AND tool_name IS NOT NULL AND proposal_request_hash IS NOT NULL
+            )
+        );
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION reject_agent_mcp_provenance_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (OLD.origin = 'MCP_CLIENT' OR NEW.origin = 'MCP_CLIENT') AND (
+        NEW.origin IS DISTINCT FROM OLD.origin
+        OR NEW.grant_id IS DISTINCT FROM OLD.grant_id
+        OR NEW.client_id IS DISTINCT FROM OLD.client_id
+        OR NEW.policy_generation IS DISTINCT FROM OLD.policy_generation
+        OR NEW.invocation_id IS DISTINCT FROM OLD.invocation_id
+        OR NEW.spec_version IS DISTINCT FROM OLD.spec_version
+        OR NEW.tool_name IS DISTINCT FROM OLD.tool_name
+        OR NEW.proposal_request_hash IS DISTINCT FROM OLD.proposal_request_hash
+    ) THEN
+        RAISE EXCEPTION 'MCP Agent proposal provenance is immutable';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS reject_agent_mcp_provenance_update ON agent_runs;
+CREATE TRIGGER reject_agent_mcp_provenance_update
+BEFORE UPDATE OF origin, grant_id, client_id, policy_generation, invocation_id, spec_version,
+                 tool_name, proposal_request_hash ON agent_runs
+FOR EACH ROW EXECUTE FUNCTION reject_agent_mcp_provenance_update();
 
 -- 카탈로그에서 Claude는 claude-haiku-4-5-20251001만 남았다. 진행 중인 run의 다른 Claude 모델을 맞춘다.
 UPDATE agent_runs
@@ -521,6 +892,27 @@ ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS operation_ids text[];
 -- 누가 승인했는지. 'user'는 사용자가 승인 화면에서 직접, 'auto:user-setting'은 사용자의 자동 승인 설정에 따라
 -- document-svc가 대신 승인했다. NULL은 이 열이 생기기 전의 승인(사용자 직접)이다.
 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS approved_by text;
+-- Document-owned stable MCP approval identity. Price remains in document DB and is never copied here.
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS schema_version text;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS approval_mode text;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS workspace_id text;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS grant_id text;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS client_id text;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS policy_generation bigint;
+ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS approval_request_hash varchar(64);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_approvals_mcp_binding_check') THEN
+        ALTER TABLE agent_approvals ADD CONSTRAINT agent_approvals_mcp_binding_check CHECK (
+            schema_version IS NULL OR (
+                schema_version = 'mcp.agent-approval.v1' AND approval_mode = 'EXPLICIT_WEB'
+                AND workspace_id IS NOT NULL AND grant_id IS NOT NULL AND client_id IS NOT NULL
+                AND policy_generation > 0 AND approval_request_hash ~ '^[0-9a-f]{64}$'
+                AND approved_by = 'user' AND operation_ids IS NOT NULL
+            )
+        );
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id text PRIMARY KEY,
@@ -553,6 +945,38 @@ CREATE TABLE IF NOT EXISTS agent_tool_executions (
     CONSTRAINT agent_tool_executions_unique_idempotency UNIQUE (idempotency_key)
 );
 
+-- Every MCP network attempt keeps its own UUID and outcome; a later retry cannot erase uncertain evidence.
+CREATE TABLE IF NOT EXISTS agent_mcp_tool_attempts (
+    attempt_id text PRIMARY KEY,
+    approval_id text NOT NULL REFERENCES agent_approvals(id) ON DELETE CASCADE,
+    run_id text NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    plan_id text NOT NULL REFERENCES agent_plans(id) ON DELETE CASCADE,
+    operation_id text NOT NULL REFERENCES agent_plan_operations(id) ON DELETE CASCADE,
+    tool_name text NOT NULL CHECK (tool_name IN (
+        'create_folder', 'rename_folder', 'move_folder', 'move_document',
+        'rename_document', 'create_document', 'apply_document_edit'
+    )),
+    create_identity jsonb,
+    attempt integer NOT NULL CHECK (attempt > 0),
+    status text NOT NULL CHECK (status IN ('started', 'committed', 'no_change', 'failed', 'unknown')),
+    receipt jsonb,
+    error_code text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (run_id, plan_id, operation_id, attempt)
+);
+ALTER TABLE agent_mcp_tool_attempts ADD COLUMN IF NOT EXISTS create_identity jsonb;
+ALTER TABLE agent_mcp_tool_attempts DROP CONSTRAINT IF EXISTS agent_mcp_tool_attempts_tool_name_check;
+ALTER TABLE agent_mcp_tool_attempts ADD CONSTRAINT agent_mcp_tool_attempts_tool_name_check CHECK (
+    tool_name IN (
+        'create_folder', 'rename_folder', 'move_folder', 'move_document',
+        'rename_document', 'create_document', 'apply_document_edit'
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_agent_mcp_tool_attempts_reconcile
+    ON agent_mcp_tool_attempts (status, updated_at)
+    WHERE status IN ('started', 'unknown');
+
 CREATE TABLE IF NOT EXISTS agent_run_artifacts (
     id text PRIMARY KEY,
     run_id text NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -576,6 +1000,39 @@ ALTER TABLE agent_run_artifacts
     ADD COLUMN IF NOT EXISTS summary text;
 ALTER TABLE agent_run_artifacts
     ADD COLUMN IF NOT EXISTS preview_object_key text;
+
+CREATE TABLE IF NOT EXISTS agent_mcp_proposal_requests (
+    grant_id text NOT NULL,
+    user_id text NOT NULL,
+    workspace_id text NOT NULL,
+    tool_name text NOT NULL CHECK (tool_name IN ('propose_document_edit', 'propose_plan')),
+    idempotency_key text NOT NULL,
+    request_hash varchar(71) NOT NULL CHECK (request_hash ~ '^sha256:[0-9a-f]{64}$'),
+    invocation_id text NOT NULL,
+    client_id text NOT NULL,
+    policy_generation bigint NOT NULL CHECK (policy_generation > 0),
+    run_id text NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+    plan_id text NOT NULL UNIQUE REFERENCES agent_plans(id) ON DELETE CASCADE,
+    plan_version integer NOT NULL CHECK (plan_version > 0),
+    operation_hash varchar(64) NOT NULL CHECK (operation_hash ~ '^[0-9a-f]{64}$'),
+    status text NOT NULL CHECK (status = 'awaiting_approval'),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (grant_id, user_id, workspace_id, tool_name, idempotency_key)
+);
+ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_mcp_provenance_check;
+ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_mcp_provenance_check CHECK (
+    origin IS DISTINCT FROM 'MCP_CLIENT' OR (
+        grant_id IS NOT NULL AND client_id IS NOT NULL AND policy_generation > 0
+        AND invocation_id IS NOT NULL AND spec_version = '2025-11-25'
+        AND tool_name IN ('propose_document_edit', 'propose_plan')
+        AND proposal_request_hash ~ '^sha256:[0-9a-f]{64}$'
+    )
+);
+ALTER TABLE agent_mcp_proposal_requests
+    DROP CONSTRAINT IF EXISTS agent_mcp_proposal_requests_tool_name_check;
+ALTER TABLE agent_mcp_proposal_requests
+    ADD CONSTRAINT agent_mcp_proposal_requests_tool_name_check
+    CHECK (tool_name IN ('propose_document_edit', 'propose_plan'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_personal_command
     ON skills (owner_user_id, command) WHERE scope_type = 'personal';
@@ -746,7 +1203,7 @@ BEGIN
         ['wiki_page_embeddings','page_id,embedding_model'], ['wiki_embedding_vectors','id'],
         ['wiki_embedding_units','id'], ['wiki_schemas','id'], ['document_derived_state','document_id'],
         ['document_quality_reviews','document_id'],
-        ['wiki_pending_contributions','page_id,operation_id']
+        ['wiki_pending_contributions','page_id,operation_id,publication_id']
     ] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS ai_task_change ON %I', item[1]);
         EXECUTE format('CREATE TRIGGER ai_task_change AFTER INSERT OR UPDATE OR DELETE ON %I '

@@ -18,7 +18,18 @@ _LOCK_CONCEPT_PERSISTENCE = persistence.lock_concept_persistence
 
 @pytest.fixture(autouse=True)
 def _stub_concept_persistence_lock(monkeypatch) -> None:
+    monkeypatch.setenv("S3_BUCKET", "bucket")
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, _text, _type: key)
     monkeypatch.setattr(persistence, "lock_concept_persistence", lambda *_args: None)
+    monkeypatch.setattr(
+        persistence,
+        "resolve_concept_page_identity",
+        lambda conn, user_id, workspace_id, *, title, identity_aliases, preferred_slug: (
+            persistence.resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", preferred_slug),
+            preferred_slug,
+            "new",
+        ),
+    )
 
 
 def _stub_followup_writes(monkeypatch) -> None:
@@ -144,6 +155,7 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
     conn = Mock()
     conn.execute.return_value.fetchone.return_value = None
     manifest = {
+        "operation_id": "op-1",
         "normalized": {
             "document": {"title": "문서"},
             "semantic_notes": [],
@@ -170,11 +182,6 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
         persistence,
         "resolve_or_create_wiki_page_id",
         lambda *_args: calls.append("resolve_source") or "source-page-1",
-    )
-    monkeypatch.setattr(
-        persistence,
-        "upload_wiki_markdown",
-        lambda *_args: calls.append("upload_source") or "wiki/source.md",
     )
     monkeypatch.setattr(
         persistence,
@@ -221,14 +228,13 @@ def test_persist_wiki_outputs_keeps_source_and_followup_write_order(
 
     assert page_ids == ["source-page-1", "updated-concept-page"]
     assert calls == [
-        "source_blocks",
         "resolve_source",
-        "upload_source",
+        "lock",
+        "load_concept_ids",
+        "source_blocks",
         "upsert_source",
         "document_link",
         "embedding_units",
-        "lock",
-        "load_concept_ids",
         "delete_source_links",
         "meaning_clusters",
         # 기존 개념 갱신도 이 문서의 문서 연결이 되고, 모든 페이지를 쓴 뒤 소스 → 개념 링크를 맞춘다(ADR 0042 결정 5).
@@ -294,9 +300,12 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
             second_read.set()
         return stored_markdown["value"]
 
-    def write_markdown(markdown: str, _key: str) -> str:
-        stored_markdown["value"] = markdown
-        return "wiki/workspace-1/concepts/shared.md"
+    def write_markdown(_op, _page, key, markdown, _content_type):
+        if key.endswith(".md") and "Shared" in markdown:
+            stored_markdown["value"] = markdown
+        return key
+
+    monkeypatch.setattr(persistence, "write_publication_text", write_markdown)
 
     monkeypatch.setattr(
         persistence,
@@ -319,13 +328,13 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
         lambda *_args: "concept-page-1",
     )
     monkeypatch.setattr(persistence, "read_optional_text_object", read_markdown)
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", write_markdown)
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(persistence, "upsert_document_wiki_link", lambda *_args: None)
     monkeypatch.setattr(persistence, "persist_embedding_units", lambda *_args: None)
 
     def worker(claim_id: str, claim: str) -> None:
         manifest = {
+            "operation_id": "op-1",
             "normalized": {
                 "document": {"title": "문서"},
                 "concept_ledger": [{"slug": "shared", "title": "Shared"}],
@@ -371,6 +380,7 @@ def test_concurrent_concept_updates_keep_both_evidence_units(monkeypatch) -> Non
 
 def test_persist_wiki_outputs_persists_concept_and_page_link(monkeypatch) -> None:
     manifest = {
+        "operation_id": "op-1",
         "normalized": {
             "document": {"title": "문서"},
             "semantic_notes": [],
@@ -410,11 +420,6 @@ def test_persist_wiki_outputs_persists_concept_and_page_link(monkeypatch) -> Non
         lambda _conn, _user, _workspace, page_type, _slug: (
             "source-page-1" if page_type == "source" else "concept-page-1"
         ),
-    )
-    monkeypatch.setattr(
-        persistence,
-        "upload_wiki_markdown",
-        lambda _markdown, object_name: object_name,
     )
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(
@@ -517,15 +522,6 @@ def test_persist_wiki_outputs_connects_operation_artifacts(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         persistence,
-        "upload_wiki_markdown",
-        lambda _markdown, object_name: (
-            events.append("canonical")
-            or markdown_uploads.append(object_name)
-            or object_name
-        ),
-    )
-    monkeypatch.setattr(
-        persistence,
         "upsert_wiki_page",
         lambda *args: page_upserts.append(args),
     )
@@ -562,14 +558,10 @@ def test_persist_wiki_outputs_connects_operation_artifacts(monkeypatch) -> None:
     assert captured["operation_id"] == "op-1"
     assert captured["workspace_id"] == "workspace-1"
     assert captured["source_page_id"] == "source-page-1"
-    # operation artifact 저장은 DB 반영(canonical markdown 업로드)이 모두 끝난 뒤 마지막에 일어나야
-    # 트랜잭션 롤백 시 orphan object가 남지 않는다.
+    # 공개 참조를 먼저 준비하고, 마지막에 불변 객체를 업로드한 뒤 호출자가 커밋한다.
     assert events[-1] == "artifact"
-    assert markdown_uploads == [
-        "wiki/workspace-1/sources/doc-1.md",
-        "wiki/workspace-1/concepts/concept-a.md",
-        "wiki/workspace-1/concepts/concept-b.md",
-    ]
+    assert markdown_uploads == []
+    assert all("/ops/op-1.md" in args[6] for args in page_upserts)
     assert len(page_upserts) == 3
     assert captured["concept_pages"] == [
         {
@@ -611,11 +603,6 @@ def test_persist_wiki_outputs_skips_operation_artifacts_when_later_step_fails(
         persistence,
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
-    )
-    monkeypatch.setattr(
-        persistence,
-        "upload_wiki_markdown",
-        lambda _markdown, key: key,
     )
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(
@@ -682,11 +669,6 @@ def test_operation_artifacts_include_existing_concept_evidence_updates(
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
     )
-    monkeypatch.setattr(
-        persistence,
-        "upload_wiki_markdown",
-        lambda _markdown, key: key,
-    )
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(
         persistence,
@@ -736,7 +718,7 @@ def test_operation_artifacts_include_existing_concept_evidence_updates(
     ]
 
 
-def test_existing_concept_update_writes_canonical_current_markdown(
+def test_existing_concept_update_prepares_immutable_reference_without_overwriting(
     monkeypatch,
 ) -> None:
     writes = []
@@ -772,6 +754,7 @@ def test_existing_concept_update_writes_canonical_current_markdown(
         Connection(),
         "doc-1",
         "ws",
+        "op-new",
         [
             {
                 "decision": "same_concept",
@@ -783,7 +766,7 @@ def test_existing_concept_update_writes_canonical_current_markdown(
         ],
     )
 
-    assert writes[0][0] == "wiki/ws/concepts/existing.md"
+    assert writes == []
     assert all("ops/op-old.md" not in key for key, _text in writes)
     assert changes[0]["page_id"] == "existing-page-1"
     assert "새 근거" in changes[0]["markdown"]
@@ -813,6 +796,7 @@ def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> Non
         Connection(),
         "doc-1",
         "ws",
+        "op-new",
         [
             {
                 "decision": "same_concept",
@@ -824,10 +808,10 @@ def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> Non
         ],
     )
 
-    assert "외부 이미지(attacker.example)" in writes[0][1]
-    assert "https://" not in writes[0][1]
-    assert embedded == [writes[0][1]]
-    assert changes[0]["markdown"] == writes[0][1]
+    assert writes == []
+    assert "외부 이미지(attacker.example)" in changes[0]["markdown"]
+    assert "https://" not in changes[0]["markdown"]
+    assert embedded == [changes[0]["markdown"]]
 
 
 def test_meaning_cluster_log_retry_does_not_append_duplicate(monkeypatch) -> None:
@@ -873,6 +857,7 @@ def test_persist_wiki_outputs_reads_normalized_and_links_artifacts(
         encoding="utf-8",
     )
     manifest = {
+        "operation_id": "op-1",
         "out": str(tmp_path),
         "source_page": {"markdown": "본문"},
         "source_blocks": [],
@@ -888,11 +873,6 @@ def test_persist_wiki_outputs_reads_normalized_and_links_artifacts(
         persistence,
         "resolve_or_create_wiki_page_id",
         lambda *_args: "source-page-1",
-    )
-    monkeypatch.setattr(
-        persistence,
-        "upload_wiki_markdown",
-        lambda _markdown, object_name: object_name,
     )
     monkeypatch.setattr(
         persistence,
@@ -941,7 +921,6 @@ def test_persist_source_page_titles_with_document_display_name(
     expected_title,
 ) -> None:
     upserts: list[tuple] = []
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda *_args: "s3://wiki/source.md")
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *args: upserts.append(args))
     monkeypatch.setattr(persistence, "upsert_document_wiki_link", lambda *_args: None)
     monkeypatch.setattr(persistence, "persist_embedding_units", lambda *_args, **_kwargs: None)
@@ -957,6 +936,7 @@ def test_persist_source_page_titles_with_document_display_name(
         "user-1",
         "workspace-1",
         page_id="source-page-1",
+        operation_id="op-1",
     )
 
     assert upserts[0][3] == expected_title
@@ -1011,3 +991,14 @@ def test_post_ingest_cluster_files_do_not_reapply_concept_updates(monkeypatch) -
     )
 
     assert writes == ["wiki/ws/clusters/active.md"]
+
+
+@pytest.mark.parametrize("operation_id", [None, "", "   "])
+def test_ingest_requires_operation_id_before_writing(operation_id):
+    conn = Mock()
+    with pytest.raises(ValueError, match="operation_id is required"):
+        persistence.persist_wiki_outputs(conn, "doc-1", {
+            "operation_id": operation_id,
+            "normalized": {}, "links": [],
+        })
+    conn.execute.assert_not_called()

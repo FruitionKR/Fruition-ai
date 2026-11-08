@@ -20,6 +20,11 @@ from app.core.jev_client import JevUnavailable
 from app.core.pipeline_control import PipelineRunCancelledError
 from app.core.error_text import truncate_error
 from app.modules.wiki_generation.domain.text_utils import name_key, slugify
+from app.modules.wiki_generation.domain.concept_identity import (
+    concept_name_keys,
+    concept_slug_candidates,
+    remap_concept_markdown_slugs,
+)
 from app.modules.wiki_generation.infrastructure.concept_resolution import concept_page_tags
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
     read_contributions,
@@ -27,7 +32,18 @@ from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
 )
 from app.modules.wiki_ingestion.infrastructure.pending_contributions import (
     record_pending_contributions,
+    record_pending_deltas,
     with_pending_contributions,
+)
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import (
+    MANUAL_SUMMARY,
+    PublicationConflict,
+    committed_publication_result,
+    finalize_publication,
+    normalize_operation_result,
+    prepare_publication,
+    publication_id,
+    write_publication_text,
 )
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     cluster_detail_items as _cluster_detail_items,
@@ -51,6 +67,9 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     ConceptContributionError,
     load_concept_contributions,
     rebuild_concept_page,
+    prune_dangling_entry_references,
+    rebuild_active_concept_page_from_ledger,
+    replay_concept_page_with_operation,
 )
 from app.modules.wiki_embedding.application.ports import EmbeddingModelPort
 from app.modules.wiki_generation.infrastructure.jev_concept_resolver import cached_embeddings, vector_similarity
@@ -108,12 +127,15 @@ from app.modules.wiki_ingestion.infrastructure.source_contribution_reconciliatio
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     SOURCE_MENTIONS_CONCEPT,
     delete_source_related_links as _delete_source_related_links,
+    load_concept_identity_index as _load_concept_identity_index,
     load_existing_concept_ids_by_slug as _load_existing_concept_ids_by_slug,
     persist_embedding_units as _persist_embedding_units,
     stored_entry_index as _stored_entry_index,
     upsert_entry_references,
     upsert_page_entries as _upsert_page_entries,
     read_optional_text_object as _read_optional_text_object,
+    replace_extracted_concept_identity_aliases as _replace_extracted_concept_identity_aliases,
+    resolve_concept_page_identity as _resolve_concept_page_identity,
     resolve_or_create_wiki_page_id as _resolve_or_create_wiki_page_id,
     sync_source_concept_links,
     upload_wiki_markdown as _upload_wiki_markdown,
@@ -276,13 +298,15 @@ def apply_restored_wiki_state_and_cleanup(
     link_changes: dict[str, list[dict[str, Any]]],
     replace_links: bool,
     deleted_page_ids: list[str],
+    publication: dict[str, Any] | None = None,
+    pending_deltas: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """복구 상태를 반영하고, 삭제한 원본이라 되살리지 않은 페이지 ID를 돌려준다.
 
     재조립·삭제로 가리키던 항목이 없어진 참조는 같은 복구에서 정리한다. 그 참조를 가진 다른 페이지를 다시 그렸으면
     `changed_pages`에 그 페이지를 더한다(document-svc가 그 페이지의 새 버전을 남긴다).
     """
-    if not changed_pages and not any(link_changes.values()) and not deleted_page_ids:
+    if not changed_pages and not any(link_changes.values()) and not deleted_page_ids and publication is None:
         return []
     with concept_write_lock(workspace_id, operation_id):
         with connect() as conn:
@@ -295,8 +319,60 @@ def apply_restored_wiki_state_and_cleanup(
                 deleted_page_ids,
             )
             _cleanup_deleted_wiki_pages(conn, workspace_id, deleted_page_ids)
+            pruned_links = []
             if deleted_page_ids or any(page.get("entries") is not None for page in changed_pages):
-                _prune_dangling_references(conn, workspace_id, operation_id, changed_pages, deleted_page_ids)
+                pruned_links = _prune_dangling_references(
+                    conn, workspace_id, operation_id, changed_pages, deleted_page_ids,
+                )
+            if publication is not None:
+                for page in changed_pages:
+                    markdown = page.get("markdown")
+                    if markdown is not None:
+                        write_publication_text(
+                            operation_id,
+                            str(page["page_id"]),
+                            str(page["markdown_key"]),
+                            str(markdown),
+                            database_connect=connect,
+                        )
+                result = publication["result"]
+                if publication["kind"] == "RESTORE":
+                    result["changed_pages"] = [
+                        {**page, "contribution_stored": False}
+                        for page in changed_pages
+                        if str(page["page_id"]) not in skipped_page_ids
+                    ]
+                    removed = [*link_changes.get("removed_links", []), *pruned_links]
+                    removed_keys = {_page_link_key(link) for link in pruned_links}
+                    restored = [
+                        link for link in link_changes.get("restored_links", [])
+                        if _page_link_key(link) not in removed_keys
+                    ]
+                    result["link_changes"] = {
+                        "removed_links": list({_page_link_key(link): link for link in removed}.values()),
+                        "restored_links": list({_page_link_key(link): link for link in restored}.values()),
+                    }
+                else:
+                    result["changed_pages"] = [
+                        page for page in result.get("changed_pages", [])
+                        if str(page["page_id"]) not in skipped_page_ids
+                    ]
+                if pending_deltas:
+                    record_pending_deltas(
+                        conn,
+                        workspace_id,
+                        pending_deltas,
+                        publication_id=publication_id(operation_id),
+                    )
+                publication["event"] = finalize_publication(
+                    conn,
+                    operation_id=operation_id,
+                    workspace_id=workspace_id,
+                    user_id=str(publication["user_id"]),
+                    kind=str(publication["kind"]),
+                    outcome=str(publication["outcome"]),
+                    result=result,
+                )
         try:
             invalidate_concept_index(workspace_id)
         except Exception:
@@ -311,7 +387,7 @@ def _prune_dangling_references(
     changed_pages: list[dict[str, Any]],
     deleted_page_ids: list[str],
     pending_contributions: dict[str, dict[str, Any]] | None = None,
-) -> None:
+) -> list[dict[str, Any]]:
     """가리키던 항목이 최종 상태에 없는 참조(`entry_reference`)를 참조 사본·본문 목록·간선에서 함께 뺀다(ADR 0042 결정 3).
 
     대상: 이번에 재조립한 페이지 자신의 참조와, 재조립·삭제한 페이지의 항목을 가리키던 다른 살아 있는 페이지의 참조다.
@@ -356,52 +432,54 @@ def _prune_dangling_references(
     ).fetchall()
     for row in others:
         page_id = str(row["page_id"])
-        kept = sorted(
-            (item for item in with_pending_contributions(conn, read_contributions([page_id], workspace_id), [page_id])
-             if str(item.get("page_id")) == page_id and item.get("active")),
-            key=lambda item: int(item.get("sequence_revision") or 0),
-        )
-        if not kept:
-            continue
-        loaded = load_concept_contributions(
-            workspace_id=workspace_id,
-            page_id=page_id,
-            keep_contributions=[
-                {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
-            ],
-            read_text=read_text_object,
-        )
+        ledger = with_pending_contributions(conn, read_contributions([page_id], workspace_id), [page_id])
         pending = (pending_contributions or {}).get(page_id)
         if pending is not None:
-            loaded = [*loaded, PageContribution(
-                page_id, "concept", operation_id, max(item.sequence for item in loaded) + 1, "", pending,
-            )]
-        rebuilt = rebuild_concept_page(loaded)
+            replay = replay_concept_page_with_operation(
+                workspace_id=workspace_id, page_id=page_id, operation_id=operation_id,
+                ledger=ledger, contribution=pending, read_text=read_text_object,
+                load_contributions=load_concept_contributions, rebuild_page=rebuild_concept_page,
+            )
+        else:
+            replay = rebuild_active_concept_page_from_ledger(
+                workspace_id=workspace_id, page_id=page_id, ledger=ledger,
+                read_text=read_text_object, load_contributions=load_concept_contributions,
+                rebuild_page=rebuild_concept_page,
+            )
+        if replay is None:
+            continue
+        _loaded, rebuilt = replay
         if rebuilt.deleted or not any(dangling(link) for link in rebuilt.supported_links):
             continue
         key = f"wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md"
-        write_text_object(key, rebuilt.markdown, "text/markdown; charset=utf-8")
         page = {
             "page_id": page_id,
             "page_type": "concept",
             "markdown_key": key,
+            "markdown": rebuilt.markdown,
             "title": rebuilt.title,
             "summary": rebuilt.summary,
             "supported_links": list(rebuilt.supported_links),
             "source_document_ids": list(rebuilt.source_document_ids),
+            "identity_aliases": list(rebuilt.identity_aliases),
             "entries": list(rebuilt.entries),
         }
         changed_pages.append(page)
         redraw.append(page)
+    removed_links: list[dict[str, Any]] = []
     for page in redraw:
-        links = [link for link in page["supported_links"] if not dangling(link)]
-        markdown = render_entry_index(read_text_object(storage_uri(str(page["markdown_key"]))), page["entries"], links)
-        write_text_object(str(page["markdown_key"]), markdown, "text/markdown; charset=utf-8")
+        markdown, links, removed = prune_dangling_entry_references(
+            str(page.get("markdown") or read_text_object(storage_uri(str(page["markdown_key"])))),
+            page["entries"], page["supported_links"], live,
+        )
+        removed_links.extend(removed)
         page.update(
+            markdown=markdown,
             supported_links=links,
             content_hash="sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         )
         _apply_restored_wiki_state(workspace_id, [page], {"removed_links": [], "restored_links": links}, True, conn)
+    return list({_page_link_key(link): link for link in removed_links}.values())
 
 
 def _tombstoned_document_ids(conn: psycopg.Connection, workspace_id: str) -> set[str]:
@@ -421,7 +499,7 @@ def _apply_restored_wiki_state(
     deleted_page_ids: list[str] = (),
 ) -> set[str]:
     """deleted_page_ids는 같은 작업이 이어서 지울 페이지다. 항목 충돌 검사에서 그 페이지의 항목은 빠진 것으로 본다."""
-    if not changed_pages and not any(link_changes.values()):
+    if not changed_pages and not any(link_changes.values()) and not deleted_page_ids:
         return set()
     with (connect() if conn is None else nullcontext(conn)) as conn:
         page_ids = [str(page["page_id"]) for page in changed_pages]
@@ -504,6 +582,13 @@ def _apply_restored_wiki_state(
                 _replace_page_entries(
                     conn, workspace_id, str(page["page_id"]), page["entries"], page.get("supported_links") or [],
                 )
+            if by_id[str(page["page_id"])]["page_type"] == "concept" and "identity_aliases" in page:
+                _replace_extracted_concept_identity_aliases(
+                    conn,
+                    workspace_id,
+                    str(page["page_id"]),
+                    list(page.get("identity_aliases") or []),
+                )
 
             source_document_ids = page.get("source_document_ids")
             if source_document_ids is not None:
@@ -545,7 +630,11 @@ def _apply_restored_wiki_state(
                 "DELETE FROM wiki_embedding_units WHERE page_id = %s",
                 (page["page_id"],),
             )
-            markdown = read_text_object(storage_uri(str(page["markdown_key"])))
+            markdown = str(
+                page.get("markdown")
+                if page.get("markdown") is not None
+                else read_text_object(storage_uri(str(page["markdown_key"])))
+            )
             source_document_id = next(
                 (str(item) for item in (source_document_ids or []) if item),
                 None,
@@ -576,6 +665,8 @@ def _apply_restored_wiki_state(
                     markdown,
                 )
             old_vector_ids.extend(str(row["embedding_vector_id"]) for row in old_vectors)
+        for page_id in deleted_page_ids:
+            _replace_extracted_concept_identity_aliases(conn, workspace_id, str(page_id), [])
         # 모든 페이지 단위를 다시 쓴 뒤 한 번만 지운다. 분리로 다른 페이지에 옮긴 항목은 같은 표현 텍스트의 벡터를
         # 다시 쓰므로, 페이지마다 지우면 옮겨 갈 벡터까지 지워 다시 임베딩하게 된다(ADR 0042).
         if old_vector_ids:
@@ -838,6 +929,15 @@ AI_DB_REQUIRED_TABLES = (
     "wiki_pending_contributions",
     "wiki_source_tombstones",
     "ai_document_purges",
+    "wiki_publications",
+    "wiki_publication_objects",
+    "wiki_publication_outbox",
+    "mcp_wiki_ingest_runs",
+    "mcp_wiki_source_blocks",
+    "mcp_wiki_windows",
+    "mcp_wiki_window_submissions",
+    "mcp_wiki_drafts",
+    "mcp_wiki_draft_idempotency",
     *AGENT_REQUIRED_TABLES,
 )
 
@@ -1244,6 +1344,13 @@ def save_manual_wiki_edit(
             ).fetchone()
             if page is None:
                 return None
+            prepare_publication(
+                operation_id,
+                workspace_id,
+                user_id,
+                "MANUAL_EDIT",
+                database_connect=connect,
+            )
             result = {
                 "page_id": page_id,
                 "page_type": page["page_type"],
@@ -1251,17 +1358,32 @@ def save_manual_wiki_edit(
                 "contribution_key": contribution_key,
                 "content_hash": "sha256:" + hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
             }
+            committed = committed_publication_result(
+                operation_id,
+                database_connect=connect,
+            )
+            if committed is not None:
+                changed_pages = list(committed.get("changed_pages") or [])
+                stored = dict(changed_pages[0]) if len(changed_pages) == 1 else {}
+                if (
+                    stored.get("page_id") != page_id
+                    or stored.get("markdown_key") != markdown_key
+                    or stored.get("contribution_key") != contribution_key
+                    or stored.get("content_hash") != result["content_hash"]
+                ):
+                    raise PublicationConflict(
+                        f"manual edit operation reused with different body: {operation_id}"
+                    )
+                stored.pop("contribution_stored", None)
+                return stored
             old_markdown = (
                 _read_optional_text_object(str(page["markdown_uri"]))
                 if page["markdown_uri"]
                 else ""
             )
-            if page["markdown_uri"] == storage_uri(markdown_key):
-                # 같은 작업의 재요청이다. 이미 반영했으므로 다시 쓰지 않고, 저장된 본문의 해시를 돌려준다.
-                result["content_hash"] = (
-                    "sha256:" + hashlib.sha256(old_markdown.encode("utf-8")).hexdigest()
-                )
-                return result
+            same_operation = page["markdown_uri"] == storage_uri(markdown_key)
+            if same_operation and old_markdown != markdown:
+                raise PublicationConflict(f"manual edit operation reused with different body: {operation_id}")
             current_links = conn.execute(
                 """
                 SELECT concat(target.page_type, ':', target.slug) AS target,
@@ -1300,15 +1422,28 @@ def save_manual_wiki_edit(
                         (page_id,),
                     ).fetchall()
                 ]
-        added_links, removed_links = manual_link_changes(
-            page_ref=f'{page["page_type"]}:{page["slug"]}',
-            old_markdown=old_markdown,
-            new_markdown=markdown,
-            current_links=[dict(row) for row in current_links],
-            target_refs=target_refs,
+        if same_operation:
+            stored_contribution = json.loads(read_text_object(contribution_key))
+            added_links = list(stored_contribution.get("added_links") or [])
+            removed_links = list(stored_contribution.get("removed_links") or [])
+        else:
+            added_links, removed_links = manual_link_changes(
+                page_ref=f'{page["page_type"]}:{page["slug"]}',
+                old_markdown=old_markdown,
+                new_markdown=markdown,
+                current_links=[dict(row) for row in current_links],
+                target_refs=target_refs,
+            )
+        write_publication_text(
+            operation_id,
+            page_id,
+            markdown_key,
+            markdown,
+            database_connect=connect,
         )
-        write_text_object(markdown_key, markdown, "text/markdown; charset=utf-8")
-        write_text_object(
+        write_publication_text(
+            operation_id,
+            page_id,
             contribution_key,
             json.dumps(
                 {
@@ -1325,8 +1460,34 @@ def save_manual_wiki_edit(
                 sort_keys=True,
             ),
             "application/json; charset=utf-8",
+            database_connect=connect,
         )
         # 이름·요약은 rename으로만 바꾸므로 넘기지 않는다(None이면 기존 값을 유지한다).
+        changed_page = {
+            **result,
+            "contribution_stored": True,
+        }
+        publication_result = normalize_operation_result({
+            "operation_id": operation_id,
+            "operation_type": "wiki_edit",
+            "status": "succeeded",
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "target_document_id": None,
+            "summary": MANUAL_SUMMARY,
+            "changed_pages": [changed_page],
+            "failed_pages": [],
+            "deleted_pages": [],
+            "link_changes": None,
+            "failed_actions": None,
+            "ledger_contributions": [{
+                "page_id": page_id,
+                "operation_id": operation_id,
+                "document_id": None,
+                "contribution_key": contribution_key,
+                "linked_by_operation_id": None,
+            }],
+        })
         apply_restored_wiki_state_and_cleanup(
             operation_id,
             workspace_id,
@@ -1334,6 +1495,7 @@ def save_manual_wiki_edit(
                 "page_id": page_id,
                 "page_type": page["page_type"],
                 "markdown_key": markdown_key,
+                "markdown": markdown,
                 "title": None,
                 "summary": None,
                 "source_document_ids": source_document_ids,
@@ -1348,6 +1510,19 @@ def save_manual_wiki_edit(
             {"removed_links": removed_links, "restored_links": added_links},
             False,
             [],
+            {
+                "user_id": user_id,
+                "kind": "MANUAL_EDIT",
+                "outcome": "PUBLISHED",
+                "result": publication_result,
+            },
+            [{
+                "page_id": page_id,
+                "operation_id": operation_id,
+                "document_id": None,
+                "object_key": contribution_key,
+                "active": True,
+            }],
         )
         return result
 
@@ -1392,6 +1567,14 @@ def create_pipeline_run(
     mode: str,
 ) -> None:
     with connect() as conn:
+        if document_id is not None:
+            from app.modules.wiki_ingestion.infrastructure.document_ingest_lock import (
+                lock_document_ingest,
+                reject_other_active_ingest,
+            )
+
+            lock_document_ingest(conn, document_id)
+            reject_other_active_ingest(conn, document_id, run_id)
         conn.execute(
             """
             INSERT INTO pipeline_runs (
@@ -1421,11 +1604,36 @@ def finish_pipeline_run(
     embedded_page_ids: list[str] = []
     with connect() as conn:
         row = conn.execute(
-            "SELECT document_id, workspace_id FROM pipeline_runs WHERE id = %s",
+            "SELECT document_id, workspace_id, user_id FROM pipeline_runs WHERE id = %s",
             (run_id,),
         ).fetchone()
     document_id = row["document_id"] if row else None
     workspace_id = row["workspace_id"] if row else None
+    user_id = row["user_id"] if row else None
+    operation_id = str(manifest.get("operation_id") or "")
+    if document_id and not operation_id:
+        raise ValueError("operation_id is required for wiki publication")
+    publication_prepared = False
+
+    def publication_writer(key: str, text: str, content_type: str) -> str:
+        nonlocal publication_prepared
+        if not publication_prepared:
+            prepare_publication(
+                operation_id,
+                str(workspace_id),
+                str(user_id),
+                "INGEST",
+                database_connect=connect,
+            )
+            publication_prepared = True
+        return write_publication_text(
+            operation_id,
+            key.split("/pages/", 1)[1].split("/", 1)[0],
+            key,
+            text,
+            content_type,
+            database_connect=connect,
+        )
     # 수동 본문 조회는 document-svc·저장소를 부르므로 락과 트랜잭션을 잡기 전에 끝낸다.
     manual_source_markdown = (
         _active_manual_source_markdown(str(document_id), manifest)
@@ -1452,17 +1660,56 @@ def finish_pipeline_run(
                     apply_rebuilt_pages=_apply_restored_wiki_state,
                     prune_references=_prune_dangling_references,
                     cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
+                    artifact_writer=publication_writer,
                 )
+                if not publication_prepared:
+                    prepare_publication(
+                        operation_id,
+                        str(workspace_id),
+                        str(user_id),
+                        "INGEST",
+                        database_connect=connect,
+                    )
+                    publication_prepared = True
                 if manifest.get("operation_id"):
                     # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
                     record_pending_contributions(
                         conn, str(workspace_id), str(manifest["operation_id"]), str(document_id),
                         list(manifest.get("operation_artifacts") or []),
+                        publication_id=publication_id(operation_id),
                     )
                 post_ingest = manifest.get("post_ingest")
                 if isinstance(post_ingest, dict):
                     post_ingest["page_ids"] = embedded_page_ids
                 manifest["source_contribution"] = _source_contribution_payload(manifest)
+                result = normalize_operation_result({
+                    "operation_id": operation_id,
+                    "operation_type": "ingest",
+                    "status": "succeeded",
+                    "workspace_id": str(workspace_id),
+                    "user_id": str(user_id),
+                    "target_document_id": str(document_id),
+                    "summary": "Wiki ingest를 완료했습니다.",
+                    "changed_pages": [
+                        {**item, "contribution_stored": bool(item.get("contribution_key"))}
+                        for item in manifest.get("operation_artifacts") or []
+                    ],
+                    "failed_pages": [],
+                    "deleted_pages": manifest.get("deleted_pages") or [],
+                    "link_changes": None,
+                    "failed_actions": None,
+                    "ledger_contributions": [],
+                })
+                event = finalize_publication(
+                    conn,
+                    operation_id=operation_id,
+                    workspace_id=str(workspace_id),
+                    user_id=str(user_id),
+                    kind="INGEST",
+                    outcome=("PUBLISHED" if result["changed_pages"] or result["deleted_pages"] else "NO_CHANGE"),
+                    result=result,
+                )
+                manifest["publication_result"] = event["result"]
                 manifest = _stored_manifest(manifest)
             conn.execute(
                 """
@@ -1575,6 +1822,9 @@ def update_pipeline_run_post_ingest(
             """,
             (Json(values), run_id),
         )
+        # Embedding readiness checkpoints do not replace the ongoing quality review.
+        if not {"run_id", "status", "result"}.intersection(values):
+            return
         # 이 편입이 아직 문서의 최신 편입일 때만 바꾼다. 다시 편입한 뒤 늦게 끝난 옛 post_ingest는 새 상태를 덮지 않는다.
         conn.execute(
             """
@@ -1686,27 +1936,29 @@ def get_pipeline_run(run_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cache: bool = True) -> list[dict[str, Any]]:
+def list_active_concept_index(
+    workspace_id: str = "local-workspace",
+    *,
+    use_cache: bool = True,
+    include_deleted: bool = False,
+) -> list[dict[str, Any]]:
     # 개념 잠금 안에서는 캐시를 건너뛴다. 잠금 밖 조회가 앞선 편입 저장 전 목록을 캐시에 다시 넣을 수 있다.
-    if use_cache:
+    if use_cache and not include_deleted:
         try:
             cached = get_concept_index(workspace_id)
             if cached is not None:
-                return cached
+                return [
+                    {
+                        **concept,
+                        "status": "active",
+                        "identity_aliases": list(concept.get("identity_aliases") or []),
+                    }
+                    for concept in cached
+                ]
         except Exception:
             logger.warning("concept index cache read failed", exc_info=True)
     with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT slug, title, summary, markdown_uri
-            FROM wiki_pages
-            WHERE page_type = 'concept'
-              AND status = 'active'
-              AND workspace_id = %s
-            ORDER BY slug
-            """,
-            (workspace_id,),
-        ).fetchall()
+        rows = _load_concept_identity_index(conn, workspace_id, include_deleted=include_deleted)
         # 같은 하위 항목 찾기(ADR 0042)의 후보다. 집 페이지 개념 아래에 둔다.
         entry_rows = conn.execute(
             """
@@ -1727,16 +1979,34 @@ def list_active_concept_index(workspace_id: str = "local-workspace", *, use_cach
             {key: row[key] for key in ("entry_id", "name", "definition", "parent_entry_id", "slugs", "aliases")}
         )
     concepts = []
-    for row in rows:
+    for row in (item for item in rows if item["status"] == "active"):
         markdown = _read_optional_text_object(row["markdown_uri"])
         concepts.append({
             **_concept_index_from_markdown(row["slug"], row["title"], row["markdown_uri"], markdown),
+            "page_id": str(row["id"]),
+            "status": "active",
+            "identity_aliases": list(row["identity_aliases"]),
             "entries": entries_by_slug.get(row["slug"], []),
         })
-    try:
-        put_concept_index(workspace_id, concepts)
-    except Exception:
-        logger.warning("concept index cache write failed", exc_info=True)
+    concepts.extend(
+        {
+            "page_id": str(row["id"]),
+            "slug": str(row["slug"]),
+            "title": str(row["title"]),
+            "aliases": [],
+            "identity_aliases": list(row["identity_aliases"]),
+            "definition": str(row.get("summary") or ""),
+            "status": str(row["status"]),
+            "entries": [],
+        }
+        for row in rows
+        if row["status"] != "active"
+    )
+    if not include_deleted:
+        try:
+            put_concept_index(workspace_id, concepts)
+        except Exception:
+            logger.warning("concept index cache write failed", exc_info=True)
     return concepts
 
 
@@ -2466,7 +2736,7 @@ def lint_concept_entries(
             slug = next(
                 (
                     candidate
-                    for candidate in (slugify(entry["name"]), base, *(f"{base}-{number}" for number in range(2, 10)))
+                    for candidate in concept_slug_candidates(entry["name"], base)
                     if candidate and candidate != "untitled" and candidate not in taken_slugs
                 ),
                 None,
@@ -2607,6 +2877,7 @@ def lint_concept_entries(
                 "title": change["title"] if page is None else None,
                 "summary": change["definition"] if page is None else None,
                 "source_document_ids": list(rebuilt.source_document_ids),
+                "identity_aliases": list(rebuilt.identity_aliases),
                 "entries": list(rebuilt.entries),
                 # 항목 참조 사본(wiki_page_entry_references)도 재생 결과로 다시 쓴다.
                 "supported_links": list(rebuilt.supported_links),
@@ -2876,6 +3147,7 @@ def persist_lint_operation_result(
     operation_id: str,
     result: dict[str, Any],
     connection: psycopg.Connection | None = None,
+    artifact_writer: Callable[[str, str, str], str] | None = None,
 ) -> list[dict[str, Any]]:
     page_changes: dict[str, dict[str, Any]] = {}
     for change in result.pop("_lint_page_changes", []):
@@ -2940,13 +3212,16 @@ def persist_lint_operation_result(
         operation_id=operation_id,
         workspace_id=workspace_id,
         page_changes=list(page_changes.values()),
-        write_text=write_text_object,
+        write_text=artifact_writer or write_text_object,
     )
     # 저장한 lint 기록은 모두 원장 행이다. 빠진 기록은 이후 복구 재생에 들어가지 않는다(ADR 0042).
     result["ledger_contributions"] = _lint_ledger_rows(operation_id, artifacts)
     entry_state = result.pop("_entry_state", None)
     if entry_state:
-        _persist_entry_lint(workspace_id, operation_id, result, entry_state, connection)
+        _persist_entry_lint(
+            workspace_id, operation_id, result, entry_state, connection,
+            artifact_writer or write_text_object,
+        )
     return artifacts
 
 
@@ -2970,6 +3245,7 @@ def _persist_entry_lint(
     result: dict[str, Any],
     entry_state: dict[str, Any],
     connection: psycopg.Connection | None,
+    artifact_writer: Callable[[str, str, str], str],
 ) -> None:
     """하위 항목 재검사 기록을 쓰고 현재 상태에 반영한다.
 
@@ -2979,9 +3255,8 @@ def _persist_entry_lint(
     ledger = result["ledger_contributions"]
     for item in entry_state["linked"]:
         key = f"wiki/{workspace_id}/pages/{item['page_id']}/ops/{item['operation_id']}.json"
-        write_text_object(
-            key,
-            json.dumps(item, ensure_ascii=False, sort_keys=True),
+        artifact_writer(
+            key, json.dumps(item, ensure_ascii=False, sort_keys=True),
             "application/json; charset=utf-8",
         )
         ledger.append(
@@ -3094,8 +3369,8 @@ def _materialize_promotion_candidates(
         if not cluster.get("promotion_source_refs") or not _reaches_promotion(cluster):
             continue
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
-        # 핵심 개념과 같아 승격 후보가 된 클러스터는 그 개념(target)에 병합한다.
-        if not claims or (cluster.get("promotion_target") or cluster_id) in existing_concept_ids:
+        # 서버가 명시적으로 검증한 target만 생성을 생략한다. cluster id는 개념 identity가 아니다.
+        if not claims or cluster.get("promotion_target") in existing_concept_ids:
             continue
         source_refs = _unique_keep_order(ref for claim in claims for ref in claim.get("refs", []))
         prepared_pages[cluster_id] = promotion_page_generator(
@@ -3117,7 +3392,6 @@ def _materialize_promotion_candidates(
                 cluster_id: page
                 for cluster_id, page in prepared_pages.items()
                 if (judgments.get(cluster_id) or {}).get("decision") != "merge_into"
-                and slugify(str(page.get("slug") or cluster_id)) not in existing_concept_ids
             },
             judge_part_of,
             embedding_model,
@@ -3164,6 +3438,7 @@ def _materialize_promotion_candidates(
     ]
     active_sections = _cluster_sections_by_id(latest_active_markdown)
     existing_concept_ids = _load_existing_concept_ids_by_slug(conn, workspace_id)
+    existing_identity_index = _load_concept_identity_index(conn, workspace_id)
     for cluster in clusters:
         cluster_id = cluster["id"]
         if cluster.get("promotion_status") != "candidate":
@@ -3173,16 +3448,26 @@ def _materialize_promotion_candidates(
         claims = [claim for claim in cluster.get("claims", []) if claim.get("refs")]
         if not claims:
             continue
-        target_slug = cluster.get("promotion_target") or cluster_id
+        explicit_target = str(cluster.get("promotion_target") or "")
+        target_slug = explicit_target if explicit_target in existing_concept_ids else ""
         judgment = judgments.get(cluster_id) or {}
-        if target_slug not in existing_concept_ids and judgment.get("decision") == "merge_into":
-            target_slug = judgment["canonical_slug"]
+        if not target_slug and judgment.get("decision") == "merge_into":
+            judged_target = str(judgment.get("canonical_slug") or "")
+            if judged_target in existing_concept_ids:
+                target_slug = judged_target
         page = prepared_pages.get(cluster_id)
         generated_slug = slugify(str(page.get("slug") or cluster_id)) if page else ""
-        # 생성한 페이지의 slug가 기존 개념이면 같은 페이지 id를 받아 그 개념을 덮어쓰므로 근거만 병합한다.
-        if target_slug not in existing_concept_ids and generated_slug in existing_concept_ids:
-            target_slug = generated_slug
-        if target_slug in existing_concept_ids:
+        if page is not None and (not str(page.get("markdown") or "").strip() or generated_slug == "untitled"):
+            continue
+        if not target_slug and page is not None:
+            incoming = {"title": str(page.get("title") or cluster_id), "identity_aliases": []}
+            matches = [
+                concept for concept in existing_identity_index
+                if concept_name_keys(incoming) & concept_name_keys(concept)
+            ]
+            if len(matches) == 1:
+                target_slug = str(matches[0]["slug"])
+        if target_slug:
             merged_page = _merge_promotion_into_existing_concept(
                 conn,
                 user_id,
@@ -3261,10 +3546,18 @@ def _materialize_promotion_candidates(
         ).strip()
         markdown = sanitize_ai_markdown(markdown)
         title = str(page.get("title") or cluster_id).strip()
-        slug = generated_slug
+        page_id, slug = _resolve_concept_page_identity(
+            conn,
+            user_id,
+            workspace_id,
+            title=title,
+            identity_aliases=[],
+            preferred_slug=generated_slug,
+        )[:2]
+        if slug != generated_slug:
+            markdown = remap_concept_markdown_slugs(markdown, {generated_slug: slug})
         if not markdown or not slug or slug == "untitled":
             continue
-        page_id = _resolve_or_create_wiki_page_id(conn, user_id, workspace_id, "concept", slug)
         # 클러스터에 모인 세부 항목을 새 페이지의 하위 항목으로 둔다(ADR 0042). 기록에 남아 lint 복원이 되돌린다.
         entry_changes = _promotion_entry_changes(slug, _detail_items(cluster), {})
         markdown = _add_promotion_entries(conn, workspace_id, page_id, markdown, entry_changes, claims).strip()
@@ -3283,6 +3576,9 @@ def _materialize_promotion_candidates(
         first_document_id = source_refs[0].split(":", 1)[0] if source_refs else ""
         _persist_embedding_units(conn, page_id, first_document_id, markdown)
         existing_concept_ids[slug] = page_id
+        existing_identity_index.append(
+            {"id": page_id, "slug": slug, "title": title, "identity_aliases": [], "status": "active"}
+        )
         materialized_promotions.append({"cluster_id": cluster_id, "concept_slug": slug, "page_id": page_id})
         created_page = {
             "page_id": page_id,
@@ -3490,7 +3786,7 @@ def _judge_promoted_concepts(
             )
     if not concepts:
         return {}
-    pool = [concept for concept in list_active_concept_index(workspace_id) if concept.get("definition")]
+    pool = list_active_concept_index(workspace_id, use_cache=False)
     try:
         return concept_judge.judge_concepts(concepts, pool)
     except JevUnavailable as exc:

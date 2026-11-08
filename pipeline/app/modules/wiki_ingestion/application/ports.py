@@ -63,6 +63,7 @@ class PipelineRunRepositoryPort(Protocol):
         workspace_id: str,
         *,
         use_cache: bool = True,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]: ...
 
     def latest_source_page_context(
@@ -90,6 +91,8 @@ class WikiPageRestorePort(Protocol):
         link_changes: dict[str, list[dict[str, Any]]],
         replace_links: bool,
         deleted_page_ids: list[str],
+        publication: dict[str, Any] | None = None,
+        pending_deltas: list[dict[str, Any]] | None = None,
     ) -> list[str]: ...
 
     def rebuild_page(

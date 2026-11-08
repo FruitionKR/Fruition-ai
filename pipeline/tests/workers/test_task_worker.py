@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -22,6 +23,15 @@ from tests.modules.query.test_answer_query import (
     ScoreSearch,
     source_page,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_publication_relay(monkeypatch):
+    # Worker unit tests isolate the publication relay's external database.
+    monkeypatch.setattr(task_worker, "relay_pending", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "relay_pending_mcp_publications", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "reconcile_sent_receipts", MagicMock(return_value=0))
+    monkeypatch.setattr(task_worker, "expire_inactive_runs", MagicMock(return_value=0))
 
 
 @pytest.fixture(autouse=True)
@@ -2060,7 +2070,7 @@ def _consumer_stub():
     )
 
 
-def _run_first_turn(send_error=None):
+def _run_first_turn(send_error=None, relay_error=None):
     """첫 문답 하나를 처리하며 원장 예약·결과 발행·제목 호출의 순서를 남긴다."""
     command = {"kind": "agent", "run_id": "run-1", "workspace_id": "w", "user_id": "u", "session_id": "s",
                "provider": "openai", "model": "m", "message": "질문"}
@@ -2072,6 +2082,7 @@ def _run_first_turn(send_error=None):
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=0, offset=1, value=command)
         delivered = []
+        relay_calls = 0
 
         async def getmany(**kwargs):
             if not delivered:
@@ -2085,6 +2096,16 @@ def _run_first_turn(send_error=None):
             order.append(event["status"])
             if send_error is not None:
                 raise send_error
+
+        async def relay(*_args):
+            nonlocal relay_calls
+            relay_calls += 1
+            if relay_calls == 1:
+                return 0
+            order.append("relay")
+            if relay_error is not None:
+                raise relay_error
+            return 0
 
         async def to_thread(function, *args):
             if function is task_worker._handle_controlled:
@@ -2102,10 +2123,13 @@ def _run_first_turn(send_error=None):
 
         consumer.getmany = getmany
         producer.send_and_wait = send
-        with patch.object(task_worker.database, "ensure_ai_schema"), \
+        with (patch.dict(task_worker.os.environ, {"AI_DATABASE_URL": "unused"})
+              if relay_error is not None else nullcontext()), \
+                patch.object(task_worker.database, "ensure_ai_schema"), \
                 patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
                 patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(task_worker, "relay_pending", side_effect=relay), \
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
                 patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
@@ -2113,8 +2137,10 @@ def _run_first_turn(send_error=None):
             try:
                 await asyncio.wait_for(task_worker.consume(), timeout=1)
             except Exception as exc:
-                if exc is not send_error:
+                if exc not in {send_error, relay_error}:
                     raise
+        if relay_error is not None:
+            assert consumer.commit.await_count == 0
         return order
 
     return asyncio.run(run_test())
@@ -2128,6 +2154,12 @@ def test_title_ledger_row_opens_before_result_publish_and_model_call_stays_after
 
 def test_title_reservation_is_released_when_result_publish_fails() -> None:
     assert _run_first_turn(send_error=RuntimeError("kafka down")) == ["reserve", "succeeded", ("release", "call-1")]
+
+
+def test_relay_failure_keeps_scheduled_title_reservation_and_offset_uncommitted() -> None:
+    assert _run_first_turn(relay_error=RuntimeError("relay down")) == [
+        "reserve", "succeeded", "relay", "title_call", ("release", "call-1"), "session_title",
+    ]
 
 
 def test_failed_title_generation_still_releases_reservation() -> None:

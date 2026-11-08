@@ -194,10 +194,17 @@ class ChatCompletionsJsonClientTest(unittest.TestCase):
             )
             content = client.complete_text(
                 "system prompt",
-                "연락처는 010-9876-5432입니다.",
+                "발급번호를 알려줘. 발급번호: 1234567890123456, 연락처는 010-9876-5432입니다.",
             )
 
         self.assertIn("highest-priority", model.messages[0].content)  # type: ignore[attr-defined]
+        system_content = model.messages[0].content  # type: ignore[attr-defined]
+        self.assertIn("개인정보 보호를 위해 AI에 전달되지 않았으므로 답변해 드릴 수 없습니다", system_content)
+        self.assertIn("Only use this privacy explanation when the requested value is marked as withheld", system_content)
+        self.assertIn("Answer any remaining supported, unmasked parts normally", system_content)
+        self.assertIn("do not attach a document citation to it", system_content)
+        self.assertNotIn("1234567890123456", model.messages[1].content)  # type: ignore[attr-defined]
+        self.assertIn("발급번호: [NUMERIC_PERSONAL_DATA]", model.messages[1].content)  # type: ignore[attr-defined]
         self.assertNotIn("010-9876-5432", model.messages[1].content)  # type: ignore[attr-defined]
         self.assertIn("[NUMERIC_PERSONAL_DATA]", model.messages[1].content)  # type: ignore[attr-defined]
         self.assertEqual(content, "연락처는 [NUMERIC_PERSONAL_DATA]입니다.")

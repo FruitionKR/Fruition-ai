@@ -47,13 +47,18 @@ def _loaded(page_id, contribution):
 def test_prune_replays_pending_contribution_of_this_operation(monkeypatch) -> None:
     # B는 이번 편입(op2)이 기여했고, 다시 그린 A의 사라진 하위 항목을 가리킨다.
     replayed: list[list[PageContribution]] = []
-    dangling = {"relation": repository.ENTRY_REFERENCE, "target": "concept:a", "entry_id": "entry:gone"}
+    dangling = {
+        "source": "concept:b",
+        "relation": repository.ENTRY_REFERENCE,
+        "target": "concept:a",
+        "entry_id": "entry:gone",
+    }
 
     def rebuild(contributions):
         replayed.append(contributions)
         return SimpleNamespace(
             deleted=False, markdown="# B", title="B", summary=None, supported_links=[dangling],
-            source_document_ids=["doc"], entries=[],
+            source_document_ids=["doc"], identity_aliases=[], entries=[],
         )
 
     monkeypatch.setattr(repository, "read_contributions", lambda page_ids, workspace_id: _ledger("B"))
@@ -66,11 +71,14 @@ def test_prune_replays_pending_contribution_of_this_operation(monkeypatch) -> No
 
     pending = {"B": {"operation_id": "op2", "page_id": "B", "evidence_units": [{"claim": "이번 편입 근거"}]}}
     changed: list[dict] = [{"page_id": "A", "entries": [], "supported_links": []}]
-    repository._prune_dangling_references(_Conn([], [{"page_id": "B"}]), "ws", "op2", changed, [], pending)
+    removed = repository._prune_dangling_references(
+        _Conn([], [{"page_id": "B"}]), "ws", "op2", changed, [], pending,
+    )
 
     last = replayed[0][-1]
     assert (last.operation_id, last.sequence, last.contribution) == ("op2", 2, pending["B"])
     assert [page["page_id"] for page in changed] == ["A", "B"]
+    assert removed == [dangling]
 
     # 이번 작업 기여가 없는 페이지(복구 경로)는 원장 그대로 재생한다.
     replayed.clear()
@@ -92,9 +100,9 @@ def test_rebuild_invalidated_pages_passes_this_operation_contributions_to_prune(
     )
     monkeypatch.setattr(
         persistence, "rebuild_concept_page",
-        lambda contributions: SimpleNamespace(
-            deleted=False, markdown="# A", supported_links=[], source_document_ids=["doc"], entries=[],
-        ),
+            lambda contributions: SimpleNamespace(
+                deleted=False, markdown="# A", supported_links=[], source_document_ids=["doc"], identity_aliases=[], entries=[],
+            ),
     )
     monkeypatch.setattr(persistence, "write_text_object", lambda *args: None)
     monkeypatch.setattr(persistence, "read_text_object", lambda uri: "# A")

@@ -37,6 +37,7 @@ def scoped_dsn():
 
 def _manifest(user_id: str, claim: str) -> dict:
     return {
+        "operation_id": "op-" + uuid4().hex,
         "normalized": {
             "document": {"title": "문서"},
             "concept_ledger": [{"slug": "shared", "title": "Shared", "definition": "공유 개념"}],
@@ -58,7 +59,8 @@ def test_two_members_ingesting_same_document_and_concept_share_one_page(scoped_d
         stored[key] = markdown
         return key
 
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", write)
+    monkeypatch.setattr(persistence, "storage_uri", lambda key: key)
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: write(text, key))
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
 
     for user_id in ("member-a", "member-b"):
@@ -79,7 +81,8 @@ def test_ingest_links_each_document_to_its_ledger_concepts_including_existing_on
     # 편입 개념 목록의 페이지(새 개념, 기존 개념에 병합한 개념, 집으로 넣은 기존 페이지 모두 같은 목록이다)마다
     # 소스 → 개념 링크가 문서 연결에서 파생된다(ADR 0042 결정 5). LinkBuilder는 이 링크를 만들지 않는다.
     stored: dict[str, str] = {}
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda markdown, key: stored.setdefault(key, markdown) and key)
+    monkeypatch.setattr(persistence, "storage_uri", lambda key: key)
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: stored.setdefault(key, text) and key)
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
 
     for document_id in ("doc-1", "doc-2", "doc-2"):
@@ -164,7 +167,8 @@ def test_restoring_source_page_to_earlier_ingest_keeps_filename_title(scoped_dsn
         stored[key] = text
         return key
 
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda text, key: write(key, text))
+    monkeypatch.setattr(persistence, "storage_uri", lambda key: key)
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: write(key, text))
     monkeypatch.setattr(persistence, "write_text_object", write)
     monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
 

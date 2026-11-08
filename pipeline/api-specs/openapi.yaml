@@ -227,14 +227,18 @@ components:
           title: Added Lines
           type: integer
         base_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Base Version
-          type: integer
         display_name:
           title: Display Name
           type: string
         document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Document Id
-          type: string
         hunks:
           items:
             $ref: '#/components/schemas/AgentDocumentEditHunkResponse'
@@ -249,6 +253,13 @@ components:
         summary:
           title: Summary
           type: string
+        tool_name:
+          default: apply_document_edit
+          enum:
+          - apply_document_edit
+          - create_document
+          title: Tool Name
+          type: string
       required:
       - operation_id
       - document_id
@@ -259,6 +270,28 @@ components:
       - removed_lines
       - hunks
       title: AgentDocumentEditPreviewResponse
+      type: object
+    AgentOperationExistingResultResponse:
+      additionalProperties: false
+      properties:
+        current_version:
+          exclusiveMinimum: 0.0
+          title: Current Version
+          type: integer
+        resource_id:
+          title: Resource Id
+          type: string
+        resource_type:
+          enum:
+          - DOCUMENT
+          - FOLDER
+          title: Resource Type
+          type: string
+      required:
+      - resource_type
+      - resource_id
+      - current_version
+      title: AgentOperationExistingResultResponse
       type: object
     AgentPlanOperationResponse:
       properties:
@@ -286,6 +319,10 @@ components:
           - type: string
           - type: 'null'
           title: Error Code
+        existing_result:
+          anyOf:
+          - $ref: '#/components/schemas/AgentOperationExistingResultResponse'
+          - type: 'null'
         id:
           title: Id
           type: string
@@ -430,18 +467,43 @@ components:
           - type: string
           - type: 'null'
           title: Clarification Question
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
         error_code:
           anyOf:
           - type: string
           - type: 'null'
           title: Error Code
+        grant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Grant Id
         id:
           title: Id
           type: string
+        invocation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Invocation Id
+        origin:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin
         plan:
           anyOf:
           - $ref: '#/components/schemas/AgentPlanResponse'
           - type: 'null'
+        policy_generation:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Policy Generation
         request_summary:
           title: Request Summary
           type: string
@@ -455,6 +517,11 @@ components:
           - type: string
           - type: 'null'
           title: Skill Version Id
+        spec_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spec Version
         status:
           title: Status
           type: string
@@ -463,6 +530,11 @@ components:
           - type: string
           - type: 'null'
           title: Target Folder Id
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
         workspace_id:
           title: Workspace Id
           type: string
@@ -478,10 +550,30 @@ components:
       type: object
     AgentToolExecuteAuthorizationRequest:
       properties:
+        approval_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Id
         arguments:
           additionalProperties: true
           title: Arguments
           type: object
+        attempt_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Attempt Id
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
+        grant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Grant Id
         operation_hash:
           maxLength: 64
           minLength: 64
@@ -499,6 +591,12 @@ components:
           minimum: 1.0
           title: Plan Version
           type: integer
+        policy_generation:
+          anyOf:
+          - minimum: 1.0
+            type: integer
+          - type: 'null'
+          title: Policy Generation
         run_id:
           minLength: 1
           title: Run Id
@@ -690,12 +788,16 @@ components:
           title: Restore To Operation Id
         source_page:
           $ref: '#/components/schemas/SourceSnapshotRestoreIn'
+        user_id:
+          title: User Id
+          type: string
         workspace_id:
           title: Workspace Id
           type: string
       required:
       - operation_id
       - workspace_id
+      - user_id
       - rebuild_pages
       - restore_to_operation_id
       - cancel_operation_ids
@@ -720,12 +822,16 @@ components:
         target_operation_id:
           title: Target Operation Id
           type: string
+        user_id:
+          title: User Id
+          type: string
         workspace_id:
           title: Workspace Id
           type: string
       required:
       - operation_id
       - workspace_id
+      - user_id
       - rebuild_pages
       - target_operation_id
       title: LintOperationRestoreIn
@@ -798,6 +904,216 @@ components:
       - type
       - text
       title: MarkdownDiffLineResponse
+      type: object
+    McpAgentApprovalRequest:
+      additionalProperties: false
+      properties:
+        approval_id:
+          title: Approval Id
+          type: string
+        approval_mode:
+          const: EXPLICIT_WEB
+          title: Approval Mode
+          type: string
+        client_id:
+          title: Client Id
+          type: string
+        grant_id:
+          title: Grant Id
+          type: string
+        operation_hash:
+          title: Operation Hash
+          type: string
+        operation_ids:
+          items:
+            type: string
+          maxItems: 20
+          minItems: 1
+          title: Operation Ids
+          type: array
+        plan_version:
+          maximum: 9.223372036854776e+18
+          minimum: 1.0
+          title: Plan Version
+          type: integer
+        policy_generation:
+          maximum: 9.223372036854776e+18
+          minimum: 1.0
+          title: Policy Generation
+          type: integer
+        schema_version:
+          const: mcp.agent-approval.v1
+          title: Schema Version
+          type: string
+        user_id:
+          title: User Id
+          type: string
+        workspace_id:
+          title: Workspace Id
+          type: string
+      required:
+      - schema_version
+      - workspace_id
+      - user_id
+      - plan_version
+      - operation_hash
+      - operation_ids
+      - approval_id
+      - approval_mode
+      - grant_id
+      - client_id
+      - policy_generation
+      title: McpAgentApprovalRequest
+      type: object
+    McpAgentProposalResponse:
+      additionalProperties: false
+      properties:
+        operation_hash:
+          title: Operation Hash
+          type: string
+        plan_id:
+          title: Plan Id
+          type: string
+        plan_version:
+          title: Plan Version
+          type: integer
+        run_id:
+          title: Run Id
+          type: string
+        schema_version:
+          const: mcp.agent-proposal.v1
+          default: mcp.agent-proposal.v1
+          title: Schema Version
+          type: string
+        status:
+          const: awaiting_approval
+          title: Status
+          type: string
+      required:
+      - run_id
+      - plan_id
+      - plan_version
+      - operation_hash
+      - status
+      title: McpAgentProposalResponse
+      type: object
+    McpOwnedRunItemResponse:
+      additionalProperties: false
+      properties:
+        run_id:
+          title: Run Id
+          type: string
+        status:
+          title: Status
+          type: string
+      required:
+      - run_id
+      - status
+      title: McpOwnedRunItemResponse
+      type: object
+    McpOwnedRunsResponse:
+      additionalProperties: false
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/McpOwnedRunItemResponse'
+          title: Items
+          type: array
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      required:
+      - items
+      - next_cursor
+      title: McpOwnedRunsResponse
+      type: object
+    McpWikiEvidenceResponse:
+      additionalProperties: false
+      properties:
+        block_id:
+          title: Block Id
+          type: string
+        document_id:
+          title: Document Id
+          type: string
+      required:
+      - document_id
+      - block_id
+      title: McpWikiEvidenceResponse
+      type: object
+    McpWikiSearchResponse:
+      additionalProperties: false
+      properties:
+        data_boundary:
+          const: UNTRUSTED_WORKSPACE_CONTENT
+          title: Data Boundary
+          type: string
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+        results:
+          items:
+            $ref: '#/components/schemas/McpWikiSearchResultResponse'
+          title: Results
+          type: array
+        schema_version:
+          const: mcp.wiki-search.v1
+          title: Schema Version
+          type: string
+        truncated:
+          title: Truncated
+          type: boolean
+      required:
+      - schema_version
+      - results
+      - next_cursor
+      - truncated
+      - data_boundary
+      title: McpWikiSearchResponse
+      type: object
+    McpWikiSearchResultResponse:
+      additionalProperties: false
+      properties:
+        content_hash:
+          title: Content Hash
+          type: string
+        evidence:
+          items:
+            $ref: '#/components/schemas/McpWikiEvidenceResponse'
+          title: Evidence
+          type: array
+        page_id:
+          title: Page Id
+          type: string
+        page_type:
+          enum:
+          - SOURCE
+          - CONCEPT
+          title: Page Type
+          type: string
+        snippet:
+          title: Snippet
+          type: string
+        title:
+          title: Title
+          type: string
+        version:
+          minimum: 1.0
+          title: Version
+          type: integer
+      required:
+      - page_id
+      - page_type
+      - title
+      - version
+      - content_hash
+      - snippet
+      - evidence
+      title: McpWikiSearchResultResponse
       type: object
     ModelUsage:
       properties:
@@ -2281,6 +2597,95 @@ info:
   version: 0.1.0
 openapi: 3.1.0
 paths:
+  /agent/runs/mcp-owned:
+    get:
+      operationId: list_owned_mcp_runs_agent_runs_mcp_owned_get
+      parameters:
+      - in: query
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: user_id
+        required: true
+        schema:
+          title: User Id
+          type: string
+      - in: query
+        name: grant_id
+        required: true
+        schema:
+          title: Grant Id
+          type: string
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 20
+          title: Limit
+          type: integer
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOwnedRunsResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Owned Mcp Runs
+      tags:
+      - mcp-agent-proposals
+  /agent/runs/mcp-proposals:
+    post:
+      operationId: create_mcp_proposal_agent_runs_mcp_proposals_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAgentProposalResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Mcp Proposal
+      tags:
+      - mcp-agent-proposals
   /agent/runs/{run_id}:
     get:
       operationId: get_agent_run_agent_runs__run_id__get
@@ -2349,7 +2754,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApproveAgentPlanRequest'
+              anyOf:
+              - $ref: '#/components/schemas/McpAgentApprovalRequest'
+              - $ref: '#/components/schemas/ApproveAgentPlanRequest'
+              title: Payload
         required: true
       responses:
         '200':
@@ -2982,6 +3390,362 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
+  /internal/mcp/wiki/drafts/{draft_id}/apply:
+    post:
+      operationId: apply_draft_internal_mcp_wiki_drafts__draft_id__apply_post
+      parameters:
+      - in: path
+        name: draft_id
+        required: true
+        schema:
+          title: Draft Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Apply Draft
+      tags:
+      - mcp-wiki-apply
+  /internal/mcp/wiki/drafts/{draft_id}/preview:
+    get:
+      operationId: get_draft_preview_internal_mcp_wiki_drafts__draft_id__preview_get
+      parameters:
+      - in: path
+        name: draft_id
+        required: true
+        schema:
+          title: Draft Id
+          type: string
+      - in: query
+        name: draft_version
+        required: true
+        schema:
+          minimum: 1
+          title: Draft Version
+          type: integer
+      - in: header
+        name: X-MCP-Workspace-Id
+        required: true
+        schema:
+          title: X-Mcp-Workspace-Id
+          type: string
+      - in: header
+        name: X-MCP-User-Id
+        required: true
+        schema:
+          title: X-Mcp-User-Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Draft Preview
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/ingest-runs:
+    post:
+      operationId: start_ingest_internal_mcp_wiki_ingest_runs_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Start Ingest
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/ingest-runs/{run_id}/finalize:
+    post:
+      operationId: finalize_ingest_internal_mcp_wiki_ingest_runs__run_id__finalize_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Finalize Ingest
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/ingest-runs/{run_id}/resume:
+    post:
+      operationId: resume_ingest_internal_mcp_wiki_ingest_runs__run_id__resume_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Resume Ingest
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/ingest-runs/{run_id}/windows/read:
+    post:
+      operationId: read_window_internal_mcp_wiki_ingest_runs__run_id__windows_read_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read Window
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/ingest-runs/{run_id}/windows/{window_id}/submissions:
+    post:
+      operationId: submit_window_internal_mcp_wiki_ingest_runs__run_id__windows__window_id__submissions_post
+      parameters:
+      - in: path
+        name: run_id
+        required: true
+        schema:
+          title: Run Id
+          type: string
+      - in: path
+        name: window_id
+        required: true
+        schema:
+          title: Window Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Submit Window
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/lint-drafts:
+    post:
+      operationId: submit_lint_draft_internal_mcp_wiki_lint_drafts_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Submit Lint Draft
+      tags:
+      - mcp-wiki-draft
+  /internal/mcp/wiki/publication-results/{approval_id}/{operation_id}:
+    get:
+      operationId: publication_result_internal_mcp_wiki_publication_results__approval_id___operation_id__get
+      parameters:
+      - in: path
+        name: approval_id
+        required: true
+        schema:
+          title: Approval Id
+          type: string
+      - in: path
+        name: operation_id
+        required: true
+        schema:
+          title: Operation Id
+          type: string
+      - in: header
+        name: X-MCP-Workspace-Id
+        required: true
+        schema:
+          title: X-Mcp-Workspace-Id
+          type: string
+      - in: header
+        name: X-MCP-User-Id
+        required: true
+        schema:
+          title: X-Mcp-User-Id
+          type: string
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Publication Result
+      tags:
+      - mcp-wiki-apply
+  /internal/mcp/wiki/search:
+    post:
+      operationId: search_wiki_internal_mcp_wiki_search_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpWikiSearchResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Search Wiki
+      tags:
+      - mcp-wiki-read
   /internal/model-usage/calls:
     get:
       operationId: list_usage_calls_internal_model_usage_calls_get
@@ -4108,6 +4872,13 @@ paths:
         schema:
           title: Workspace Id
           type: string
+      - in: query
+        name: mcp_read
+        required: false
+        schema:
+          default: false
+          title: Mcp Read
+          type: boolean
       - in: header
         name: X-Internal-Token
         required: false
@@ -4121,9 +4892,7 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 title: Response Get Wiki Page Wiki Pages  Page Id  Get
-                type: object
           description: Successful Response
         '422':
           content:

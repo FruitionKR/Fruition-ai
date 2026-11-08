@@ -19,6 +19,7 @@ from app.modules.wiki_ingestion.domain.operation_recovery import PageContributio
 from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
+from app.modules.wiki_ingestion.infrastructure import wiki_publication as publication
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
     load_concept_contributions,
     rebuild_concept_page,
@@ -320,7 +321,6 @@ def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
     }
     monkeypatch.setattr(persistence, "resolve_or_create_wiki_page_id", lambda *_args: "S1")
     monkeypatch.setattr(persistence, "_persist_source_blocks", lambda *_args: None)
-    monkeypatch.setattr(persistence, "upload_wiki_markdown", lambda markdown, key: uploaded.setdefault(key, markdown))
     monkeypatch.setattr(persistence, "upsert_wiki_page", lambda *_args: None)
     monkeypatch.setattr(persistence, "upsert_document_wiki_link", lambda *_args: None)
     monkeypatch.setattr(persistence, "persist_embedding_units", lambda _conn, _page, _doc, markdown, *_rest: embedded.append(markdown))
@@ -328,12 +328,13 @@ def test_reingest_keeps_manual_source_body(monkeypatch) -> None:
     monkeypatch.setattr(persistence, "load_existing_concept_ids_by_slug", lambda *_args: {})
     monkeypatch.setattr(persistence, "delete_source_related_links", lambda *_args: None)
     monkeypatch.setattr(persistence, "_apply_concept_update_decisions", lambda *_args: [])
-    monkeypatch.setattr(persistence, "write_text_object", lambda key, text, _type: written.setdefault(key, text))
+    monkeypatch.setenv("S3_BUCKET", "bucket")
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: written.setdefault(key, text))
 
     body = "사람 본문 [링크](https://example.com)\n"
     persistence.persist_wiki_outputs(Mock(), "doc-1", manifest, body)
 
-    assert list(uploaded.values()) == [body]
+    assert uploaded == {}
     assert embedded == [body]
     assert written["wiki/ws/pages/S1/ops/op-2.md"] == body
 
@@ -390,6 +391,14 @@ def ai_database(monkeypatch):
         monkeypatch.setattr(repository, "write_text_object", lambda key, text, _type: objects.__setitem__(f"s3://bucket/{key}", text))
         monkeypatch.setattr(repository, "read_text_object", objects.__getitem__)
         monkeypatch.setattr(repository, "_read_optional_text_object", lambda key: objects.get(key, ""))
+        monkeypatch.setattr(publication, "connect", connect_under_lock)
+        monkeypatch.setattr(
+            publication,
+            "create_or_verify_text_object",
+            lambda key, text, _content_type: (
+                objects.__setitem__(f"s3://bucket/{key}", text) or f"s3://bucket/{key}"
+            ),
+        )
         yield connect, objects
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -427,9 +436,9 @@ def test_save_manual_edit_updates_body_links_and_keeps_title(ai_database) -> Non
     objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"] = "재요청이 덮어쓰면 안 된다"
     assert repository.save_manual_wiki_edit("C1", "user", "ws", "op-m", markdown) == result
     assert objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.json"] == "재요청이 덮어쓰면 안 된다"
-    # 같은 작업 ID에 다른 본문이 와도 다시 쓰지 않고, 해시는 저장된 본문 기준이다.
-    replay = repository.save_manual_wiki_edit("C1", "user", "ws", "op-m", markdown + "\n다른 본문")
-    assert replay == result
+    # 고정 작업 키에 다른 본문을 넣는 재요청은 기존 바이트를 덮어쓰지 않고 충돌한다.
+    with pytest.raises(publication.PublicationConflict):
+        repository.save_manual_wiki_edit("C1", "user", "ws", "op-m", markdown + "\n다른 본문")
     assert objects["s3://bucket/wiki/ws/pages/C1/ops/op-m.md"] == markdown
 
 

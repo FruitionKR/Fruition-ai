@@ -569,6 +569,13 @@ source_refs: [doc-1, doc-3]
         "_load_existing_concept_ids_by_slug",
         lambda *_args: next(concept_indexes),
     )
+    monkeypatch.setattr(
+        repository,
+        "_load_concept_identity_index",
+        lambda *_args: [
+            {"id": "page-shared", "slug": "shared", "title": "Shared", "identity_aliases": [], "status": "active"},
+        ],
+    )
     monkeypatch.setattr(repository, "_orphan_source_refs", lambda _refs: [])
 
     def load_reconciliation_candidates(*_args):
@@ -1025,6 +1032,13 @@ source_refs: [doc-1, doc-2]
             return Result()
 
     monkeypatch.setattr(repository, "_load_existing_concept_ids_by_slug", lambda *_args: {"supply-contract": "page-supply"})
+    monkeypatch.setattr(
+        repository,
+        "_load_concept_identity_index",
+        lambda *_args: [
+            {"id": "page-supply", "slug": "supply-contract", "title": "공급 계약", "identity_aliases": [], "status": "active"},
+        ],
+    )
     monkeypatch.setattr(repository, "_source_blocks_for_refs", lambda *_args: [])
     monkeypatch.setattr(repository, "_lock_concept_persistence", lambda *_args: None)
     monkeypatch.setattr(
@@ -1037,12 +1051,21 @@ source_refs: [doc-1, doc-2]
     monkeypatch.setattr(
         repository,
         "list_active_concept_index",
-        lambda _workspace_id: [
+        lambda _workspace_id, *, use_cache: [
             {"slug": "supply-contract", "title": "공급 계약", "aliases": [], "definition": "공급 조건을 정한 계약"},
             {"slug": "draft", "title": "초안", "aliases": [], "definition": ""},
         ],
     )
     monkeypatch.setattr(repository, "_resolve_or_create_wiki_page_id", lambda *_args: "page-orchid")
+    monkeypatch.setattr(
+        repository,
+        "_resolve_concept_page_identity",
+        lambda _conn, _user, _workspace, *, title, identity_aliases, preferred_slug: (
+            "page-orchid",
+            "supply-contract-2" if preferred_slug == "supply-contract" else preferred_slug,
+            "new",
+        ),
+    )
     monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *args: upserts.append(args))
     monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
     monkeypatch.setattr(repository, "_upsert_wiki_page_link", lambda *args: links.append(args[1:]))
@@ -1075,7 +1098,7 @@ def test_lint_promotion_judged_same_merges_into_existing_concept(monkeypatch) ->
     assert concepts == [
         {"slug": "orchid-lease", "title": "Orchid Lease", "aliases": [], "definition": "Orchid Lease는 공급 계약이다."}
     ]
-    assert [concept["slug"] for concept in pool] == ["supply-contract"]
+    assert [concept["slug"] for concept in pool] == ["supply-contract", "draft"]
     assert result["promotions"] == []
     assert result["merged_promotions"] == [
         {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
@@ -1145,18 +1168,66 @@ def test_lint_promotion_without_jev_judgment_creates_page(monkeypatch) -> None:
         assert links == []
 
 
-def test_lint_promotion_merges_when_generated_slug_is_existing_concept(monkeypatch) -> None:
-    # 생성한 페이지의 slug가 클러스터 id와 달라도 기존 개념과 같으면 덮어쓰지 않고 그 개념에 병합한다.
+def test_lint_promotion_generated_slug_collision_uses_allocator_not_existing_identity(monkeypatch) -> None:
     result, upserts, _links = _materialize_with_judge(monkeypatch, None, page_slug="Supply Contract")
 
-    assert result["promotions"] == []
-    assert result["merged_promotions"] == [
-        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract", "page_id": "page-supply"}
+    assert result["promotions"] == [
+        {"cluster_id": "orchid-lease", "concept_slug": "supply-contract-2", "page_id": "page-orchid"}
     ]
+    assert result["merged_promotions"] == []
     [upsert] = upserts
-    assert upsert[2:5] == ("concept", "공급 계약", "supply-contract")
-    assert result["page_changes"][0]["content_action"] == "append_evidence"
-    assert "merged_to: concept:supply-contract" in result["archived_sections"][0]
+    assert upsert[2:5] == ("concept", "Orchid Lease", "supply-contract-2")
+    assert result["page_changes"][0]["content_action"] == "create"
+    assert "promoted_to: concept:supply-contract-2" in result["archived_sections"][0]
+
+
+def test_lint_promotion_raw_cluster_slug_collision_reaches_common_allocator(monkeypatch) -> None:
+    cluster = {
+        "id": "c",
+        "representative": "C#",
+        "promotion_status": "candidate",
+        "promotion_source_refs": ["doc:B1"],
+        "claims": [{"id": "claim-1", "claim": "C# evidence", "refs": ["doc:B1"]}],
+        "detail_items": [],
+    }
+    generated = []
+    allocated = []
+    monkeypatch.setattr(repository, "_reaches_promotion", lambda _cluster: True)
+    monkeypatch.setattr(repository, "_load_existing_concept_ids_by_slug", lambda *_args: {"c": "page-c"})
+    monkeypatch.setattr(repository, "_load_concept_identity_index", lambda *_args: [
+        {"id": "page-c", "slug": "c", "title": "C", "identity_aliases": [], "status": "active"},
+    ])
+    monkeypatch.setattr(repository, "_read_optional_text_object", lambda _key: "active")
+    monkeypatch.setattr(repository, "_parse_active_cluster_lint", lambda _markdown: [cluster])
+    monkeypatch.setattr(repository, "_cluster_sections_by_id", lambda _markdown: {})
+    monkeypatch.setattr(repository, "_source_blocks_for_refs", lambda *_args: [])
+    monkeypatch.setattr(repository, "_lock_concept_persistence", lambda *_args: None)
+    monkeypatch.setattr(repository, "_add_promotion_entries", lambda _conn, _workspace, _page, markdown, *_args: markdown)
+    monkeypatch.setattr(repository, "_upload_wiki_markdown", lambda _markdown, key: key)
+    monkeypatch.setattr(repository, "_upsert_wiki_page", lambda *_args: None)
+    monkeypatch.setattr(repository, "_persist_embedding_units", lambda *_args: None)
+    monkeypatch.setattr(repository, "sync_source_concept_links", lambda *_args, **_kwargs: None)
+
+    def resolve(_conn, _user, _workspace, *, title, identity_aliases, preferred_slug):
+        allocated.append((title, preferred_slug))
+        return "page-c-sharp", "c-2", "new"
+
+    monkeypatch.setattr(repository, "_resolve_concept_page_identity", resolve)
+
+    def generate(payload):
+        generated.append(payload["id"])
+        return {"slug": "c", "title": "C#", "markdown": "# C#\n\n## Definition\nC# language\n"}
+
+    result = repository._materialize_promotion_candidates(
+        object(), "user", "workspace", [cluster], "active", generate,
+    )
+
+    assert generated == ["c"]
+    assert allocated == [("C#", "c")]
+    assert result["merged_promotions"] == []
+    assert result["promotions"] == [
+        {"cluster_id": "c", "concept_slug": "c-2", "page_id": "page-c-sharp"},
+    ]
 
 
 def test_lint_restore_returns_archived_cluster_to_active(monkeypatch) -> None:

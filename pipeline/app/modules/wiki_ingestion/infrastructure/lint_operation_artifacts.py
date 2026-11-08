@@ -11,6 +11,7 @@ ENTRY_LINT_FIELDS = (
     "entry_changes",
     "split_from",
     "linked_operation_ids",
+    "invalidated_evidence_ids",
 )
 
 

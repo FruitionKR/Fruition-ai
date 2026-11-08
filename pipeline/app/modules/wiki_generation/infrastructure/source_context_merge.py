@@ -4,8 +4,14 @@ import copy
 import json
 from typing import Any
 
+from app.modules.wiki_generation.domain.concept_identity import (
+    available_concept_slug,
+    concept_name_keys,
+    remap_normalized_concept_slugs,
+)
 from app.modules.wiki_generation.domain.entities import SourceBlock
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, name_key, slugify, unique_keep_order
+from app.modules.wiki_generation.infrastructure.concept_resolution import merge_concept_ledger
 
 
 def active_source_artifact(
@@ -50,23 +56,37 @@ def active_source_artifact(
 
 
 def source_page_context_normalized(normalized: dict[str, Any], source_artifact: dict[str, Any] | None) -> dict[str, Any]:
+    merged, _incoming = source_page_context_parts(normalized, source_artifact)
+    return merged
+
+
+def source_page_context_parts(
+    normalized: dict[str, Any],
+    source_artifact: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return merged source context and the remapped incoming-only graph."""
     if not source_artifact:
-        return normalized
+        return normalized, normalized
     result = copy.deepcopy(normalized)
+    new_concepts = result.get("concept_ledger", [])
+    existing_concepts = [_artifact_core_concept(item, source_artifact) for item in source_artifact.get("core_concepts", [])]
+    merged_concepts, incoming_slug_map = _merge_concepts(existing_concepts, new_concepts)
+    # Existing source references describe the historical concept at the old slug. Move only incoming references first.
+    remap_normalized_concept_slugs(result, incoming_slug_map)
+    result["concept_ledger"] = merge_concept_ledger(
+        result.get("concept_ledger", []), {}, {}, {}
+    )
+    incoming = copy.deepcopy(result)
+
     existing_context = _existing_source_context_note(source_artifact)
     if existing_context:
         result.setdefault("semantic_notes", [])
         result["semantic_notes"] = [existing_context, *result["semantic_notes"]]
-
     result["categories"] = _merge_categories(source_artifact.get("categories", []), result.get("categories", []))
     result["observations"] = _merge_observations(source_artifact.get("observations", []), result.get("observations", []))
     result["evidence_units"] = _merge_evidence(source_artifact.get("evidence_claims", []), result.get("evidence_units", []))
-
-    new_concepts = result.get("concept_ledger", [])
-    existing_concepts = [_artifact_core_concept(item, source_artifact) for item in source_artifact.get("core_concepts", [])]
-    result["concept_ledger"] = _merge_term_items(existing_concepts, new_concepts, "title")
+    result["concept_ledger"] = merged_concepts
     core_concepts = result["concept_ledger"]
-    core_slugs = {slugify(str(item.get("slug") or item.get("title") or "")) for item in core_concepts}
 
     existing_sections = [
         _artifact_section(item)
@@ -76,8 +96,7 @@ def source_page_context_normalized(normalized: dict[str, Any], source_artifact: 
     new_sections = [
         item
         for item in result.get("section_candidates", [])
-        if slugify(str(item.get("slug") or item.get("title") or "")) not in core_slugs
-        and not _matches_any_concept(item, core_concepts)
+        if not _matches_any_concept(item, core_concepts)
     ]
     result["section_candidates"] = _merge_term_items(existing_sections, new_sections, "title")
 
@@ -89,14 +108,13 @@ def source_page_context_normalized(normalized: dict[str, Any], source_artifact: 
     new_mentions = [
         item
         for item in result.get("mentions", [])
-        if slugify(str(item.get("slug") or item.get("name") or "")) not in core_slugs
-        and not _matches_any_concept(item, core_concepts)
+        if not _matches_any_concept(item, core_concepts)
     ]
     result["mentions"] = _merge_term_items(existing_mentions, new_mentions, "name")
     result["existing_source_context"] = {
         "source_markdown": source_artifact.get("source_markdown") or "",
     }
-    return result
+    return result, incoming
 
 
 def source_context_blocks(source_artifact: dict[str, Any] | None) -> list[SourceBlock]:
@@ -248,6 +266,40 @@ def _merge_term_items(existing: list[dict[str, Any]], incoming: list[dict[str, A
     return merged
 
 
+def _merge_concepts(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    merged = [copy.deepcopy(item) for item in existing]
+    occupied = {str(item.get("slug")) for item in merged if item.get("slug")}
+    slug_map: dict[str, str] = {}
+    for item in sorted(incoming, key=lambda value: (name_key(value.get("title")), str(value.get("slug") or ""))):
+        old_slug = str(item.get("slug") or "")
+        matches = [target for target in merged if concept_name_keys(target) & concept_name_keys(item)]
+        if len(matches) == 1:
+            target = matches[0]
+            if old_slug and target.get("slug"):
+                slug_map[old_slug] = str(target["slug"])
+            target["anchor_reference_ids"] = unique_keep_order(
+                target.get("anchor_reference_ids", []) + item.get("anchor_reference_ids", [])
+            )
+            target["display_reference_ids"] = unique_keep_order(
+                target.get("display_reference_ids", []) + item.get("display_reference_ids", [])
+            )
+            target["aliases"] = unique_keep_order(target.get("aliases", []) + item.get("aliases", []))
+            target["identity_aliases"] = unique_keep_order(
+                target.get("identity_aliases", []) + item.get("identity_aliases", [])
+            )
+            continue
+        copied = copy.deepcopy(item)
+        copied["slug"] = available_concept_slug(copied.get("slug") or copied.get("title"), occupied)
+        if old_slug:
+            slug_map[old_slug] = copied["slug"]
+        occupied.add(copied["slug"])
+        merged.append(copied)
+    return merged, {old: new for old, new in slug_map.items() if old != new}
+
+
 def _active_artifact_items(
     items: list[Any],
     active_refs: set[str],
@@ -311,8 +363,8 @@ def _artifact_item_blocks(source_artifact: dict[str, Any], item: dict[str, Any],
 
 
 def _matches_concept(concept: dict[str, Any], context: dict[str, Any]) -> bool:
-    concept_keys = _match_keys(concept.get("slug"), concept.get("title"), concept.get("aliases", []))
-    context_keys = _match_keys(context.get("slug"), context.get("term"), context.get("aliases", []))
+    concept_keys = concept_name_keys(concept)
+    context_keys = _match_keys(context.get("term"), context.get("aliases", []))
     if concept_keys & context_keys:
         return True
     for concept_key in concept_keys:
@@ -322,14 +374,13 @@ def _matches_concept(concept: dict[str, Any], context: dict[str, Any]) -> bool:
     return False
 
 
-def _match_keys(slug: Any, title: Any, aliases: list[Any]) -> set[str]:
-    values = [slug, title, *aliases]
-    return {slugify(str(value)) for value in values if slugify(str(value))}
+def _match_keys(title: Any, aliases: list[Any]) -> set[str]:
+    return {name_key(value) for value in [title, *aliases] if value and name_key(value)}
 
 
 def _token_subset_match(left: str, right: str) -> bool:
-    left_tokens = {token for token in left.split("-") if len(token) >= 4}
-    right_tokens = {token for token in right.split("-") if len(token) >= 4}
+    left_tokens = {token for token in slugify(left).split("-") if len(token) >= 4}
+    right_tokens = {token for token in slugify(right).split("-") if len(token) >= 4}
     return bool(left_tokens and right_tokens and (left_tokens <= right_tokens or right_tokens <= left_tokens))
 
 
@@ -356,6 +407,7 @@ def _artifact_core_concept(item: dict[str, Any], source_artifact: dict[str, Any]
         "definition": item.get("context") or "",
         "why_page_worthy": "기존 source page context",
         "aliases": unique_keep_order(item.get("aliases", []) + [term]),
+        "identity_aliases": list(item.get("identity_aliases") or []),
         "tags": item.get("tags", []),
         "display_reference_ids": refs,
         "anchor_reference_ids": refs,
