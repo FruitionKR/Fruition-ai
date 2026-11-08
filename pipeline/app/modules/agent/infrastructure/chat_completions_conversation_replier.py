@@ -59,7 +59,8 @@ class ChatCompletionsConversationReplier(ConversationReplierPort):
             "reference_context": conversation.reference_context if conversation else {},
         }
         system_prompt = with_response_preferences(
-            f"{self._system_prompt}\n\n# Trusted Runtime Context\nCurrent date: {current_date}",
+            f"{self._system_prompt}\n\n# Trusted Runtime Context\nCurrent date: {current_date}\n"
+            f"UI language: {current_response_language() or 'unknown'}",
             # 응답 언어 설정이 없으면 요청자 화면 언어를 따른다. 둘 다 없으면 기존 동작이다.
             request.output_language or current_response_language(),
             request.response_length,
