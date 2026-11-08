@@ -25,6 +25,18 @@ def query_context(evidence_snippets: list[EvidenceSnippet]) -> QueryContext:
 
 
 class QueryAnswerAssemblerTest(unittest.TestCase):
+    def test_privacy_explanation_has_no_sources_despite_retrieved_evidence(self) -> None:
+        content = "요청하신 발급번호는 개인정보 보호를 위해 AI에 전달되지 않아 답변해 드릴 수 없습니다."
+        assembler = QueryAnswerAssembler(FixedAnswerGenerator(content))
+        context = query_context([
+            EvidenceSnippet(rank=1, source_document_id="doc-a", source_block_ids=["B0001"], text="발급번호: [NUMERIC_PERSONAL_DATA]"),
+        ])
+
+        answer, sources = assembler.generate_supported_answer(context)
+
+        self.assertEqual(answer.content, content)
+        self.assertEqual(sources, [])
+
     def test_empty_evidence_cannot_yield_citations(self) -> None:
         assembler = QueryAnswerAssembler(FixedAnswerGenerator("답변입니다. [1]"))
 

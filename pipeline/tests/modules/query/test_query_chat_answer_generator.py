@@ -40,6 +40,9 @@ class QueryChatAnswerGeneratorTest(unittest.TestCase):
         self.assertEqual(client.calls[0][1], "# User Question\n질문")
         self.assertIn("Answer in Korean.", client.calls[0][0])
         self.assertIn("citation markers like [1]", client.calls[0][0])
+        self.assertIn("requested value is [NUMERIC_PERSONAL_DATA]", client.calls[0][0])
+        self.assertIn("not sent to the AI for personal-information protection", client.calls[0][0])
+        self.assertIn("do not add citation markers, source links, or a source list", client.calls[0][0])
         self.assertEqual(client.calls[0][0], QUERY_ANSWER_SYSTEM_PROMPT)
 
     def test_request_snapshot_overrides_legacy_environment_model(self) -> None:

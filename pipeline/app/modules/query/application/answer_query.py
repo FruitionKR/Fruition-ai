@@ -810,6 +810,15 @@ class AnswerQueryUseCase:
         if evaluation.route not in {"unsupported", "revise_answer"}:
             return answer, evidence_snippets, stop_reason
 
+        # 평가기가 안전한 거절로 판정한 출처 없는 안내는 일반 근거 부족 문구로 덮어쓰지 않는다.
+        if (
+            evaluation.route == "unsupported"
+            and evaluation.unsupported_refusal_accuracy == 1.0
+            and not evidence_snippets
+            and answer.content.strip()
+        ):
+            return answer, [], "query_evaluator_unsupported"
+
         unsupported = self._unsupported_answer(evidence_snippets, output_language, question)
         unsupported, evidence_snippets = self._query_answer_assembler.renumber_used_evidence(
             unsupported,
