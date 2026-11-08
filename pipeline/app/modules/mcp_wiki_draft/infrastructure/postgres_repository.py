@@ -522,10 +522,10 @@ class PostgresMcpWikiDraftRepository:
                 raise McpWikiDraftError(413, "PREVIEW_TOO_LARGE", "Complete preview source exceeds the configured bound.")
             lock_concept_persistence(conn, payload.actor.workspace_id)
             # 웹 편입과 같이 서버 개념 판정기(Jev)를 승인 전 한 번만 돌려 제출에 고정한다(적용은 고정값으로 다시 계산).
-            submissions = freeze_server_concept_merges(
-                conn, workspace_id=str(row["workspace_id"]), submissions=submissions, judge=self._concept_judge(),
-            )
             try:
+                submissions = freeze_server_concept_merges(
+                    conn, workspace_id=str(row["workspace_id"]), submissions=submissions, judge=self._concept_judge(),
+                )
                 calculation = calculate_ingest_preview(
                     conn, run=dict(row), submissions=submissions, source_blocks=source_blocks
                 )
