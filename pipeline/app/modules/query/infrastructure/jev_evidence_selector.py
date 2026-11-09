@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _Candidate:
+class EvidenceCandidate:
     unit: WikiEmbeddingUnit
     source_titles: tuple[str, ...]
     page_ids: tuple[str, ...]
@@ -114,7 +114,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
                     return selected
         return self._fallback.select(question, related_pages, embedding_units_by_page_id, workspace_id=workspace_id)
 
-    def _candidates(self, question: str, workspace_id: str) -> list[_Candidate]:
+    def _candidates(self, question: str, workspace_id: str) -> list[EvidenceCandidate]:
         groups: dict[tuple[str, tuple[str, ...], str], list[tuple[WikiEmbeddingUnit, str]]] = {}
         for unit, page_title in self._wiki_repository.list_workspace_embedding_units(workspace_id):
             if not unit.text.strip() or not source_references_from_ids(unit.source_block_ids, unit.source_document_id):
@@ -122,7 +122,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
             key = (unit.text.strip(), tuple(sorted(unit.source_block_ids)), unit.source_document_id)
             groups.setdefault(key, []).append((unit, page_title))
         candidates = [
-            _Candidate(
+            EvidenceCandidate(
                 unit=min(members, key=lambda member: member[0].id)[0],
                 source_titles=tuple(sorted({title for _, title in members if title})),
                 page_ids=tuple(sorted({unit.page_id for unit, _ in members})),
@@ -147,52 +147,72 @@ class JevEvidenceSelector(EvidenceSelectorPort):
                 key=lambda row: (-row[0], row[1].unit.id),
             )
         ][: self._candidate_limit]
-        # 평가와 같이 순서가 순위 단서가 되지 않도록 질문별로 고정된 순서로 섞는다.
-        random.Random(hashlib.sha256(question.encode("utf-8")).hexdigest()).shuffle(ranked)
         return ranked
 
-    def _select_with_jev(self, question: str, candidates: list[_Candidate]) -> list[EvidenceSnippet]:
-        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            futures = [
-                executor.submit(copy_context().run, self._judge_batch, question, batch)
-                for batch in self._batches(question, candidates)
-            ]
-            probabilities = {unit_id: score for future in futures for unit_id, score in future.result().items()}
-        units_by_id = {candidate.unit.id: candidate.unit for candidate in candidates}
-        # 한 원문 블록이 원문·핵심 문장·관찰·개념 정의 unit으로 여러 번 저장되므로,
-        # 이미 고른 근거의 블록만 가리키는 unit은 건너뛰어 같은 블록이 자리를 여러 번 차지하지 않게 한다.
-        selected: list[WikiEmbeddingUnit] = []
-        covered: set[str] = set()
-        for unit_id in sorted(probabilities, key=lambda unit_id: (-probabilities[unit_id], unit_id)):
-            unit = units_by_id[unit_id]
-            blocks = set(unit.source_block_ids)
-            if blocks <= covered:
-                continue
-            selected.append(unit)
-            covered |= blocks
-            if len(selected) == self._max_evidence_snippets:
-                break
-        return [_snippet(rank, unit) for rank, unit in enumerate(selected, start=1)]
-
-    def _batches(self, question: str, candidates: list[_Candidate]) -> list[list[_Candidate]]:
-        return token_batches(
+    def _select_with_jev(self, question: str, candidates: list[EvidenceCandidate]) -> list[EvidenceSnippet]:
+        selected = select_evidence(
+            self._client,
+            question,
             candidates,
-            lambda batch: _request(question, batch),
-            max_tokens=self._max_batch_tokens,
-            max_items=self._max_batch_candidates,
+            max_selected=self._max_evidence_snippets,
+            max_batch_candidates=self._max_batch_candidates,
+            max_batch_tokens=self._max_batch_tokens,
+            max_workers=self._max_workers,
         )
-
-    def _judge_batch(self, question: str, batch: list[_Candidate]) -> dict[str, float]:
-        request = _request(question, batch)
-        answers = self._client.choose(request["state"], request["questions"])
-        return {
-            key: choice_probability(answer, "include")
-            for key, answer in answers.items()
-            if answer["choice"] == "include"
-        }
+        return [_snippet(rank, candidate.unit) for rank, candidate in enumerate(selected, start=1)]
 
 
-def _request(question: str, batch: list[_Candidate]) -> dict[str, Any]:
+def select_evidence(
+    client: JevClient,
+    question: str,
+    candidates: list[EvidenceCandidate],
+    *,
+    max_selected: int,
+    max_batch_candidates: int = 80,
+    max_batch_tokens: int = MAX_BATCH_TOKENS,
+    max_workers: int = 8,
+) -> list[EvidenceCandidate]:
+    """호출자가 이미 추린 후보만 Jev로 판정해 include 확률 순으로 고른다. Jev를 쓸 수 없으면 JevUnavailable을 낸다."""
+    # 평가와 같이 순서가 순위 단서가 되지 않도록 질문별로 고정된 순서로 섞는다.
+    shuffled = list(candidates)
+    random.Random(hashlib.sha256(question.encode("utf-8")).hexdigest()).shuffle(shuffled)
+    batches = token_batches(
+        shuffled,
+        lambda batch: _request(question, batch),
+        max_tokens=max_batch_tokens,
+        max_items=max_batch_candidates,
+    )
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(copy_context().run, _judge_batch, client, question, batch) for batch in batches]
+        probabilities = {unit_id: score for future in futures for unit_id, score in future.result().items()}
+    candidates_by_id = {candidate.unit.id: candidate for candidate in shuffled}
+    # 한 원문 블록이 원문·핵심 문장·관찰·개념 정의 unit으로 여러 번 저장되므로,
+    # 이미 고른 근거의 블록만 가리키는 unit은 건너뛰어 같은 블록이 자리를 여러 번 차지하지 않게 한다.
+    selected: list[EvidenceCandidate] = []
+    covered: set[str] = set()
+    for unit_id in sorted(probabilities, key=lambda unit_id: (-probabilities[unit_id], unit_id)):
+        candidate = candidates_by_id[unit_id]
+        blocks = set(candidate.unit.source_block_ids)
+        if blocks <= covered:
+            continue
+        selected.append(candidate)
+        covered |= blocks
+        if len(selected) == max(1, max_selected):
+            break
+    return selected
+
+
+def _judge_batch(client: JevClient, question: str, batch: list[EvidenceCandidate]) -> dict[str, float]:
+    request = _request(question, batch)
+    answers = client.choose(request["state"], request["questions"])
+    return {
+        key: choice_probability(answer, "include")
+        for key, answer in answers.items()
+        if answer["choice"] == "include"
+    }
+
+
+def _request(question: str, batch: list[EvidenceCandidate]) -> dict[str, Any]:
     # 판정 규칙은 state에 한 번만 두고 질문에는 후보 id만 담는다(개념 판정 _request와 같은 방식).
     # 질문마다 규칙을 붙이면 후보 수만큼 반복돼 요청 토큰의 80% 이상을 차지했다.
     return {

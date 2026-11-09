@@ -12,6 +12,7 @@ from app.workers import ingest_worker
 
 def test_create_pipeline_run_ignores_duplicate_run_id() -> None:
     connection = MagicMock()
+    connection.__enter__.return_value.execute.return_value.fetchone.return_value = None
 
     with patch.object(database, "connect", return_value=connection):
         database.create_pipeline_run(

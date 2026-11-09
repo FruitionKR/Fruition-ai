@@ -17,6 +17,15 @@ from app.workers.task_worker import OrderedDispatcher
 TP = TopicPartition("t", 0)
 
 
+@pytest.fixture(autouse=True)
+def _stub_publication_relay(monkeypatch):
+    # Scheduling tests isolate the publication relay's external database.
+    monkeypatch.setattr(task_worker, "relay_pending", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "relay_pending_mcp_publications", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "reconcile_sent_receipts", MagicMock(return_value=0))
+    monkeypatch.setattr(task_worker, "expire_inactive_runs", MagicMock(return_value=0))
+
+
 def _msg(offset: int, key: bytes | None = None, run_id: str | None = None, partition: int = 0):
     return SimpleNamespace(
         topic="t", partition=partition, offset=offset, key=key,
@@ -87,6 +96,7 @@ class _Harness:
         self.paused = False
         self.listener = None
         self.stop_callbacks: list = []
+        self.thread_calls: list = []
         self.consumer = SimpleNamespace(
             start=AsyncMock(), stop=AsyncMock(), seek=MagicMock(),
             commit=AsyncMock(side_effect=lambda offsets: self.commits.append(dict(offsets))),
@@ -114,6 +124,10 @@ class _Harness:
             return await self.handler(args[0])
         return None
 
+    async def _to_thread(self, function, *args):
+        self.thread_calls.append(function)
+        return None
+
     def stop(self) -> None:
         self.stop_callbacks[0]()
 
@@ -135,7 +149,7 @@ def _patched(h: _Harness):
             patch.object(task_worker, "AIOKafkaProducer", return_value=h.producer), \
             patch.object(task_worker, "get_wiki_embedding_job"), \
             patch.object(task_worker, "_run_blocking", side_effect=h._run_blocking), \
-            patch.object(asyncio, "to_thread", side_effect=AsyncMock(return_value=None)), \
+            patch.object(asyncio, "to_thread", side_effect=h._to_thread), \
             patch.object(journal, "REDELIVERY_BACKOFF_SECONDS", 0.001), \
             patch.object(loop, "add_signal_handler", side_effect=lambda sig, cb: h.stop_callbacks.append(cb)):
         yield
@@ -161,6 +175,14 @@ def _run(messages, handler, scenario, concurrency=3, expect_error=None):
         return h
 
     return asyncio.run(main())
+
+
+def test_maintenance_cycle_invokes_bounded_publication_reconciliation_without_messages() -> None:
+    async def scenario(h):
+        await h.until(lambda: task_worker.reconcile_sent_receipts in h.thread_calls)
+        await h.until(lambda: task_worker.expire_inactive_runs in h.thread_calls)
+
+    _run([], lambda _command: {}, scenario)
 
 
 def test_different_keys_run_concurrently_up_to_capacity() -> None:

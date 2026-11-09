@@ -5,7 +5,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.concept_identity import (
+    available_concept_slug,
+    concept_name_keys,
+)
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, name_key, slugify, unique_keep_order
 
 
 VALID_DECISIONS = {"merge_into", "link_to", "create_new"}
@@ -214,6 +218,64 @@ def apply_concept_resolutions(
     return result
 
 
+def allocate_concept_slugs(
+    resolved: dict[str, Any],
+    concept_index: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Allocate final slugs against active and deleted pages while the caller holds the concept lock."""
+    result = copy.deepcopy(resolved)
+    active = [concept for concept in concept_index if concept.get("status", "active") == "active"]
+    deleted = [concept for concept in concept_index if concept.get("status") == "deleted"]
+    occupied = {str(concept["slug"]) for concept in concept_index if concept.get("slug")}
+    assigned: set[str] = set()
+    slug_map: dict[str, str] = {}
+    ordered = sorted(
+        result.get("concept_ledger", []),
+        key=lambda concept: (min(concept_name_keys(concept), default=name_key(concept.get("title"))), str(concept["slug"])),
+    )
+    for concept in ordered:
+        old_slug = str(concept["slug"])
+        active_matches = [candidate for candidate in active if concept_name_keys(concept) & concept_name_keys(candidate)]
+        deleted_matches = [candidate for candidate in deleted if concept_name_keys(concept) & concept_name_keys(candidate)]
+        if len(active_matches) == 1:
+            slug = str(active_matches[0]["slug"])
+        elif not active_matches and len(deleted_matches) == 1:
+            slug = str(deleted_matches[0]["slug"])
+        else:
+            slug = available_concept_slug(old_slug, occupied | assigned)
+        if slug in assigned:
+            slug = available_concept_slug(old_slug, occupied | assigned)
+        assigned.add(slug)
+        slug_map[old_slug] = slug
+        concept["slug"] = slug
+
+    if not any(old != new for old, new in slug_map.items()):
+        result["existing_concept_index"] = active
+        return result
+
+    for evidence in result.get("evidence_units", []):
+        evidence["related_concept_slugs"] = unique_keep_order(
+            slug_map.get(slug, slug) for slug in evidence.get("related_concept_slugs", [])
+        )
+    for link in result.get("alias_concept_links", []):
+        link["source"] = slug_map.get(link.get("source"), link.get("source"))
+        link["target"] = slug_map.get(link.get("target"), link.get("target"))
+    result["concept_slug_map"] = {
+        source: slug_map.get(target, target)
+        for source, target in result.get("concept_slug_map", {}).items()
+    }
+    result["hint_slug_map"] = {
+        source: slug_map.get(target, target)
+        for source, target in result.get("hint_slug_map", {}).items()
+    }
+    for resolution in [*result.get("concept_resolutions", []), *result.get("hint_resolutions", [])]:
+        if resolution.get("canonical_slug"):
+            resolution["canonical_slug"] = slug_map.get(resolution["canonical_slug"], resolution["canonical_slug"])
+        resolution["link_targets"] = [slug_map.get(slug, slug) for slug in resolution.get("link_targets", [])]
+    result["existing_concept_index"] = active
+    return result
+
+
 def merge_concept_ledger(
     ledger: list[dict[str, Any]],
     resolution_by_slug: dict[str, dict[str, Any]],
@@ -234,10 +296,17 @@ def merge_concept_ledger(
                 target["title"] = existing.get("title") or target.get("title")
                 if existing.get("summary") and not target.get("definition"):
                     target["definition"] = existing["summary"]
-            target["aliases"] = unique_keep_order(target.get("aliases", []) + [original_slug])
+                target["identity_aliases"] = unique_keep_order(
+                    [*existing.get("identity_aliases", []), *target.get("identity_aliases", [])]
+                )
             merged_by_slug[canonical_slug] = target
         else:
-            target["aliases"] = unique_keep_order(target.get("aliases", []) + concept.get("aliases", []) + [concept.get("title"), original_slug])
+            target["aliases"] = unique_keep_order(
+                target.get("aliases", []) + concept.get("aliases", []) + [concept.get("title")]
+            )
+            target["identity_aliases"] = unique_keep_order(
+                target.get("identity_aliases", []) + concept.get("identity_aliases", [])
+            )
             target["tags"] = clean_concept_tags(target.get("tags", []) + concept.get("tags", []), target.get("title"), target["aliases"])
             target["anchor_reference_ids"] = unique_keep_order(target.get("anchor_reference_ids", []) + concept.get("anchor_reference_ids", []))
             target["mention_reference_ids"] = unique_keep_order(target.get("mention_reference_ids", []) + concept.get("mention_reference_ids", []))
@@ -275,6 +344,8 @@ def _read_concept_page(path: Path) -> dict[str, Any]:
         "slug": slug,
         "title": title,
         "aliases": _frontmatter_list(frontmatter, "aliases"),
+        "identity_aliases": [],
+        "status": "active",
         "tags": _frontmatter_list(frontmatter, "tags"),
         "summary": _definition_summary(text),
         "path": str(path),

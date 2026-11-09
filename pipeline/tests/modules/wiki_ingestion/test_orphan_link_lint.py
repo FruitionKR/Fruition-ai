@@ -22,6 +22,10 @@ def _no_shared_object_storage(monkeypatch) -> None:
     # 공유 객체 보관·복원은 객체 저장소를 읽으므로 기본으로 비운다. 복원 테스트는 따로 바꾼다.
     monkeypatch.setattr(wiki_maintenance, "_snapshot_object", lambda _key: None)
     monkeypatch.setattr(wiki_maintenance, "_restore_object", lambda _key, _before: None)
+    # 공개 원장 DB 경계는 격리하고 lint 트랜잭션·객체 보호 동작을 검사한다.
+    monkeypatch.setattr(wiki_maintenance, "prepare_publication", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(wiki_maintenance, "record_pending_deltas", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(wiki_maintenance, "finalize_publication", lambda _conn, **kwargs: {"result": kwargs["result"]})
     # 하위 항목 재검사는 DB를 읽으므로 비운다. 재검사는 test_concept_entry_lint에서 본다.
     monkeypatch.setattr(wiki_maintenance.database, "lint_concept_entries", lambda *_args, **_kwargs: {})
 
@@ -327,6 +331,20 @@ def test_wiki_maintenance_reserves_embedding_before_commit_and_keeps_result_when
         ),
     )
 
+    monkeypatch.setattr(
+        wiki_maintenance, "prepare_publication",
+        lambda operation_id, workspace_id, user_id, kind, **_kwargs:
+            calls.append(("prepare", operation_id, workspace_id, user_id, kind)),
+    )
+    monkeypatch.setattr(
+        wiki_maintenance, "record_pending_deltas",
+        lambda connection, *_args, **_kwargs: calls.append(("pending", connection is transaction)),
+    )
+    monkeypatch.setattr(
+        wiki_maintenance, "finalize_publication",
+        lambda connection, **kwargs: calls.append(("finalize", connection is transaction)) or {"result": kwargs["result"]},
+    )
+
     result = wiki_maintenance.PostgresWikiMaintenance(EmbeddingJob()).lint(
         WikiMaintenanceCommand(
             user_id="user-1",
@@ -339,6 +357,7 @@ def test_wiki_maintenance_reserves_embedding_before_commit_and_keeps_result_when
     assert result["removed_orphan_links"] == [{"reason": "no_active_support"}]
     assert result["changed_pages"] == []
     assert calls == [
+        ("prepare", "lint-op-1", "ws-1", "user-1", "LINT"),
         "begin",
         ("lint", False),
         ("orphan", True),
@@ -346,6 +365,8 @@ def test_wiki_maintenance_reserves_embedding_before_commit_and_keeps_result_when
         ("log", [{"reason": "no_active_support"}]),
         "objects",
         ("reserve", True, ["page-1", "page-2"], "BAAI/bge-m3"),
+        ("pending", True),
+        ("finalize", True),
         "commit",
         ("embedding", "lint-op-1", ["page-1", "page-2"]),
     ]
@@ -436,17 +457,14 @@ def test_wiki_maintenance_rolls_back_when_operation_log_persistence_fails(
     assert calls[-1] == "rollback"
 
 
-def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
-    monkeypatch,
+@pytest.mark.parametrize("failure_step", ["upload", "log", "commit"])
+def test_wiki_maintenance_preserves_immutable_objects_when_later_step_fails(
+    monkeypatch, failure_step,
 ) -> None:
-    """persist_lint_operation_result가 storage에 쓴 뒤 후속 단계(write_wiki_lint_log)가
-    실패하면, DB는 롤백되고 이미 쓴 lint 산출물도 함께 지워져 orphan이 남지 않아야 한다.
-
-    기존 rollback 테스트는 함수 전체를 모킹해 storage 효과를 볼 수 없으므로,
-    실제로 어떤 key가 쓰였고 어떤 key가 지워졌는지를 직접 기록하는 fake를 사용한다.
-    """
+    """미공개 불변 객체는 실패 직후 삭제하지 않고 publication GC가 참조를 확인해 정리한다."""
     calls = []
     deleted_keys: list[str] = []
+    written: dict[str, str] = {}
 
     class Transaction:
         def __enter__(self):
@@ -455,6 +473,8 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
 
         def __exit__(self, exc_type, *_args):
             calls.append("rollback" if exc_type else "commit")
+            if exc_type is None and failure_step == "commit":
+                raise OSError("commit failed")
             return False
 
     transaction = Transaction()
@@ -477,24 +497,28 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
             "removed_orphan_links": [],
         },
     )
-    monkeypatch.setattr(
-        wiki_maintenance.database,
-        "persist_lint_operation_result",
-        lambda *_args, **_kwargs: (
-            calls.append("artifact")
-            or [
-                {
-                    "page_id": "page-1",
-                    "markdown_key": "wiki/ws-1/pages/page-1/ops/lint-op-1.md",
-                    "contribution_key": "wiki/ws-1/pages/page-1/ops/lint-op-1.json",
-                }
-            ]
-        ),
-    )
+    markdown_key = "wiki/ws-1/pages/page-1/ops/lint-op-1.md"
+    contribution_key = "wiki/ws-1/pages/page-1/ops/lint-op-1.json"
+
+    def write_publication(_operation_id, _page_id, key, text, _content_type, **_kwargs):
+        if failure_step == "upload" and key == contribution_key:
+            raise OSError("upload failed")
+        written[key] = text
+        return key
+
+    def persist_artifacts(*_args, artifact_writer, **_kwargs):
+        calls.append("artifact")
+        artifact_writer(markdown_key, "body", "text/markdown")
+        artifact_writer(contribution_key, "{}", "application/json")
+        return [{"page_id": "page-1", "markdown_key": markdown_key, "contribution_key": contribution_key}]
+
+    monkeypatch.setattr(wiki_maintenance, "write_publication_text", write_publication)
+    monkeypatch.setattr(wiki_maintenance.database, "persist_lint_operation_result", persist_artifacts)
 
     def write_log(_result, _lint_date):
         calls.append("log")
-        raise OSError("lint log write failed")
+        if failure_step == "log":
+            raise OSError("lint log write failed")
 
     monkeypatch.setattr(wiki_maintenance.database, "write_wiki_lint_log", write_log)
     monkeypatch.setattr(
@@ -519,11 +543,16 @@ def test_wiki_maintenance_deletes_written_objects_when_later_step_fails(
             )
         )
 
-    assert calls == ["begin", "artifact", "log", "rollback"]
-    assert deleted_keys[:2] == [
-        "wiki/ws-1/pages/page-1/ops/lint-op-1.md",
-        "wiki/ws-1/pages/page-1/ops/lint-op-1.json",
-    ]
+    assert calls == {
+        "upload": ["begin", "artifact", "rollback"],
+        "log": ["begin", "artifact", "log", "rollback"],
+        "commit": ["begin", "artifact", "log", "objects", "commit"],
+    }[failure_step]
+    assert written == (
+        {markdown_key: "body"} if failure_step == "upload"
+        else {markdown_key: "body", contribution_key: "{}"}
+    )
+    assert deleted_keys == []
 
 
 def test_failed_lint_restores_workspace_shared_objects_instead_of_deleting(

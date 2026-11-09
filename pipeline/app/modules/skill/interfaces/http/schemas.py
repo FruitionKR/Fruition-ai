@@ -381,3 +381,40 @@ class SkillTaskRequest(BaseModel):
     user_id: str = Field(min_length=1)
     payload: dict[str, object]
     skill_id: str | None = None
+
+
+class McpSkillDefinition(BaseModel):
+    """외부 MCP 클라이언트 AI가 작성한 Skill 정의. allowed_tools·actor·승인 값은 받지 않는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str | None = Field(default=None, min_length=1, max_length=255)
+    expected_version: int | None = Field(default=None, ge=1)
+    scope_type: Literal["personal", "team"] | None = None
+    name: str = Field(..., min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    description: str = Field(..., min_length=1, max_length=500)
+    instructions_markdown: str = Field(..., min_length=1, max_length=30_000)
+    capabilities: list[str] | None = None
+    targets: list[TargetValue] | None = Field(default=None, max_length=2)
+    result_mode: ResultModeValue | None = None
+    requires_source: bool | None = None
+
+
+class McpSkillAcceptanceRequest(BaseModel):
+    """승인된 MCP operation 실행. run_id·operation_id는 Document가 확인한 불변 operation 식별자다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(..., min_length=1, max_length=255)
+    operation_id: str = Field(..., min_length=1, max_length=255)
+    workspace_id: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1)
+    definition: McpSkillDefinition
+
+
+class McpSkillAcceptanceLookupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(..., min_length=1, max_length=255)
+    operation_id: str = Field(..., min_length=1, max_length=255)
+    user_id: str = Field(..., min_length=1)

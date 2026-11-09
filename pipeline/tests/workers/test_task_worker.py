@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -22,6 +23,15 @@ from tests.modules.query.test_answer_query import (
     ScoreSearch,
     source_page,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_publication_relay(monkeypatch):
+    # Worker unit tests isolate the publication relay's external database.
+    monkeypatch.setattr(task_worker, "relay_pending", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "relay_pending_mcp_publications", AsyncMock(return_value=0))
+    monkeypatch.setattr(task_worker, "reconcile_sent_receipts", MagicMock(return_value=0))
+    monkeypatch.setattr(task_worker, "expire_inactive_runs", MagicMock(return_value=0))
 
 
 @pytest.fixture(autouse=True)
@@ -2060,7 +2070,7 @@ def _consumer_stub():
     )
 
 
-def _run_first_turn(send_error=None):
+def _run_first_turn(send_error=None, relay_error=None):
     """첫 문답 하나를 처리하며 원장 예약·결과 발행·제목 호출의 순서를 남긴다."""
     command = {"kind": "agent", "run_id": "run-1", "workspace_id": "w", "user_id": "u", "session_id": "s",
                "provider": "openai", "model": "m", "message": "질문"}
@@ -2072,6 +2082,7 @@ def _run_first_turn(send_error=None):
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=0, offset=1, value=command)
         delivered = []
+        relay_calls = 0
 
         async def getmany(**kwargs):
             if not delivered:
@@ -2085,6 +2096,16 @@ def _run_first_turn(send_error=None):
             order.append(event["status"])
             if send_error is not None:
                 raise send_error
+
+        async def relay(*_args):
+            nonlocal relay_calls
+            relay_calls += 1
+            if relay_calls == 1:
+                return 0
+            order.append("relay")
+            if relay_error is not None:
+                raise relay_error
+            return 0
 
         async def to_thread(function, *args):
             if function is task_worker._handle_controlled:
@@ -2102,10 +2123,13 @@ def _run_first_turn(send_error=None):
 
         consumer.getmany = getmany
         producer.send_and_wait = send
-        with patch.object(task_worker.database, "ensure_ai_schema"), \
+        with (patch.dict(task_worker.os.environ, {"AI_DATABASE_URL": "unused"})
+              if relay_error is not None else nullcontext()), \
+                patch.object(task_worker.database, "ensure_ai_schema"), \
                 patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
                 patch.object(task_worker, "AIOKafkaProducer", return_value=producer), \
+                patch.object(task_worker, "relay_pending", side_effect=relay), \
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
                 patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
@@ -2113,8 +2137,10 @@ def _run_first_turn(send_error=None):
             try:
                 await asyncio.wait_for(task_worker.consume(), timeout=1)
             except Exception as exc:
-                if exc is not send_error:
+                if exc not in {send_error, relay_error}:
                     raise
+        if relay_error is not None:
+            assert consumer.commit.await_count == 0
         return order
 
     return asyncio.run(run_test())
@@ -2128,6 +2154,12 @@ def test_title_ledger_row_opens_before_result_publish_and_model_call_stays_after
 
 def test_title_reservation_is_released_when_result_publish_fails() -> None:
     assert _run_first_turn(send_error=RuntimeError("kafka down")) == ["reserve", "succeeded", ("release", "call-1")]
+
+
+def test_relay_failure_keeps_scheduled_title_reservation_and_offset_uncommitted() -> None:
+    assert _run_first_turn(relay_error=RuntimeError("relay down")) == [
+        "reserve", "succeeded", "relay", "title_call", ("release", "call-1"), "session_title",
+    ]
 
 
 def test_failed_title_generation_still_releases_reservation() -> None:
@@ -2222,7 +2254,7 @@ def test_title_flow_stays_when_flag_is_true_missing_or_invalid(fields, result, f
     release.assert_called_once_with("call-1")
 
 
-def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None):
+def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=None, job=None, then=None):
     """handled를 순서대로 _handle_controlled 결과(예외면 raise)로 쓴다. 메시지는 한 번만 전달한다."""
     async def run_test():
         stop_callbacks = []
@@ -2232,12 +2264,17 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
         consumer.seek = MagicMock()
         producer = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
         message = SimpleNamespace(topic="t", partition=3, offset=42, value=command or {"kind": kind, "run_id": "run-1"})
+        batch = [message]
+        if then is not None:
+            # 같은 key(같은 workspace)로 뒤따르는 command. 앞 메시지가 끝나야 실행된다.
+            message.key = b"w"
+            batch.append(SimpleNamespace(topic="t", partition=3, offset=43, key=b"w", value=then))
         delivered = []
 
         async def getmany(**kwargs):
             if not delivered:
                 delivered.append(True)
-                return {"partition": [message]}
+                return {"partition": batch}
             if not handled:
                 stop_callbacks[0]()
             await asyncio.sleep(0)
@@ -2259,6 +2296,8 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
             if function is task_worker.generate_chat_session_title:
                 titles.append(args[0]["run_id"])
                 return "제목"
+            if job is not None and function is job.recover:
+                return function(*args)
             return None
 
         consumer.getmany = getmany
@@ -2270,12 +2309,57 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
                 patch.object(asyncio, "to_thread", side_effect=to_thread), \
                 patch.object(task_worker, "_run_blocking", side_effect=lambda _executor, fn, *args: to_thread(fn, *args)), \
                 patch("app.modules.task_cancellation.infrastructure.postgres_task_journal.REDELIVERY_BACKOFF_SECONDS", 0), \
+                patch.object(task_worker, "get_wiki_embedding_job", return_value=job), \
                 patch.object(asyncio.get_running_loop(), "add_signal_handler",
                              side_effect=lambda sig, callback: stop_callbacks.append(callback)):
             await asyncio.wait_for(task_worker.consume(), timeout=1)
         return consumer, events, titles
 
     return asyncio.run(run_test())
+
+
+_INDEX_WAKE = {"kind": "mcp_publication_index", "run_id": "mcp-index:event-1", "workspace_id": "w"}
+
+
+def test_mcp_publication_wake_recovers_embeddings_before_commit_without_task_event() -> None:
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    order = []
+    job.recover.side_effect = lambda run_id: order.append(("recover", run_id))
+    emitted = []
+
+    consumer, events, _ = _run_consume([], command=_INDEX_WAKE, emitted=emitted, job=job)
+
+    # 실행 기록·결과 이벤트 없이 임베딩 복구를 끝낸 뒤에만 offset을 커밋한다.
+    assert order == [("recover", "mcp-index:event-1")]
+    assert events == [] and emitted == []
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
+
+
+def test_mcp_publication_wake_failure_leaves_offset_uncommitted() -> None:
+    job = MagicMock()
+    job.recover.side_effect = RuntimeError("wiki page embedding recovery failed")
+
+    with pytest.raises(RuntimeError, match="recovery failed"):
+        _run_consume([], command=_INDEX_WAKE, job=job)
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+
+
+def test_mcp_publication_wake_with_failed_page_lets_next_same_key_command_run() -> None:
+    # 페이지별 실패만 남은 복구는 recover가 정상 반환하므로, 같은 partition·key의 다음 command가 이어서 처리되고 둘 다 커밋된다.
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    job.recover.return_value = None
+    consumer, events, _ = _run_consume(
+        [{"answer": "ok"}], command=_INDEX_WAKE, job=job, then={"kind": "query", "run_id": "run-2"},
+    )
+
+    job.recover.assert_called_once_with("mcp-index:event-1")
+    assert "succeeded" in events
+    assert consumer.commit.await_args_list[-1].args[0] == {TopicPartition("t", 3): 44}
 
 
 def test_redelivered_running_task_waits_in_place_without_seek() -> None:

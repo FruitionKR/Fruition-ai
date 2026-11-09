@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import difflib
 import json
+import mimetypes
 import os
 import re
 import shlex
@@ -10,6 +12,7 @@ import subprocess
 import unicodedata
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import fitz
 
@@ -360,6 +363,32 @@ def fallback_reasons(body: dict[str, Any], failure: str | None) -> list[str]:
 def fallback_note(reasons: list[str]) -> str:
     labels = ", ".join(REASON_LABELS[reason] for reason in reasons)
     return "> ⚠️ 이 페이지는 원문 텍스트로 대신했어요." + (f" (이유: {labels})" if labels else "")
+
+
+def embed_local_image_links(markdown: str, markdown_file: Path, output_dir: Path) -> str:
+    pattern = re.compile(
+        r"(?P<prefix>!?\[[^\]]*\]\()(?P<target><[^>]+>|[^)\s]+)(?P<suffix>[^)]*\))"
+    )
+    output_root = output_dir.resolve()
+
+    def replace(match: re.Match[str]) -> str:
+        target = match.group("target")
+        target = target[1:-1] if target.startswith("<") else target
+        parsed = urlsplit(target)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+            return match.group(0)
+        asset = (markdown_file.parent / unquote(parsed.path)).resolve()
+        try:
+            asset.relative_to(output_root)
+        except ValueError:
+            return match.group(0)
+        mime_type = mimetypes.guess_type(asset.name)[0]
+        if not asset.is_file() or not mime_type or not mime_type.startswith("image/"):
+            return match.group(0)
+        encoded = base64.b64encode(asset.read_bytes()).decode("ascii")
+        return f"{match.group('prefix')}data:{mime_type};base64,{encoded}{match.group('suffix')}"
+
+    return pattern.sub(replace, markdown)
 
 
 def assemble(manifest_file: Path, output_dir: Path, output_file: Path) -> None:

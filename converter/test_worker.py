@@ -307,3 +307,48 @@ class ConsumeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CONVERSION = "0f6f3d1e-2b7a-4c8e-9d5f-1a2b3c4d5e6f"
+
+
+def external_command(start=0, **overrides):
+    value = command(run_id=f"mcpconvert:{CONVERSION}:{start}", parent_run_id=f"mcpconvert:{CONVERSION}",
+                    start_page=start, restoration="external", conversion_id=CONVERSION)
+    value.pop("provider"), value.pop("model")
+    return {**value, **overrides}
+
+
+class ExternalPrepareTest(unittest.TestCase):
+    def test_external_batch_needs_no_provider_but_a_bound_run_identity(self):
+        self.assertEqual(worker.parse_command(external_command())["restoration"], "external")
+        for bad in (external_command(run_id=f"mcpconvert:{CONVERSION}:10"),
+                    external_command(conversion_id="0f6f3d1e-2b7a-4c8e-9d5f-000000000000"),
+                    external_command(parent_run_id="convert:doc_1")):
+            with self.assertRaises(ValueError):
+                worker.parse_command(bad)
+        with self.assertRaises(ValueError):
+            worker.parse_command(command(restoration="internal", provider=""))
+
+    def test_external_batch_uploads_bundle_without_pdf_copies(self):
+        storage = FakeStorage(pdf_bytes(25))
+        storage.put_object = lambda bucket, key, data, length, **_: storage.puts.__setitem__(key, data.read())
+
+        def fake_prepare(reader, start, end, cancelled, describe_figures, upload):
+            import tempfile
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "external").mkdir()
+                (root / "external" / "windows.json").write_text("[]", encoding="utf-8")
+                (root / "batch.pdf").write_bytes(b"%PDF")
+                return [upload(start, end, root, 0)]
+
+        with mock.patch.object(worker, "client", return_value=storage), \
+                mock.patch.object(worker, "bucket_name", return_value="bucket"), \
+                mock.patch.object(converter_app, "missing_commands", return_value=[]), \
+                mock.patch.object(converter_app, "prepare_pages", side_effect=fake_prepare):
+            result = worker.convert_batch(external_command(), threading.Event())
+
+        prefix = f"tmp/convert/mcp/ws_1/{CONVERSION}/0/"
+        self.assertEqual(set(storage.puts), {prefix + "external/windows.json"})
+        self.assertEqual(result["segments"], [{"page_start": 1, "page_end": 10, "prefix": prefix, "window_count": 0}])

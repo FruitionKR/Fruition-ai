@@ -11,7 +11,8 @@ from app.modules.wiki_generation.application.judge_candidates import (
     judge_meaning_cluster_candidates,
 )
 from app.modules.wiki_generation.application.ports import JsonCompletionPort
-from app.modules.wiki_generation.domain.text_utils import slugify, unique_keep_order
+from app.modules.wiki_generation.domain.concept_identity import concept_name_keys
+from app.modules.wiki_generation.domain.text_utils import name_key, slugify, unique_keep_order
 from app.modules.wiki_generation.infrastructure.assemble import (
     MeaningClusterArtifactAssembler,
 )
@@ -110,18 +111,21 @@ def _core_concept_promotions(
     core_concepts: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """이번 문서의 핵심 개념과 이름·별칭이 같은 클러스터를 그 개념으로 승격할 후보로 표시한다."""
-    concept_by_name: dict[str, dict[str, Any]] = {}
+    concepts_by_name: dict[str, list[dict[str, Any]]] = {}
     for concept in core_concepts:
-        for name in [concept.get("slug"), concept.get("title"), *(concept.get("aliases") or [])]:
-            if name:
-                concept_by_name.setdefault(slugify(str(name)), concept)
+        for key in concept_name_keys(concept):
+            concepts_by_name.setdefault(key, []).append(concept)
     promotions: dict[str, dict[str, Any]] = {}
     for cluster_id, section in sections.items():
         if cluster_promotion_status(section) == "candidate":
             continue
-        concept = concept_by_name.get(slugify(cluster_id)) or concept_by_name.get(
-            slugify(cluster_representative(section) or cluster_id)
-        )
+        matches = {
+            str(concept["slug"]): concept
+            for value in [cluster_id, cluster_representative(section) or cluster_id]
+            for concept in concepts_by_name.get(name_key(value), [])
+            if concept.get("slug")
+        }
+        concept = next(iter(matches.values())) if len(matches) == 1 else None
         if concept and concept.get("slug"):
             title = concept.get("title") or concept["slug"]
             promotions[cluster_id] = _promotion(

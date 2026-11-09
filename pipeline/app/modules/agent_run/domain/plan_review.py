@@ -75,7 +75,7 @@ def review_content_duplicates(plan: AgentPlan, duplicates: dict[str, ContentDupl
         if operation.warning is not None and not operation.suggested_selected
     }
     for operation in plan.operations:
-        duplicate = duplicates.get(operation.target_id or "")
+        duplicate = duplicates.get(operation.target_id or operation.id)
         if duplicate is None or operation.target_type != "document":
             continue
         existing = warnings.get(operation.id)

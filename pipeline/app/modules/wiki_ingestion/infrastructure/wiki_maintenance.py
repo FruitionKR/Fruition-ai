@@ -52,6 +52,14 @@ from app.modules.wiki_ingestion.infrastructure.promotion_concept_page import (
 from app.modules.wiki_ingestion.infrastructure.workspace_concept_lock import (
     concept_write_lock,
 )
+from app.modules.wiki_ingestion.infrastructure.pending_contributions import record_pending_deltas
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import (
+    finalize_publication,
+    normalize_operation_result,
+    prepare_publication,
+    publication_id,
+    write_publication_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +75,14 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                 "operation_id is required when dry_run is false"
             )
         should_materialize = command.materialize_promotions and not command.dry_run
+        if not command.dry_run:
+            prepare_publication(
+                str(command.operation_id),
+                command.workspace_id,
+                command.user_id,
+                "LINT",
+                database_connect=database.connect,
+            )
         promotion_generator = (
             self._build_promotion_page_generator(command)
             if should_materialize
@@ -126,25 +142,22 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     key: _snapshot_object(key)
                     for key in database.lint_shared_object_keys(command.workspace_id, lint_date)
                 }
-                written_object_keys: list[str] = []
                 try:
                     operation_artifacts = database.persist_lint_operation_result(
                         command.workspace_id,
                         str(command.operation_id),
                         result,
                         connection=connection,
-                    )
-                    written_object_keys.extend(
-                        key
-                        for artifact in operation_artifacts
-                        for key in (
-                            artifact.get("markdown_key"),
-                            artifact.get("contribution_key"),
-                        )
-                        if key
-                    )
-                    written_object_keys.extend(
-                        str(item["contribution_key"]) for item in result.get("ledger_contributions", [])
+                        artifact_writer=(
+                            lambda key, text, content_type: write_publication_text(
+                                str(command.operation_id),
+                                key.split("/pages/", 1)[1].split("/", 1)[0],
+                                key,
+                                text,
+                                content_type,
+                                database_connect=database.connect,
+                            )
+                        ),
                     )
                     result["operation_artifacts"] = operation_artifacts
                     result["changed_pages"] = operation_artifacts
@@ -157,11 +170,56 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                             page_ids,
                             BgeM3EmbeddingModel().model_name,
                         )
+                    publication_result = normalize_operation_result({
+                        "operation_id": str(command.operation_id),
+                        "operation_type": "lint",
+                        "status": "succeeded",
+                        "workspace_id": command.workspace_id,
+                        "user_id": command.user_id,
+                        "target_document_id": None,
+                        "summary": f"Wiki lint로 페이지 {len(operation_artifacts)}개를 변경했습니다.",
+                        "changed_pages": [
+                            {**artifact, "contribution_stored": False}
+                            for artifact in operation_artifacts
+                        ],
+                        "failed_pages": [],
+                        "deleted_pages": result.get("deleted_pages") or [],
+                        "link_changes": None,
+                        "failed_actions": None,
+                        "ledger_contributions": result.get("ledger_contributions") or [],
+                    })
+                    pending = [
+                        {
+                            "page_id": item["page_id"],
+                            "operation_id": item["operation_id"],
+                            "document_id": item.get("document_id"),
+                            "object_key": item["contribution_key"],
+                            "active": True,
+                            "linked_by_operation_id": item.get("linked_by_operation_id"),
+                        }
+                        for item in publication_result["ledger_contributions"]
+                    ]
+                    record_pending_deltas(
+                        connection,
+                        command.workspace_id,
+                        pending,
+                        publication_id=publication_id(str(command.operation_id)),
+                    )
+                    event = finalize_publication(
+                        connection,
+                        operation_id=str(command.operation_id),
+                        workspace_id=command.workspace_id,
+                        user_id=command.user_id,
+                        kind="LINT",
+                        outcome=(
+                            "PUBLISHED"
+                            if operation_artifacts or publication_result["deleted_pages"]
+                            else "NO_CHANGE"
+                        ),
+                        result=publication_result,
+                    )
+                    result["publication_result"] = event["result"]
                 except Exception:
-                    # 이후 단계 실패로 DB 트랜잭션이 롤백될 때, 이 작업만의 산출물은 orphan으로
-                    # 남지 않도록 지우고, 공유 객체는 쓰기 전 내용으로 되돌린다.
-                    for key in written_object_keys:
-                        delete_object(key)
                     for key, before in shared_before.items():
                         _restore_object(key, before)
                     raise

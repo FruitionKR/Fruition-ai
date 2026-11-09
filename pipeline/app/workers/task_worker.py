@@ -114,6 +114,13 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
     WikiLintOut,
 )
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import (
+    reconcile_sent_receipts,
+    relay_pending,
+)
+from app.modules.wiki_ingestion.infrastructure.wiki_publication_cleanup import cleanup_configured_publications
+from app.modules.mcp_wiki_draft.infrastructure.postgres_repository import expire_inactive_runs
+from app.modules.mcp_wiki_draft.infrastructure.apply_repository import relay_pending_mcp_publications
 from app.workers.event_request import without_top_level_secrets
 
 
@@ -129,6 +136,10 @@ POST_INGEST_MAX_ATTEMPTS = 3
 POST_INGEST_AUDIT_LIMIT = 3
 # maintenance worker가 임베딩이 덜 된 활성 페이지를 다시 처리하는 주기(초). 기동 직후 한 번 돌고 이 간격으로 반복한다.
 EMBEDDING_RECOVERY_INTERVAL_SECONDS = 600
+# Existing outbox retries become eligible after five seconds.
+PUBLICATION_RECONCILIATION_INTERVAL_SECONDS = 5
+# Document가 MCP 위키 발행을 받은 뒤 ai.maintenance.command로 보내는 임베딩 깨우기 command.
+MCP_PUBLICATION_INDEX_KIND = "mcp_publication_index"
 
 
 def _required(command: dict[str, Any], *fields: str) -> None:
@@ -543,7 +554,8 @@ def _handle_lint(command: dict[str, Any]) -> dict[str, Any]:
         result = get_wiki_maintenance().lint(
             WikiLintIn.model_validate(lint_payload).to_command()
         )
-        payload = WikiLintOut.model_validate(result).model_dump(mode="json")
+        api_payload = WikiLintOut.model_validate(result).model_dump(mode="json")
+        payload = dict(result.get("publication_result") or api_payload)
         database.finish_pipeline_run(run_id, {"task_result": payload})
         return payload
     except Exception as exc:
@@ -587,20 +599,52 @@ def _handle_meeting_transcription(command: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(use_case.execute(request.workspace_id, request.run_id, request.meeting_id, request.recording_key))
 
 
-def _validate_restore_contributions(command: dict[str, Any]) -> None:
+def _validate_restore_contributions(command: dict[str, Any]) -> list[dict[str, Any]]:
     expected = command.get("expected_contributions") or {}
     if not expected:
-        return
+        return []
     rows = read_contributions(list(expected), str(command["workspace_id"]))
     current: dict[str, list[str]] = {str(page_id): [] for page_id in expected}
+    indexed: dict[tuple[str, str, int], dict[str, Any]] = {}
     for row in sorted(rows, key=lambda item: int(item.get("sequence_revision") or 0)):
         page_id = str(row.get("page_id") or "")
         current.setdefault(page_id, []).append(
             f"{row.get('ingest_operation_id')}:{int(row.get('sequence_revision') or 0)}:"
             f"{'1' if row.get('active') else '0'}"
         )
-    if current != {str(key): list(value) for key, value in expected.items()}:
+        indexed[(page_id, str(row.get("ingest_operation_id")), int(row.get("sequence_revision") or 0))] = row
+    desired = {str(key): list(value) for key, value in expected.items()}
+    current_identity = {
+        page_id: [value.rsplit(":", 1)[0] for value in values]
+        for page_id, values in current.items()
+    }
+    desired_identity = {
+        page_id: [value.rsplit(":", 1)[0] for value in values]
+        for page_id, values in desired.items()
+    }
+    if current_identity != desired_identity:
         raise ValueError("restore contribution manifest is stale")
+    pending = []
+    for page_id, signatures in desired.items():
+        for signature in signatures:
+            identity, active = signature.rsplit(":", 1)
+            operation_id, sequence = identity.rsplit(":", 1)
+            row = indexed[(page_id, operation_id, int(sequence))]
+            wanted = active == "1"
+            if bool(row.get("active")) == wanted:
+                continue
+            if not row.get("object_key"):
+                raise ValueError("restore contribution object identity is unavailable")
+            pending.append({
+                "page_id": page_id,
+                "operation_id": operation_id,
+                "document_id": row.get("source_document_id"),
+                "object_key": row.get("object_key"),
+                "active": wanted,
+                "sequence_revision": int(sequence),
+                "linked_by_operation_id": row.get("lint_operation_id"),
+            })
+    return pending
 
 
 def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
@@ -622,15 +666,19 @@ def _handle_restore(command: dict[str, Any]) -> dict[str, Any]:
             f"kafka:{command['kind']}", f"runs/{run_id}", str(command["kind"]),
         )
     try:
-        _validate_restore_contributions(command)
+        pending_deltas = _validate_restore_contributions(command)
         use_case = get_restore_wiki_pages_use_case()
         if command["kind"] == "restore_ingest":
             result = use_case.execute_ingest(
-                IngestOperationRestoreIn.model_validate(command).to_command()
+                IngestOperationRestoreIn.model_validate(command).to_command(),
+                str(command["user_id"]),
+                pending_deltas,
             )
         else:
             result = use_case.execute_lint(
-                LintOperationRestoreIn.model_validate(command).to_command()
+                LintOperationRestoreIn.model_validate(command).to_command(),
+                str(command["user_id"]),
+                pending_deltas,
             )
         database.finish_pipeline_run(run_id, {"task_result": result})
         return result
@@ -1455,6 +1503,10 @@ async def consume() -> None:
     consumer.subscribe([COMMAND_TOPIC], listener=_RebalanceListener(dispatcher, commit_lock, consumer))
     await consumer.start()
     await producer.start()
+    if os.environ.get("AI_DATABASE_URL"):
+        await asyncio.to_thread(reconcile_sent_receipts)
+        await relay_pending(producer, RESULT_TOPIC)
+        await relay_pending_mcp_publications()
     executor = ThreadPoolExecutor(max_workers=CONCURRENCY, thread_name_prefix="ai-task")
     title_tasks: set[asyncio.Task[None]] = set()
     running: set[asyncio.Task[None]] = set()
@@ -1475,6 +1527,11 @@ async def consume() -> None:
         """메시지 하나를 처리하고 결과 이벤트를 발행한다. 종료 요청으로 포기하면 False."""
         # JSON object가 아닌 값은 빈 command로 두어 아래 malformed 경로가 실패로 확정한다.
         command = message.value if isinstance(message.value, dict) else {}
+        if command.get("kind") == MCP_PUBLICATION_INDEX_KIND:
+            # MCP 발행 뒤 Document가 보내는 깨우기 command다. 실행 기록·과금·결과 이벤트 없이 누락 임베딩만 만든다.
+            # 끝난 뒤에 offset을 커밋해 lag이 남아 있는 동안 KEDA가 이 worker를 0으로 줄이지 않는다.
+            await _run_blocking(executor, get_wiki_embedding_job().recover, str(command.get("run_id") or "mcp-publication-index"))
+            return True
         try:
             while True:
                 try:
@@ -1549,6 +1606,9 @@ async def consume() -> None:
             task = asyncio.create_task(_publish_session_title(producer, command, result, title_call))
             title_tasks.add(task)
             task.add_done_callback(title_tasks.discard)
+        if os.environ.get("AI_DATABASE_URL"):
+            await relay_pending(producer, RESULT_TOPIC)
+            await relay_pending_mcp_publications()
         return True
 
     async def run(message) -> None:
@@ -1570,9 +1630,19 @@ async def consume() -> None:
     logger.info("[worker 기동] topic=%s group=%s concurrency=%s", COMMAND_TOPIC, GROUP_ID, CONCURRENCY)
     recovers_embeddings = COMMAND_TOPIC.endswith("maintenance.command")
     next_embedding_recovery = time.monotonic()
+    next_publication_reconciliation = time.monotonic()
     try:
         while not stop.is_set():
+            if recovers_embeddings and time.monotonic() >= next_publication_reconciliation:
+                await asyncio.to_thread(reconcile_sent_receipts)
+                await relay_pending(producer, RESULT_TOPIC)
+                await relay_pending_mcp_publications()
+                next_publication_reconciliation = (
+                    time.monotonic() + PUBLICATION_RECONCILIATION_INTERVAL_SECONDS
+                )
             if recovers_embeddings and time.monotonic() >= next_embedding_recovery:
+                await asyncio.to_thread(cleanup_configured_publications)
+                await asyncio.to_thread(expire_inactive_runs)
                 get_wiki_embedding_job().start("pending-recovery", [])
                 next_embedding_recovery = time.monotonic() + EMBEDDING_RECOVERY_INTERVAL_SECONDS
             await asyncio.to_thread(journal.rollback_pending)

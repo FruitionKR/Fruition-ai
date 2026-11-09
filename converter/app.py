@@ -1,7 +1,5 @@
-import base64
 import json
 import logging
-import mimetypes
 import os
 import re
 import shlex
@@ -14,10 +12,10 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 from threading import Event
-from typing import Any
-from urllib.parse import unquote, urlsplit
+from typing import Any, Callable
 
 from app.core.llm_env import DEFAULT_LLM_MODELS, resolve_workspace_llm_selection
+from app.modules.document_restoration.infrastructure.crop_first_with_anydoc import embed_local_image_links
 from app.core.pipeline_control import (
     DeadlineExceededError,
     PipelineRunCancelledError,
@@ -51,32 +49,6 @@ def required_commands() -> list[str]:
 
 def missing_commands() -> list[str]:
     return [command for command in required_commands() if shutil.which(command) is None]
-
-
-def embed_local_image_links(markdown: str, markdown_file: Path, output_dir: Path) -> str:
-    pattern = re.compile(
-        r"(?P<prefix>!?\[[^\]]*\]\()(?P<target><[^>]+>|[^)\s]+)(?P<suffix>[^)]*\))"
-    )
-    output_root = output_dir.resolve()
-
-    def replace(match: re.Match[str]) -> str:
-        target = match.group("target")
-        target = target[1:-1] if target.startswith("<") else target
-        parsed = urlsplit(target)
-        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-            return match.group(0)
-        asset = (markdown_file.parent / unquote(parsed.path)).resolve()
-        try:
-            asset.relative_to(output_root)
-        except ValueError:
-            return match.group(0)
-        mime_type = mimetypes.guess_type(asset.name)[0]
-        if not asset.is_file() or not mime_type or not mime_type.startswith("image/"):
-            return match.group(0)
-        encoded = base64.b64encode(asset.read_bytes()).decode("ascii")
-        return f"{match.group('prefix')}data:{mime_type};base64,{encoded}{match.group('suffix')}"
-
-    return pattern.sub(replace, markdown)
 
 
 def _run_command(command: list[str], working_dir: Path, timeout_seconds: int,
@@ -231,6 +203,59 @@ def process_pdf(
                 figure_summary, _empty_figure_descriptions(describe_figures)
             ),
         }
+
+
+def prepare_pdf(pdf: Path, output_dir: Path, cancelled: Event | None, describe_figures: bool) -> int:
+    """MCP 외부 AI 변환의 전처리. AnyDoc crop-first 준비 단계만 돌리고 외부 AI 창을 만든다. 공급사 호출은 없다.
+
+    @return 창 수
+    """
+    from app.modules.document_restoration.infrastructure.external_restoration import build_windows
+    if missing := missing_commands():
+        raise RuntimeError(f"Missing converter commands: {', '.join(missing)}")
+    slug = "batch"
+    process_log = output_dir.parent / "process.log"
+    run([*shlex.split(RESTORATION_COMMAND), "--pdf-file", str(pdf), "--output-dir", str(output_dir),
+         "--document-slug", slug, "--mode", "crop-first-prepare"],
+        output_dir.parent, _within_deadline(ATTEMPT_TIMEOUT_SECONDS), process_log, cancelled)
+    if cancelled is not None and cancelled.is_set():
+        raise PipelineRunCancelledError("Conversion cancelled")
+    return len(build_windows(output_dir / f"{slug}.pdf", output_dir,
+                             output_dir / "layout" / "auto" / f"{slug}.crop_first_manifest.json",
+                             output_dir / "final" / f"{slug}.detected.md", describe_figures))
+
+
+def prepare_pages(reader: Any, start: int, end: int, cancelled: Event, describe_figures: bool,
+                  upload: Callable[[int, int, Path, int], dict[str, Any]]) -> list[dict[str, Any]]:
+    """[start, end) 쪽을 전처리해 묶음마다 upload(시작, 끝, 결과 폴더, 창 수)를 부른다. 실패 시 범위를 나누는 규칙은
+    convert_pages와 같다. 나뉜 범위마다 따로 조립하므로 묶음 목록을 돌려준다."""
+    from pypdf import PdfWriter
+    if cancelled.is_set():
+        raise PipelineRunCancelledError("Conversion cancelled")
+    try:
+        with request_deadline(ATTEMPT_TIMEOUT_SECONDS), \
+                tempfile.TemporaryDirectory(prefix="fruition-pdf-prepare-") as directory:
+            pdf = Path(directory) / "batch.pdf"
+            writer = PdfWriter()
+            for index in range(start, end):
+                writer.add_page(reader.pages[index])
+            with pdf.open("wb") as output:
+                writer.write(output)
+            writer.close()
+            output_dir = Path(directory) / "restoration"
+            windows = prepare_pdf(pdf, output_dir, cancelled, describe_figures)
+            return [upload(start, end, output_dir, windows)]
+    except Exception as error:
+        remaining = remaining_seconds()
+        if remaining is not None and remaining <= 0:
+            raise DeadlineExceededError("Conversion deadline exceeded") from error
+        if (isinstance(error, InputRejectedError) or cancelled.is_set() or end - start == 1
+                or (isinstance(error, PipelineRunCancelledError) and not isinstance(error, DeadlineExceededError))):
+            raise
+        middle = start + (end - start) // 2
+        logger.warning("전처리 실패, 범위를 나눠 재시도: pages=%d-%d error_type=%s", start, end, type(error).__name__)
+    return [*prepare_pages(reader, start, middle, cancelled, describe_figures, upload),
+            *prepare_pages(reader, middle, end, cancelled, describe_figures, upload)]
 
 
 def _empty_figure_descriptions(requested: bool) -> dict[str, Any]:

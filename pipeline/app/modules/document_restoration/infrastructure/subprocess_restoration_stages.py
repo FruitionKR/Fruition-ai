@@ -58,7 +58,7 @@ class SubprocessDocumentRestorationStages(DocumentRestorationStagesPort):
             / "auto"
             / (
                 f"{command.document_slug}.crop_first_manifest.json"
-                if command.mode is RestorationMode.CROP_FIRST
+                if command.mode in {RestorationMode.CROP_FIRST, RestorationMode.CROP_FIRST_PREPARE}
                 else f"{command.document_slug}.docling_primary_manifest.json"
             ),
         )

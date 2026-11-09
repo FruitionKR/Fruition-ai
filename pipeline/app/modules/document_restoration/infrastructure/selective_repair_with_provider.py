@@ -742,6 +742,65 @@ def rejected_candidates(
     ]
 
 
+def repair_request(
+    pdf_file: Path,
+    lane: str,
+    prompt: str,
+    request_blocks: list[dict[str, Any]],
+    *,
+    chained: bool,
+    body_only: bool,
+    fragments: dict[str, str],
+    pages: dict[int, str],
+    page_images: dict[int, str],
+    block_images: dict[str, str],
+) -> dict[str, Any]:
+    """복원 공급사에 보낼 prompt·payload·이미지(data URL)다. MCP 외부 AI 창도 같은 입력을 받는다."""
+    # 이어진 표는 첫 조각 하나로 묻고, 나머지 조각은 crop만 순서대로 뒤에 붙인다.
+    payload_blocks = []
+    for sequence, block in enumerate(request_blocks[:1] if chained else request_blocks, 1):
+        item = {
+            "block_id": block["id"],
+            "page": block["page"],
+            "order": block["order"],
+            "type": block["type"],
+            "bbox": block["bbox"],
+            "crop_sequence": sequence,
+            "scope": block.get("scope", "block"),
+            "required_tokens": block.get("required_tokens", []),
+            "current_markdown": block_markdown(block, fragments),
+        }
+        if lane == "table":
+            item.update(
+                table_layout(
+                    pdf_file,
+                    request_blocks if chained else [block],
+                    sequence,
+                )
+            )
+        if chained:
+            item["continuation_crop_sequences"] = list(range(2, len(request_blocks) + 1))
+        payload_blocks.append(item)
+    request_page = int(request_blocks[0]["page"])
+    if not body_only and request_page not in page_images:
+        page_images[request_page] = render_page(pdf_file, request_page)
+    return {
+        "prompt": prompt,
+        "payload": {
+            "page_context": (
+                ""
+                if any(block.get("scope") == "page_body" for block in request_blocks)
+                else pages.get(request_page, "")
+            ),
+            "blocks": payload_blocks,
+        },
+        "images": (
+            ([] if body_only else [page_images[request_page]])
+            + [block_images[block["id"]] for block in request_blocks]
+        ),
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     provider, model = resolve_llm_selection(args.provider, args.model)
     manifest = json.loads(args.manifest_file.read_text(encoding="utf-8"))
@@ -788,53 +847,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             *,
             chained: bool = False,
         ) -> tuple[dict[str, Any], dict[str, Any]]:
-            # 이어진 표는 첫 조각 하나로 묻고, 나머지 조각은 crop만 순서대로 뒤에 붙인다.
-            payload_blocks = []
-            for sequence, block in enumerate(request_blocks[:1] if chained else request_blocks, 1):
-                item = {
-                    "block_id": block["id"],
-                    "page": block["page"],
-                    "order": block["order"],
-                    "type": block["type"],
-                    "bbox": block["bbox"],
-                    "crop_sequence": sequence,
-                    "scope": block.get("scope", "block"),
-                    "required_tokens": block.get("required_tokens", []),
-                    "current_markdown": block_markdown(block, fragments),
-                }
-                if lane == "table":
-                    item.update(
-                        table_layout(
-                            args.pdf_file,
-                            request_blocks if chained else [block],
-                            sequence,
-                        )
-                    )
-                if chained:
-                    item["continuation_crop_sequences"] = list(range(2, len(request_blocks) + 1))
-                payload_blocks.append(item)
-            request_page = int(request_blocks[0]["page"])
-            if not body_only and request_page not in page_images:
-                page_images[request_page] = render_page(args.pdf_file, request_page)
             return call_page(
                 provider=provider,
                 api_key=api_key,
                 model=model,
-                prompt=prompts[lane],
-                payload={
-                    "page_context": (
-                        ""
-                        if any(
-                            block.get("scope") == "page_body"
-                            for block in request_blocks
-                        )
-                        else pages.get(request_page, "")
-                    ),
-                    "blocks": payload_blocks,
-                },
-                images=(
-                    ([] if body_only else [page_images[request_page]])
-                    + [block_images[block["id"]] for block in request_blocks]
+                **repair_request(
+                    args.pdf_file, lane, prompts[lane], request_blocks,
+                    chained=chained, body_only=body_only, fragments=fragments, pages=pages,
+                    page_images=page_images, block_images=block_images,
                 ),
             )
 

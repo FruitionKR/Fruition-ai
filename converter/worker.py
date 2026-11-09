@@ -40,9 +40,20 @@ SOURCE_KEY = re.compile(r"sources/documents/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/or
 SAFE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
+# MCP 외부 AI 변환(restoration=external)의 batch run_id. batch마다 document가 기존 outbox로 발행한다.
+EXTERNAL_RUN_ID = re.compile(r"mcpconvert:([0-9a-f-]{36}):(\d+)")
+
+
 def parse_command(command: dict[str, Any]) -> dict[str, Any]:
     """command를 검증한다. 잘못된 값은 ValueError이며 input_rejected로 알린다."""
-    for field in ("run_id", "parent_run_id", "workspace_id", "user_id", "document_id", "source_key", "provider", "model"):
+    external = command.get("restoration", "internal")
+    if external not in {"internal", "external"}:
+        raise ValueError("restoration must be internal or external")
+    external = external == "external"
+    # 외부 변환은 공급사를 부르지 않으므로 provider·model이 없다.
+    required = ("run_id", "parent_run_id", "workspace_id", "user_id", "document_id", "source_key",
+                *(() if external else ("provider", "model")))
+    for field in required:
         if not isinstance(command.get(field), str) or not command[field].strip():
             raise ValueError(f"convert command requires: {field}")
     if command.get("kind") != "convert_batch":
@@ -60,7 +71,54 @@ def parse_command(command: dict[str, Any]) -> dict[str, Any]:
     # 선택 필드다. 이전 document-svc는 보내지 않으므로 없으면 false다.
     if type(command.get("describe_figures", False)) is not bool:
         raise ValueError("describe_figures must be a boolean")
+    if external:
+        match = EXTERNAL_RUN_ID.fullmatch(command["run_id"])
+        if (match is None or int(match.group(2)) != start or command.get("conversion_id") != match.group(1)
+                or command["parent_run_id"] != f"mcpconvert:{match.group(1)}"):
+            raise ValueError("external conversion run identity is invalid")
     return command
+
+
+def external_prefix(command: dict[str, Any], start: int) -> str:
+    return f"tmp/convert/mcp/{command['workspace_id']}/{command['conversion_id']}/{start}/"
+
+
+def prepare_external_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[str, Any]:
+    """AnyDoc 전처리 결과와 외부 AI 창을 tmp/convert/mcp/ 아래에 올린다. PDF 사본은 올리지 않는다."""
+    storage, bucket = client(), bucket_name()
+    size = _source_size(storage, bucket, command)
+    stream = converter_app.StorageRangeReader(storage, bucket, command["source_key"], size, cancelled)
+
+    def upload(start: int, end: int, output_dir, windows: int) -> dict[str, Any]:
+        prefix = external_prefix(command, start)
+        for path in sorted(output_dir.rglob("*")):
+            if path.is_file() and path.suffix.lower() != ".pdf":
+                data = path.read_bytes()
+                storage.put_object(bucket, prefix + path.relative_to(output_dir).as_posix(), BytesIO(data),
+                                   length=len(data))
+        return {"page_start": start + 1, "page_end": end, "prefix": prefix, "window_count": windows}
+
+    try:
+        reader, total = converter_app.open_pdf(stream)
+        start = command["start_page"]
+        if start >= total:
+            raise ValueError("start_page is beyond the last page")
+        end = min(start + command["page_count"], total)
+        segments = converter_app.prepare_pages(reader, start, end, cancelled,
+                                               command.get("describe_figures", False), upload)
+    finally:
+        stream.close()
+    return {"conversion_id": command["conversion_id"], "page_start": start + 1, "page_end": end,
+            "total_pages": total, "segments": segments}
+
+
+def _source_size(storage: Any, bucket: str, command: dict[str, Any]) -> int:
+    try:
+        return storage.stat_object(bucket, command["source_key"]).size
+    except S3Error as error:
+        if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+            raise ValueError("source object does not exist") from error
+        raise
 
 
 def result_key(command: dict[str, Any]) -> str:
@@ -72,13 +130,10 @@ def convert_batch(command: dict[str, Any], cancelled: threading.Event) -> dict[s
     command = parse_command(command)
     if missing := converter_app.missing_commands():
         raise RuntimeError(f"Missing converter commands: {', '.join(missing)}")
+    if command.get("restoration") == "external":
+        return prepare_external_batch(command, cancelled)
     storage, bucket = client(), bucket_name()
-    try:
-        size = storage.stat_object(bucket, command["source_key"]).size
-    except S3Error as error:
-        if error.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
-            raise ValueError("source object does not exist") from error
-        raise
+    size = _source_size(storage, bucket, command)
     stream = converter_app.StorageRangeReader(storage, bucket, command["source_key"], size, cancelled)
     try:
         reader, total = converter_app.open_pdf(stream)
