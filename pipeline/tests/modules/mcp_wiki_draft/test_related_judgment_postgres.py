@@ -4,6 +4,7 @@ import pytest
 import test_mcp_wiki_draft as h
 from test_mcp_wiki_draft import isolated_state  # noqa: F401
 from test_related_judgment import judge
+from app.modules.model_usage.infrastructure import usage_ledger
 
 
 @pytest.mark.parametrize("drift", [None, "version", "hash", "identity"])
@@ -20,8 +21,9 @@ def test_related_finalize_frozen_apply_and_target_drift(monkeypatch, drift):
         intake.submit(started["run_id"], window["window_id"], h._submission(
             grant, started, window, key=f"submit-{ordinal}", concept="Incoming", text=text, quote=text,
             block_id=f"B000{ordinal}"))
-    finalized = intake.finalize(started["run_id"], h._finalize_payload(grant, started))
-    assert intake.finalize(started["run_id"], h._finalize_payload(grant, started)) == finalized
+    allowed = h._finalize_payload(grant, started).model_copy(update={"jev_allowed": True})
+    finalized = intake.finalize(started["run_id"], allowed)
+    assert intake.finalize(started["run_id"], allowed) == finalized
     payload = h._apply_payload(grant, finalized, operation_id=f"related-{uuid4()}")
     with h._connect() as conn:
         draft = h.apply_repository_module._load_draft(conn, payload, lock=False)
@@ -56,3 +58,55 @@ def test_related_finalize_frozen_apply_and_target_drift(monkeypatch, drift):
         if not drift:
             assert links[0]["to_page_id"] == "target"
             assert conn.execute("SELECT count(*) AS n FROM mcp_wiki_publication_outbox").fetchone()["n"] == 1
+
+
+def _ready_run(grant):
+    intake = h._intake()
+    started = intake.start(h._start_payload(grant))
+    for ordinal, text in [(1, "Alpha concept has evidence."), (2, "Beta concept has support.")]:
+        window = intake.read_window(started["run_id"], h.McpWikiActorRequest.model_validate(h._actor("get_window", grant)), ordinal)
+        intake.submit(started["run_id"], window["window_id"], h._submission(
+            grant, started, window, key=f"submit-{ordinal}", concept="Incoming", text=text, quote=text,
+            block_id=f"B000{ordinal}"))
+    return intake, started
+
+
+def test_finalize_without_jev_allowed_uses_client_judgment_and_flag_retry_replays(monkeypatch):
+    h._seed_lint_page("target", "target")
+    monkeypatch.setattr(h.calculation, "read_contributions", lambda *_: [])
+    def forbidden():
+        pytest.fail("jev_allowed=false must not construct Jev")
+    monkeypatch.setattr(h.PostgresMcpWikiDraftRepository, "_concept_judge", staticmethod(forbidden))
+    grant = str(uuid4())
+    intake, started = _ready_run(grant)
+
+    finalized = intake.finalize(started["run_id"], h._finalize_payload(grant, started))
+
+    with h._connect() as conn:
+        frozen = conn.execute("SELECT normalized_submissions FROM mcp_wiki_drafts WHERE run_id=%s",
+                              (started["run_id"],)).fetchone()["normalized_submissions"]
+    assert not any("server_merge_target_page_id" in item for window in frozen for item in window["contributions"])
+    retry = h._finalize_payload(grant, started).model_copy(update={"jev_allowed": True})
+    assert intake.finalize(started["run_id"], retry) == finalized
+
+
+def test_finalize_jev_calls_are_attributed_to_run_and_actor(monkeypatch):
+    h._seed_lint_page("target", "target")
+    monkeypatch.setattr(h.calculation, "read_contributions", lambda *_: [])
+    model = judge()
+    scopes = []
+    original = model.judge_concepts
+    def scoped(concepts, pool):
+        scopes.append(usage_ledger._actor.get())
+        return original(concepts, pool)
+    monkeypatch.setattr(model, "judge_concepts", scoped)
+    monkeypatch.setattr(h.PostgresMcpWikiDraftRepository, "_concept_judge", staticmethod(lambda: model))
+    grant = str(uuid4())
+    intake, started = _ready_run(grant)
+
+    intake.finalize(started["run_id"], h._finalize_payload(grant, started).model_copy(update={"jev_allowed": True}))
+
+    assert scopes == [{
+        "run_id": started["run_id"], "workspace_id": "workspace-1", "user_id": "user-1",
+        "kind": "mcp_wiki_ingest_jev_concept",
+    }]

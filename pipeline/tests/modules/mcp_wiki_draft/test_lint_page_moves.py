@@ -62,7 +62,7 @@ def world(monkeypatch):
 
 def test_freeze_moves_references_and_replay_without_second_judgment(world):
     judge, rows, pages, loaded = world
-    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {})
+    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {}, jev_allowed=True)
     assert len(judge.calls) == 1
     assert effects['deleted_page_ids'] == ['child']
     assert effects['page_changes']['referrer']['added_links'][0]['target'] == 'concept:parent'
@@ -90,7 +90,7 @@ def test_heads_and_effects_are_selected_targets_only(world):
     judge, rows, pages, _ = world
     rows.pop('parent')
     pages.pop('parent')
-    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {})
+    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {}, jev_allowed=True)
     assert not effects['deleted_page_ids']
     assert all(head['slug'] != 'parent' for call in judge.calls for head, _ in call)
 
@@ -108,16 +108,16 @@ def test_unavailable_has_no_inferred_effects_or_llm(world, monkeypatch, unavaila
         monkeypatch.setattr(production, 'cached_embeddings', fail)
     else:
         judge.error = JevUnavailable('offline')
-    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {})
+    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {}, jev_allowed=True)
     assert not effects.get('page_changes') and not effects.get('linked')
 
 
 def test_busy_target_is_not_moved_but_its_inbound_reference_is_rewritten(world):
     _, rows, pages, _ = world
-    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {'referrer': {}})
+    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {'referrer': {}}, jev_allowed=True)
     assert effects['deleted_page_ids'] == ['child']
     assert effects['page_changes']['referrer']['added_links'][0]['target'] == 'concept:parent'
-    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {'parent': {}})
+    effects = lint._freeze_page_moves(None, 'workspace', pages, rows, {'parent': {}}, jev_allowed=True)
     assert not effects['deleted_page_ids']
 
 
@@ -128,6 +128,6 @@ def test_selected_planner_passes_page_and_entry_bounds(world, monkeypatch):
         seen.append(kwargs)
         return {}
     monkeypatch.setattr(production, '_stored_concept_vectors', vectors)
-    lint._freeze_page_moves(None, 'workspace', pages, rows, {})
+    lint._freeze_page_moves(None, 'workspace', pages, rows, {}, jev_allowed=True)
     assert set(seen[0]['page_ids']) == set(pages)
     assert set(seen[0]['entry_ids']) <= {entry['entry_id'] for page in pages.values() for entry in page.entries}

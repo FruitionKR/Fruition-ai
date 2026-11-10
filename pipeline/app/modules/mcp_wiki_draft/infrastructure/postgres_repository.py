@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.core.ai_database import ai_database_url
+from app.modules.model_usage.infrastructure.usage_ledger import usage_scope
 from app.modules.task_cancellation.infrastructure.postgres_task_journal import (
     lock_user_writes,
     lock_workspace_writes,
@@ -199,19 +200,26 @@ class PostgresMcpWikiDraftRepository:
                 return response
             _check_active_limits(conn, payload.actor, intake_limits, source_bytes)
             lock_concept_persistence(conn, payload.actor.workspace_id)
+            usage = {
+                "run_id": draft_id, "workspace_id": payload.actor.workspace_id,
+                "user_id": payload.actor.user_id, "kind": "mcp_wiki_lint_jev_concept",
+            }
             try:
-                calculation = calculate_lint_preview(
-                    conn,
-                    draft_id=draft_id,
-                    workspace_id=payload.actor.workspace_id,
-                    target_snapshot=[item.model_dump() for item in payload.target_snapshot],
-                    source_snapshots=sources,
-                    operations=normalized,
-                    policy_version=lint_limits.policy_version,
-                    max_structural_changes=lint_limits.max_structural_changes,
-                    max_deletes=lint_limits.max_deletes,
-                    infer_page_moves=True,
-                )
+                # 서버 이동 추론은 Jev 판정이라 document가 크레딧을 허용했을 때만 하고, 그 호출을 사용자에게 귀속한다.
+                with usage_scope(usage):
+                    calculation = calculate_lint_preview(
+                        conn,
+                        draft_id=draft_id,
+                        workspace_id=payload.actor.workspace_id,
+                        target_snapshot=[item.model_dump() for item in payload.target_snapshot],
+                        source_snapshots=sources,
+                        operations=normalized,
+                        policy_version=lint_limits.policy_version,
+                        max_structural_changes=lint_limits.max_structural_changes,
+                        max_deletes=lint_limits.max_deletes,
+                        infer_page_moves=True,
+                        jev_allowed=payload.jev_allowed,
+                    )
             except PreviewCalculationError as exc:
                 message = str(exc)
                 if "exceeds" in message:
@@ -522,10 +530,17 @@ class PostgresMcpWikiDraftRepository:
                 raise McpWikiDraftError(413, "PREVIEW_TOO_LARGE", "Complete preview source exceeds the configured bound.")
             lock_concept_persistence(conn, payload.actor.workspace_id)
             # 웹 편입과 같이 서버 개념 판정기(Jev)를 승인 전 한 번만 돌려 제출에 고정한다(적용은 고정값으로 다시 계산).
+            # 크레딧이 없으면 Jev를 만들지 않고 외부 AI 판단으로 둔다. Jev 호출은 이 run과 행위자에게 귀속한다.
+            usage = {
+                "run_id": run_id, "workspace_id": str(row["workspace_id"]),
+                "user_id": payload.actor.user_id, "kind": "mcp_wiki_ingest_jev_concept",
+            }
             try:
-                submissions = freeze_server_concept_merges(
-                    conn, workspace_id=str(row["workspace_id"]), submissions=submissions, judge=self._concept_judge(),
-                )
+                with usage_scope(usage):
+                    submissions = freeze_server_concept_merges(
+                        conn, workspace_id=str(row["workspace_id"]), submissions=submissions,
+                        judge=self._concept_judge() if payload.jev_allowed else None,
+                    )
                 calculation = calculate_ingest_preview(
                     conn, run=dict(row), submissions=submissions, source_blocks=source_blocks
                 )

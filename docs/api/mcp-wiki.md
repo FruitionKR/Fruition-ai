@@ -28,9 +28,12 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
   },
   "query": "검색어",
   "cursor": null,
-  "page_size": 10
+  "page_size": 10,
+  "jev_allowed": false
 }
 ```
+
+`jev_allowed`는 document가 사용자 크레딧으로 Jev 비용을 낼 수 있다고 판정했는지 알리는 최상위 boolean이다. 없으면 `false`이고 boolean이 아니면 `400 INVALID_INPUT`이다. `false`면 Jev 클라이언트를 만들지도 부르지도 않고 하이브리드 순서만 쓴다. cursor 소유권·HMAC에는 포함하지 않는다.
 
 첫 요청의 `cursor`는 `null`이다. 다음 요청은 cursor와 함께 최초의 `query`, `page_size`, actor user/workspace/grant/client/policy/spec/tool을 그대로 보내야 한다. `invocation_id`는 요청별 추적 ID라 cursor 소유권에는 포함하지 않는다.
 
@@ -65,7 +68,7 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
 - admission에 성공한 scope는 전체 page metadata와 unit text의 lexical score, 전체 current page vector의 semantic score를 계산한 후에만 candidate limit을 적용한다. evidence 배열과 statement timeout도 응답 slicing 전에 적용한다.
 - 현재 page update 뒤 완료된 stored page vector만 후보 publication identity에 쓴다. relevant unit의 완료 stored vector가 있으면 semantic rerank에 쓰고, 없으면 semantic score 0으로 두며 본문을 즉석 임베딩하지 않는다. 질문은 한 번만 임베딩한다.
 - 기존 `Bm25Searcher`, stored dense score, 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
-- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 이미 bounded된 검색 후보의 snippet unit(본문·document-qualified block ref·unit 종류·가중치)뿐이며 workspace 전체 unit을 다시 읽지 않는다. 본문·블록·문서가 같은 후보는 하나로 묶고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 후보를 고른 순서로 앞에 두고 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
+- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 이미 bounded된 검색 후보의 snippet unit(본문·document-qualified block ref·unit 종류·가중치)뿐이며 workspace 전체 unit을 다시 읽지 않는다. 본문·블록·문서가 같은 후보는 하나로 묶고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 후보를 고른 순서로 앞에 두고 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
 - query embedding 호출은 model usage ledger의 `kind=mcp_wiki_search_query_embedding`으로 answer generation과 분리해 기록한다.
 - 검색 실행은 API event loop 밖의 worker thread에서 수행하고, deadline-aware remote embedding transport만 허용한다. 로컬 model fallback은 이 endpoint에서 지원하지 않는다.
 
@@ -165,7 +168,7 @@ page limit은 모두 양수로 명시한다: `MCP_WIKI_PAGE_MAX_ID_CHARS`, `MCP_
 | `POST /internal/mcp/wiki/ingest-runs/{run_id}/resume` | `{schema_version,actor}` | 같은 owner/grant/client/generation의 현재 intake 위치 |
 | `POST /internal/mcp/wiki/ingest-runs/{run_id}/windows/read` | `{schema_version,actor,window_ordinal}` | bounded ordered immutable blocks, UUID window, canonical window hash, `UNTRUSTED_WORKSPACE_CONTENT` |
 | `POST /internal/mcp/wiki/ingest-runs/{run_id}/windows/{window_id}/submissions` | `{schema_version,actor,idempotency_key,request_hash,snapshot_id,window_hash,contributions}` | validated structured contribution을 draft에만 저장하고 next ordinal로 진행 |
-| `POST /internal/mcp/wiki/ingest-runs/{run_id}/finalize` | `{schema_version,actor,idempotency_key,request_hash,snapshot_id,expected_submitted_window_count}` | 모든 ordered window를 검증하고 frozen `draft_version=1`과 `AWAITING_WEB_APPROVAL` response를 한 번만 생성 |
+| `POST /internal/mcp/wiki/ingest-runs/{run_id}/finalize` | `{schema_version,actor,idempotency_key,request_hash,snapshot_id,expected_submitted_window_count,jev_allowed?}` | 모든 ordered window를 검증하고 frozen `draft_version=1`과 `AWAITING_WEB_APPROVAL` response를 한 번만 생성 |
 | `GET /internal/mcp/wiki/drafts/{draft_id}/preview?draft_version=1` | body 없음; `X-MCP-Workspace-Id`, `X-MCP-User-Id` | owner-bound exact `mcp.wiki-preview.v1` full preview; missing/wrong owner는 `404` |
 
 Start는 client source/version/hash/bytes/URI를 받지 않는다. AI가 고정 Document origin의 `POST /internal/documents/{document_id}/mcp-wiki-source`를 `X-Agent-Service-Token`으로 한 번 호출한다. callback request는 exact `{schema_version:"mcp.wiki-source.v1",actor}`이고 response는 exact `{schema_version,document_id,workspace_id,source_version,source_content_hash,mime_type,blocks[{block_id,ordinal,text,content_hash}]}`다. Document는 한 coherent current read에서 Markdown/txt/기존 converted text의 version/hash/ordered blocks를 만들며 PDF parser나 caller URL/bearer를 추가하지 않는다.
@@ -179,6 +182,8 @@ MCP ingest의 기본 개념 판단자는 **클라이언트 LLM**이다. `get_win
 병합 대상은 normalized contribution 및 submit/finalize/draft hash에 포함된다. `null`은 생략으로 정규화하며 이전 클라이언트의 요청·저장 draft는 기존 이름/별칭 판정을 유지한다. document-svc의 `mcp-tools.v2`는 정적 tool description에 위 검색→의미 비교→대상 지정 순서를 기본 절차로 명시하고, `get_window` 응답과 `submit_window` contribution schema·hash normalization에서 이 필드를 전달한다. 두 서비스 계약은 함께 배포해야 한다. 위키 ingest 도구는 여전히 staged이며 공개 catalog의 네 read tool과 별개다. 이 변경이 ingest 도구의 공개 활성화를 뜻하지는 않는다.
 
 Request hash는 I0 canonical JSON으로 actor `invocation_id`만 제외하며 tool, run/window path identity, immutable source mapping과 internal composite locators를 포함한다. 같은 scoped key/hash는 저장 response를 반환하고 다른 hash는 `IDEMPOTENCY_CONFLICT`; PostgreSQL unique key와 row/document advisory lock이 동시 retry를 직렬화한다. owner/workspace/user/grant/client/generation이 다르면 `404`다.
+
+Finalize와 `POST /internal/mcp/wiki/lint-drafts`는 최상위 boolean `jev_allowed`(없으면 `false`)를 받는다. document가 사용자 크레딧으로 Jev 비용을 낼 수 있다고 판정했을 때만 `true`다. `false`면 finalize는 Jev 개념 판정기를 만들지 않고 클라이언트 판단(`merge_target_page_id`)을 쓰며, lint는 서버 이동 추론 없이 클라이언트 작업만 쓴다. `jev_allowed`는 request hash와 멱등성에 넣지 않으므로 다른 값으로 재시도해도 최초 결과를 그대로 재생한다. `true`일 때 Jev 호출은 model usage ledger에 행위자 `user_id`·`workspace_id`와 함께 finalize는 `run_id=<ingest run_id>`, `kind=mcp_wiki_ingest_jev_concept`, lint는 `run_id=<lint draft_id>`, `kind=mcp_wiki_lint_jev_concept`로 기록한다. 후보 선별용 임베딩 서버 호출은 웹 편입과 같이 원장에 기록하지 않는다.
 
 Finalize request hash에는 run path, server snapshot mapping, ordered window/hash/accepted-submission hash, normalized stored contributions와 internal evidence locator/quote가 들어간다. transport invocation metadata만 빠진다. complete sequence/count/source coverage가 아니면 전부 거절하며, 같은 intent의 동시 또는 다른-key retry는 최초 frozen response를 반환하고 바뀐 intent는 충돌한다. finalize 뒤 submission은 수정할 수 없다.
 
