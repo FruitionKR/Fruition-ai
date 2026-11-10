@@ -6,6 +6,7 @@ import test_mcp_wiki_draft as h
 from test_mcp_wiki_draft import isolated_state  # noqa: F401
 from test_lint_page_moves import Judge, Embedding
 from app.modules.mcp_wiki_draft import lint_calculation as lint
+from app.modules.model_usage.infrastructure import usage_ledger
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver as jev
 
 
@@ -35,7 +36,7 @@ def selected(monkeypatch):
         'arguments': {'statement_id': statement_id, 'text': 'Referrer replacement evidence.',
                       'evidence': [{'snapshot_id': snapshot, 'block_id': 'B0001', 'quote': 'Referrer replacement evidence.'}]},
     }], source)
-    return judge, source, grant, payload
+    return judge, source, grant, payload.model_copy(update={'jev_allowed': True})
 
 
 def test_frozen_moves_apply_and_contributions_replay(selected, monkeypatch):
@@ -165,3 +166,37 @@ def test_selected_vector_sql_excludes_unrelated_pages_and_entries_but_web_keeps_
     h._intake(source).lint(payload)
     # The entry has no authoritative definition, so it isn't a selected head either.
     assert materialized == [{'parent', 'child', 'referrer'}]
+
+
+def test_jev_not_allowed_skips_judge_and_retry_with_flag_replays(selected, monkeypatch):
+    _, source, _, payload = selected
+    def no_judge(_):
+        pytest.fail('jev_allowed=false must not construct Jev')
+    monkeypatch.setattr(jev, 'jev_concept_judge', no_judge)
+    intake = h._intake(source)
+
+    preview = intake.lint(payload.model_copy(update={'jev_allowed': False}))
+
+    with h._connect() as conn:
+        draft = dict(conn.execute('SELECT * FROM mcp_wiki_drafts').fetchone())
+        assert not draft['calculation_inputs']['server_effects']
+        assert not any(change['kind'] == 'PAGE_DELETE' for change in draft['changes'])
+    # jev_allowed는 request hash 밖이라 값이 달라도 같은 결과를 재생하고 Jev를 다시 만들지 않는다.
+    assert intake.lint(payload) == preview
+
+
+def test_lint_jev_calls_are_attributed_to_draft_and_actor(selected, monkeypatch):
+    judge, source, _, payload = selected
+    scopes = []
+    original = judge.judge_part_of
+    def scoped(pairs):
+        scopes.append(usage_ledger._actor.get())
+        return original(pairs)
+    monkeypatch.setattr(judge, 'judge_part_of', scoped)
+
+    preview = h._intake(source).lint(payload)
+
+    assert scopes == [{
+        'run_id': preview['draft_id'], 'workspace_id': 'workspace-1', 'user_id': 'user-1',
+        'kind': 'mcp_wiki_lint_jev_concept',
+    }]

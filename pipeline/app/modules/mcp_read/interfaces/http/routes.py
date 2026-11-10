@@ -13,6 +13,7 @@ from app.modules.mcp_read.application.wiki_page import ReadWikiPageUseCase, Wiki
 from app.modules.mcp_read.application.wiki_search import (
     SearchWikiUseCase,
     WikiSearchActor,
+    WikiSearchCandidate,
     WikiSearchError,
     WikiSearchLimits,
 )
@@ -132,14 +133,24 @@ def _query_embedding_usage(actor: WikiSearchActor, model: str, query: str):
         receipt["input_characters"] = len(query)
 
 
+class ConfiguredJevWikiSearchEvidence:
+    """요청이 `jev_allowed`일 때만 use case가 부른다. 그때 Jev 클라이언트를 만들어 크레딧이 없는 요청은 Jev를 만들지도 않는다."""
+
+    def select(self, actor: WikiSearchActor, query: str, candidates: list[WikiSearchCandidate]) -> list[str]:
+        # 웹 질의와 같은 설정·키로 Jev 근거 판정을 쓴다. 꺼져 있거나 키가 없으면 하이브리드 순서만 쓴다.
+        client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV, interactive=True)
+        if client is None:
+            return []
+        evidence = JevWikiSearchEvidence(client, max_selected=int_env("QUERY_EVIDENCE_LIMIT", 8))
+        return evidence.select(actor, query, candidates)
+
+
 def get_search_use_case() -> SearchWikiUseCase:
     limits, cursor_key = load_search_config()
     if not os.environ.get("EMBEDDING_SERVICE_URL", "").strip():
         raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "Remote embedding service is not configured.", retryable=True)
     model = RemoteEmbeddingModel.from_env()
     embedding_search = StoredWikiPageEmbeddingSearch(model).without_live_embedding()
-    # 웹 질의와 같은 설정·키로 Jev 근거 판정을 쓴다. 꺼져 있거나 키가 없으면 하이브리드 순서만 쓴다.
-    jev_client = build_jev_client(JEV_EVIDENCE_ENABLED_ENV, interactive=True)
     return SearchWikiUseCase(
         repository=PostgresMcpWikiSearchRepository(),
         embedding_search=embedding_search,
@@ -148,11 +159,7 @@ def get_search_use_case() -> SearchWikiUseCase:
         cursor_key=cursor_key,
         query_embedding_model=model.model_name,
         track_query_embedding=_query_embedding_usage,
-        evidence_selector=(
-            JevWikiSearchEvidence(jev_client, max_selected=int_env("QUERY_EVIDENCE_LIMIT", 8))
-            if jev_client is not None
-            else None
-        ),
+        evidence_selector=ConfiguredJevWikiSearchEvidence(),
     )
 
 

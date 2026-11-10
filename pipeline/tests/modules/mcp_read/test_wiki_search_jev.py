@@ -9,7 +9,13 @@ from app.core.jev_client import JevUnavailable
 from app.modules.mcp_read.application.wiki_search import SearchWikiUseCase, WikiSearchError
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
-from tests.modules.mcp_read.test_wiki_search import Repository, Search, candidate, limits, request, service
+from tests.modules.mcp_read.test_wiki_search import Repository, Search, candidate, limits, service
+from tests.modules.mcp_read.test_wiki_search import request as plain_request
+
+
+def request(**kwargs):
+    """이 파일의 검색은 document가 Jev 비용을 허용한 요청이다."""
+    return plain_request(**{"jev_allowed": True, **kwargs})
 
 
 def unit_candidate(page_id: str, text: str, block_id: str = "B0001", document_id: str = "doc-a"):
@@ -168,3 +174,35 @@ def test_selector_ids_outside_candidates_are_ignored() -> None:
 
     assert [item["page_id"] for item in response["results"]] == ["page-b", "page-a"]
     assert response["results"][0]["evidence"] == [{"document_id": "doc-a", "block_id": "B0001"}]
+
+
+def test_jev_not_allowed_keeps_hybrid_order_without_calling_selector() -> None:
+    class Forbidden:
+        def select(self, _actor, _query, _candidates):
+            pytest.fail("jev_allowed=false must not call the Jev selector")
+
+    hybrid = pages(service(Repository(list(CANDIDATES)), search_limits=limits()))
+    use_case = with_selector(Repository(list(CANDIDATES)), Forbidden())
+
+    ordered: list[str] = []
+    cursor = None
+    while True:
+        response = use_case.execute(plain_request(cursor=cursor))
+        ordered.extend(item["page_id"] for item in response["results"])
+        cursor = response["next_cursor"]
+        if cursor is None:
+            break
+
+    assert ordered == hybrid
+
+
+def test_continuation_accepts_a_different_jev_flag_and_keeps_frozen_order() -> None:
+    jev = Jev()
+    use_case = with_jev(Repository(list(CANDIDATES)), jev)
+    first = use_case.execute(request())
+
+    second = use_case.execute(plain_request(cursor=first["next_cursor"]))
+
+    assert first["results"][0]["page_id"] == "page-d"
+    assert second["results"][0]["page_id"] == "page-c"
+    assert len(jev.states) == 1

@@ -112,8 +112,11 @@ def service(repository: Repository, embedding=None, *, search_limits=None, track
     )
 
 
-def request(*, actor: WikiSearchActor = ACTOR, cursor: str | None = None, page_size: int = 1, query: str = "query"):
-    return WikiSearchRequest(actor=actor, query=query, cursor=cursor, page_size=page_size)
+def request(
+    *, actor: WikiSearchActor = ACTOR, cursor: str | None = None, page_size: int = 1, query: str = "query",
+    jev_allowed: bool = False,
+):
+    return WikiSearchRequest(actor=actor, query=query, cursor=cursor, page_size=page_size, jev_allowed=jev_allowed)
 
 
 def test_paginates_with_document_qualified_collision_safe_evidence() -> None:

@@ -70,6 +70,7 @@ class McpWikiSearchRequest(_ExactModel):
     query: str
     cursor: str | None
     page_size: StrictInt
+    jev_allowed: bool = False
 
     @field_validator("query")
     @classmethod
@@ -84,6 +85,7 @@ class McpWikiSearchRequest(_ExactModel):
             query=self.query,
             cursor=self.cursor,
             page_size=self.page_size,
+            jev_allowed=self.jev_allowed,
         )
 
 
