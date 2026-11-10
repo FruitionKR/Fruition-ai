@@ -49,6 +49,8 @@ class WikiSearchRequest:
     query: str
     cursor: str | None
     page_size: int
+    # document가 사용자 크레딧으로 Jev 비용을 낼 수 있다고 판정했을 때만 True다. 없으면 Jev 없이 하이브리드 순서만 쓴다.
+    jev_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,7 +264,7 @@ class SearchWikiUseCase:
         return sorted(candidates, key=lambda candidate: (-scores[candidate.page_id], -candidate.version, candidate.page_id))
 
     def _selected_first(self, request: WikiSearchRequest, ranked: list[WikiSearchCandidate]) -> list[WikiSearchCandidate]:
-        if self._evidence_selector is None or not ranked:
+        if not request.jev_allowed or self._evidence_selector is None or not ranked:
             return ranked
         ensure_task_active()
         selected_ids = self._evidence_selector.select(request.actor, request.query, ranked)

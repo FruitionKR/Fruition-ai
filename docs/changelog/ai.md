@@ -1,5 +1,12 @@
 # AI 변경 기록
 
+## 2026-11-10
+
+### MCP Jev 호출을 document 크레딧 판정으로 제한하고 사용자에게 귀속
+
+- `search`, ingest `finalize`, `lint-drafts`가 최상위 `jev_allowed`(없으면 false)를 받는다. false면 Jev를 만들지 않고 기존 대체 경로(하이브리드 순서, 외부 AI 판단, 클라이언트 lint 작업)를 쓴다. 값은 request hash·멱등성 밖이다.
+- finalize·lint의 Jev 호출을 `mcp_wiki_ingest_jev_concept`·`mcp_wiki_lint_jev_concept` kind로 run·workspace·행위자에게 기록한다.
+
 ## 2026-11-08
 
 ### AI 기동 상태와 위키 검색 준비 완료 구분

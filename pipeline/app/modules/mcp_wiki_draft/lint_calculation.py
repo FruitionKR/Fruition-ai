@@ -95,7 +95,7 @@ def _replay_page(
     return rebuild_concept_page([*loaded, *additions]), contribution
 
 
-def _freeze_page_moves(conn, workspace_id, pages, rows, busy):
+def _freeze_page_moves(conn, workspace_id, pages, rows, busy, *, jev_allowed):
     """Plan only within the already validated target closure; persist effects with the draft."""
     from app.core.jev_client import JevUnavailable
     from app.modules.wiki_generation.infrastructure.jev_concept_resolver import (
@@ -105,7 +105,8 @@ def _freeze_page_moves(conn, workspace_id, pages, rows, busy):
         _part_of_heads_from_rows, _plan_page_moves,
     )
 
-    judge = jev_concept_judge(None)
+    # 크레딧이 없으면 Jev를 만들지 않고 이동 추론 없이 클라이언트 작업만 쓴다.
+    judge = jev_concept_judge(None) if jev_allowed else None
     model = embedding_server_model() if judge is not None else None
     if judge is None or model is None:
         return {}
@@ -157,6 +158,7 @@ def calculate_lint_preview(
     max_structural_changes: int,
     max_deletes: int,
     infer_page_moves: bool = False,
+    jev_allowed: bool = False,
     server_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_ids = sorted(str(item["page_id"]) for item in target_snapshot)
@@ -338,6 +340,7 @@ def calculate_lint_preview(
         server_effects = _freeze_page_moves(
             conn, workspace_id, pages, row_by_id,
             {key for key, value in changes_by_page.items() if _has_change(value)},
+            jev_allowed=jev_allowed,
         )
     server_effects = server_effects or {}
     for page_id, change in server_effects.get("page_changes", {}).items():

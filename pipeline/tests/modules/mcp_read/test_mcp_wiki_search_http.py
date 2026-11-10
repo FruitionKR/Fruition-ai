@@ -197,3 +197,46 @@ def test_search_configuration_requires_explicit_positive_values_and_key(monkeypa
         assert getattr(exc, "code", None) == "DEPENDENCY_UNAVAILABLE"
     else:
         raise AssertionError("page size above candidate limit must fail closed")
+
+
+def _post_search(use_case, payload):
+    with (
+        patch.dict(os.environ, {"INTERNAL_CALLBACK_TOKEN": "internal-test-token"}),
+        patch.object(api.database, "ensure_ai_schema"),
+        patch.object(routes, "get_search_use_case", return_value=use_case),
+        TestClient(api.app) as client,
+    ):
+        return client.post(
+            "/internal/mcp/wiki/search",
+            headers={"X-Internal-Token": "internal-test-token"},
+            json=payload,
+        )
+
+
+def test_jev_allowed_defaults_to_false_and_passes_explicit_true() -> None:
+    missing, allowed = fake_use_case(), fake_use_case()
+
+    assert _post_search(missing, PAYLOAD).status_code == 200
+    assert _post_search(allowed, {**PAYLOAD, "jev_allowed": True}).status_code == 200
+
+    assert missing.execute.call_args.args[0].jev_allowed is False
+    assert allowed.execute.call_args.args[0].jev_allowed is True
+
+
+def test_jev_allowed_must_be_a_json_boolean() -> None:
+    use_case = fake_use_case()
+
+    response = _post_search(use_case, {**PAYLOAD, "jev_allowed": "true"})
+
+    assert response.status_code == 400
+    use_case.execute.assert_not_called()
+
+
+def test_configured_selector_builds_jev_only_when_called(monkeypatch) -> None:
+    built = []
+    monkeypatch.setattr(routes, "build_jev_client", lambda *args, **kwargs: built.append(args) or None)
+    selector = routes.ConfiguredJevWikiSearchEvidence()
+
+    assert built == []
+    assert selector.select(None, "query", []) == []
+    assert len(built) == 1

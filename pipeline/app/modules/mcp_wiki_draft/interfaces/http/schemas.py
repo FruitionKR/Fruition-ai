@@ -190,6 +190,8 @@ class FinalizeIngestRequest(ExactModel):
     request_hash: str
     snapshot_id: str
     expected_submitted_window_count: StrictInt = Field(ge=1, le=_MAX_SIGNED_LONG)
+    # document의 크레딧 판정. request hash·멱등성에는 넣지 않아 값이 달라도 같은 결과를 재생한다.
+    jev_allowed: bool = False
 
     @field_validator("idempotency_key")
     @classmethod
@@ -341,6 +343,8 @@ class SubmitLintDraftRequest(ExactModel):
     target_snapshot: list[TargetPageSnapshotRequest]
     source_snapshots: list[SourceSnapshotRequest]
     operations: list[LintOperationRequest]
+    # document의 크레딧 판정. request hash·멱등성에는 넣지 않아 값이 달라도 같은 결과를 재생한다.
+    jev_allowed: bool = False
 
     @field_validator("idempotency_key")
     @classmethod
