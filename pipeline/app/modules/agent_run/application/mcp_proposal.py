@@ -390,6 +390,16 @@ class CreateMcpProposalUseCase:
             }:
                 continue
             arguments = operation["arguments"]
+            if "source_document_id" in arguments:
+                # PDF 변환본은 서버가 기존 조립·sanitize로 만든 결과(key·hash)만 받는다. 본문은 계획에 싣지 않고
+                # 승인 뒤 Document가 그 key에서 읽어 hash를 확인한다. 클라이언트가 쓴 Markdown은 받지 않는다.
+                if not self._finalized_conversion(
+                    command.actor.workspace_id, command.actor.user_id, str(arguments["source_document_id"]),
+                    str(arguments["source_content_hash"]), str(arguments["content_hash"]),
+                    str(arguments["content_result_key"]),
+                ):
+                    raise McpProposalError(400, "INVALID_INPUT", "PDF conversion result is not a finalized conversion.")
+                continue
             artifact = artifact_by_id.get(str(arguments["content_artifact_id"]))
             if artifact is None:
                 raise McpProposalError(400, "INVALID_INPUT", "Document mutation artifact is missing.")
@@ -401,16 +411,7 @@ class CreateMcpProposalUseCase:
                 raise McpProposalError(400, "INVALID_INPUT", "Artifact content_hash does not match raw Markdown.")
             preview_json = None
             if operation["tool_name"] == "create_document":
-                if "source_document_id" in arguments:
-                    # PDF 변환본은 서버가 기존 조립·sanitize로 만든 결과만 받는다. 클라이언트가 쓴 Markdown은 받지 않는다.
-                    if not self._finalized_conversion(
-                        command.actor.workspace_id, command.actor.user_id, str(arguments["source_document_id"]),
-                        str(arguments["source_content_hash"]), raw_hash,
-                    ):
-                        raise McpProposalError(400, "INVALID_INPUT", "PDF conversion artifact is not a finalized conversion.")
-                    markdown = raw
-                else:
-                    markdown = sanitize_ai_markdown(raw, keep_urls=set())
+                markdown = sanitize_ai_markdown(raw, keep_urls=set())
                 if markdown != raw:
                     raise McpProposalError(400, "INVALID_INPUT", "Artifact Markdown violates the storage contract.")
                 document_id = base_version = target = None
@@ -494,7 +495,7 @@ class CreateMcpProposalUseCase:
         create_contents = {
             operation.id: create_artifacts[str(operation.arguments["content_artifact_id"])].markdown
             for operation in plan.operations
-            if operation.tool_name == "create_document"
+            if operation.tool_name == "create_document" and "content_artifact_id" in operation.arguments
         }
         if len(create_documents) > 1:
             plan = review_content_duplicates(

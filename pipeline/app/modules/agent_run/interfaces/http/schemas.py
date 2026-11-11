@@ -234,10 +234,14 @@ _PLAN_ARGUMENT_KEYS = {
         "document_id", "base_version", "target", "content_artifact_id", "content_hash",
     },
 }
-# PDF 변환본 생성: 원본 PDF 문서와 그 hash를 둘 다 지정한 create_document. 하나만 오면 거절한다.
-_SOURCE_BOUND_CREATE_DOCUMENT_KEYS = _PLAN_ARGUMENT_KEYS["create_document"] | {
-    "source_document_id", "source_content_hash",
+# PDF 변환본 생성: 원본 PDF 문서와 그 hash, MCP 변환 조립 결과의 저장소 key와 hash를 지정한 create_document.
+# 조립 결과는 artifact로 싣지 않는다. 승인 뒤 document가 key에서 읽어 hash를 확인하고 저장한다.
+_SOURCE_BOUND_CREATE_DOCUMENT_KEYS = {
+    "display_name", "folder_id", "content_result_key", "content_hash", "source_document_id", "source_content_hash",
 }
+_CONVERSION_RESULT_KEY = re.compile(
+    r"tmp/convert/mcp/[A-Za-z0-9_-]{1,255}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/final\.json"
+)
 
 
 def _folder_id(value: object, *, nullable: bool = True) -> str | None:
@@ -298,9 +302,13 @@ class McpPlanOperationRequest(_McpExactModel):
             source_id = self.arguments["source_document_id"]
             if not isinstance(source_id, str) or not _DOCUMENT_ID.fullmatch(source_id):
                 raise ValueError("source_document_id has an invalid format")
-            source_hash = self.arguments["source_content_hash"]
-            if not isinstance(source_hash, str) or not _HASH.fullmatch(source_hash):
-                raise ValueError("source_content_hash must be a lowercase sha256 digest")
+            for key in ("source_content_hash", "content_hash"):
+                value = self.arguments[key]
+                if not isinstance(value, str) or not _HASH.fullmatch(value):
+                    raise ValueError(f"{key} must be a lowercase sha256 digest")
+            result_key = self.arguments["content_result_key"]
+            if not isinstance(result_key, str) or not _CONVERSION_RESULT_KEY.fullmatch(result_key):
+                raise ValueError("content_result_key must be an MCP PDF conversion result")
         folder_tool = self.tool_name in {"create_folder", "rename_folder", "move_folder"}
         if self.target_type != ("folder" if folder_tool else "document"):
             raise ValueError("target_type does not match tool_name")

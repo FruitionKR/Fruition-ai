@@ -90,6 +90,7 @@ Kafka key는 `run_id`(batch id)다. 같은 문서의 batch가 파티션에 퍼�
 `run_id`는 `mcpconvert:{conversion_id}:{start_page}`, `parent_run_id`는 `mcpconvert:{conversion_id}`여야 한다(아니면 `input_rejected`).
 converter는 기존 batch·journal·쪽 나눔 재시도로 AnyDoc 전처리(`--mode crop-first-prepare`)만 하고, 기존 복원 요청을 창
 (`external/windows.json`과 PNG)으로 만들어 `tmp/convert/mcp/{workspace_id}/{conversion_id}/{묶음 시작 쪽}/`에 PDF 사본 없이 올린다.
+창마다 기존 복원의 재시도 요청(블록 하나씩, 이어진 표는 조각 하나씩)도 `followups`로 미리 만들어 둔다. 재시도 창 입력에 PDF가 필요하기 때문이다.
 결과 `payload`는 `{conversion_id, page_start, page_end, total_pages, segments:[{page_start, page_end, prefix, window_count}]}`다.
 converter는 command를 발행하지 않는다. 다음 batch는 세션 상태의 `dispatch_start_page`를 보고 document가 기존 outbox로 넣는다.
 
@@ -100,11 +101,11 @@ converter는 command를 발행하지 않는다. 다음 batch는 세션 상태의
 | `POST /` | `{idempotency_key, request_hash, document_id, source_key, source_content_hash, page_count, describe_figures}`로 세션을 만들거나 같은 키의 세션을 돌려준다. 다른 `request_hash`면 409 `IDEMPOTENCY_CONFLICT`. 응답 `dispatch_start_page`(0부터, 없으면 null)가 있으면 document가 그 batch를 넣는다 |
 | `POST /{id}/status` | journal의 batch를 따라 `PREPARING·READY·FAILED·FINALIZED`를 돌려준다 |
 | `POST /{id}/windows/read` | `{window_ordinal}`. 기존 복원 prompt·payload·`result_schema`와 묶음 안 이미지 key. `READY` 전이면 409 `CONVERSION_NOT_READY` |
-| `POST /{id}/windows/{window_id}/submissions` | `{idempotency_key, request_hash, window_hash, result}`. 기존 검증(`valid_replacement`, `clean_description`)에서 떨어진 block id를 돌려준다. 창당 2번까지(409 `ATTEMPTS_EXHAUSTED`) |
-| `POST /{id}/finalize` | 모든 창이 제출됐으면(아니면 409 `WINDOWS_NOT_SUBMITTED`) 묶음마다 마지막 제출을 기존 결과 파일로 쓰고 기존 조립·이미지 내장을 한 뒤 쪽 번호를 원본 기준으로 바꾸고, AnyDoc 원문 링크만 남겨 sanitize한다. Markdown은 `tmp/convert/mcp/{workspace_id}/{id}/final.md`에 두고 `content_hash`·`result_key`·`restoration_summary`를 돌려준다. 4MiB를 넘으면 413 `SOURCE_LIMIT_EXCEEDED`. 다시 부르면 같은 결과다 |
+| `POST /{id}/windows/{window_id}/submissions` | `{idempotency_key, request_hash, window_hash, result}`. 기존 검증(`valid_replacement`, `clean_description`)에서 떨어진 block id를 돌려준다. 기존 복원처럼 창마다 1번이다(409 `ATTEMPTS_EXHAUSTED`). 다시 묻기는 웹 복원과 같은 `retry_blocks` 규칙으로 정한다: 떨어진 블록마다, 이어진 표는 첫 조각이 받아들여진 교체가 아니면 조각마다 한 블록 재시도 창이 창 목록 뒤에 붙는다(`followup_block_ids`, `new_window_ordinals`, 늘어난 `window_count`). 재시도 창과 그림 창은 더 묻지 않는다 |
+| `POST /{id}/finalize` | 재시도 창까지 모든 창이 제출됐으면(아니면 409 `WINDOWS_NOT_SUBMITTED`) 묶음마다 제출을 기존 결과 파일로 쓰고(재시도에서 받아들여진 블록은 실패에서 뺀다) 기존 조립·이미지 내장을 하고, AnyDoc 원문 링크만 남겨 sanitize한다. 쪽 번호는 묶음 안 번호 그대로 두고 `[{page_start, markdown}]` JSON으로 `tmp/convert/mcp/{workspace_id}/{id}/final.json`에 둔다. 응답은 `content_hash`(그 JSON 바이트의 hash)·`result_key`·`restoration_summary`다. 크기 상한은 없다. 원본 기준 쪽 번호 바꾸기와 이미지 asset 분리는 승인 뒤 document가 웹 변환 batch와 같은 코드로 한다. 다시 부르면 같은 결과다 |
 
 세션은 workspace·user·grant·client·policy generation이 모두 같은 actor만 본다(아니면 404 `RESOURCE_NOT_FOUND`).
-상태는 `mcp_pdf_conversions`·`mcp_pdf_conversion_submissions`에 두고 워크스페이스·사용자 삭제 때 지운다. 묶음 object는 `tmp/convert/` lifecycle이 지운다.
+상태는 `mcp_pdf_conversions`·`mcp_pdf_conversion_submissions`에 두고 워크스페이스·사용자 삭제 때 지운다. 묶음 object와 `final.json`은 `tmp/convert/` lifecycle(1일)이 지운다. 그 뒤에 승인하면 document 저장이 결과를 읽지 못해 실패한다.
 
 ## 모델별 사용량 조회
 

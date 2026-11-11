@@ -27,11 +27,13 @@ artifact의 document/base/target/id/raw UTF-8 `sha256:` hash는 모두 같아야
 `target_folder_id`, 정확한 v1 operation 1~20개와 각 문서 mutation이 한 번씩 참조하는 artifact를 받는다.
 operation은 `create_folder|rename_folder|move_folder|move_document|rename_document|create_document|apply_document_edit`
 중 하나이고 unknown field, 잘못된 result reference/dependency, 오래된 hierarchy/version, 범위 밖 대상은 거절한다.
-MCP 외부 AI PDF 변환본(Fruition-document `finalize_pdf_conversion`)은 `create_document` 인자에 `source_document_id`(원본 PDF
-문서 ID)와 `source_content_hash`(`sha256:` 64 hex)를 함께 담는다. 둘 중 하나만 오면 거절한다. 이 인자는 MCP proposal 경로에서만
-받으며 내부 Agent planning(LLM) 계획은 받지 않는다. artifact는 같은 workspace·user의 [MCP PDF 변환 세션](tasks.md#mcp-외부-ai-pdf-변환-세션)이
-조립해 finalize한 Markdown과 hash가 같아야 한다(아니면 `INVALID_INPUT`). 서버가 조립·sanitize한 결과라 일반 `create_document`의
-sanitize 일치 검사는 하지 않는다. 두 값은 승인된 operation 인자에 그대로 남아 document-svc가 승인·실행 때 원본 권한과 hash를 다시 확인한다.
+MCP 외부 AI PDF 변환본(Fruition-document `finalize_pdf_conversion`)의 `create_document` 인자는 정확히 `display_name`, `folder_id`,
+`content_result_key`, `content_hash`, `source_document_id`(원본 PDF 문서 ID), `source_content_hash`(`sha256:` 64 hex)다. 하나라도
+빠지면 거절한다. 이 인자는 MCP proposal 경로에서만 받으며 내부 Agent planning(LLM) 계획은 받지 않는다. 본문은 artifact로 싣지 않는다:
+`content_result_key`(`tmp/convert/mcp/{workspace_id}/{conversion_id}/final.json`)와 `content_hash`가 같은 workspace·user의
+[MCP PDF 변환 세션](tasks.md#mcp-외부-ai-pdf-변환-세션)이 finalize한 결과 key·hash와 같아야 한다(아니면 `INVALID_INPUT`). 그래서 이
+operation에는 승인 화면 본문 미리보기가 없다. 값은 승인된 operation 인자에 그대로 남아 document-svc가 승인·실행 때 원본 권한과 hash를
+다시 확인하고, 실행 때 key에서 결과를 읽어 hash를 확인한 뒤 웹 변환과 같은 코드로 저장한다.
 
 `propose_skill_definition`의 `proposal`은 `{request_summary, definition}`이고 `definition`은
 `POST /skills/mcp-acceptances`의 정의와 같은 필드를 모두(생략 값은 `null`) 보낸다. AI는 LLM 없이

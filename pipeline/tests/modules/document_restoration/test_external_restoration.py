@@ -78,3 +78,30 @@ def test_rejected_result_falls_back_visibly_instead_of_counting_as_repaired():
 
         assert "표 자동 복원 실패" in markdown and "표 아님" not in markdown
         assert summary["rejected_block_ids"] == ["heron_table_p001_001"]
+
+
+def test_rejected_block_gets_a_single_block_followup_window_like_existing_retry():
+    with tempfile.TemporaryDirectory() as directory:
+        pdf, out, manifest, detected = _prepared(Path(directory), body="본문 원문\n\nXQ001QX\n")
+        table = next(w for w in external.build_windows(pdf, out, manifest, detected, False) if w["lane"] == "table")
+        block = "heron_table_p001_001"
+        blocks, fragments = external.load_context(manifest, detected)
+        bad = {"results": [{"block_id": block, "action": "replace", "replacement": "표 아님"}]}
+        good = {"results": [{"block_id": block, "action": "replace",
+                             "replacement": "| a | b |\n| --- | --- |\n| 1 | 2 |"}]}
+
+        # 기존 복원처럼 받아들인 블록은 다시 묻지 않고, 떨어진 블록만 한 블록 요청으로 한 번 더 묻는다.
+        assert external.followup_block_ids(table, good, blocks, fragments) == []
+        assert external.followup_block_ids(table, bad, blocks, fragments) == [block]
+        followup = external.followup_window(table, block)
+        assert followup["result_block_ids"] == [block] and followup["chain_block_ids"] == []
+        assert [item["block_id"] for item in followup["payload"]["blocks"]] == [block]
+        assert followup["instructions"] == table["instructions"]
+        # 같은 쪽 이미지는 한 번만 저장한다.
+        assert followup["images"] == table["images"]
+        # 재시도 창은 더 묻지 않는다.
+        assert external.followup_block_ids(followup, bad, blocks, fragments) == []
+
+        markdown, summary = external.assemble_external(out, manifest, detected, [(table, bad), (followup, good)])
+        assert "| a | b |" in markdown and "표 자동 복원 실패" not in markdown
+        assert summary["rejected_block_ids"] == []
