@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -85,11 +86,12 @@ def _validate(value, actor, document_id, limits) -> dict:
         or set(value) != _RESPONSE_KEYS
         or value.get("schema_version") != "mcp.wiki-source.v1"
         or value.get("document_id") != document_id
-        # 표시 이름은 소스 페이지 제목·frontmatter에 그대로 들어가는 신뢰할 수 없는 텍스트다. 줄바꿈·제어 문자를 막는다.
+        # 표시 이름은 소스 페이지 제목 한 줄에 들어가는 신뢰할 수 없는 텍스트다. Document 업로드·이름 변경이
+        # 받는 이름은 그대로 받고, 줄을 끊을 수 있는 문자(Cc·Zl·Zp)만 막는다.
         or not isinstance(value.get("display_name"), str)
         or not value["display_name"].strip()
         or len(value["display_name"]) > 255
-        or not value["display_name"].isprintable()
+        or any(unicodedata.category(char) in {"Cc", "Zl", "Zp"} for char in value["display_name"])
         or value.get("workspace_id") != actor.workspace_id
         or type(value.get("source_version")) is not int
         or value["source_version"] < 1

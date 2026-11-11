@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -63,10 +64,12 @@ class SourcePageAssembler:
             if item.get("title") or item.get("summary")
         ]
 
+        # source_file은 사용자가 지은 문서 이름이다. ": "·"#"·앞의 "-" 같은 YAML 문법 문자가 frontmatter를
+        # 깨지 않도록 JSON 문자열(YAML 큰따옴표 스칼라와 호환)로 쓴다.
         md = f"""---
 type: source
 document_id: {doc['document_id']}
-source_file: {doc['source_path']}
+source_file: {json.dumps(str(doc['source_path']), ensure_ascii=False)}
 categories: {', '.join(item.get('name', '') for item in normalized.get('categories', []) if item.get('name')) or '-'}
 ---
 

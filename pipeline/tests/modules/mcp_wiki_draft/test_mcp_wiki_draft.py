@@ -32,6 +32,7 @@ from app.modules.mcp_wiki_draft.apply_application import McpWikiDraftApply
 from app.modules.mcp_wiki_draft.infrastructure.apply_repository import PostgresMcpWikiApplyRepository
 from app.modules.mcp_wiki_draft.interfaces.http.apply_schemas import ApplyWikiDraftRequest
 from app.modules.mcp_wiki_draft import calculation
+from app.modules.wiki_generation.infrastructure.assemble import SourcePageAssembler
 from app.modules.mcp_wiki_draft.interfaces.http.dependencies import get_mcp_wiki_draft_intake
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
     FinalizeIngestRequest,
@@ -1669,7 +1670,10 @@ def test_controlled_document_http_contract_is_exact(monkeypatch, tool_name):
     }
 
 
-@pytest.mark.parametrize("display_name", [None, "", "   ", "x" * 256, "제목\nsource_file: evil", "제목\u202e"])
+@pytest.mark.parametrize("display_name", [
+    None, "", "   ", "x" * 256, "제목\nsource_file: evil", "제목\r", "제목\t탭", "제목\x00", "제목\x85",
+    "제목\u2028줄", "제목\u2029문단",
+])
 def test_document_source_display_name_is_required_bounded_untrusted_text(monkeypatch, display_name):
     actor = McpWikiActorRequest.model_validate(_actor("start_ingest", str(uuid4())))
     text = "Alpha source"
@@ -1699,6 +1703,50 @@ def test_document_source_display_name_is_required_bounded_untrusted_text(monkeyp
     assert rejected.value.code == "DEPENDENCY_UNAVAILABLE"
 
 
+@pytest.mark.parametrize("display_name", [
+    "Screenshot 2026-11-11 at 2.09.40\u202fPM", "붙여넣은\u00a0이름", "Q3: plan # draft", "- 목록 같은 이름", "제목\u202e",
+])
+def test_document_source_display_name_accepts_names_document_accepts(monkeypatch, display_name):
+    actor = McpWikiActorRequest.model_validate(_actor("start_ingest", str(uuid4())))
+    text = "Alpha source"
+    response = {
+        "schema_version": "mcp.wiki-source.v1", "document_id": "doc_1", "display_name": display_name,
+        "workspace_id": "workspace-1", "source_version": 3,
+        "source_content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        "mime_type": "text/plain", "blocks": [{
+            "block_id": "B0001", "ordinal": 1, "text": text,
+            "content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        }],
+    }
+
+    class HttpResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def read(self, _limit):
+            return json.dumps(response).encode()
+
+    monkeypatch.setattr(backend_source_reader, "urlopen", lambda _request, timeout: HttpResponse())
+    limits = __import__("app.modules.mcp_wiki_draft.application", fromlist=["load_intake_limits"]).load_intake_limits()
+    result = BackendMcpWikiSourceReader("https://document.internal", "service-token", 7).read(actor, "doc_1", limits)
+    assert result["display_name"] == display_name
+
+
+@pytest.mark.parametrize("display_name", [
+    "Screenshot 2026-11-11 at 2.09.40\u202fPM", "붙여넣은\u00a0이름", "Q3: plan # draft", "- 목록 같은 이름",
+])
+def test_source_page_renders_display_name_verbatim_with_safe_frontmatter(display_name):
+    yaml = pytest.importorskip("yaml")
+    normalized, _ = calculation._normalized(
+        {"document_id": "doc_1", "source_display_name": display_name}, [], {}, []
+    )
+    markdown = SourcePageAssembler().build(normalized)["markdown"]
+    assert f"\n# {display_name}\n" in markdown
+    line = next(item for item in markdown.split("---\n")[1].splitlines() if item.startswith("source_file:"))
+    assert yaml.safe_load(line) == {"source_file": display_name}
+
+
 @pytest.mark.parametrize("existing_source_page", [False, True])
 def test_source_page_title_is_document_display_name_not_document_id(existing_source_page):
     if existing_source_page:
@@ -1722,7 +1770,7 @@ def test_source_page_title_is_document_display_name_not_document_id(existing_sou
     source_change = next(item for item in preview["changes"] if item["kind"] == "SOURCE_PAGE")
     assert source_change["action"] == ("UPDATE" if existing_source_page else "ADD")
     assert "\n# 회의록 2026-11\n" in source_change["after_text"]
-    assert "source_file: 회의록 2026-11\n" in source_change["after_text"]
+    assert 'source_file: "회의록 2026-11"\n' in source_change["after_text"]
 
     result = McpWikiDraftApply(PostgresMcpWikiApplyRepository(), _ValidApprovalAuthority()).apply(
         finalized["draft_id"], _apply_payload(grant, finalized)
