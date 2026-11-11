@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app.modules.mcp_read.application.wiki_page import ReadWikiPageUseCase, WikiPageReadLimits
 from app.modules.mcp_read.application.wiki_search import (
     SearchWikiUseCase,
     WikiSearchActor,
@@ -19,7 +18,6 @@ from app.modules.mcp_read.application.wiki_search import (
 )
 from app.core.jev_client import JEV_EVIDENCE_ENABLED_ENV, build_jev_client
 from app.core.llm_env import int_env
-from app.modules.mcp_read.infrastructure.bounded_wiki_page_repository import BoundedWikiPageRepository
 from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
 from app.modules.mcp_read.infrastructure.postgres_wiki_search_repository import PostgresMcpWikiSearchRepository
 from app.modules.model_usage.infrastructure.usage_ledger import track_call, usage_scope
@@ -41,17 +39,6 @@ _CONFIG_NAMES = (
     "MCP_WIKI_SEARCH_MAX_SCAN_PAGES",
     "MCP_WIKI_SEARCH_MAX_SCAN_UNITS",
     "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS",
-)
-_PAGE_CONFIG_NAMES = (
-    "MCP_WIKI_PAGE_MAX_ID_CHARS",
-    "MCP_WIKI_PAGE_MAX_METADATA_BYTES",
-    "MCP_WIKI_PAGE_MAX_BODY_BYTES",
-    "MCP_WIKI_PAGE_MAX_RESPONSE_BYTES",
-    "MCP_WIKI_PAGE_DEADLINE_MS",
-    "MCP_WIKI_PAGE_DB_CONNECT_TIMEOUT_MS",
-    "MCP_WIKI_PAGE_DB_STATEMENT_TIMEOUT_MS",
-    "MCP_WIKI_PAGE_STORAGE_CONNECT_TIMEOUT_MS",
-    "MCP_WIKI_PAGE_STORAGE_READ_TIMEOUT_MS",
 )
 
 
@@ -90,33 +77,6 @@ def load_search_config() -> tuple[WikiSearchLimits, bytes]:
             max_vector_dimensions=values["MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS"],
         ),
         cursor_key,
-    )
-
-
-def load_page_config() -> WikiPageReadLimits:
-    if any(not os.environ.get(name, "").strip() for name in _PAGE_CONFIG_NAMES):
-        raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki page read is not configured.")
-    values: dict[str, int] = {}
-    for name in _PAGE_CONFIG_NAMES:
-        try:
-            value = int(os.environ[name].strip())
-        except ValueError:
-            raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki page read configuration is invalid.") from None
-        if value <= 0:
-            raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki page read configuration is invalid.")
-        values[name] = value
-    if values["MCP_WIKI_PAGE_MAX_RESPONSE_BYTES"] <= values["MCP_WIKI_PAGE_MAX_BODY_BYTES"]:
-        raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki page read configuration is invalid.")
-    return WikiPageReadLimits(
-        max_id_chars=values["MCP_WIKI_PAGE_MAX_ID_CHARS"],
-        max_metadata_bytes=values["MCP_WIKI_PAGE_MAX_METADATA_BYTES"],
-        max_body_bytes=values["MCP_WIKI_PAGE_MAX_BODY_BYTES"],
-        max_response_bytes=values["MCP_WIKI_PAGE_MAX_RESPONSE_BYTES"],
-        deadline_ms=values["MCP_WIKI_PAGE_DEADLINE_MS"],
-        db_connect_timeout_ms=values["MCP_WIKI_PAGE_DB_CONNECT_TIMEOUT_MS"],
-        db_statement_timeout_ms=values["MCP_WIKI_PAGE_DB_STATEMENT_TIMEOUT_MS"],
-        storage_connect_timeout_ms=values["MCP_WIKI_PAGE_STORAGE_CONNECT_TIMEOUT_MS"],
-        storage_read_timeout_ms=values["MCP_WIKI_PAGE_STORAGE_READ_TIMEOUT_MS"],
     )
 
 
@@ -161,10 +121,6 @@ def get_search_use_case() -> SearchWikiUseCase:
         track_query_embedding=_query_embedding_usage,
         evidence_selector=ConfiguredJevWikiSearchEvidence(),
     )
-
-
-def get_page_read_use_case() -> ReadWikiPageUseCase:
-    return ReadWikiPageUseCase(BoundedWikiPageRepository(), load_page_config())
 
 
 def _error(error: WikiSearchError) -> JSONResponse:

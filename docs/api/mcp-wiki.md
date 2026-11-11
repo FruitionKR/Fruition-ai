@@ -115,45 +115,20 @@ Embedding/provider, bounded SQL statement, BM25 검색의 deadline check는 work
 
 검색은 active published rows만 읽고 draft/source snapshot/cursor row를 만들지 않는다. Cursor가 stateless라 AI purge/TTL 대상도 추가하지 않는다. page 변경은 다음 요청에서 새 bounded snapshot과 비교해 stale 처리한다.
 
-## 10. Bounded `get_wiki_page`
+## 10. `get_wiki_page`
 
-MCP public tool input은 existing bounded ID grammar의 `{ "page_id": "..." }`뿐이다. document-svc가 검증된 authorization context의 workspace로 다음을 호출한다.
-
-`GET /wiki/pages/{page_id}?workspace_id=<validated context>&mcp_read=true`
-
-`mcp_read` 없는 legacy GET은 바꾸지 않는다. AI mode는 다음 일곱 text field만 반환한다.
-
-```json
-{
-  "schema_version": "mcp.wiki-page.v1",
-  "page_id": "page-a",
-  "page_type": "CONCEPT",
-  "title": "페이지 제목",
-  "body": "# 제목\n\n본문\n",
-  "content_hash": "sha256:0cbe37d6300159221d66c8bdc45b489caa97abdc10726d12af7a2417497f14c8",
-  "data_boundary": "UNTRUSTED_WORKSPACE_CONTENT"
-}
-```
-
-표시한 hash는 예시 body의 exact UTF-8 bytes SHA-256이다. 빈 `body`도 유효하다. 응답에는 `version`, evidence/quote, cursor, chunk, `next_cursor`, `truncated`, raw-hash field가 없다.
-
-AI는 validated workspace의 active page만 읽고 read 중 metadata/body가 바뀌지 않았는지 확인한다. exact raw returned UTF-8 body를 hash하며, Document는 그 internal hash를 먼저 검증한 뒤 기존 Markdown sanitizer를 title/body에 적용하고 exact sanitized UTF-8 body의 public hash를 반환한다. public hash는 returned representation만 식별하며 raw storage identity, search embedding/version/evidence identity, approval/apply identity, I8 publication identity가 아니다.
-
-page limit은 모두 양수로 명시한다: `MCP_WIKI_PAGE_MAX_ID_CHARS`, `MCP_WIKI_PAGE_MAX_METADATA_BYTES`, `MCP_WIKI_PAGE_MAX_BODY_BYTES`, `MCP_WIKI_PAGE_MAX_RESPONSE_BYTES`, `MCP_WIKI_PAGE_DEADLINE_MS`, `MCP_WIKI_PAGE_DB_CONNECT_TIMEOUT_MS`, `MCP_WIKI_PAGE_DB_STATEMENT_TIMEOUT_MS`, `MCP_WIKI_PAGE_STORAGE_CONNECT_TIMEOUT_MS`, `MCP_WIKI_PAGE_STORAGE_READ_TIMEOUT_MS`. response bytes는 body bytes보다 커야 하며 운영 기본값은 문서화하지 않는다. oversize metadata/body/envelope는 자르지 않고 `413 RESPONSE_LIMIT_EXCEEDED`; invalid ID는 `400 INVALID_INPUT`; 없는 page는 `404 PAGE_NOT_FOUND`; read 중 변경은 retryable `409 PAGE_CHANGED`; invalid configuration, storage/DB failure, bad UTF-8, timeout은 `503 DEPENDENCY_UNAVAILABLE`이다.
-
-구현은 bounded current-body consistency check만 증명하며 immutable publication, atomic cross-store snapshot, live provider 보장, hard end-to-end deadline을 뜻하지 않는다. I8을 기다리지 않는다.
+AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki_page`는 웹 상세 조회(`WikiService.findById`)를 그대로 쓰고, 그 조회가 부르는 기존 `GET /wiki/pages/{page_id}?workspace_id=...`만 AI에 닿는다. 본문은 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 고른다. 크기 제한·sanitize·`mcp.wiki-page.v1` 응답·hash는 document-svc의 MCP 경계가 맡는다(Fruition-document `docs/api/mcp-read.md`).
 
 ## 11. 구현 파일
 
 - application/cursor: `pipeline/app/modules/mcp_read/application/wiki_search.py`
 - bounded PostgreSQL candidate adapter: `pipeline/app/modules/mcp_read/infrastructure/postgres_wiki_search_repository.py`
-- bounded page read: `pipeline/app/modules/mcp_read/application/wiki_page.py`, `infrastructure/bounded_wiki_page_repository.py`, and the `mcp_read=true` branch in `wiki_ingestion/interfaces/http/routes.py`
 - exact DTO/route: `pipeline/app/modules/mcp_read/interfaces/http/{schemas,routes}.py`
 - composition root: `pipeline/api.py`
 
 ## 12. 연동 상태와 한계
 
-- bounded four-tool code slice: `search_wiki`, `find_documents`, `get_document`, `get_wiki_page`가 catalog에 있고, Document page client가 current authorization 뒤 bounded AI GET mode를 호출한다.
+- bounded four-tool code slice: `search_wiki`, `find_documents`, `get_document`, `get_wiki_page`가 catalog에 있고, `get_wiki_page`는 current authorization 뒤 웹 상세 조회(`WikiService.findById`)를 그대로 쓴다.
 - 아웃바운드 호출: deadline-aware embedding service로 query embedding 1회; 미설정이면 fail closed
 - inherited controlled evidence: AI는 focused 48개와 real PostgreSQL/MinIO 18개, Document는 real PostgreSQL/MinIO와 controlled HTTPS를 포함한 10개(6+2+2) 검사가 있다. incoming SDK harness는 MockHttp 기반이다.
 - 이는 release 또는 I2 전체 readiness가 아니다. live socket/proxy/Claude client proof가 없고, 이전 architectural failure 여섯 건도 passed로 기록하지 않는다. MCP public transport/current access authorization과 I3–I6/I8–I9 release work는 이 증거 범위 밖이다.
