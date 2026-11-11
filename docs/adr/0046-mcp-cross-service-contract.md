@@ -222,9 +222,30 @@ document가 access 판정으로 만든 다음 DTO를 actor-bearing MCP 전용 �
 
 공통 응답의 `data_boundary`는 항상 `UNTRUSTED_WORKSPACE_CONTENT`다. text는 tool definition이나 지시로 합치지 않고 content block의 데이터로만 반환하며 link/image를 inert representation으로 바꾼다. pagination을 쓰는 `search_wiki`·`find_documents`·`get_document`에서만 `next_cursor`가 있으면 `truncated=true`, 없으면 `false`다. 그 cursor는 opaque이며 user·workspace·grant·tool·정규화한 query/target·정렬·page version/content hash에 묶고, 다음 page/chunk에서도 access를 다시 판정한다. cursor가 가리키는 version이 바뀌면 새 내용을 섞지 않고 `STALE_CURSOR`를 반환한다. `get_wiki_page`는 cursor나 chunk를 쓰지 않는 단일 bounded body read다.
 
+### 공개 읽기 출처 링크 (`mcp-tools.v9`, 2026-11-11)
+
+- 네 공개 읽기 응답에 현재 인가 컨텍스트의 `workspace_id`를 추가한다.
+- 위키 페이지는 내부 지식이며 사용자에게 직접 여는 출처가 아니다. `search_wiki` 결과와
+  `get_wiki_page`에는 위키 페이지 URL을 추가하지 않는다. 위키 인용은 검색 evidence의 원문을 사용한다.
+- `search_wiki.results[].evidence[]`에 필수 nullable `source_url`을 추가한다.
+  document 서비스가 인가·검증·무해화를 마친 뒤 기존 canonical HTTPS `MCP_REVIEW_ORIGIN`과
+  `/home?doc=<encoded document_id>&blocks=<encoded block_id>`로 만든다.
+  frontend는 블록 ID를 기존 원문 미리보기의 위치 대조·하이라이트·스크롤 경로에 전달한다.
+- `find_documents.results[]`, `get_document`에는 문서 전체를 여는 `/home?doc=<encoded document_id>`
+  `source_url`을 추가한다. 이 도구의 블록 번호를 위키 영구 source block ID로 추측하지 않는다.
+- origin 미설정이면 URL은 null이며, content나 요청 헤더에서 origin을 가져오지 않는다.
+  정적 도구 설명은 근거 주장 옆에 반환된 원문 URL로 Markdown 인용을 달도록 지시한다.
+  `get_wiki_page`의 맥락을 인용할 때는 `search_wiki`에서 일치하는 원문 근거를 먼저 얻는다.
+  null URL은 문서·블록 ID로 대신 인용하고, 위키 페이지 링크나 임의 앵커는 만들지 않는다.
+- `/home`은 브라우저의 현재 워크스페이스를 사용하므로 대상 `workspace_id`를 먼저 선택하도록 안내한다.
+  URL은 공유 권한을 부여하지 않는다.
+- 이 필드는 공개 MCP 표시용이다. AI↔document 내부 strict DTO, 근거 locator의 identity,
+  본문·hash·커서는 그대로 유지하며, 링크를 붙인 후 전체 응답 크기 제한을 적용한다.
+  기존 응답 `schema_version` v1을 유지하고 공개 카탈로그/output schema를 v9로 갱신한다.
+
 ### 위키 evidence locator
 
-위키 근거의 식별자는 실제 source of truth마다 block ID 단독이 아닌 합성 locator다. 공개 `search_wiki` evidence와 그 search cursor는 저장된 exact `{ "document_id": "doc_<id>", "block_id": "B0001" }`를 쓰며, quote가 필요한 경우에만 `quote`를 더한다. document는 반환 전 현재 workspace/read 접근과 search result의 page version/content hash, document의 block provenance를 서버 저장 상태와 대조한다. 새 I9 ingest/lint draft의 ai 내부·저장·hash·apply 경계만 unknown field 없는 `{ "snapshot_id": "<server-created uuid>", "block_id": "B0001" }`를 쓴다. `(document_id, block_id)`와 `(snapshot_id, block_id)` 쌍은 각 list 안에서 unique하며 `block_id`만으로 dedupe·조인·충돌 판정하지 않는다.
+위키 근거의 식별자는 실제 source of truth마다 block ID 단독이 아닌 합성 locator다. `search_wiki`의 내부 evidence와 search cursor는 저장된 exact `{ "document_id": "doc_<id>", "block_id": "B0001" }`를 쓰며, quote가 필요한 경우에만 `quote`를 더한다. document는 반환 전 현재 workspace/read 접근과 search result의 page version/content hash, document의 block provenance를 서버 저장 상태와 대조한다. 새 I9 ingest/lint draft의 ai 내부·저장·hash·apply 경계만 unknown field 없는 `{ "snapshot_id": "<server-created uuid>", "block_id": "B0001" }`를 쓴다. `(document_id, block_id)`와 `(snapshot_id, block_id)` 쌍은 각 list 안에서 unique하며 `block_id`만으로 dedupe·조인·충돌 판정하지 않는다.
 
 I9 draft가 internal locator를 반환하거나 저장할 때는 같은 immutable body에 server-created `source_snapshots[{snapshot_id, document_id, source_version, source_content_hash}]`를 두고 모든 참조 snapshot을 정확히 한 번 mapping한다. 한 body/draft에서 `snapshot_id`와 `document_id`는 각각 unique해야 하며 하나의 document를 두 snapshot으로 모호하게 projection하지 않는다. document는 mapping의 workspace, read 권한, version/hash, block 소유를 서버 저장 상태와 대조한 뒤 frontend에만 document locator로 projection하며 client가 보낸 mapping은 받지 않는다. published search cursor의 canonical payload/hash에는 ordered document-qualified locator와 published page version/content hash를 포함한다. `submit_window`의 외부 evidence는 document locator로 받아 run에 고정된 단일 source snapshot의 internal locator로 치환하고, lint는 검증된 `source_documents` mapping으로 같이 치환한다. preview는 internal locator를 hash하고 frontend에만 document locator를 보이며, apply는 저장된 snapshot ID·version·hash·block을 다시 검증하고 document ID로 재매핑하지 않는다.
 
@@ -262,7 +283,7 @@ External input은 `{ "query": "<nonblank bounded text>", "cursor": null, "page_s
 }
 ```
 
-`page_type`은 `SOURCE | CONCEPT`이다. 위 response는 published read의 internal/external exact DTO이며 `evidence`는 그대로 `[{document_id, block_id}]`로 반환한다. `evidence`는 빈 배열일 수 있지만, 값이 있으면 document가 현재 workspace/read 접근과 해당 고정 page version/content hash의 document block provenance를 검증해야 한다. page ID와 block ID는 기존 wiki 도메인 validator와 길이 상한을 통과해야 하고 UUID로 일괄 변환하지 않는다. 후보 조회 단계부터 개수·총 text bytes·deadline 상한을 적용한다. 질문만 임베딩하고 저장 vector가 없는 본문은 `without_live_embedding()`으로 즉석 임베딩하지 않는다. 답변 생성기, 평가기, 요약기, `/agent/turn`은 호출하지 않는다.
+`page_type`은 `SOURCE | CONCEPT`이다. 위 response는 published read의 내부 exact DTO다. 공개 응답에는 위 절의 `workspace_id`, 근거 `source_url`을 추가하며, 내부 `evidence`는 `[{document_id, block_id}]`로 유지한다. `evidence`는 빈 배열일 수 있지만, 값이 있으면 document가 현재 workspace/read 접근과 해당 고정 page version/content hash의 document block provenance를 검증해야 한다. page ID와 block ID는 기존 wiki 도메인 validator와 길이 상한을 통과해야 하고 UUID로 일괄 변환하지 않는다. 후보 조회 단계부터 개수·총 text bytes·deadline 상한을 적용한다. 질문만 임베딩하고 저장 vector가 없는 본문은 `without_live_embedding()`으로 즉석 임베딩하지 않는다. 답변 생성기, 평가기, 요약기, `/agent/turn`은 호출하지 않는다.
 
 ### `get_wiki_page`
 
@@ -271,6 +292,7 @@ External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<ex
 ```json
 {
   "schema_version": "mcp.wiki-page.v1",
+  "workspace_id": "<authorized workspace id>",
   "page_id": "<id>",
   "page_type": "CONCEPT",
   "title": "<bounded untrusted text>",
@@ -280,7 +302,7 @@ External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<ex
 }
 ```
 
-응답은 정확히 `schema_version`, `page_id`, `page_type`, `title`, `body`, `content_hash`, `data_boundary`의 일곱 text field다. `version`, `evidence`, `quote`, `next_cursor`, `truncated`, chunk 또는 raw-hash field는 없다. body는 한 번에 반환되며 비어 있을 수 있다. body·metadata·전체 response 중 어느 하나가 bounded limit을 넘으면 조용히 자르지 않고 `RESPONSE_LIMIT_EXCEEDED`로 거절한다.
+공개 응답은 정확히 `schema_version`, `page_id`, `page_type`, `title`, `body`, `content_hash`, `data_boundary`, `workspace_id`의 여덟 text field다. `version`, `evidence`, `quote`, `next_cursor`, `truncated`, chunk 또는 raw-hash field는 없다. body는 한 번에 반환되며 비어 있을 수 있다. body·metadata·전체 response 중 어느 하나가 bounded limit을 넘으면 조용히 자르지 않고 `RESPONSE_LIMIT_EXCEEDED`로 거절한다.
 
 document는 본문을 고른 뒤 page metadata(`page_type`, `title`, `markdown_uri`, `status`, `updated_at`)와 최신 revision을 다시 읽어 read 중 바뀌었거나 active가 아니면 retryable `PAGE_CHANGED`로 거절한다. 전체 읽기는 `MCP_WIKI_PAGE_DEADLINE_MS` 안에 끝나야 하고 넘으면 `DEPENDENCY_UNAVAILABLE`이다. 저장 객체를 읽었는데 비어 있는 본문은 빈 `body`로 정상 반환하고, 끝내 본문을 구하지 못하면 `DEPENDENCY_UNAVAILABLE`이다. document는 기존 Markdown sanitizer로 title/body를 neutralize하고, public `content_hash`를 **반환한 sanitized body의 exact UTF-8 SHA-256**으로 계산한다. 따라서 identity를 섞지 않는다: 저장 본문 identity, MCP public returned-representation identity, 그리고 검색의 version/hash/evidence identity는 각각 별개다. 이 read는 immutable publication, approval/apply identity 또는 I8 publication identity를 주장하지 않으며 I8을 기다리지 않는다.
 
@@ -291,8 +313,10 @@ document 내부에서 처리하며 external input은 `{ "query": "<nonblank boun
 ```json
 {
   "schema_version": "mcp.document-search.v1",
+  "workspace_id": "<authorized workspace id>",
   "results": [{
     "document_id": "doc_<existing id>",
+    "source_url": "https://app.example/home?doc=doc_1",
     "display_name": "<bounded untrusted text>",
     "current_version": 1,
     "content_hash": "sha256:<64 lowercase hex>",
@@ -312,6 +336,8 @@ document 내부에서 처리하며 external input은 `{ "document_id": "<existin
 ```json
 {
   "schema_version": "mcp.document-read.v1",
+  "workspace_id": "<authorized workspace id>",
+  "source_url": "https://app.example/home?doc=doc_1",
   "document_id": "doc_<existing id>",
   "display_name": "<bounded untrusted text>",
   "current_version": 1,
@@ -898,7 +924,7 @@ frontend는 다음을 기존 UI 패턴에 연결한다.
 | 단계 | 필수 검사 |
 |---|---|
 | I1 access | metadata 익명 조회와 데이터 401; S256 only와 `token_endpoint_auth_method=none`; exact CIMD `client_id`가 authorization/token/code에서 literal `none` 또는 다른 ID로 대체되지 않음; authorization code 만료/재사용/동시 교환; verifier/client/redirect/actual loopback port/resource 바꿔치기; user/workspace/scope 불변; allowlist 전 CIMD network 0회; SSRF/redirect/size/time; public client refresh 실제 동작; 회전 동시성·응답 유실·reuse family revoke·오류 뒤 revoke commit; 임의 invalid token의 다른 grant 무회수; credential expiry가 grant expiry를 만들지 않음; policy off→on generation; 원본 membership/permission과 access 장애 fail-closed |
-| I2 document/ai read | 네 read DTO의 unknown field/type/identifier/version/hash/evidence/truncation 검증; `get_wiki_page`의 page-id-only input, exact seven-field `mcp.wiki-page.v1` response, internal raw-body hash 검증 뒤 sanitizer 적용과 sanitized public-body hash, empty body, no cursor/chunk/evidence/quote/version 및 oversize 거절; search의 stored `{document_id,block_id}` evidence, current workspace/read/provenance 및 search page version/content hash 검증; draft snapshot 없이 historical 두 document가 모두 `B0001`을 가질 때 별도 search evidence로 남고 dedupe/cursor hash가 충돌하지 않으며 안전한 document locator로 반환됨; stale/cross workspace/user/grant search·document cursor와 page version 변경 거절; 양방향 audience 거절; bad signature/issuer/expiry/scope; every ID/cursor/session cross-owner; POST와 지원 GET/DELETE session ownership; HTTPS-only와 allowed/missing/malformed/mismatched `Origin`; decompressed body 4 MiB; no token passthrough; `doc_`/`chatdoc_`와 길이; static `mcp-tools.v1` schema에 user/workspace text·Skill 없음; no generative LLM/evaluator/summarizer; missing stored vector 본문 embedding 0회; candidate count/text/time/response bounds, 필수 field/result의 silent truncation 없음, 계약상 bounded search snippet excerpt 적용 |
+| I2 document/ai read | 네 read DTO의 unknown field/type/identifier/version/hash/evidence/truncation 검증; `get_wiki_page`의 page-id-only input, exact eight-field public `mcp.wiki-page.v1` response (v9 workspace_id 포함, 출처는 search evidence의 원문 블록 URL), internal raw-body hash 검증 뒤 sanitizer 적용과 sanitized public-body hash, empty body, no cursor/chunk/evidence/quote/version 및 oversize 거절; search의 stored `{document_id,block_id}` evidence, current workspace/read/provenance 및 search page version/content hash 검증; draft snapshot 없이 historical 두 document가 모두 `B0001`을 가질 때 별도 search evidence로 남고 dedupe/cursor hash가 충돌하지 않으며 안전한 document locator로 반환됨; stale/cross workspace/user/grant search·document cursor와 page version 변경 거절; 양방향 audience 거절; bad signature/issuer/expiry/scope; every ID/cursor/session cross-owner; POST와 지원 GET/DELETE session ownership; HTTPS-only와 allowed/missing/malformed/mismatched `Origin`; decompressed body 4 MiB; no token passthrough; `doc_`/`chatdoc_`와 길이; static `mcp-tools.v1` schema에 user/workspace text·Skill 없음; no generative LLM/evaluator/summarizer; missing stored vector 본문 embedding 0회; candidate count/text/time/response bounds, 필수 field/result의 silent truncation 없음, 계약상 bounded search snippet excerpt 적용 |
 | I3 launch/UI | 실제 Claude client별 CIMD/redirect/discovery/refresh/reconnect/step-up; 관리자 default off; 연결 해제 즉시 새 read 차단; stale authz cache가 남아도 탈퇴 읽기 차단; access 장애 read 차단; consent CSRF/clickjacking/identity warning; HTTPS/proxy canonical URL; tool catalog version/change review와 write-before-launch/팀 Skill 미노출; audit exact user/workspace/client/grant/tool/target/result/origin fields, body/token/query/snippet 미기록; write author+MCP origin |
 | I4 proposal | exact operation/artifact/target/result-reference/tool-argument schemas, bounds, unknown field 거절; planner/evaluator 미호출; hierarchy/artifact/hash/purpose/folder scope 위조 거절; artifact UTF-8 hash와 deterministic normalized request/operation hash golden vectors; external raw instruction의 exact `proposal.instruction`·trimmed summary/reason mapping; `instruction-v1`/new-invocation/`instruction-v2` golden hash 재현과 같은 key의 raw instruction-only 변경 conflict; retry의 새 invocation/trace/time은 same hash, actor/content 변경은 conflict; obvious no-op 하나가 offending operation과 함께 전체 submission을 거절하고 run/artifact 없음; duplicate warning은 no-op과 구분; origin 위조 거절; auto approval setting/plan-ready/internal auto API로 실행 불가; explicit web approval만 가능; MCP revise 불가; 기존 web planner 회귀 |
 | I5 approval/execution/fees | approval canonical body/operation hash/price snapshot 고정과 selected operation plan-order normalization; full reserve or 402; duplicate/lost/late/cancelled approval; current permission at approval and every operation; user disconnect post-approval continues; admin/security halt next boundary; timeout/5xx/409/late commit receipt reconciliation; proposal에서만 확정 가능한 no-op은 I4 거절, execution-only `NO_CHANGE`는 free; duplicate receipt/charge once; cap; partial success; cancel/rollback no refund; releaseStale/model usage isolation; no web polling dependency |
