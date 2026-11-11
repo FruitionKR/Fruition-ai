@@ -63,16 +63,17 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
 
 ## 4. 검색 경계
 
-MCP 검색은 웹 질의의 근거 선택과 같은 코드를 쓴다. MCP 전용 코드는 클라이언트에 돌려주는 외부 경계(page size, snippet·응답 byte, cursor, 결과 projection, `UNTRUSTED_WORKSPACE_CONTENT` 표시)뿐이며, 후보 조회·정렬에는 MCP 전용 상한이 없다.
+MCP 검색은 웹 질의의 근거 선택과 같은 코드를 쓴다. MCP 전용 코드는 외부 호출 경계뿐이다: [ADR 0046](../adr/0046-mcp-cross-service-contract.md)대로 후보 조회 단계의 개수·총 text bytes·deadline 상한, 그리고 클라이언트에 돌려주는 page size·snippet·응답 byte·cursor·결과 projection·`UNTRUSTED_WORKSPACE_CONTENT` 표시다.
 
-- 후보: 웹 `JevEvidenceSelector`와 같이 `PostgresWikiRepository.list_workspace_embedding_units`로 요청 actor의 exact `workspace_id`에 있는 active source·concept page의 embedding unit을 읽고, `rank_candidates`로 (본문, document-qualified block ref, 문서)가 같은 unit을 하나로 묶은 뒤 BGE-M3 0.75 + BM25 0.25 점수로 정렬한다. 웹과 같은 `StoredWikiPageEmbeddingSearch.without_live_embedding()`·`Bm25Searcher`를 쓰므로 완료된 unit vector가 있으면 dense 점수에 쓰고, 없으면 dense 0으로 두며 본문을 즉석 임베딩하지 않는다. page embedding(`wiki_page_embeddings`)이 없거나 page 변경 뒤 아직 다시 계산되지 않아도 unit만 있으면 찾는다. 질문은 한 번만 임베딩한다.
-- 웹과 같은 정렬 상위 `CANDIDATE_LIMIT`(200)개 unit 후보를 page 결과로 바꾼다. 후보 순서대로 처음 나온 page를 결과로 두고, 그 page를 처음 가리킨 unit이 snippet과 evidence가 된다. 묶인 후보가 여러 page를 가리키면 각 page가 같은 snippet을 가진다. 그 사이 삭제된 page는 결과에서 뺀다.
+- 후보: 웹 `JevEvidenceSelector`와 같이 `PostgresWikiRepository.list_workspace_embedding_units`로 요청 actor의 exact `workspace_id`에 있는 active source·concept page의 embedding unit을 읽고, `group_candidates`로 (본문, document-qualified block ref, 문서)가 같은 unit을 하나로 묶고 dense·BM25 점수를 한 번 계산한다. 웹과 같은 `StoredWikiPageEmbeddingSearch.without_live_embedding()`·`Bm25Searcher`를 쓰므로 완료된 unit vector가 있으면 dense 점수에 쓰고, 없으면 dense 0으로 두며 본문을 즉석 임베딩하지 않는다. page embedding(`wiki_page_embeddings`)이 없거나 page 변경 뒤 아직 다시 계산되지 않아도 unit만 있으면 찾는다. 질문은 한 번만 임베딩한다.
+- 후보 조회 상한(ADR 0046): unit을 `MAX_SCAN_UNITS + 1`행까지만 읽고, 행 수가 `MAX_SCAN_UNITS`를 넘거나 읽은 unit 본문의 UTF-8 byte 합이 `MAX_CANDIDATE_BYTES`를 넘으면 정렬 전에 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`("scope exceeds configured capacity")로 거절한다. 임의 일부만 검색해 recall을 버리지 않는다. unit 조회와 page metadata 조회에는 남은 MCP deadline을 `statement_timeout`으로 걸고, 시간을 넘기면 재시도할 수 있는 `503 DEPENDENCY_UNAVAILABLE`이다. 웹은 같은 함수를 인자 없이 불러 상한 없이 읽는다.
+- 기본 결과 순서는 웹이 Jev 없이 근거 점수를 매길 때 쓰는 질문 언어별 비중([ADR 0009](../adr/0009-query-pipeline.md): 한글이 있으면 BM25 10%, 없으면 40%, `evidence_embedding_weight`)이다. 웹 fallback(`EvidenceSelector`)은 여기에 graph 탐색 page의 역할·일치 가산점을 더하지만 MCP 검색에는 graph 탐색이 없어 그 가산점은 쓰지 않는다. 이 순서 상위 `CANDIDATE_LIMIT`(200)개 unit 후보를 page 결과로 바꾼다. 후보 순서대로 처음 나온 page를 결과로 두고, 그 page를 처음 가리킨 unit이 snippet과 evidence가 된다. 묶인 후보가 여러 page를 가리키면 각 page가 같은 snippet을 가진다. 그 사이 삭제된 page는 결과에서 뺀다.
 - 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
-- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙(`select_evidence`)으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 위의 unit 후보(웹과 같은 200개) 그대로이고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 unit이 가리키는 page를 고른 순서로 앞에 두고 그 unit을 snippet으로 쓰며, 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
+- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙(`select_evidence`)으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 웹 Jev 근거 선택과 같은 BGE-M3 0.75 + BM25 0.25 순위([ADR-0027](../adr/0027-jev-selective-judge.md))에서 웹과 같은 상위 `CANDIDATE_LIMIT`(200)개다. Jev 비용은 웹과 같이 사용자 크레딧으로 낸다. 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 unit이 가리키는 page 중 기본 결과에 있는 page를 고른 순서로 앞에 두고 그 unit을 snippet으로 쓰며, 나머지는 기본 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
 - query embedding 호출은 model usage ledger의 `kind=mcp_wiki_search_query_embedding`으로 answer generation과 분리해 기록한다.
 - 검색 실행은 API event loop 밖의 worker thread에서 수행하고, deadline-aware remote embedding transport만 허용한다. 로컬 model fallback은 이 endpoint에서 지원하지 않는다.
 
-현재 array vector schema에는 index-supported nearest-neighbor 연산이 없어 웹과 같이 workspace의 unit 전체를 읽고 dense 점수를 Python에서 계산한다. 대규모 workspace 비용은 웹 질의와 같으며 실제 vector index/schema·deployment 결정 후에 함께 해결해야 한다.
+현재 array vector schema에는 index-supported nearest-neighbor 연산이 없어 웹과 같이 workspace의 unit 전체를 읽고 dense 점수를 Python에서 계산한다. 호출당 작업량은 unit 수에 비례하므로(로컬 측정 약 0.4ms/unit, 1024차원) 상한을 넘는 workspace는 capacity error로 거절한다. 대규모 workspace 지원은 실제 vector index/schema·deployment 결정 후에 별도로 해결해야 한다.
 
 ## 5. Cursor
 
@@ -90,14 +91,16 @@ Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant
 - `MCP_WIKI_SEARCH_MAX_REQUEST_BYTES`
 - `MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES`
 - `MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS`
+- `MCP_WIKI_SEARCH_MAX_SCAN_UNITS`
+- `MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES`
 
 `MCP_WIKI_SEARCH_CURSOR_HMAC_KEY`는 UTF-8 32 bytes 이상이어야 한다. 하나라도 없거나 잘못되면 API는 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다. 테스트 값은 focused test가 직접 주입하며 제품 상한이나 TTL을 뜻하지 않는다.
 
-`MAX_VECTOR_DIMENSIONS`는 embedding 서버가 돌려준 질문 vector 차원의 상한이며, 차원이 다른 저장 vector는 dense 0이다. 예전 `MCP_WIKI_SEARCH_MAX_CANDIDATES`·`MAX_CANDIDATE_BYTES`·`MAX_SCAN_PAGES`·`MAX_SCAN_UNITS`는 더 읽지 않는다.
+`MAX_VECTOR_DIMENSIONS`는 embedding 서버가 돌려준 질문 vector 차원의 상한이며, 차원이 다른 저장 vector는 dense 0이다. `MAX_SCAN_UNITS`는 workspace 검색 unit 행 수, `MAX_CANDIDATE_BYTES`는 그 unit 본문 UTF-8 byte 합의 상한이며, 넘는 workspace는 같은 상태에서 재시도해도 성공하지 않는 capacity error를 반환한다. 예전 `MCP_WIKI_SEARCH_MAX_CANDIDATES`·`MAX_SCAN_PAGES`는 더 읽지 않는다.
 
 Query embedding에는 `EMBEDDING_SERVICE_URL`, `INTERNAL_CALLBACK_TOKEN`, `EMBEDDING_MODEL_NAME`이 필요하다. Remote transport는 남은 MCP deadline보다 오래 기다리지 않으며, service URL이 없으면 local inference로 fallback하지 않고 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다.
 
-Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. 웹 저장소를 그대로 쓰므로 DB statement timeout은 따로 걸지 않는다. model-usage ledger/DB connection 수립, 이미 시작한 SQL과 Python 점수 계산은 강제 중단되지 않으며, 전·후 deadline check로만 제한한다.
+Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. unit·page metadata 조회 SQL은 남은 deadline의 statement timeout으로 끊는다. model-usage ledger/DB connection 수립, 저장 vector 조회와 Python 점수 계산은 강제 중단되지 않으며, 후보 행·byte 상한과 전·후 deadline check로 제한한다.
 
 ## 7. 오류
 
@@ -118,7 +121,7 @@ AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki
 ## 11. 구현 파일
 
 - application/cursor: `pipeline/app/modules/mcp_read/application/wiki_search.py`
-- 웹 근거 후보 adapter(page version/hash projection): `pipeline/app/modules/mcp_read/infrastructure/web_wiki_search_candidates.py`, 공유 후보 정렬 `pipeline/app/modules/query/infrastructure/jev_evidence_selector.py`의 `rank_candidates`
+- 웹 근거 후보 adapter(후보 조회 상한·page version/hash projection): `pipeline/app/modules/mcp_read/infrastructure/web_wiki_search_candidates.py`, 공유 후보 묶기·정렬 `pipeline/app/modules/query/infrastructure/jev_evidence_selector.py`의 `group_candidates`·`order_candidates`
 - Jev 근거 판정 adapter: `pipeline/app/modules/mcp_read/infrastructure/jev_wiki_search_evidence.py`
 - exact DTO/route: `pipeline/app/modules/mcp_read/interfaces/http/{schemas,routes}.py`
 - composition root: `pipeline/api.py`

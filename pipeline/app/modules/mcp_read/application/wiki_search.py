@@ -10,7 +10,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
 from typing import Callable, Protocol
 
-from app.core.pipeline_control import ensure_task_active, request_deadline
+from app.core.pipeline_control import ensure_task_active, remaining_seconds, request_deadline
 from app.modules.query.application.source_references import remove_block_refs, source_references_from_ids
 from app.modules.query.domain.entities import SemanticQueryEmbedding
 from app.modules.query.infrastructure.jev_evidence_selector import EvidenceCandidate
@@ -24,6 +24,9 @@ class WikiSearchLimits:
     max_request_bytes: int
     max_response_bytes: int
     max_vector_dimensions: int
+    # ADR 0046: 후보 조회 단계 상한. workspace의 검색 unit 행 수와 그 본문 UTF-8 byte 합.
+    max_scan_units: int
+    max_candidate_bytes: int
 
 
 @dataclass(frozen=True)
@@ -60,8 +63,10 @@ class WikiSearchPage:
 
 @dataclass(frozen=True)
 class WikiSearchCandidates:
-    # 웹 근거 선택과 같은 unit 후보를 같은 순서로 담는다. 한 후보가 여러 page를 가리킬 수 있다.
+    # 기본 결과 순서. 웹이 Jev 없이 근거를 고르는 질문 언어별 하이브리드 비중이다. 한 후보가 여러 page를 가리킬 수 있다.
     ranked: list[EvidenceCandidate]
+    # Jev 판정 후보. 웹 Jev 근거 선택과 같은 순위·개수(200)다.
+    judged: list[EvidenceCandidate]
     # 후보가 가리키는 active page의 결과 metadata. 없는 page는 결과에서 뺀다.
     pages: dict[str, WikiSearchPage]
 
@@ -72,6 +77,9 @@ class WikiSearchRepositoryPort(Protocol):
         *,
         workspace_id: str,
         query: str,
+        unit_limit: int,
+        text_bytes_limit: int,
+        statement_timeout_ms: int,
     ) -> WikiSearchCandidates: ...
 
 
@@ -132,14 +140,17 @@ class SearchWikiUseCase:
                 candidates = self._repository.list_candidates(
                     workspace_id=request.actor.workspace_id,
                     query=request.query,
+                    unit_limit=self.limits.max_scan_units,
+                    text_bytes_limit=self.limits.max_candidate_bytes,
+                    statement_timeout_ms=max(1, int((remaining_seconds() or 0) * 1000)),
                 )
                 self._validate_prefetch(candidates)
                 hits = self._page_hits(candidates)
                 if cursor is None:
-                    ranked = self._selected_first(request, candidates.ranked, hits)
+                    ranked = self._selected_first(request, candidates.judged, hits)
                 else:
                     # 이어지는 요청은 Jev를 다시 부르지 않고 cursor에 고정한 순서를 현재 후보와 대조해 쓴다.
-                    ranked = self._frozen_order(cursor, candidates.ranked, hits)
+                    ranked = self._frozen_order(cursor, [*candidates.ranked, *candidates.judged], hits)
                 ensure_task_active()
         except WikiSearchError:
             raise
@@ -223,16 +234,17 @@ class SearchWikiUseCase:
     def _selected_first(
         self,
         request: WikiSearchRequest,
-        ranked: list[EvidenceCandidate],
+        judged: list[EvidenceCandidate],
         hits: list[tuple[WikiSearchPage, EvidenceCandidate]],
     ) -> list[tuple[WikiSearchPage, EvidenceCandidate]]:
         if not request.jev_allowed or self._evidence_selector is None or not hits:
             return hits
         ensure_task_active()
-        selected_ids = self._evidence_selector.select(request.actor, request.query, ranked)
-        units = {candidate.unit.id: candidate for candidate in ranked}
+        selected_ids = self._evidence_selector.select(request.actor, request.query, judged)
+        units = {candidate.unit.id: candidate for candidate in judged}
         pages = {page.page_id: page for page, _ in hits}
         # 후보에 없는 ID는 버려, 판정 결과가 새 page를 만들어내지 못하게 한다. 고른 unit이 그 page의 snippet이 된다.
+        # 기본 결과에 없는 page는 앞으로 끌어오지 않는다(cursor가 기본 page 집합으로 후보 변경을 판정한다).
         front: dict[str, tuple[WikiSearchPage, EvidenceCandidate]] = {}
         for unit_id in selected_ids:
             candidate = units.get(unit_id)

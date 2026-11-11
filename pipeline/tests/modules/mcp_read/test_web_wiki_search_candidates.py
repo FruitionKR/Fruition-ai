@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
@@ -11,9 +12,10 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg.errors import QueryCanceled
 from psycopg.rows import dict_row
 
-from app.modules.mcp_read.application.wiki_search import SearchWikiUseCase
+from app.modules.mcp_read.application.wiki_search import SearchWikiUseCase, WikiSearchError
 from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
 from app.modules.mcp_read.infrastructure.web_wiki_search_candidates import WebWikiSearchCandidates
 from app.modules.query.domain.entities import WikiEmbeddingUnit
@@ -48,9 +50,11 @@ UNITS = [
 class Units:
     def __init__(self, units: list[WikiEmbeddingUnit]) -> None:
         self.units = units
+        self.calls: list[dict] = []
 
-    def list_workspace_embedding_units(self, workspace_id: str):
-        return [(item, f"Title {item.page_id}") for item in self.units]
+    def list_workspace_embedding_units(self, workspace_id: str, *, limit=None, statement_timeout_ms=None):
+        self.calls.append({"limit": limit, "statement_timeout_ms": statement_timeout_ms})
+        return [(item, f"Title {item.page_id}") for item in self.units][:limit]
 
 
 class Dense:
@@ -81,6 +85,8 @@ class PageConnection:
         return None
 
     def execute(self, query: str, params: tuple):
+        if "set_config('statement_timeout'" in query:
+            return Rows([])
         assert "FROM wiki_pages" in query
         workspace_id, page_ids = params
         return Rows([
@@ -100,16 +106,30 @@ def all_results(use_case, query: str) -> list[dict]:
             return results
 
 
-def test_ranking_matches_web_evidence_selector_for_the_same_candidates() -> None:
-    query = "refund window"
-    web = JevEvidenceSelector(None, None, Units(UNITS), Dense(), Bm25Searcher())._candidates(
+def first_pages(candidates) -> list[tuple[str, str]]:
+    pages: list[tuple[str, str]] = []
+    for item in candidates:
+        for page_id in item.page_ids:
+            if page_id not in {page for page, _ in pages}:
+                pages.append((page_id, item.unit.text))
+    return pages
+
+
+@pytest.mark.parametrize("query", ["refund window", "환불 refund window"])
+def test_without_jev_order_follows_the_web_fallback_language_weight(query: str) -> None:
+    # 웹은 Jev 없이 근거를 고를 때 질문 언어별 키워드 비중(ADR 0009: 한국어 0.10, 그 밖 0.40)을 쓴다.
+    keyword = 0.10 if "환불" in query else 0.40
+    groups = JevEvidenceSelector(None, None, Units(UNITS), Dense(), Bm25Searcher(), candidate_limit=99)._candidates(
         query, "workspace-1"
     )
-    expected: list[tuple[str, str]] = []
-    for item in web:
-        for page_id in item.page_ids:
-            if page_id not in {page for page, _ in expected}:
-                expected.append((page_id, item.unit.text))
+    texts = [item.unit.text for item in groups]
+    scores = {
+        item.unit.id: (1 - keyword) * dense + keyword * lexical
+        for item, dense, lexical in zip(
+            groups, Dense().score(query, texts), Bm25Searcher().score(query, texts), strict=True
+        )
+    }
+    expected = first_pages(sorted(groups, key=lambda item: (-scores[item.unit.id], item.unit.id)))
 
     repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(UNITS))
     with patch.object(database, "connect", return_value=PageConnection()):
@@ -135,17 +155,53 @@ def test_content_hash_follows_page_units_and_version_comes_from_the_page() -> No
     assert before["page-a"]["content_hash"] == after["page-a"]["content_hash"]
 
 
-def test_workspace_over_the_old_byte_cap_still_returns_results() -> None:
-    # 예전 MCP 전용 상한(MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES=262144)을 넘는 unit 본문이다.
-    large = [unit(f"u{index:04}", f"page-{index:04}", f"refund {index} " + "x" * 2000, f"B{index:04}") for index in range(300)]
-    repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(large))
-    assert sum(len(item.text.encode()) for item in large) > 262144
+@pytest.mark.parametrize(
+    ("bound", "value"),
+    # UNITS는 6행, 본문 합 160 bytes 남짓이다.
+    [("max_scan_units", 5), ("max_candidate_bytes", 100)],
+)
+def test_workspace_over_candidate_bounds_is_rejected_before_ranking(bound: str, value: int) -> None:
+    class Unranked(Dense):
+        def score(self, query, documents):
+            raise AssertionError("ranking must not run over capacity")
+
+    units = Units(UNITS)
+    repository = WebWikiSearchCandidates(Unranked(), Bm25Searcher(), wiki_repository=units)
+
+    with pytest.raises(WikiSearchError) as exc:
+        service(repository, search_limits=limits(**{bound: value})).execute(request())
+
+    assert (exc.value.status_code, exc.value.code, exc.value.retryable) == (503, "DEPENDENCY_UNAVAILABLE", False)
+    # 행 상한+1개까지만 읽어 초과를 판정한다. 일부만 검색하지 않는다.
+    assert units.calls[0]["limit"] == limits(**{bound: value}).max_scan_units + 1
+
+
+def test_workspace_exactly_at_candidate_bounds_is_searched() -> None:
+    total = sum(len(item.text.encode()) for item in UNITS)
+    repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(UNITS))
 
     with patch.object(database, "connect", return_value=PageConnection()):
-        response = service(repository).execute(request(query="refund"))
+        response = service(repository, search_limits=limits(max_scan_units=6, max_candidate_bytes=total)).execute(
+            request(query="refund")
+        )
 
-    assert len(response["results"]) == 1
-    assert response["next_cursor"] is not None
+    assert response["results"]
+
+
+def test_candidate_query_timeout_is_the_remaining_deadline_and_cancellation_fails_retryably() -> None:
+    class Cancelled(Units):
+        def list_workspace_embedding_units(self, workspace_id, *, limit=None, statement_timeout_ms=None):
+            super().list_workspace_embedding_units(workspace_id, limit=limit, statement_timeout_ms=statement_timeout_ms)
+            raise QueryCanceled("canceling statement due to statement timeout")
+
+    units = Cancelled(UNITS)
+    repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=units)
+
+    with pytest.raises(WikiSearchError) as exc:
+        service(repository, search_limits=limits(deadline_ms=1000)).execute(request())
+
+    assert (exc.value.status_code, exc.value.code, exc.value.retryable) == (503, "DEPENDENCY_UNAVAILABLE", True)
+    assert 0 < units.calls[0]["statement_timeout_ms"] <= 1000
 
 
 class CountingJev:
@@ -157,9 +213,19 @@ class CountingJev:
         return {key: {"choice": "exclude", "probabilities": {"exclude": 1.0}} for key in questions}
 
 
-def test_jev_judges_the_same_number_of_candidates_as_the_web_selector() -> None:
+class RecordingJev(CountingJev):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: list[str] = []
+
+    def choose(self, state: str, questions: dict) -> dict:
+        self.ids.extend(questions)
+        return super().choose(state, questions)
+
+
+def test_jev_judges_the_same_candidates_as_the_web_selector() -> None:
     units = [unit(f"u{index:04}", f"page-{index:04}", f"refund case {index}", f"B{index:04}") for index in range(250)]
-    web_jev, mcp_jev = CountingJev(), CountingJev()
+    web_jev, mcp_jev = RecordingJev(), RecordingJev()
     JevEvidenceSelector(web_jev, None, Units(units), Dense(), Bm25Searcher()).select("refund", [], {}, "workspace-1")
 
     repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(units))
@@ -174,7 +240,9 @@ def test_jev_judges_the_same_number_of_candidates_as_the_web_selector() -> None:
     with patch.object(database, "connect", return_value=PageConnection()):
         use_case.execute(request(query="refund", jev_allowed=True))
 
+    # Jev 비용은 웹과 같이 사용자 크레딧으로 내므로 판정 후보도 웹과 같은 200개다.
     assert web_jev.judged == mcp_jev.judged == CANDIDATE_LIMIT == 200
+    assert sorted(mcp_jev.ids) == sorted(web_jev.ids)
 
 
 DSN = os.environ.get("TEST_AGENT_DATABASE_URL") or os.environ.get("CONCEPT_LOCK_TEST_DSN")
@@ -249,6 +317,18 @@ def test_postgres_finds_pages_by_unit_embeddings_without_a_page_embedding(monkey
         assert response["results"][0]["snippet"] == "returns accepted for two weeks"
         assert response["results"][0]["version"] >= 1
         assert response["results"][0]["content_hash"].startswith("sha256:")
+
+        # 후보 조회가 잠금에 막히면 남은 deadline의 statement timeout으로 끊고 재시도 가능한 오류로 끝낸다.
+        with psycopg.connect(scoped) as locker:
+            locker.execute("LOCK TABLE wiki_embedding_units IN ACCESS EXCLUSIVE MODE")
+            started = time.monotonic()
+            with pytest.raises(WikiSearchError) as exc:
+                service(
+                    repository, embedding, search_limits=limits(max_vector_dimensions=2, deadline_ms=300)
+                ).execute(request(query="what is the refund window", page_size=2))
+            elapsed = time.monotonic() - started
+        assert (exc.value.code, exc.value.retryable) == ("DEPENDENCY_UNAVAILABLE", True)
+        assert elapsed < 2
     finally:
         with psycopg.connect(DSN, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))

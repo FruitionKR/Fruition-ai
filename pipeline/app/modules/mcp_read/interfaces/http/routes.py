@@ -35,6 +35,8 @@ _CONFIG_NAMES = (
     "MCP_WIKI_SEARCH_MAX_REQUEST_BYTES",
     "MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES",
     "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS",
+    "MCP_WIKI_SEARCH_MAX_SCAN_UNITS",
+    "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES",
 )
 
 
@@ -63,6 +65,8 @@ def load_search_config() -> tuple[WikiSearchLimits, bytes]:
             max_request_bytes=values["MCP_WIKI_SEARCH_MAX_REQUEST_BYTES"],
             max_response_bytes=values["MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES"],
             max_vector_dimensions=values["MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS"],
+            max_scan_units=values["MCP_WIKI_SEARCH_MAX_SCAN_UNITS"],
+            max_candidate_bytes=values["MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES"],
         ),
         cursor_key,
     )

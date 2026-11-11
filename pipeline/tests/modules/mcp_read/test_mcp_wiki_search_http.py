@@ -38,7 +38,7 @@ RESPONSE = {
 
 def fake_use_case() -> Mock:
     use_case = Mock()
-    use_case.limits = WikiSearchLimits(512, 5, 1000, 8192, 8192, 1024)
+    use_case.limits = WikiSearchLimits(512, 5, 1000, 8192, 8192, 1024, 100, 4096)
     use_case.execute.return_value = RESPONSE
     return use_case
 
@@ -136,7 +136,7 @@ def test_route_accepts_exact_dto_on_internal_router() -> None:
 
 def test_route_rejects_request_before_materializing_more_than_configured_bytes() -> None:
     use_case = fake_use_case()
-    use_case.limits = WikiSearchLimits(512, 5, 1000, 10, 8192, 1024)
+    use_case.limits = WikiSearchLimits(512, 5, 1000, 10, 8192, 1024, 100, 4096)
     with (
         patch.dict(os.environ, {"INTERNAL_CALLBACK_TOKEN": "internal-test-token"}),
         patch.object(api.database, "ensure_ai_schema"),
@@ -174,6 +174,8 @@ def test_search_configuration_requires_explicit_positive_values_and_key(monkeypa
         "MCP_WIKI_SEARCH_MAX_REQUEST_BYTES": "8192",
         "MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES": "8192",
         "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS": "1024",
+        "MCP_WIKI_SEARCH_MAX_SCAN_UNITS": "100",
+        "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES": "4096",
         "MCP_WIKI_SEARCH_CURSOR_HMAC_KEY": "test-cursor-key-that-is-at-least-32-bytes",
     }
     for name, value in configured.items():
@@ -183,6 +185,7 @@ def test_search_configuration_requires_explicit_positive_values_and_key(monkeypa
 
     assert config.max_page_size == 5
     assert config.max_vector_dimensions == 1024
+    assert (config.max_scan_units, config.max_candidate_bytes) == (100, 4096)
     assert key == configured["MCP_WIKI_SEARCH_CURSOR_HMAC_KEY"].encode()
 
     monkeypatch.setenv("MCP_WIKI_SEARCH_MAX_PAGE_SIZE", "0")

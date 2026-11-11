@@ -45,6 +45,8 @@ def limits(**values: int) -> WikiSearchLimits:
         "max_request_bytes": 16384,
         "max_response_bytes": 16384,
         "max_vector_dimensions": 16,
+        "max_scan_units": 1000,
+        "max_candidate_bytes": 1_000_000,
     }
     defaults.update(values)
     return WikiSearchLimits(**defaults)
@@ -92,6 +94,7 @@ class Repository:
         return WikiSearchCandidates(
             # 같은 묶음 후보를 여러 page가 공유하면 한 번만 둔다.
             ranked=list({id(item): item for item, _ in self.candidates}.values()),
+            judged=list({id(item): item for item, _ in self.candidates}.values()),
             pages={page.page_id: page for _, page in self.candidates},
         )
 
@@ -134,8 +137,10 @@ def test_paginates_with_document_qualified_collision_safe_evidence() -> None:
     assert first["results"][0]["evidence"] == [{"document_id": "doc-a", "block_id": "B0001"}]
     assert second["results"][0]["evidence"] == [{"document_id": "doc-b", "block_id": "B0001"}]
     assert repository.calls[0]["workspace_id"] == "workspace-1"
-    # 후보 조회에는 MCP 전용 상한을 넘기지 않는다.
-    assert all(call == {"workspace_id": "workspace-1", "query": "query"} for call in repository.calls)
+    # ADR 0046: 후보 조회 단계에 unit 행 수·text byte·남은 deadline 상한을 넘긴다.
+    for call in repository.calls:
+        assert (call["query"], call["unit_limit"], call["text_bytes_limit"]) == ("query", 1000, 1_000_000)
+        assert 0 < call["statement_timeout_ms"] <= 1000
 
 
 @pytest.mark.parametrize(
@@ -294,7 +299,7 @@ def test_only_query_is_embedded_and_usage_scope_is_separate() -> None:
             return Rows([])
 
     class Units:
-        def list_workspace_embedding_units(self, workspace_id, limit=None):
+        def list_workspace_embedding_units(self, workspace_id, *, limit=None, statement_timeout_ms=None):
             item, _page = candidate("page-a", text="body without stored vector")
             return [(item.unit, "Title page-a")]
 

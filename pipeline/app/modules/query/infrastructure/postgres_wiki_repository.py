@@ -398,9 +398,20 @@ class PostgresWikiRepository(WikiRepositoryPort):
             units_by_page_id.setdefault(unit.page_id, []).append(unit)
         return units_by_page_id
 
-    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
-        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다."""
+    def list_workspace_embedding_units(
+        self,
+        workspace_id: str,
+        *,
+        limit: int | None = None,
+        statement_timeout_ms: int | None = None,
+    ) -> list[tuple[WikiEmbeddingUnit, str]]:
+        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다.
+
+        웹은 인자 없이 전부 읽는다. 외부 호출 경계(MCP)는 행 수(limit)와 statement timeout을 걸 수 있다.
+        """
         with database.connect() as conn:
+            if statement_timeout_ms is not None:
+                conn.execute("SELECT set_config('statement_timeout', %s, true)", (f"{statement_timeout_ms}ms",))
             rows = conn.execute(
                 f"""
                 SELECT eu.id, eu.page_id, eu.source_document_id, eu.unit_type, eu.block_refs, eu.text, eu.weight,
@@ -412,8 +423,9 @@ class PostgresWikiRepository(WikiRepositoryPort):
                   AND p.workspace_id = %s
                   AND p.page_type IN ('source', 'concept')
                 ORDER BY eu.id
+                LIMIT %s
                 """,
-                (workspace_id,),
+                (workspace_id, limit),
             ).fetchall()
         return [(_embedding_unit(row), row["page_title"] or "") for row in rows]
 

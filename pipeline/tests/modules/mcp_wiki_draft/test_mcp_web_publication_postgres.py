@@ -95,7 +95,13 @@ def test_mcp_apply_defers_embedding_to_maintenance_worker_like_web_ingest(monkey
 
     found = WebWikiSearchCandidates(
         StoredWikiPageEmbeddingSearch(_Model()).without_live_embedding(), Bm25Searcher(),
-    ).list_candidates(workspace_id="workspace-1", query="Alpha concept")
+    ).list_candidates(
+        workspace_id="workspace-1",
+        query="Alpha concept",
+        unit_limit=10_000,
+        text_bytes_limit=10_000_000,
+        statement_timeout_ms=5_000,
+    )
     alpha = next(page_id for page_id, row in active.items() if row["slug"] == "alpha")
     assert alpha in found.pages
 
