@@ -41,15 +41,16 @@ MCP용으로 새 경로를 만들지 않는다. 기존 직접 업로드 API가 �
 |---|---|---|---|
 | `start_document_upload` | `POST .../uploads` | `{filename, size, folder_id}` | `{ticket, part_size, part_count, next_step}` |
 | `get_upload_part_urls` | `POST .../uploads/parts` | `{ticket, first_part, count}` | `{parts:[{part_number, url}]}` |
-| `complete_document_upload` | `POST .../uploads/complete` | `{idempotency_key, ticket}` | 웹 `DocumentUploadResponse` 필드 + `next_step` |
+| `complete_document_upload` | `POST .../uploads/complete` | `{idempotency_key, ticket}` | 웹 `DocumentUploadResponse` 필드 + `content_hash` + `next_step` |
 
 - 웹 요청·응답 필드 이름과 의미를 그대로 쓴다.
-- MCP에만 있는 필드는 둘이다.
+- MCP에만 있는 필드는 셋이다.
   - `idempotency_key`: 웹은 `Idempotency-Key` 헤더로 받지만 MCP tool에는 헤더가 없어서 필드로 받는다.
   - `next_step`: 기존 MCP 도구처럼 다음에 부를 도구를 알려 주는 코드 고정 문구다. start는 조각 PUT 방법을, complete는 `start_ingest`(Markdown) 또는 `start_pdf_conversion`(PDF, `content_hash`를 `source_content_hash`로) 안내를 담는다.
+  - `content_hash`: 웹 응답에는 없다. 그러나 `start_pdf_conversion`이 `source_content_hash`로 요구하고, 클라이언트는 이 값(PDF는 ETag 지문)을 스스로 계산할 수 없다. 그래서 `documents.content_hash`를 `sha256:` 형식으로 돌려준다.
 - 웹의 `abort`와 가져오기 세션 헤더(`X-Fruition-Import-Id`)는 노출하지 않는다. 버려진 multipart는 버킷 lifecycle이 7일 뒤 정리하고(flatform `infra/terraform/s3.tf:78-85`), 가져오기는 웹 Notion 가져오기 기능이기 때문이다.
 - **인가**: 웹과 같은 `requireMember`·`requirePlacement`·ticket의 user/workspace/key 대조를 그대로 탄다. 그 앞에서 MCP filter가 매 요청 현재 grant를 판정한다. scope는 기존 쓰기 scope인 `write_propose`다.
-- **감사**: 다른 도구와 같은 body-free audit v1이다. `target_ids`는 `folder_id`(있으면)와 완료 뒤 `document_id`뿐이다. ticket·URL·파일 이름은 남기지 않는다.
+- **감사**: 다른 도구와 같은 body-free audit v1이다. `target_ids`는 start의 `folder_id`(있으면)뿐이다. ticket·URL·파일 이름은 남기지 않는다.
 - ADR 0046 결정 1-6("쓰기는 제안만 만들고 웹 승인 뒤 실행")에서 업로드는 예외다. 업로드는 사람이 고른 파일을 그대로 저장할 뿐 AI가 만든 내용이 아니므로, 웹과 같이 승인 없이 저장한다.
 
 ## 결정 3: MCP 업로드는 서버 자동 편입을 하지 않는다
