@@ -131,3 +131,55 @@ def test_selected_planner_passes_page_and_entry_bounds(world, monkeypatch):
     lint._freeze_page_moves(None, 'workspace', pages, rows, {}, jev_allowed=True)
     assert set(seen[0]['page_ids']) == set(pages)
     assert set(seen[0]['entry_ids']) <= {entry['entry_id'] for page in pages.values() for entry in page.entries}
+
+
+@pytest.mark.parametrize('relation', ['source_mentions_concept', 'concept_related_to'])
+def test_lint_source_link_does_not_require_source_target(world, monkeypatch, relation):
+    from types import SimpleNamespace
+
+    _, rows, _, loaded = world
+    row = {**rows['parent'], 'page_type': 'concept', 'status': 'active'}
+    snapshot = {
+        'page_id': 'parent', 'page_type': 'concept', 'slug': 'parent',
+        'status': 'active', 'version': 1, 'content_hash': 'hash',
+        'markdown_uri': 'baseline/parent.md',
+        'body': lint.rebuild_concept_page(loaded['parent']).markdown,
+    }
+    link = {'from_page_id': 'source', 'to_page_id': 'parent',
+            'link_type': relation, 'label': None, 'confidence': None}
+    structures = {'entries': [], 'links': [link], 'references': [],
+                  'manual_links': [], 'document_links': []}
+    monkeypatch.setattr(lint, '_page_snapshot', lambda _: snapshot)
+    monkeypatch.setattr(lint, '_structural_rows', lambda *args: structures)
+    monkeypatch.setattr(lint, '_load_reconciled', lambda *args: [{
+        'page_id': 'parent', 'active': True, 'sequence_revision': 1,
+        'ingest_operation_id': 'seed-parent',
+    }])
+    monkeypatch.setattr(lint, 'load_concept_contributions', lambda **kwargs: loaded['parent'])
+    conn = SimpleNamespace(execute=lambda sql, params: SimpleNamespace(
+        fetchall=lambda: [row] if sql.startswith('SELECT * FROM wiki_pages') else []))
+    kwargs = dict(
+        draft_id='lint-source-link', workspace_id='workspace',
+        target_snapshot=[snapshot],
+        source_snapshots=[{'snapshot_id': 'source-snapshot', 'document_id': 'doc-source',
+                           'source_version': 1, 'source_content_hash': 'source-hash'}],
+        operations=[{'operation_id': 'add', 'kind': 'UPSERT_STATEMENT',
+                     'target_page_id': 'parent', 'depends_on': [], 'arguments': {
+                         'statement_id': None, 'text': 'Additional parent evidence.',
+                         'evidence': [{'snapshot_id': 'source-snapshot', 'block_id': 'B1',
+                                       'quote': 'Additional parent evidence.'}],
+                     }}],
+        policy_version='test', max_structural_changes=100, max_deletes=0,
+    )
+    if relation != 'source_mentions_concept':
+        with pytest.raises(lint.PreviewCalculationError, match='omits a linked identity'):
+            lint.calculate_lint_preview(conn, **kwargs)
+        return
+    result = lint.calculate_lint_preview(conn, **kwargs)
+    assert any(change['kind'] == 'PAGE_BODY' for change in result['preview']['changes'])
+    assert not any(change['kind'] == 'LINK' for change in result['preview']['changes'])
+    assert result['calculation_inputs']['public_state']['links'] == [link]
+    assert result['publication_plan']['link_changes'] == {'removed_links': [], 'restored_links': []}
+    before = result['preview']['public_state_hash']
+    structures['links'] = []
+    assert lint.calculate_lint_preview(conn, **kwargs)['preview']['public_state_hash'] != before
