@@ -1,5 +1,7 @@
 """MCP 승인 적용은 웹 편입 반영 코드를 그대로 탄다: 임베딩·휴지통 해제·수동 본문 보존·품질 상태 초기화."""
+import asyncio
 import json
+import logging
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
@@ -7,23 +9,11 @@ from psycopg.types.json import Jsonb
 import test_mcp_wiki_draft as h
 from test_mcp_wiki_draft import isolated_state  # noqa: F401
 from app.modules.mcp_read.infrastructure.web_wiki_search_candidates import WebWikiSearchCandidates
+from app.modules.mcp_wiki_draft.infrastructure import apply_repository
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.mcp_wiki_draft.interfaces.http import apply_routes
-from app.modules.wiki_embedding.application.build_wiki_page_embeddings import BuildWikiPageEmbeddingsUseCase
-from app.modules.wiki_embedding.infrastructure.minio_markdown_reader import MinioMarkdownReader
-from app.modules.wiki_embedding.infrastructure.postgres_wiki_page_embedding_repository import (
-    PostgresWikiPageEmbeddingRepository,
-)
-from app.modules.wiki_embedding.infrastructure.threaded_wiki_embedding_job import build_wiki_unit_embeddings
-
-
-class _EmbeddingJob:
-    def __init__(self):
-        self.calls = []
-
-    def start(self, run_id, page_ids):
-        self.calls.append((run_id, list(page_ids)))
+from app.modules.wiki_embedding.infrastructure import bge_m3_embedding_model, threaded_wiki_embedding_job
 
 
 class _Model:
@@ -32,20 +22,31 @@ class _Model:
     def embed(self, texts):
         return [[1.0, 0.0] for _ in texts]
 
+    def input_key(self, text):
+        return text
+
+
+def _no_local_model(*_args):
+    raise AssertionError("pipeline-api must not load the local BGE-M3 model")
+
 
 def _apply_through_route(monkeypatch, grant, finalized):
-    """운영 라우트의 조립(get_mcp_wiki_draft_apply)으로 적용한다. 승인 조회만 테스트 대역으로 바꾼다."""
-    job = _EmbeddingJob()
-    monkeypatch.setattr(apply_routes, "get_wiki_embedding_job", lambda: job, raising=False)
+    """운영 라우트의 조립(get_mcp_wiki_draft_apply)으로 적용한다. 승인 조회만 테스트 대역으로 바꾼다.
+    pipeline-api 안에서는 로컬 BGE-M3를 올리지 않는다(올리면 실패한다)."""
+    monkeypatch.setattr(bge_m3_embedding_model, "_load_sentence_transformer", _no_local_model)
+    monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", _no_local_model)
     monkeypatch.setattr(apply_routes, "ConfiguredWikiApprovalAuthority", h._ValidApprovalAuthority)
     apply_routes.get_mcp_wiki_draft_apply.cache_clear()
     try:
         payload = h._apply_payload(grant, finalized)
-        result = apply_routes.get_mcp_wiki_draft_apply().apply(payload.draft_id, payload)
+        use_case = apply_routes.get_mcp_wiki_draft_apply()
+        # 웹 편입 worker(get_deferred_pipeline_run_use_case)와 같은 지연 임베딩 작업을 쓴다.
+        assert type(use_case._repository._embedding_job) is threaded_wiki_embedding_job.DeferredWikiEmbeddingJob
+        result = use_case.apply(payload.draft_id, payload)
     finally:
         apply_routes.get_mcp_wiki_draft_apply.cache_clear()
     assert result["state"] == "PUBLISHED"
-    return payload, job
+    return payload
 
 
 def _ingest(monkeypatch, ledger=()):
@@ -57,9 +58,9 @@ def _ingest(monkeypatch, ledger=()):
     return grant, started, finalized
 
 
-def test_mcp_apply_starts_embedding_and_page_becomes_mcp_searchable(monkeypatch):
+def test_mcp_apply_defers_embedding_to_maintenance_worker_like_web_ingest(monkeypatch):
     grant, _started, finalized = _ingest(monkeypatch)
-    payload, job = _apply_through_route(monkeypatch, grant, finalized)
+    payload = _apply_through_route(monkeypatch, grant, finalized)
 
     with h._connect() as conn:
         active = {
@@ -67,16 +68,31 @@ def test_mcp_apply_starts_embedding_and_page_becomes_mcp_searchable(monkeypatch)
                 "SELECT id,page_type,slug FROM wiki_pages WHERE status='active'"
             ).fetchall()
         }
-    assert len(job.calls) == 1
-    run_id, page_ids = job.calls[0]
-    assert run_id == payload.operation_id
-    assert set(page_ids) == set(active)
+        # 웹 편입 worker처럼 API는 발행만 하고 임베딩을 만들지 않는다.
+        assert conn.execute(
+            "SELECT count(*) AS n FROM wiki_page_embeddings WHERE status='completed'"
+        ).fetchone()["n"] == 0
+    assert active
 
-    # 임베딩 작업이 만든 벡터로 MCP search_wiki 후보 질의(웹 근거 검색 경로)가 발행한 개념을 찾는다.
-    BuildWikiPageEmbeddingsUseCase(
-        PostgresWikiPageEmbeddingRepository(), _Model(), MinioMarkdownReader(),
-    ).execute(page_ids)
-    build_wiki_unit_embeddings(page_ids, embedding_model=_Model())
+    # 발행 결과가 Document로 간다(Document는 이를 받아 mcp_publication_index로 maintenance worker를 깨운다).
+    sent = []
+    monkeypatch.setattr(apply_repository, "_send_publication_receipt", sent.append)
+    assert asyncio.run(apply_repository.relay_pending_mcp_publications()) == 1
+    assert [(event["operation_id"], event["changed"]) for event in sent] == [(payload.operation_id, True)]
+    with h._connect() as conn:
+        assert conn.execute("SELECT state FROM mcp_wiki_publication_outbox").fetchone()["state"] == "sent"
+
+    # maintenance worker의 mcp_publication_index 처리(recover)가 웹 post_ingest와 같은 build_wiki_embeddings로 임베딩한다.
+    monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", lambda: _Model())
+    threaded_wiki_embedding_job.ThreadedWikiEmbeddingJob(logging.getLogger("test")).recover("mcp-index:test")
+    with h._connect() as conn:
+        embedded = {
+            str(row["page_id"]) for row in conn.execute(
+                "SELECT page_id FROM wiki_page_embeddings WHERE status='completed' AND embedding_model='test-model'"
+            ).fetchall()
+        }
+    assert embedded == set(active)
+
     found = WebWikiSearchCandidates(
         StoredWikiPageEmbeddingSearch(_Model()).without_live_embedding(), Bm25Searcher(),
     ).list_candidates(workspace_id="workspace-1", query="Alpha concept")
