@@ -2,7 +2,7 @@
 
 - 상태: 제안
 - 범위: Fruition-document, Fruition-ai(문서)
-- 기준 커밋: ai `f41a57c`, document `072f7c6`(catalog `mcp-tools.v4`)
+- 기준 커밋: ai `e35d9da`, document `9407cb9`(catalog `mcp-tools.v6`)
 - 고치는 결정: [ADR 0046](0046-mcp-cross-service-contract.md) 결정 1의 닫힌 tool 목록과 1-6(쓰기는 제안만)
 
 ## 개정 기록
@@ -12,6 +12,7 @@
   - 업로드는 AI 단계가 아니다. 그래서 웹과 같이 승인 없이 완료 즉시 문서가 된다.
   - 승인은 사용자 AI가 만든 결과(PDF 변환본, 위키 초안)에만 남는다. 이 승인은 기존 도구가 이미 하고 있다.
   - 그 결과 이전 안의 staging 표·prefix, 승인 operation, U2, 별도 hash 규칙이 필요 없어졌다.
+- 2026-11-11 사용자 결정으로 scope 미결 질문을 닫았다. 새 scope를 만들지 않고, 업로드 확인은 MCP 클라이언트의 도구 실행 확인이 맡는다([결정 6](#결정-6-업로드-확인은-mcp-클라이언트가-한다)). catalog 버전은 dev가 이미 `mcp-tools.v6`이므로 `v7`로 바로잡았다.
 
 ## 맥락
 
@@ -49,7 +50,7 @@ MCP용으로 새 경로를 만들지 않는다. 기존 직접 업로드 API가 �
   - `next_step`: 기존 MCP 도구처럼 다음에 부를 도구를 알려 주는 코드 고정 문구다. start는 조각 PUT 방법을, complete는 `start_ingest`(Markdown) 또는 `start_pdf_conversion`(PDF, `content_hash`를 `source_content_hash`로) 안내를 담는다.
   - `content_hash`: 웹 응답에는 없다. 그러나 `start_pdf_conversion`이 `source_content_hash`로 요구하고, 클라이언트는 이 값(PDF는 ETag 지문)을 스스로 계산할 수 없다. 그래서 `documents.content_hash`를 `sha256:` 형식으로 돌려준다.
 - 웹의 `abort`와 가져오기 세션 헤더(`X-Fruition-Import-Id`)는 노출하지 않는다. 버려진 multipart는 버킷 lifecycle이 7일 뒤 정리하고(flatform `infra/terraform/s3.tf:78-85`), 가져오기는 웹 Notion 가져오기 기능이기 때문이다.
-- **인가**: 웹과 같은 `requireMember`·`requirePlacement`·ticket의 user/workspace/key 대조를 그대로 탄다. 그 앞에서 MCP filter가 매 요청 현재 grant를 판정한다. scope는 기존 쓰기 scope인 `write_propose`다.
+- **인가**: 웹과 같은 `requireMember`·`requirePlacement`·ticket의 user/workspace/key 대조를 그대로 탄다. 그 앞에서 MCP filter가 매 요청 현재 grant를 판정한다. scope는 기존 쓰기 scope인 `write_propose`다. 새 scope는 만들지 않는다([결정 6](#결정-6-업로드-확인은-mcp-클라이언트가-한다)).
 - **감사**: 다른 도구와 같은 body-free audit v1이다. `target_ids`는 start의 `folder_id`(있으면)뿐이다. ticket·URL·파일 이름은 남기지 않는다.
 - ADR 0046 결정 1-6("쓰기는 제안만 만들고 웹 승인 뒤 실행")에서 업로드는 예외다. 업로드는 사람이 고른 파일을 그대로 저장할 뿐 AI가 만든 내용이 아니므로, 웹과 같이 승인 없이 저장한다.
 
@@ -65,7 +66,17 @@ MCP용으로 새 경로를 만들지 않는다. 기존 직접 업로드 API가 �
 
 ## 결정 5: catalog version
 
-도구 세 개를 더하므로 `mcp-tools.v4` → `mcp-tools.v5`로 올리고, Fruition-document `docs/api/mcp-read.md`에 기록한다.
+도구 세 개를 더하므로 `mcp-tools.v6` → `mcp-tools.v7`로 올리고, Fruition-document `docs/api/mcp-read.md`에 기록한다. v6 변경 기록에서 이 작업용으로 남겨 둔 `v5`는 쓰지 않는다.
+
+## 결정 6: 업로드 확인은 MCP 클라이언트가 한다
+
+새 동의 scope(예: `upload`)도 웹 승인도 두지 않는다. 사용자가 업로드를 확인하는 자리는 MCP 클라이언트의 도구 실행 확인(예: Claude Code의 도구별 확인 창)이다.
+
+- 세 도구는 MCP tool annotation으로 쓰기임을 알린다. 모두 `readOnlyHint=false`, `destructiveHint=false`(기존 문서를 지우거나 덮지 않음), `openWorldHint=false`다.
+- `idempotentHint`는 도구마다 다르다. `start_document_upload`는 부를 때마다 새 ticket과 multipart를 만들므로 `false`다. `get_upload_part_urls`와 같은 `idempotency_key`의 `complete_document_upload`는 같은 결과를 돌려주므로 `true`다.
+- annotation은 다른 도구와 같이 Java SDK `McpSchema.ToolAnnotations` builder로 단다.
+- start·complete 설명에 "승인 단계 없이 파일을 워크스페이스에 저장하니 업로드 전에 사용자에게 확인하라"는 고정 문구를 넣는다.
+- 한계: 서버는 확인 창이 실제로 떴는지 확인할 수 없다. 클라이언트가 자동 승인 모드이면 확인 없이 실행된다. annotation은 힌트일 뿐이다. 이 신뢰 수준은 로그인한 사용자가 웹 업로드 버튼을 누르는 것과 같다고 보고 받아들인다. 업로드는 사람이 고른 파일을 그대로 저장할 뿐 AI가 만든 내용을 반영하지 않기 때문이다. 기존 `write_propose`에 동의한 연결은 이 도구도 쓸 수 있다.
 
 ## 대안과 기각 사유
 
@@ -85,4 +96,4 @@ MCP용으로 새 경로를 만들지 않는다. 기존 직접 업로드 API가 �
 
 ## 미결 질문
 
-1. 승인 없는 직접 쓰기를 기존 `write_propose` scope에 둘지, 새 scope(예: `upload`)로 동의를 따로 받을지. 이 개정은 access 변경 없이 `write_propose`를 쓴다.
+없음. scope 질문은 [결정 6](#결정-6-업로드-확인은-mcp-클라이언트가-한다)으로 닫았다.
