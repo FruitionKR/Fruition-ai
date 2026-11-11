@@ -41,6 +41,8 @@ EVIDENCE_POLICY = """질문에 답하는 데 직접 필요한 근거를 선택�
 EVIDENCE_CRITERIA = {"include": "질문에 직접 필요한 근거", "exclude": "필요한 근거가 아님"}
 # 평가 후보 점수(prepare_jev_controlled.common_candidates)의 BGE-M3 비중이다.
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
+# Jev가 판정하는 후보 수(ADR-0027). MCP 위키 검색도 같은 값을 쓴다.
+CANDIDATE_LIMIT = 200
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         embedding_search: EmbeddingSearchPort,
         text_search: TextSearchPort,
         *,
-        candidate_limit: int = 200,
+        candidate_limit: int = CANDIDATE_LIMIT,
         max_evidence_snippets: int = 8,
         max_batch_candidates: int = 80,
         max_batch_tokens: int = MAX_BATCH_TOKENS,
@@ -115,39 +117,13 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         return self._fallback.select(question, related_pages, embedding_units_by_page_id, workspace_id=workspace_id)
 
     def _candidates(self, question: str, workspace_id: str) -> list[EvidenceCandidate]:
-        groups: dict[tuple[str, tuple[str, ...], str], list[tuple[WikiEmbeddingUnit, str]]] = {}
-        for unit, page_title in self._wiki_repository.list_workspace_embedding_units(workspace_id):
-            if not unit.text.strip() or not source_references_from_ids(unit.source_block_ids, unit.source_document_id):
-                continue
-            key = (unit.text.strip(), tuple(sorted(unit.source_block_ids)), unit.source_document_id)
-            groups.setdefault(key, []).append((unit, page_title))
-        candidates = [
-            EvidenceCandidate(
-                unit=min(members, key=lambda member: member[0].id)[0],
-                source_titles=tuple(sorted({title for _, title in members if title})),
-                page_ids=tuple(sorted({unit.page_id for unit, _ in members})),
-            )
-            for members in groups.values()
-        ]
-        if not candidates:
-            return []
-        texts = [candidate.unit.text for candidate in candidates]
-        scores = [
-            hybrid_score(dense, lexical, CANDIDATE_EMBEDDING_WEIGHT)
-            for dense, lexical in zip(
-                self._embedding_search.score(question, texts),
-                self._text_search.score(question, texts),
-                strict=True,
-            )
-        ]
-        ranked = [
-            candidate
-            for _, candidate in sorted(
-                zip(scores, candidates, strict=True),
-                key=lambda row: (-row[0], row[1].unit.id),
-            )
-        ][: self._candidate_limit]
-        return ranked
+        return rank_candidates(
+            question,
+            self._wiki_repository.list_workspace_embedding_units(workspace_id),
+            self._embedding_search,
+            self._text_search,
+            limit=self._candidate_limit,
+        )
 
     def _select_with_jev(self, question: str, candidates: list[EvidenceCandidate]) -> list[EvidenceSnippet]:
         selected = select_evidence(
@@ -160,6 +136,52 @@ class JevEvidenceSelector(EvidenceSelectorPort):
             max_workers=self._max_workers,
         )
         return [_snippet(rank, candidate.unit) for rank, candidate in enumerate(selected, start=1)]
+
+
+def rank_candidates(
+    question: str,
+    units: list[tuple[WikiEmbeddingUnit, str]],
+    embedding_search: EmbeddingSearchPort,
+    text_search: TextSearchPort,
+    *,
+    limit: int,
+) -> list[EvidenceCandidate]:
+    """(unit, 페이지 제목)을 (본문, block ref, 문서)로 묶고 BGE-M3 0.75 + BM25 0.25 점수 상위 limit개를 고른다.
+
+    웹 근거 선택과 MCP 위키 검색이 같은 후보·순서를 쓰도록 둘 다 이 함수를 부른다.
+    """
+    groups: dict[tuple[str, tuple[str, ...], str], list[tuple[WikiEmbeddingUnit, str]]] = {}
+    for unit, page_title in units:
+        if not unit.text.strip() or not source_references_from_ids(unit.source_block_ids, unit.source_document_id):
+            continue
+        key = (unit.text.strip(), tuple(sorted(unit.source_block_ids)), unit.source_document_id)
+        groups.setdefault(key, []).append((unit, page_title))
+    candidates = [
+        EvidenceCandidate(
+            unit=min(members, key=lambda member: member[0].id)[0],
+            source_titles=tuple(sorted({title for _, title in members if title})),
+            page_ids=tuple(sorted({unit.page_id for unit, _ in members})),
+        )
+        for members in groups.values()
+    ]
+    if not candidates:
+        return []
+    texts = [candidate.unit.text for candidate in candidates]
+    scores = [
+        hybrid_score(dense, lexical, CANDIDATE_EMBEDDING_WEIGHT)
+        for dense, lexical in zip(
+            embedding_search.score(question, texts),
+            text_search.score(question, texts),
+            strict=True,
+        )
+    ]
+    return [
+        candidate
+        for _, candidate in sorted(
+            zip(scores, candidates, strict=True),
+            key=lambda row: (-row[0], row[1].unit.id),
+        )
+    ][:limit]
 
 
 def select_evidence(
