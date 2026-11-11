@@ -28,7 +28,7 @@ MCP는 access의 OAuth 인가, document의 리소스 인가·승인·수수료, 
 2. access-svc가 OAuth authorization server와 grant·workspace 정책을 소유한다. MCP 서버는 토큰을 발급하거나 다른 서비스로 전달하지 않는다.
 3. ai-svc는 MCP 프로토콜을 처리하지 않는다. document-svc만 기존 서비스 토큰으로 ai-svc를 호출한다.
 4. MCP 버전은 `2025-11-25`, Java SDK는 호환되는 정식 `2.1.x`로 시작한다. 세션은 상태의 소유권 증거가 아니며 지속 상태는 아래 handle로 식별한다.
-5. OAuth만 지원한다. PAT, 조직 공용 고정 헤더, Dynamic Client Registration, sampling, elicitation, MCP 안의 승인 tool은 제공하지 않는다.
+5. OAuth만 지원한다. PAT, 조직 공용 고정 헤더, Dynamic Client Registration, sampling, elicitation, MCP 안의 승인 tool은 제공하지 않는다. 승인 화면을 여는 URL 모드 elicitation만 [0047](0047-mcp-approval-url-elicitation.md)이 예외로 제안한다(제안 상태).
 6. 쓰기는 제안만 만들고 사람의 웹 승인 뒤 실행한다. MCP 경로에서 생성형 서버 LLM을 호출하지 않는다.
 
 ### Transport, tool definition, audit
