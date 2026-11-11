@@ -150,13 +150,28 @@ def rank_candidates(
 
     웹 근거 선택과 MCP 위키 검색이 같은 후보·순서를 쓰도록 둘 다 이 함수를 부른다.
     """
+    candidates = group_candidates(units)
+    if not candidates:
+        return []
+    texts = [candidate.unit.text for candidate in candidates]
+    return order_candidates(
+        candidates,
+        embedding_search.score(question, texts),
+        text_search.score(question, texts),
+        embedding_weight=CANDIDATE_EMBEDDING_WEIGHT,
+        limit=limit,
+    )
+
+
+def group_candidates(units: list[tuple[WikiEmbeddingUnit, str]]) -> list[EvidenceCandidate]:
+    """근거 블록이 있는 unit을 (본문, block ref, 문서)가 같은 것끼리 하나의 후보로 묶는다."""
     groups: dict[tuple[str, tuple[str, ...], str], list[tuple[WikiEmbeddingUnit, str]]] = {}
     for unit, page_title in units:
         if not unit.text.strip() or not source_references_from_ids(unit.source_block_ids, unit.source_document_id):
             continue
         key = (unit.text.strip(), tuple(sorted(unit.source_block_ids)), unit.source_document_id)
         groups.setdefault(key, []).append((unit, page_title))
-    candidates = [
+    return [
         EvidenceCandidate(
             unit=min(members, key=lambda member: member[0].id)[0],
             source_titles=tuple(sorted({title for _, title in members if title})),
@@ -164,16 +179,20 @@ def rank_candidates(
         )
         for members in groups.values()
     ]
-    if not candidates:
-        return []
-    texts = [candidate.unit.text for candidate in candidates]
+
+
+def order_candidates(
+    candidates: list[EvidenceCandidate],
+    dense_scores: list[float],
+    lexical_scores: list[float],
+    *,
+    embedding_weight: float,
+    limit: int,
+) -> list[EvidenceCandidate]:
+    """dense·lexical 점수를 embedding_weight로 섞어 높은 순(같으면 unit id 순) 상위 limit개를 돌려준다."""
     scores = [
-        hybrid_score(dense, lexical, CANDIDATE_EMBEDDING_WEIGHT)
-        for dense, lexical in zip(
-            embedding_search.score(question, texts),
-            text_search.score(question, texts),
-            strict=True,
-        )
+        hybrid_score(dense, lexical, embedding_weight)
+        for dense, lexical in zip(dense_scores, lexical_scores, strict=True)
     ]
     return [
         candidate

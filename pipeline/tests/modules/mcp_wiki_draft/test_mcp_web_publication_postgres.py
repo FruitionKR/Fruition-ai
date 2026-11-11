@@ -79,7 +79,13 @@ def test_mcp_apply_starts_embedding_and_page_becomes_mcp_searchable(monkeypatch)
     build_wiki_unit_embeddings(page_ids, embedding_model=_Model())
     found = WebWikiSearchCandidates(
         StoredWikiPageEmbeddingSearch(_Model()).without_live_embedding(), Bm25Searcher(),
-    ).list_candidates(workspace_id="workspace-1", query="Alpha concept")
+    ).list_candidates(
+        workspace_id="workspace-1",
+        query="Alpha concept",
+        unit_limit=10_000,
+        text_bytes_limit=10_000_000,
+        statement_timeout_ms=5_000,
+    )
     alpha = next(page_id for page_id, row in active.items() if row["slug"] == "alpha")
     assert alpha in found.pages
 
