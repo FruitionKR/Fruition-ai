@@ -112,13 +112,13 @@ class PostgresMcpWikiDraftRepository:
                 conn.execute(
                     "INSERT INTO mcp_wiki_ingest_runs "
                     "(run_id,draft_id,snapshot_id,document_id,workspace_id,user_id,grant_id,client_id,policy_generation,origin,spec_version,"
-                    "source_version,source_content_hash,source_block_count,source_bytes,state,next_window_ordinal,submitted_window_count,ttl_seconds,expires_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE_WINDOWING',1,0,%s,now()+make_interval(secs=>%s))",
+                    "source_version,source_content_hash,source_display_name,source_block_count,source_bytes,state,next_window_ordinal,submitted_window_count,ttl_seconds,expires_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE_WINDOWING',1,0,%s,now()+make_interval(secs=>%s))",
                     (
                         run_id, draft_id, snapshot_id, payload.document_id, payload.actor.workspace_id,
                         payload.actor.user_id, payload.actor.grant_id, payload.actor.client_id,
                         payload.actor.policy_generation, payload.actor.origin, payload.actor.spec_version,
-                        source["source_version"], source["source_content_hash"], len(source["blocks"]),
+                        source["source_version"], source["source_content_hash"], source["display_name"], len(source["blocks"]),
                         source_bytes, limits.run_ttl_seconds, limits.run_ttl_seconds,
                     ),
                 )

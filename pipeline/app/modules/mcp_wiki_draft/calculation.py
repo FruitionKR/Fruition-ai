@@ -190,6 +190,10 @@ def _normalized(
     identity_index: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     document_id = str(run["document_id"])
+    if run.get("source_display_name") is None:
+        # 컬럼 추가 이전에 시작한 run이다. 문서 ID를 제목으로 대신 쓰지 않고 다시 시작하게 한다.
+        raise PreviewCalculationError("run predates the source display name snapshot")
+    display_name = str(run["source_display_name"])
     evidence_units: list[dict[str, Any]] = []
     ledger: list[dict[str, Any]] = []
     source_key_points: list[dict[str, Any]] = []
@@ -258,8 +262,8 @@ def _normalized(
     normalized = {
         "document": {
             "document_id": document_id,
-            "source_path": document_id,
-            "title": document_id,
+            "source_path": display_name,
+            "title": display_name,
         },
         "semantic_notes": [{"key_points": source_key_points}],
         "concept_ledger": ledger,
@@ -849,7 +853,7 @@ def calculate_ingest_preview(
         "source_page": {
             "page_id": source_page_id,
             "slug": str(source_row["slug"]) if source_row else document_id,
-            "title": str(source_row["title"]) if source_row else str(normalized["document"].get("title") or document_id),
+            "title": normalized["document"]["title"],
             "summary": "",
             "page_type": "source",
             "status": "active",
