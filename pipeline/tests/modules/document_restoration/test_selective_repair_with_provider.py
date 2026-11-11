@@ -23,6 +23,7 @@ from app.modules.document_restoration.infrastructure.selective_repair_with_provi
     normalize_replacement,
     page_markdown,
     openai_response_text,
+    retry_blocks,
     run,
     save_replacements,
     select_candidates,
@@ -739,6 +740,32 @@ class ContinuedTableRepairTest(unittest.TestCase):
                 self.assertEqual(call_page_mock.call_count, 3)
                 self.assertTrue((layout / "recovered_blocks" / "table-a.md").exists())
                 self.assertTrue((layout / "recovered_blocks" / "table-b.md").exists())
+
+
+class RetryBlocksTest(unittest.TestCase):
+    """웹 복원과 MCP 외부 AI 변환이 함께 쓰는 재시도 규칙."""
+
+    TABLE = ContinuedTableRepairTest.TABLE
+    CHAIN = [
+        {"id": "table-a", "page": 1, "type": "table_candidate", "replacement_required": True},
+        {"id": "table-b", "page": 2, "type": "table_candidate", "continues": "table-a", "replacement_required": True},
+    ]
+
+    def test_merged_table_retries_every_fragment_unless_head_was_replaced(self) -> None:
+        def head(action: str, replacement: str) -> dict:
+            return {"results": [{"block_id": "table-a", "action": action, "replacement": replacement}]}
+
+        self.assertEqual(retry_blocks(self.CHAIN, head("replace", self.TABLE), {}, chained=True), [])
+        for result in (head("replace", "broken"), head("keep", "")):
+            self.assertEqual([block["id"] for block in retry_blocks(self.CHAIN, result, {}, chained=True)],
+                             ["table-a", "table-b"])
+
+    def test_group_retries_only_rejected_blocks(self) -> None:
+        blocks = [{**block, "continues": None} for block in self.CHAIN]
+        result = {"results": [{"block_id": "table-a", "action": "replace", "replacement": self.TABLE},
+                              {"block_id": "table-b", "action": "replace", "replacement": "broken"}]}
+
+        self.assertEqual([block["id"] for block in retry_blocks(blocks, result, {}, chained=False)], ["table-b"])
 
 
 if __name__ == "__main__":

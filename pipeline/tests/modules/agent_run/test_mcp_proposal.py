@@ -397,13 +397,16 @@ def test_plan_duplicate_content_and_dependents_are_deselected_not_rejected() -> 
     assert preview["added_lines"] > 0
 
 
+RESULT_KEY = "tmp/mcp-convert/workspace-1/00000000-0000-4000-8000-0000000000aa/final.json"
+
+
 def _source_bound_pdf_plan(*, drop: str | None = None) -> dict[str, object]:
+    """PDF 변환본은 조립 결과를 싣지 않고 저장소 key와 hash만 싣는다. 저장 때 document가 key에서 읽는다."""
     body = plan_body()
-    markdown = "# 보고서\n\n![그림](data:image/png;base64,iVBORw0KGgo=)\n"
-    digest = "sha256:" + hashlib.sha256(markdown.encode()).hexdigest()
     arguments = {
-        "display_name": "보고서", "folder_id": None, "content_artifact_id": "converted-markdown",
-        "content_hash": digest, "source_document_id": "doc_pdf", "source_content_hash": "sha256:" + "a" * 64,
+        "display_name": "보고서", "folder_id": None, "content_result_key": RESULT_KEY,
+        "content_hash": "sha256:" + "c" * 64, "source_document_id": "doc_pdf",
+        "source_content_hash": "sha256:" + "a" * 64,
     }
     if drop:
         arguments.pop(drop)
@@ -413,10 +416,7 @@ def _source_bound_pdf_plan(*, drop: str | None = None) -> dict[str, object]:
         "source_parent_id": None, "destination_parent_id": None,
         "arguments": arguments, "reason": "PDF 변환본 저장", "depends_on": [],
     }]
-    body["proposal"]["artifacts"] = [{
-        "id": "converted-markdown", "content_hash": digest, "purpose": "create_document",
-        "document_id": None, "base_version": None, "target": None, "markdown": markdown,
-    }]
+    body["proposal"]["artifacts"] = []
     return body
 
 
@@ -432,7 +432,31 @@ def test_mcp_plan_keeps_pdf_source_binding_in_approved_arguments() -> None:
     arguments = repository.created[0]["plan"].operations[0].arguments
     assert arguments["source_document_id"] == "doc_pdf"
     assert arguments["source_content_hash"] == "sha256:" + "a" * 64
-    assert checked == [("workspace-1", checked[0][1], "doc_pdf", "sha256:" + "a" * 64, arguments["content_hash"])]
+    assert arguments["content_result_key"] == RESULT_KEY
+    assert repository.created[0]["artifacts"] == ()
+    assert checked == [("workspace-1", checked[0][1], "doc_pdf", "sha256:" + "a" * 64, arguments["content_hash"],
+                        RESULT_KEY)]
+
+
+def test_mcp_plan_rejects_old_artifact_backed_pdf_conversion_form() -> None:
+    """옛 PDF 변환본 형태(artifact 본문 + 원본 쌍)는 호환 경로 없이 거절한다."""
+    body = _source_bound_pdf_plan()
+    arguments = body["proposal"]["operations"][0]["arguments"]
+    arguments.pop("content_result_key")
+    arguments["content_artifact_id"] = "converted-markdown"
+    body["proposal"]["artifacts"] = [{
+        "id": "converted-markdown", "content_hash": arguments["content_hash"], "purpose": "create_document",
+        "document_id": None, "base_version": None, "target": None, "markdown": "# 보고서\n",
+    }]
+    with pytest.raises(Exception):
+        McpAgentProposalRequest.model_validate(body)
+
+
+def test_mcp_plan_rejects_pdf_result_key_outside_conversion_results() -> None:
+    body = _source_bound_pdf_plan()
+    body["proposal"]["operations"][0]["arguments"]["content_result_key"] = "sources/documents/doc_pdf/original"
+    with pytest.raises(Exception):
+        McpAgentProposalRequest.model_validate(body)
 
 
 def test_mcp_plan_rejects_pdf_source_binding_that_is_not_a_finalized_conversion() -> None:
@@ -447,7 +471,7 @@ def test_mcp_plan_rejects_pdf_source_binding_that_is_not_a_finalized_conversion(
     assert repository.created == []
 
 
-@pytest.mark.parametrize("drop", ["source_document_id", "source_content_hash"])
+@pytest.mark.parametrize("drop", ["source_document_id", "source_content_hash", "content_result_key"])
 def test_mcp_plan_rejects_half_pdf_source_binding(drop: str) -> None:
     with pytest.raises(Exception):
         McpAgentProposalRequest.model_validate(_source_bound_pdf_plan(drop=drop))

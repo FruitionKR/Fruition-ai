@@ -580,6 +580,77 @@ def test_mcp_proposal_is_atomic_awaiting_approval_without_planning_job(repositor
     assert len(storage) == 2
 
 
+def _mcp_pdf_values(result: str):
+    """artifact 없이 MCP PDF 변환 결과 key·hash만 싣는 원본 연결 create_document 계획."""
+    import hashlib
+
+    values = _mcp_persist_values()
+    key = f"tmp/mcp-convert/workspace-1/{uuid4()}/final.json"
+    operation = AgentPlanOperation(
+        id=f"{values['plan'].id}-op-1", sequence=1, tool_name="create_document", target_type="document",
+        target_id=None, base_version=None, source_parent_id=None, destination_parent_id=None,
+        arguments={"display_name": "보고서", "folder_id": None, "content_result_key": key,
+                   "content_hash": "sha256:" + hashlib.sha256(result.encode()).hexdigest(),
+                   "source_document_id": "doc_pdf", "source_content_hash": "sha256:" + "a" * 64},
+        reason="PDF 변환본 저장",
+    )
+    plan = build_agent_plan(values["plan"].id, values["run"].id, 1, "PDF 변환본 저장", (operation,))
+    return {**values, "plan": plan, "artifacts": ()}, key
+
+
+def test_mcp_pdf_create_previews_the_stored_result_and_expires_with_the_proposal(
+    repositories, storage, monkeypatch
+) -> None:
+    import json
+    from unittest.mock import MagicMock
+
+    from minio.error import S3Error
+
+    from app.modules.agent_run.infrastructure import postgres_agent_run_repository as module
+
+    runs, _, connect = repositories
+    result = json.dumps([
+        {"page_start": 1, "markdown": "<!-- page 1 -->\n\n# 보고서\n\n![그림](data:image/png;base64,iVBORw0KGgo=)\n"},
+        {"page_start": 2, "markdown": "<!-- page 1 -->\n\n둘째 묶음\n"},
+    ], ensure_ascii=False)
+    values, key = _mcp_pdf_values(result)
+    storage[key] = result
+    run_id = runs.create_mcp_proposal(**values).run_id
+
+    previews = runs.get_edit_previews("workspace-1", "user-1", run_id)
+
+    # 화면(validMcpContentPreview)이 받는 수정안 미리 보기와 같은 모양이다. 새 문서라 document_id·base_version은 null이다.
+    [item] = previews["items"]
+    assert item["operation_id"] == values["plan"].operations[0].id
+    assert (item["tool_name"], item["document_id"], item["base_version"]) == ("create_document", None, None)
+    assert item["display_name"] == "보고서" and item["removed_lines"] == 0
+    inserted = [line["text"] for hunk in item["hunks"] for line in hunk["lines"]]
+    assert "# 보고서" in inserted and "둘째 묶음" in inserted and item["added_lines"] == len(inserted)
+    assert "![그림](data:image/png;base64,…)" in inserted
+    with connect() as conn:
+        now = conn.execute("SELECT now() AS now").fetchone()["now"]
+        assert previews["expires_at"] > now
+        assert not module._has_unavailable_artifact(conn, run_id, values["plan"].id)
+
+    # 저장할 결과가 승인 hash와 다르면 미리 보기를 만들지 않는다.
+    storage[key] = result.replace("둘째", "바뀐")
+    with pytest.raises(ValueError):
+        runs.get_edit_previews("workspace-1", "user-1", run_id)
+
+    # 다른 수정안처럼 run 생성 + 1일에 만료하고 승인을 막는다. 결과가 지워져도 만료된 계획은 빈 미리 보기다.
+    def gone(_key):
+        raise S3Error(MagicMock(), "NoSuchKey", "없음", "resource", "request", "host")
+
+    monkeypatch.setattr(module, "read_text_object", gone)
+    with connect() as conn:
+        conn.execute("UPDATE agent_runs SET created_at = now() - interval '25 hours' WHERE id = %s", (run_id,))
+        assert module._has_unavailable_artifact(conn, run_id, values["plan"].id)
+    expired = runs.get_edit_previews("workspace-1", "user-1", run_id)
+    assert expired["items"] == []
+    with connect() as conn:
+        assert expired["expires_at"] <= conn.execute("SELECT now() AS now").fetchone()["now"]
+
+
 def test_mcp_same_key_is_concurrent_single_creation_and_different_hash_conflicts(
     repositories, storage
 ) -> None:
