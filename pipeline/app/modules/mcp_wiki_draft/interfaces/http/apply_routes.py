@@ -22,7 +22,7 @@ _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}")
 @lru_cache(maxsize=1)
 def get_mcp_wiki_draft_apply() -> McpWikiDraftApply:
     # 웹 편입 worker(get_deferred_pipeline_run_use_case)와 같이 여기서는 발행만 하고 임베딩은 maintenance worker가 만든다.
-    # Document가 발행 결과를 받으면 mcp_publication_index로 그 worker를 깨운다. pipeline-api에 BGE-M3를 올리지 않는다.
+    # Document가 발행 결과를 받으면 embedding_recovery로 그 worker를 깨운다. pipeline-api에 BGE-M3를 올리지 않는다.
     return McpWikiDraftApply(
         PostgresMcpWikiApplyRepository(DeferredWikiEmbeddingJob()), ConfiguredWikiApprovalAuthority()
     )

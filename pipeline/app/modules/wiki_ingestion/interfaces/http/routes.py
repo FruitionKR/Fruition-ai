@@ -29,7 +29,6 @@ from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     pipeline_log_uri,
     get_pipeline_run_repository,
     get_restore_wiki_pages_use_case,
-    get_wiki_embedding_job,
     get_wiki_maintenance,
 )
 from app.modules.wiki_ingestion.interfaces.http.schemas import (
@@ -100,10 +99,7 @@ def save_manual_wiki_edit(page_id: str, payload: WikiPageManualEditIn) -> dict[s
     )
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
-    try:
-        get_wiki_embedding_job().start(payload.operation_id, [page_id])
-    except Exception:
-        logger.warning("manual edit embedding start failed after publication commit", exc_info=True)
+    # 웹 편입처럼 여기서는 발행만 한다. document-svc가 embedding_recovery로 maintenance worker를 깨워 임베딩한다(ADR-0026).
     return page
 
 

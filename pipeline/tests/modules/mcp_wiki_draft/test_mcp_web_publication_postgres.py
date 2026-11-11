@@ -74,7 +74,7 @@ def test_mcp_apply_defers_embedding_to_maintenance_worker_like_web_ingest(monkey
         ).fetchone()["n"] == 0
     assert active
 
-    # 발행 결과가 Document로 간다(Document는 이를 받아 mcp_publication_index로 maintenance worker를 깨운다).
+    # 발행 결과가 Document로 간다(Document는 이를 받아 embedding_recovery로 maintenance worker를 깨운다).
     sent = []
     monkeypatch.setattr(apply_repository, "_send_publication_receipt", sent.append)
     assert asyncio.run(apply_repository.relay_pending_mcp_publications()) == 1
@@ -82,7 +82,7 @@ def test_mcp_apply_defers_embedding_to_maintenance_worker_like_web_ingest(monkey
     with h._connect() as conn:
         assert conn.execute("SELECT state FROM mcp_wiki_publication_outbox").fetchone()["state"] == "sent"
 
-    # maintenance worker의 mcp_publication_index 처리(recover)가 웹 post_ingest와 같은 build_wiki_embeddings로 임베딩한다.
+    # maintenance worker의 embedding_recovery 처리(recover)가 웹 post_ingest와 같은 build_wiki_embeddings로 임베딩한다.
     monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", lambda: _Model())
     threaded_wiki_embedding_job.ThreadedWikiEmbeddingJob(logging.getLogger("test")).recover("mcp-index:test")
     with h._connect() as conn:
@@ -98,6 +98,46 @@ def test_mcp_apply_defers_embedding_to_maintenance_worker_like_web_ingest(monkey
     ).list_candidates(workspace_id="workspace-1", query="Alpha concept")
     alpha = next(page_id for page_id, row in active.items() if row["slug"] == "alpha")
     assert alpha in found.pages
+
+
+def test_web_manual_edit_is_embedded_by_maintenance_recovery_not_api(monkeypatch):
+    """웹 직접 편집 라우트도 pipeline-api에서 발행만 하고, embedding_recovery로 깨운 worker의 recover가 임베딩한다."""
+    from app.modules.wiki_ingestion.interfaces.http import routes
+    from app.modules.wiki_ingestion.interfaces.http.schemas import WikiPageManualEditIn
+
+    monkeypatch.setenv("EMBEDDING_MODEL_NAME", _Model.model_name)
+    grant, _started, finalized = _ingest(monkeypatch)
+    _apply_through_route(monkeypatch, grant, finalized)
+    monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", lambda: _Model())
+    job = threaded_wiki_embedding_job.ThreadedWikiEmbeddingJob(logging.getLogger("test"))
+    job.recover("embedding-recovery:apply")
+    with h._connect() as conn:
+        alpha = conn.execute("SELECT id FROM wiki_pages WHERE slug='alpha' AND status='active'").fetchone()["id"]
+        before = conn.execute(
+            "SELECT representation_hash FROM wiki_page_embeddings WHERE page_id=%s AND status='completed'", (alpha,)
+        ).fetchone()["representation_hash"]
+
+    monkeypatch.setattr(bge_m3_embedding_model, "_load_sentence_transformer", _no_local_model)
+    monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", _no_local_model)
+    edit = WikiPageManualEditIn(
+        user_id="user-1", workspace_id="workspace-1", operation_id="manual-op-1",
+        markdown="# Alpha\n\nHand edited alpha body about rollouts.\n",
+    )
+    assert routes.save_manual_wiki_edit(alpha, edit)["page_id"] == alpha
+    with h._connect() as conn:
+        reserved = conn.execute(
+            "SELECT status FROM wiki_page_embeddings WHERE page_id=%s", (alpha,)
+        ).fetchone()["status"]
+    # API는 편집한 페이지를 임베딩하지 않고 웹 lint처럼 미완료로 예약만 한다.
+    assert reserved == "pending"
+
+    monkeypatch.setattr(threaded_wiki_embedding_job, "_embedding_model", lambda: _Model())
+    job.recover("embedding-recovery:manual-op-1")
+    with h._connect() as conn:
+        after = conn.execute(
+            "SELECT representation_hash FROM wiki_page_embeddings WHERE page_id=%s AND status='completed'", (alpha,)
+        ).fetchone()["representation_hash"]
+    assert after != before
 
 
 def test_mcp_reingest_clears_document_tombstone(monkeypatch):
