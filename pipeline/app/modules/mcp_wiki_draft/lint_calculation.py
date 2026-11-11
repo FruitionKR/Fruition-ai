@@ -188,6 +188,8 @@ def calculate_lint_preview(
     linked_ids = {
         str(value)
         for item in structures["links"]
+        # Source pages cannot be lint targets; keep their links in the frozen state.
+        if item["link_type"] != "source_mentions_concept"
         for value in (item["from_page_id"], item["to_page_id"])
     }
     if linked_ids - set(target_ids) or any(
@@ -262,6 +264,8 @@ def calculate_lint_preview(
                     [] if kind == "REMOVE_STATEMENT" else list(arguments["evidence"]),
                 ))
             if kind == "UPSERT_STATEMENT":
+                if change["content_action"] == "none":
+                    change["content_action"] = "append_evidence"
                 refs = [
                     f"{source_by_snapshot[item['snapshot_id']]['document_id']}:{item['block_id']}"
                     for item in arguments["evidence"]
