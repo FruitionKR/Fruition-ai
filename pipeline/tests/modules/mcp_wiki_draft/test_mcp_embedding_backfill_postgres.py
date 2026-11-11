@@ -1,5 +1,5 @@
 """#264 전 MCP 승인으로 임베딩 없이 발행된 페이지를 일회성 스크립트가 임베딩해 검색 후보에 올린다."""
-import backfill_wiki_embeddings as backfill_script
+from app.modules.wiki_embedding.interfaces import backfill_wiki_embeddings as backfill_script
 import test_mcp_wiki_draft as h
 from test_mcp_wiki_draft import isolated_state  # noqa: F401
 from test_mcp_web_publication_postgres import _apply_through_route, _ingest

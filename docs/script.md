@@ -175,20 +175,57 @@ access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이�
 
 지워지면 되돌릴 수 없다. core의 `wiki_page_versions` 본문은 `document_purge` 결과 event로 지우는데, 이 스크립트는 그 event를 보내지 않아 그대로 남는다.
 
-## MCP 승인 발행분 임베딩 보충(PR #264 배포 직후 1회)
+## MCP 승인 발행분 임베딩 보충(PR #264·#266 배포 직후 1회)
 
-PR #264 전 MCP 위키 승인 적용은 페이지·단위 행만 쓰고 임베딩 작업을 시작하지 않아, 그때 발행한 페이지가 검색(`search_wiki`·웹 근거 검색)에 나오지 않을 수 있다. 일회성 스크립트 `pipeline/backfill_wiki_embeddings.py`가 maintenance worker 주기 복구와 같은 조건(`list_retryable_page_ids`: 완료된 페이지 벡터가 없거나 완료되지 않은 단위 벡터를 가진 활성 페이지)으로 대상을 고르고 기존 임베딩 함수(`build_wiki_embeddings`)로 임베딩한다. LLM은 부르지 않고 임베딩 모델만 쓴다. 배치마다 worker와 같은 advisory lock을 잡아 운영 중에 실행해도 된다. 같은 표현이 이미 임베딩된 것은 건너뛰므로 재실행해도 같고, 중간에 멈추면 다시 실행해 남은 페이지만 처리한다.
+PR #264 전 MCP 위키 승인 적용은 페이지·단위 행만 쓰고 임베딩 작업을 시작하지 않아, 그때 발행한 페이지가 검색(`search_wiki`·웹 근거 검색)에 나오지 않을 수 있다. 누락 임베딩을 다시 잡는 경로는 maintenance worker의 기동·10분 주기 복구와 `mcp_publication_index` 깨우기뿐이다. 그런데 운영 maintenance worker는 KEDA `minReplicaCount: 0`이라 평소 0대다. 깨우기 command도 Document가 publication 수신을 받은 뒤에야 보내는데, 그 수신(`mcp_wiki_publication_outbox` relay)을 보내는 쪽이 maintenance worker 자신이다. 그래서 다른 maintenance command가 오기 전까지 아무도 이 페이지들을 복구하지 않는다.
 
-1. 임베딩 모델(BGE-M3)과 `AI_DATABASE_URL`·S3 환경변수가 있는 maintenance worker 컨테이너의 `pipeline/`에서 dry-run으로 대상 수를 확인한다. `--workspace-id`로 한 워크스페이스만 볼 수 있다.
+일회성 모듈 `app.modules.wiki_embedding.interfaces.backfill_wiki_embeddings`가 주기 복구와 같은 조건(`list_retryable_page_ids`: 완료된 페이지 벡터가 없거나 완료되지 않은 단위 벡터를 가진 활성 페이지)으로 대상을 고르고 기존 `build_wiki_embeddings`로 임베딩한다. LLM은 부르지 않고 임베딩 모델(BGE-M3, 이미지에 포함)만 쓴다. 배치마다 worker와 같은 advisory lock을 잡아 운영 중에 실행해도 된다. 같은 표현이 이미 임베딩된 것은 건너뛰므로 재실행해도 같고, 중간에 멈추면 다시 실행해 남은 페이지만 처리한다. 기본은 dry-run이고 `--apply`로 실행한다. `--workspace-id`로 한 워크스페이스만, `--batch-size`(기본 20)로 배치 크기를 정한다.
 
-   ```bash
-   python backfill_wiki_embeddings.py
-   ```
+worker Pod가 0대여도 돌 수 있게, 배포된 `maintenance-task-worker` Deployment의 Pod 명세(이미지·env·secret·service account·Kafka/RDS 인증서 볼륨·AI 노드 배치·메모리 3584Mi)를 그대로 복사해 일회성 Job으로 띄운다. 명세를 따로 적지 않으므로 overlay와 어긋나지 않는다. 라벨도 그대로 써서 NetworkPolicy 허용 대상에 든다. Job 소유 Pod라 Deployment가 가져가지 않는다. `kubectl`과 `jq`가 필요하다.
 
-2. `selected_pages`가 예상 범위면 실행한다. 배치 크기는 `--batch-size`(기본 20)다.
+1. 이 모듈이 든 이미지(#266 이후)가 `maintenance-task-worker`에 배포돼 있는지 확인한다.
 
    ```bash
-   python backfill_wiki_embeddings.py --apply
+   kubectl -n fruition get deploy maintenance-task-worker -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
    ```
 
-3. 출력의 `failed_count`가 0이면 끝이다(0이 아니면 종료 코드 1). 실패한 페이지는 미완료로 남아 다시 실행하거나 worker 주기 복구가 다시 고른다. dry-run을 다시 돌려 `selected_pages`가 0인지 확인한다.
+2. 아래 함수를 셸에 정의한다. 첫 인자는 Job 이름, 둘째는 모듈 인자의 JSON 배열이다.
+
+   ```bash
+   backfill_job() {
+     kubectl -n fruition get deploy maintenance-task-worker -o json \
+       | jq --arg name "$1" --argjson args "$2" '.spec.template as $t | {
+           apiVersion: "batch/v1", kind: "Job",
+           metadata: {name: $name, namespace: "fruition"},
+           spec: {backoffLimit: 0, ttlSecondsAfterFinished: 86400,
+             template: {metadata: {labels: $t.metadata.labels},
+               spec: ($t.spec | .restartPolicy = "Never" | .terminationGracePeriodSeconds = 60
+                 | .containers[0].command = (["python", "-m", "app.modules.wiki_embedding.interfaces.backfill_wiki_embeddings"] + $args))}}}' \
+       | kubectl apply -f -
+     # AI 노드가 0대면 노드가 뜰 때까지 몇 분 걸린다.
+     kubectl -n fruition logs -f --pod-running-timeout=15m "job/$1"
+     kubectl -n fruition get job "$1"
+   }
+   ```
+
+3. dry-run으로 대상 수를 본다. 마지막 JSON의 `selected_pages`가 대상 페이지 수다.
+
+   ```bash
+   backfill_job wiki-embedding-backfill-dry '[]'
+   ```
+
+4. 수가 예상 범위면 실행한다. 배치마다 `batch a-b/n result=...` 로그가 찍힌다. 한 워크스페이스만 하려면 `'["--apply","--workspace-id","<id>"]'`처럼 준다.
+
+   ```bash
+   backfill_job wiki-embedding-backfill-apply '["--apply"]'
+   ```
+
+   `failed_count`가 0이 아니면 종료 코드 1로 Job이 `Failed`가 된다. 실패한 페이지는 미완료로 남으니 원인(예: Markdown 객체 누락)을 로그에서 확인한 뒤 새 이름으로 다시 실행한다. 인프라 오류로 멈춰도 끝난 배치는 남고 다시 실행하면 남은 페이지만 처리한다.
+
+5. 확인한다. dry-run을 다시 돌려 `selected_pages`가 0인지 보고, 전에 검색에 나오지 않던 MCP 승인 페이지의 제목으로 그 워크스페이스에서 MCP `search_wiki`를 호출해 결과에 그 페이지가 나오는지 본다.
+
+   ```bash
+   backfill_job wiki-embedding-backfill-verify '[]'
+   ```
+
+   끝난 Job은 하루 뒤 자동으로 지워진다(`ttlSecondsAfterFinished`). 바로 지우려면 `kubectl -n fruition delete job wiki-embedding-backfill-dry wiki-embedding-backfill-apply wiki-embedding-backfill-verify`.
