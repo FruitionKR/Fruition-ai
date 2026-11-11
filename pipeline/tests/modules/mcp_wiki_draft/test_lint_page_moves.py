@@ -183,3 +183,85 @@ def test_lint_source_link_does_not_require_source_target(world, monkeypatch, rel
     before = result['preview']['public_state_hash']
     structures['links'] = []
     assert lint.calculate_lint_preview(conn, **kwargs)['preview']['public_state_hash'] != before
+
+
+@pytest.mark.parametrize('publication', ['exact', 'different', 'missing', 'missing_history', 'untracked_text', 'invalidation'])
+def test_lint_accepts_append_publication_only_with_immutable_evidence(world, monkeypatch, publication):
+    from types import SimpleNamespace
+
+    from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
+        append_concept_evidence, concept_evidence_updates,
+    )
+
+    _, rows, _, loaded = world
+    row = {**rows['parent'], 'page_type': 'concept', 'status': 'active'}
+    first = loaded['parent'][0]
+    second = deepcopy(first.contribution)
+    second.update(operation_id='second', document_id='doc-second')
+    second['evidence_units'][0]['claim'] = 'Additional parent evidence.'
+    second['concept']['definition'] = ''
+    key = 'wiki/workspace/pages/parent/ops/second.md'
+    contributions = [first, PageContribution('parent', 'concept', 'second', 2, key, second)]
+    published = append_concept_evidence(
+        lint.rebuild_concept_page([first]).markdown, concept_evidence_updates(second),
+    )
+    assert published != lint.rebuild_concept_page(contributions).markdown
+    if publication == 'missing_history':
+        contributions = contributions[1:]
+    if publication == 'untracked_text':
+        published += '\nUntracked content.\n'
+    if publication == 'invalidation':
+        second['invalidated_reference_ids'] = ['doc-parent:B1']
+    snapshot = {
+        'page_id': 'parent', 'version': 1, 'content_hash': lint._text_hash(published),
+        'page_type': 'concept', 'slug': 'parent', 'status': 'active',
+        'body': published, 'markdown_uri': key,
+    }
+    monkeypatch.setattr(lint, '_page_snapshot', lambda _: snapshot)
+    monkeypatch.setattr(lint, '_structural_rows', lambda *args: {
+        'entries': [], 'links': [], 'references': [], 'manual_links': [], 'document_links': [],
+    })
+    monkeypatch.setattr(lint, '_load_reconciled', lambda *args: [
+        {'page_id': 'parent', 'active': True, 'sequence_revision': item.sequence,
+         'ingest_operation_id': item.operation_id} for item in contributions
+    ])
+    monkeypatch.setattr(lint, 'load_concept_contributions', lambda **kwargs: contributions)
+    reads = []
+
+    def read_markdown(path):
+        reads.append(path)
+        assert path == key
+        if publication == 'missing':
+            raise OSError('unavailable')
+        return 'unrelated publication' if publication == 'different' else published
+
+    monkeypatch.setattr(lint, 'read_text_object', read_markdown)
+    conn = SimpleNamespace(execute=lambda sql, params: SimpleNamespace(
+        fetchall=lambda: [row] if sql.startswith('SELECT * FROM wiki_pages') else []))
+    kwargs = dict(
+        draft_id='lint-append', workspace_id='workspace', target_snapshot=[snapshot],
+        source_snapshots=[{'snapshot_id': 'snapshot', 'document_id': 'doc-third',
+                           'source_version': 1, 'source_content_hash': 'source-hash'}],
+        operations=[{'operation_id': 'add', 'kind': 'UPSERT_STATEMENT',
+                     'target_page_id': 'parent', 'depends_on': [], 'arguments': {
+                         'statement_id': None, 'text': 'Third evidence.',
+                         'evidence': [{'snapshot_id': 'snapshot', 'block_id': 'B1',
+                                       'quote': 'Third evidence.'}],
+                     }}],
+        policy_version='test', max_structural_changes=100, max_deletes=0,
+    )
+    if publication != 'exact':
+        with pytest.raises(lint.PreviewCalculationError, match='contribution'):
+            lint.calculate_lint_preview(conn, **kwargs)
+    else:
+        result = lint.calculate_lint_preview(conn, **kwargs)
+        change = next(item for item in result['preview']['changes'] if item['kind'] == 'PAGE_BODY')
+        assert change['before_text'] == published
+        assert 'Additional parent evidence.' in change['after_text']
+        assert 'Third evidence.' in change['after_text']
+        # Approval replay must reproduce the complete preview, including normalization of the old body.
+        assert lint.calculate_lint_preview(conn, **kwargs)['preview'] == result['preview']
+    if publication in ('missing_history', 'untracked_text', 'invalidation'):
+        assert not reads
+    else:
+        assert reads
