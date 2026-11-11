@@ -31,13 +31,9 @@ router = APIRouter(prefix="/internal/mcp/wiki", tags=["mcp-wiki-read"])
 _CONFIG_NAMES = (
     "MCP_WIKI_SEARCH_MAX_STRING_CHARS",
     "MCP_WIKI_SEARCH_MAX_PAGE_SIZE",
-    "MCP_WIKI_SEARCH_MAX_CANDIDATES",
-    "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES",
     "MCP_WIKI_SEARCH_DEADLINE_MS",
     "MCP_WIKI_SEARCH_MAX_REQUEST_BYTES",
     "MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES",
-    "MCP_WIKI_SEARCH_MAX_SCAN_PAGES",
-    "MCP_WIKI_SEARCH_MAX_SCAN_UNITS",
     "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS",
 )
 
@@ -56,10 +52,6 @@ def load_search_config() -> tuple[WikiSearchLimits, bytes]:
         if value <= 0:
             raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki search configuration is invalid.")
         values[name] = value
-    if values["MCP_WIKI_SEARCH_MAX_CANDIDATES"] < values["MCP_WIKI_SEARCH_MAX_PAGE_SIZE"]:
-        raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki search configuration is invalid.")
-    if values["MCP_WIKI_SEARCH_MAX_SCAN_PAGES"] < values["MCP_WIKI_SEARCH_MAX_CANDIDATES"]:
-        raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki search configuration is invalid.")
     cursor_key = os.environ["MCP_WIKI_SEARCH_CURSOR_HMAC_KEY"].encode("utf-8")
     if len(cursor_key) < 32:
         raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "MCP wiki search configuration is invalid.")
@@ -67,13 +59,9 @@ def load_search_config() -> tuple[WikiSearchLimits, bytes]:
         WikiSearchLimits(
             max_string_chars=values["MCP_WIKI_SEARCH_MAX_STRING_CHARS"],
             max_page_size=values["MCP_WIKI_SEARCH_MAX_PAGE_SIZE"],
-            max_candidates=values["MCP_WIKI_SEARCH_MAX_CANDIDATES"],
-            max_candidate_bytes=values["MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES"],
             deadline_ms=values["MCP_WIKI_SEARCH_DEADLINE_MS"],
             max_request_bytes=values["MCP_WIKI_SEARCH_MAX_REQUEST_BYTES"],
             max_response_bytes=values["MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES"],
-            max_scan_pages=values["MCP_WIKI_SEARCH_MAX_SCAN_PAGES"],
-            max_scan_units=values["MCP_WIKI_SEARCH_MAX_SCAN_UNITS"],
             max_vector_dimensions=values["MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS"],
         ),
         cursor_key,

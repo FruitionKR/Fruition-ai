@@ -41,6 +41,8 @@ EVIDENCE_POLICY = """질문에 답하는 데 직접 필요한 근거를 선택�
 EVIDENCE_CRITERIA = {"include": "질문에 직접 필요한 근거", "exclude": "필요한 근거가 아님"}
 # 평가 후보 점수(prepare_jev_controlled.common_candidates)의 BGE-M3 비중이다.
 CANDIDATE_EMBEDDING_WEIGHT = 0.75
+# Jev가 판정하는 후보 수(ADR-0027). MCP 위키 검색도 같은 값을 쓴다.
+CANDIDATE_LIMIT = 200
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,7 @@ class JevEvidenceSelector(EvidenceSelectorPort):
         embedding_search: EmbeddingSearchPort,
         text_search: TextSearchPort,
         *,
-        candidate_limit: int = 200,
+        candidate_limit: int = CANDIDATE_LIMIT,
         max_evidence_snippets: int = 8,
         max_batch_candidates: int = 80,
         max_batch_tokens: int = MAX_BATCH_TOKENS,

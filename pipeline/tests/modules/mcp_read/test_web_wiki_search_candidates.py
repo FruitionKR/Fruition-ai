@@ -13,14 +13,15 @@ import pytest
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from app.modules.mcp_read.application.wiki_search import WikiSearchError
+from app.modules.mcp_read.application.wiki_search import SearchWikiUseCase
+from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
 from app.modules.mcp_read.infrastructure.web_wiki_search_candidates import WebWikiSearchCandidates
 from app.modules.query.domain.entities import WikiEmbeddingUnit
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
-from app.modules.query.infrastructure.jev_evidence_selector import JevEvidenceSelector
+from app.modules.query.infrastructure.jev_evidence_selector import CANDIDATE_LIMIT, JevEvidenceSelector
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
-from tests.modules.mcp_read.test_wiki_search import limits, request, service
+from tests.modules.mcp_read.test_wiki_search import Search, limits, request, service
 
 
 def unit(unit_id: str, page_id: str, text: str, block_id: str, document_id: str = "doc-a") -> WikiEmbeddingUnit:
@@ -47,11 +48,9 @@ UNITS = [
 class Units:
     def __init__(self, units: list[WikiEmbeddingUnit]) -> None:
         self.units = units
-        self.limits: list[int | None] = []
 
-    def list_workspace_embedding_units(self, workspace_id: str, limit: int | None = None):
-        self.limits.append(limit)
-        return [(item, f"Title {item.page_id}") for item in self.units][:limit]
+    def list_workspace_embedding_units(self, workspace_id: str):
+        return [(item, f"Title {item.page_id}") for item in self.units]
 
 
 class Dense:
@@ -103,7 +102,7 @@ def all_results(use_case, query: str) -> list[dict]:
 
 def test_ranking_matches_web_evidence_selector_for_the_same_candidates() -> None:
     query = "refund window"
-    web = JevEvidenceSelector(None, None, Units(UNITS), Dense(), Bm25Searcher(), candidate_limit=4)._candidates(
+    web = JevEvidenceSelector(None, None, Units(UNITS), Dense(), Bm25Searcher())._candidates(
         query, "workspace-1"
     )
     expected: list[tuple[str, str]] = []
@@ -136,23 +135,46 @@ def test_content_hash_follows_page_units_and_version_comes_from_the_page() -> No
     assert before["page-a"]["content_hash"] == after["page-a"]["content_hash"]
 
 
-@pytest.mark.parametrize(
-    ("bound", "value"),
-    [("max_scan_units", 5), ("max_scan_pages", 3), ("max_candidate_bytes", 100)],
-)
-def test_scope_over_capacity_is_rejected_before_ranking(bound: str, value: int) -> None:
-    class Unranked(Dense):
-        def score(self, query, documents):
-            raise AssertionError("ranking must not run over capacity")
+def test_workspace_over_the_old_byte_cap_still_returns_results() -> None:
+    # 예전 MCP 전용 상한(MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES=262144)을 넘는 unit 본문이다.
+    large = [unit(f"u{index:04}", f"page-{index:04}", f"refund {index} " + "x" * 2000, f"B{index:04}") for index in range(300)]
+    repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(large))
+    assert sum(len(item.text.encode()) for item in large) > 262144
 
-    units = Units(UNITS)
-    repository = WebWikiSearchCandidates(Unranked(), Bm25Searcher(), wiki_repository=units)
+    with patch.object(database, "connect", return_value=PageConnection()):
+        response = service(repository).execute(request(query="refund"))
 
-    with pytest.raises(WikiSearchError) as exc:
-        service(repository, search_limits=limits(**{bound: value})).execute(request())
+    assert len(response["results"]) == 1
+    assert response["next_cursor"] is not None
 
-    assert (exc.value.status_code, exc.value.code, exc.value.retryable) == (503, "DEPENDENCY_UNAVAILABLE", False)
-    assert units.limits == [limits(**{bound: value}).max_scan_units + 1]
+
+class CountingJev:
+    def __init__(self) -> None:
+        self.judged = 0
+
+    def choose(self, state: str, questions: dict) -> dict:
+        self.judged += len(questions)
+        return {key: {"choice": "exclude", "probabilities": {"exclude": 1.0}} for key in questions}
+
+
+def test_jev_judges_the_same_number_of_candidates_as_the_web_selector() -> None:
+    units = [unit(f"u{index:04}", f"page-{index:04}", f"refund case {index}", f"B{index:04}") for index in range(250)]
+    web_jev, mcp_jev = CountingJev(), CountingJev()
+    JevEvidenceSelector(web_jev, None, Units(units), Dense(), Bm25Searcher()).select("refund", [], {}, "workspace-1")
+
+    repository = WebWikiSearchCandidates(Dense(), Bm25Searcher(), wiki_repository=Units(units))
+    use_case = SearchWikiUseCase(
+        repository=repository,
+        embedding_search=Search(),
+        limits=limits(),
+        cursor_key=b"cursor-test-key-that-is-at-least-32-bytes",
+        query_embedding_model="test-embedding",
+        evidence_selector=JevWikiSearchEvidence(mcp_jev, max_selected=8),
+    )
+    with patch.object(database, "connect", return_value=PageConnection()):
+        use_case.execute(request(query="refund", jev_allowed=True))
+
+    assert web_jev.judged == mcp_jev.judged == CANDIDATE_LIMIT == 200
 
 
 DSN = os.environ.get("TEST_AGENT_DATABASE_URL") or os.environ.get("CONCEPT_LOCK_TEST_DSN")

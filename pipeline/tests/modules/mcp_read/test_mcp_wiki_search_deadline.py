@@ -50,7 +50,7 @@ RESPONSE = {
 
 
 def _limits(deadline_ms: int = 30) -> WikiSearchLimits:
-    return WikiSearchLimits(512, 2, 4, 4096, deadline_ms, 8192, 8192, 20, 100, 1024)
+    return WikiSearchLimits(512, 2, deadline_ms, 8192, 8192, 1024)
 
 
 class _UnusedRepository:
@@ -102,13 +102,9 @@ def test_missing_remote_embedding_transport_fails_closed(monkeypatch) -> None:
     configured = {
         "MCP_WIKI_SEARCH_MAX_STRING_CHARS": "512",
         "MCP_WIKI_SEARCH_MAX_PAGE_SIZE": "2",
-        "MCP_WIKI_SEARCH_MAX_CANDIDATES": "4",
-        "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES": "4096",
         "MCP_WIKI_SEARCH_DEADLINE_MS": "30",
         "MCP_WIKI_SEARCH_MAX_REQUEST_BYTES": "8192",
         "MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES": "8192",
-        "MCP_WIKI_SEARCH_MAX_SCAN_PAGES": "20",
-        "MCP_WIKI_SEARCH_MAX_SCAN_UNITS": "100",
         "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS": "1024",
         "MCP_WIKI_SEARCH_CURSOR_HMAC_KEY": "test-cursor-key-that-is-at-least-32-bytes",
     }

@@ -1,6 +1,6 @@
-"""MCP 위키 검색 후보는 웹 근거 선택과 같은 저장소와 후보 순위를 쓴다.
+"""MCP 위키 검색 후보는 웹 근거 선택과 같은 저장소와 후보 순위를 그대로 쓴다.
 
-MCP가 더하는 것은 외부 경계뿐이다: workspace 범위 상한(unit·page·text byte), 결과 page의 version·content hash.
+workspace 범위에 MCP 전용 상한을 두지 않는다. MCP가 더하는 것은 결과 page의 version·content hash projection뿐이다.
 """
 
 from __future__ import annotations
@@ -8,10 +8,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-from app.core.pipeline_control import ensure_task_active
-from app.modules.mcp_read.application.wiki_search import WikiSearchCandidates, WikiSearchError, WikiSearchPage
+from app.modules.mcp_read.application.wiki_search import WikiSearchCandidates, WikiSearchPage
 from app.modules.query.application.ports import EmbeddingSearchPort, TextSearchPort
-from app.modules.query.infrastructure.jev_evidence_selector import rank_candidates
+from app.modules.query.infrastructure.jev_evidence_selector import CANDIDATE_LIMIT, rank_candidates
 from app.modules.query.infrastructure.postgres_wiki_repository import PostgresWikiRepository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
@@ -27,27 +26,9 @@ class WebWikiSearchCandidates:
         self._text_search = text_search
         self._wiki_repository = wiki_repository or PostgresWikiRepository()
 
-    def list_candidates(
-        self,
-        *,
-        workspace_id: str,
-        query: str,
-        candidate_limit: int,
-        materialized_bytes_limit: int,
-        scan_page_limit: int,
-        scan_unit_limit: int,
-    ) -> WikiSearchCandidates:
-        units = self._wiki_repository.list_workspace_embedding_units(workspace_id, limit=scan_unit_limit + 1)
-        titles = {unit.page_id: title for unit, title in units}
-        scope_bytes = sum(len(unit.text.encode("utf-8")) for unit, _ in units) + sum(
-            len(title.encode("utf-8")) for title in titles.values()
-        )
-        # 상한을 넘는 workspace는 임의 일부만 검색하지 않고 거절한다.
-        if len(units) > scan_unit_limit or len(titles) > scan_page_limit or scope_bytes > materialized_bytes_limit:
-            raise WikiSearchError(503, "DEPENDENCY_UNAVAILABLE", "Wiki search scope exceeds configured capacity.")
-        ensure_task_active()
-        ranked = rank_candidates(query, units, self._embedding_search, self._text_search, limit=candidate_limit)
-        ensure_task_active()
+    def list_candidates(self, *, workspace_id: str, query: str) -> WikiSearchCandidates:
+        units = self._wiki_repository.list_workspace_embedding_units(workspace_id)
+        ranked = rank_candidates(query, units, self._embedding_search, self._text_search, limit=CANDIDATE_LIMIT)
         unit_ids: dict[str, list[str]] = {}
         for unit, _ in units:
             unit_ids.setdefault(unit.page_id, []).append(unit.id)

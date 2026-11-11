@@ -161,8 +161,6 @@ def test_jev_sees_web_candidates_and_shared_evidence_moves_its_pages_together() 
         ("unit-page-c", ["page-c"]),
         ("unit-page-x", ["page-x"]),
     ]
-    call = repository.calls[0]
-    assert (call["candidate_limit"], call["scan_page_limit"], call["scan_unit_limit"]) == (4, 20, 100)
 
 
 def test_jev_selected_unit_becomes_the_page_snippet_and_survives_continuation() -> None:

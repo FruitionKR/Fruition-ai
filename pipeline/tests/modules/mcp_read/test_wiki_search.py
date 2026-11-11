@@ -41,13 +41,9 @@ def limits(**values: int) -> WikiSearchLimits:
     defaults = {
         "max_string_chars": 512,
         "max_page_size": 2,
-        "max_candidates": 4,
-        "max_candidate_bytes": 4096,
         "deadline_ms": 1000,
         "max_request_bytes": 16384,
         "max_response_bytes": 16384,
-        "max_scan_pages": 20,
-        "max_scan_units": 100,
         "max_vector_dimensions": 16,
     }
     defaults.update(values)
@@ -138,11 +134,8 @@ def test_paginates_with_document_qualified_collision_safe_evidence() -> None:
     assert first["results"][0]["evidence"] == [{"document_id": "doc-a", "block_id": "B0001"}]
     assert second["results"][0]["evidence"] == [{"document_id": "doc-b", "block_id": "B0001"}]
     assert repository.calls[0]["workspace_id"] == "workspace-1"
-    assert repository.calls[0]["query"] == "query"
-    assert all(call["candidate_limit"] == 4 for call in repository.calls)
-    assert all(call["scan_page_limit"] == 20 for call in repository.calls)
-    assert all(call["scan_unit_limit"] == 100 for call in repository.calls)
-    assert all(call["materialized_bytes_limit"] == 4096 for call in repository.calls)
+    # 후보 조회에는 MCP 전용 상한을 넘기지 않는다.
+    assert all(call == {"workspace_id": "workspace-1", "query": "query"} for call in repository.calls)
 
 
 @pytest.mark.parametrize(
@@ -172,6 +165,21 @@ def test_cursor_rejects_tampering_and_argument_changes() -> None:
     assert changed.value.code == "HANDLE_NOT_FOUND"
 
 
+def test_cursor_keeps_every_candidate_page_without_a_candidate_cap() -> None:
+    use_case = service(Repository([candidate(f"page-{index:03}", block_id=f"B{index:04}") for index in range(250)]))
+
+    ids: list[str] = []
+    cursor = None
+    while True:
+        response = use_case.execute(request(cursor=cursor, page_size=2))
+        ids.extend(item["page_id"] for item in response["results"])
+        cursor = response["next_cursor"]
+        if cursor is None:
+            break
+
+    assert ids == [f"page-{index:03}" for index in range(250)]
+
+
 def test_cursor_revalidates_page_versions_hashes_and_order() -> None:
     repository = Repository([candidate("page-a"), candidate("page-b")])
     use_case = service(repository)
@@ -184,15 +192,11 @@ def test_cursor_revalidates_page_versions_hashes_and_order() -> None:
     assert (exc.value.status_code, exc.value.code) == (409, "STALE_CURSOR")
 
 
-def test_rejects_invalid_sizes_and_repository_bound_violations() -> None:
+def test_rejects_invalid_sizes_and_invalid_page_metadata() -> None:
     use_case = service(Repository([candidate(f"page-{index}") for index in range(5)]))
     with pytest.raises(WikiSearchError) as page_size:
         use_case.execute(request(page_size=3))
     assert page_size.value.code == "INVALID_INPUT"
-
-    with pytest.raises(WikiSearchError) as rows:
-        use_case.execute(request())
-    assert rows.value.code == "DEPENDENCY_UNAVAILABLE"
 
     with pytest.raises(WikiSearchError) as page_type:
         service(Repository([candidate("page-a", page_type="web")])).execute(request())
