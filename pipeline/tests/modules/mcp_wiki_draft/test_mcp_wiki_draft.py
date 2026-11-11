@@ -1810,3 +1810,54 @@ def test_finalized_draft_keeps_web_ingest_fenced_until_expiry():
         conn.execute("UPDATE mcp_wiki_ingest_runs SET expires_at=now()-interval '1 second' WHERE run_id=%s", (started["run_id"],))
     assert expire_inactive_runs() == 1
     wiki_repository.create_pipeline_run(web_run_id, "doc_1", "user-1", "workspace-1", "test", "test", "api")
+
+
+@pytest.mark.parametrize("link_drift", [False, True])
+def test_lint_with_source_link_preserves_link_and_rechecks_approval(monkeypatch, link_drift):
+    ledger, target, _ = _seed_lint_page("alpha-page", "alpha")
+    monkeypatch.setattr(calculation, "read_contributions", lambda *_: [ledger])
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_pages(id,page_type,title,slug,user_id,workspace_id,status,created_at,updated_at) "
+            "VALUES ('source-page','source','Source','source','user-1','workspace-1','active',now(),now())"
+        )
+        conn.execute(
+            "INSERT INTO wiki_page_links(from_page_id,to_page_id,link_type,workspace_id,created_at,updated_at) "
+            "VALUES ('source-page','alpha-page','source_mentions_concept','workspace-1',now(),now())"
+        )
+        # The publication writer derives source links from document provenance.
+        conn.execute(
+            "INSERT INTO document_wiki_links(document_id,wiki_page_id,relation_type,workspace_id,created_at) "
+            "VALUES ('doc_seed','source-page','source_of','workspace-1',now()), "
+            "('doc_seed','alpha-page','extracted_concept','workspace-1',now())"
+        )
+    source = Source([("B0001", "Additional alpha evidence.")])
+    grant = str(uuid4())
+    payload, _ = _lint_payload(grant, [target], lambda snapshot: [{
+        "operation_id": "add-alpha", "kind": "UPSERT_STATEMENT",
+        "target_page_id": "alpha-page", "depends_on": [],
+        "arguments": {"statement_id": None, "text": "Additional alpha evidence.", "evidence": [{
+            "snapshot_id": snapshot, "block_id": "B0001", "quote": "Additional alpha evidence.",
+        }]},
+    }], source)
+    preview = _intake(source).lint(payload)
+    with _connect() as conn:
+        draft = dict(conn.execute("SELECT * FROM mcp_wiki_drafts").fetchone())
+        assert not any(change["kind"] == "LINK" for change in draft["preview"]["changes"])
+        assert apply_repository_module._recalculate_lint(conn, draft)["preview"] == draft["preview"]
+        if link_drift:
+            conn.execute("UPDATE wiki_page_links SET label='changed' WHERE from_page_id='source-page'")
+    approval = _apply_payload(grant, preview)
+    result = McpWikiDraftApply(PostgresMcpWikiApplyRepository(), _ValidApprovalAuthority()).apply(
+        approval.draft_id, approval)
+    assert result["state"] == ("CONFLICTED" if link_drift else "PUBLISHED")
+    with _connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS n FROM wiki_page_links WHERE from_page_id='source-page' "
+            "AND to_page_id='alpha-page' AND link_type='source_mentions_concept'"
+        ).fetchone()["n"] == 1
+        if link_drift:
+            assert conn.execute("SELECT count(*) AS n FROM wiki_publications").fetchone()["n"] == 0
+        else:
+            page = conn.execute("SELECT markdown_uri FROM wiki_pages WHERE id='alpha-page'").fetchone()
+            assert "Additional alpha evidence." in read_text_object(page["markdown_uri"])
