@@ -174,3 +174,21 @@ access가 AI 파기 API를 부르기 전에 운영에서 직접 document 데이�
    ```
 
 지워지면 되돌릴 수 없다. core의 `wiki_page_versions` 본문은 `document_purge` 결과 event로 지우는데, 이 스크립트는 그 event를 보내지 않아 그대로 남는다.
+
+## MCP 승인 발행분 임베딩 보충(PR #264 배포 직후 1회)
+
+PR #264 전 MCP 위키 승인 적용은 페이지·단위 행만 쓰고 임베딩 작업을 시작하지 않아, 그때 발행한 페이지가 검색(`search_wiki`·웹 근거 검색)에 나오지 않을 수 있다. 일회성 스크립트 `pipeline/backfill_wiki_embeddings.py`가 maintenance worker 주기 복구와 같은 조건(`list_retryable_page_ids`: 완료된 페이지 벡터가 없거나 완료되지 않은 단위 벡터를 가진 활성 페이지)으로 대상을 고르고 기존 임베딩 함수(`build_wiki_embeddings`)로 임베딩한다. LLM은 부르지 않고 임베딩 모델만 쓴다. 배치마다 worker와 같은 advisory lock을 잡아 운영 중에 실행해도 된다. 같은 표현이 이미 임베딩된 것은 건너뛰므로 재실행해도 같고, 중간에 멈추면 다시 실행해 남은 페이지만 처리한다.
+
+1. 임베딩 모델(BGE-M3)과 `AI_DATABASE_URL`·S3 환경변수가 있는 maintenance worker 컨테이너의 `pipeline/`에서 dry-run으로 대상 수를 확인한다. `--workspace-id`로 한 워크스페이스만 볼 수 있다.
+
+   ```bash
+   python backfill_wiki_embeddings.py
+   ```
+
+2. `selected_pages`가 예상 범위면 실행한다. 배치 크기는 `--batch-size`(기본 20)다.
+
+   ```bash
+   python backfill_wiki_embeddings.py --apply
+   ```
+
+3. 출력의 `failed_count`가 0이면 끝이다(0이 아니면 종료 코드 1). 실패한 페이지는 미완료로 남아 다시 실행하거나 worker 주기 복구가 다시 고른다. dry-run을 다시 돌려 `selected_pages`가 0인지 확인한다.
