@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -50,3 +50,10 @@ def test_publication_keeps_existing_restore_response_contract(monkeypatch, kind)
     assert events[0]["result"]["user_id"] == "user"
     assert events[0]["result"]["operation_type"] == "restore"
     assert "source_document_ids" not in events[0]["result"]["changed_pages"][0]
+    # The HTTP envelope remains enriched, but both Kafka delivery paths must carry
+    # the exact committed result, including when the journal replays this response.
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+    from app.workers import task_worker
+    with patch.object(journal, "execute", return_value=result):
+        task_result = task_worker._execute_controlled({"kind": f"restore_{kind}", "run_id": "run"})
+    assert task_result == events[0]["result"]

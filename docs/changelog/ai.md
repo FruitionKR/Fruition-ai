@@ -1,5 +1,9 @@
 # AI 변경 기록
 
+## 2026-11-11
+
+- Kafka 복구 성공 결과를 publication과 같은 canonical 형식으로 발행한다. 과거 HTTP 형식으로 저장된 journal 결과를 재생할 때도 operation_type과 페이지 필드를 정규화한다. HTTP 응답은 유지하며 worker·복구 계약 테스트 153개 통과(2개 격리 DB 테스트 제외).
+
 ## 2026-11-10
 
 ### MCP Jev 호출을 document 크레딧 판정으로 제한하고 사용자에게 귀속
