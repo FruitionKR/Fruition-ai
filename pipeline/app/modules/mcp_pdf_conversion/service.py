@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -38,6 +39,10 @@ SCHEMA = "mcp.pdf-conversion.v1"
 MAX_ATTEMPTS = 1
 MANIFEST = Path("layout") / "auto" / "batch.crop_first_manifest.json"
 DETECTED = Path("final") / "batch.detected.md"
+# 조립 결과 위치. tmp/ lifecycle(7일)이 지운다. 승인 계획은 run 생성 + 1일에 만료하고, 결과가 지워지기 전에 만료하도록
+# finalize 뒤 RESULT_PROPOSAL_DAYS 안에서만 승인 계획을 받는다.
+RESULT_PREFIX = "tmp/mcp-convert/"
+RESULT_PROPOSAL_DAYS = 6
 
 
 class McpPdfConversionError(Exception):
@@ -300,8 +305,9 @@ def finalize(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
             for first, markdown in chunks
         ])
         content_hash = _sha256(data)
-        # 기존 변환 결과처럼 tmp/convert/에 두고 key와 hash만 승인 계획에 싣는다. 승인 전에는 아무것도 저장하지 않는다.
-        result_key = f"tmp/convert/mcp/{row['workspace_id']}/{conversion_id}/final.json"
+        # key와 hash만 승인 계획에 싣는다. 승인 전에는 아무것도 저장하지 않는다. 결과는 승인 계획보다 오래 남아야 하므로
+        # tmp/convert/(1일)가 아니라 tmp/ 7일 lifecycle 아래(RESULT_PREFIX)에 둔다.
+        result_key = f"{RESULT_PREFIX}{row['workspace_id']}/{conversion_id}/final.json"
         storage.put_object(bucket_name(), result_key, io.BytesIO(data), length=len(data),
                            content_type="application/json")
         response = {
@@ -314,11 +320,28 @@ def finalize(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
         return response
 
 
+_DATA_IMAGE = re.compile(r"(data:image/(?:png|jpeg|gif);base64,)[A-Za-z0-9+/=]+")
+
+
+def converted_preview_markdown(result: str) -> str:
+    """승인 화면 미리 보기용 본문. 저장할 때(document)처럼 묶음을 빈 줄로 잇는다.
+
+    이미지 바이트(data: URI)는 저장 때 asset으로 분리되는 내용이라 미리 보기에서는 줄인다. 쪽 번호는 묶음 안 번호다.
+    """
+    merged = ""
+    for batch in json.loads(result):
+        markdown = _DATA_IMAGE.sub(r"\1…", str(batch["markdown"]))
+        merged = markdown if not merged else merged.rstrip() + "\n\n" + markdown
+    return merged
+
+
 def finalized_conversion_exists(workspace_id: str, user_id: str, document_id: str, source_content_hash: str,
                                 content_hash: str, result_key: str) -> bool:
     """propose_plan의 원본 연결 create_document가 이 사용자의 조립 결과(key·hash) 그대로인지."""
     with _connect() as conn:
         return conn.execute(
             "SELECT 1 FROM mcp_pdf_conversions WHERE workspace_id=%s AND user_id=%s AND document_id=%s "
-            "AND source_content_hash=%s AND final_markdown_hash=%s AND final_response->>'result_key' = %s",
-            (workspace_id, user_id, document_id, source_content_hash, content_hash, result_key)).fetchone() is not None
+            "AND source_content_hash=%s AND final_markdown_hash=%s AND final_response->>'result_key' = %s "
+            "AND finalized_at > now() - %s * interval '1 day'",
+            (workspace_id, user_id, document_id, source_content_hash, content_hash, result_key,
+             RESULT_PROPOSAL_DAYS)).fetchone() is not None

@@ -133,7 +133,7 @@ def test_session_follows_existing_preprocessing_retry_and_assembly(connect, monk
     assert (second["accepted"], second["new_window_ordinals"], second["submitted_window_count"]) == (True, [], 2)
 
     final = service.finalize(conversion, actor())
-    assert final["result_key"] == f"tmp/convert/mcp/ws_1/{conversion}/final.json"
+    assert final["result_key"] == f"tmp/mcp-convert/ws_1/{conversion}/final.json"
     stored = storage.objects[final["result_key"]]
     assert final["content_hash"] == "sha256:" + __import__("hashlib").sha256(stored).hexdigest()
     # 쪽 번호는 묶음 안 번호 그대로 두고 시작 쪽을 함께 둔다. 원본 기준 번호는 document가 저장 때 바꾼다.
@@ -147,7 +147,22 @@ def test_session_follows_existing_preprocessing_retry_and_assembly(connect, monk
     assert not service.finalized_conversion_exists("ws_1", "user_2", "doc_pdf", HASH, final["content_hash"],
                                                    final["result_key"])
     assert not service.finalized_conversion_exists("ws_1", "user_1", "doc_pdf", HASH, final["content_hash"],
-                                                   f"tmp/convert/mcp/ws_1/{uuid4()}/final.json")
+                                                   f"tmp/mcp-convert/ws_1/{uuid4()}/final.json")
+    # 결과는 tmp/ lifecycle(7일)이 지운다. 승인 계획(1일)이 결과보다 먼저 끝나도록 finalize 뒤 6일까지만 받는다.
+    with connect() as conn:
+        conn.execute("UPDATE mcp_pdf_conversions SET finalized_at = now() - interval '6 days 1 hour' "
+                     "WHERE conversion_id = %s", (conversion,))
+    assert not service.finalized_conversion_exists("ws_1", "user_1", "doc_pdf", HASH, final["content_hash"],
+                                                   final["result_key"])
+
+
+def test_preview_markdown_joins_batches_and_shortens_image_bytes():
+    result = __import__("json").dumps([
+        {"page_start": 1, "markdown": "<!-- page 1 -->\n\n![a](data:image/png;base64,AAAA)\n\n"},
+        {"page_start": 3, "markdown": "<!-- page 1 -->\n\nB\n"}])
+
+    assert service.converted_preview_markdown(result) == (
+        "<!-- page 1 -->\n\n![a](data:image/png;base64,…)\n\n<!-- page 1 -->\n\nB\n")
 
 
 def test_finalize_has_no_proposal_size_cap(connect, monkeypatch):

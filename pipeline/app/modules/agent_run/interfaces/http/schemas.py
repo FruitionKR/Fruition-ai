@@ -240,7 +240,7 @@ _SOURCE_BOUND_CREATE_DOCUMENT_KEYS = {
     "display_name", "folder_id", "content_result_key", "content_hash", "source_document_id", "source_content_hash",
 }
 _CONVERSION_RESULT_KEY = re.compile(
-    r"tmp/convert/mcp/[A-Za-z0-9_-]{1,255}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/final\.json"
+    r"tmp/mcp-convert/[A-Za-z0-9_-]{1,255}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/final\.json"
 )
 
 

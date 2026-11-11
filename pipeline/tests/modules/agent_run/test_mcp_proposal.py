@@ -397,7 +397,7 @@ def test_plan_duplicate_content_and_dependents_are_deselected_not_rejected() -> 
     assert preview["added_lines"] > 0
 
 
-RESULT_KEY = "tmp/convert/mcp/workspace-1/00000000-0000-4000-8000-0000000000aa/final.json"
+RESULT_KEY = "tmp/mcp-convert/workspace-1/00000000-0000-4000-8000-0000000000aa/final.json"
 
 
 def _source_bound_pdf_plan(*, drop: str | None = None) -> dict[str, object]:
@@ -436,6 +436,20 @@ def test_mcp_plan_keeps_pdf_source_binding_in_approved_arguments() -> None:
     assert repository.created[0]["artifacts"] == ()
     assert checked == [("workspace-1", checked[0][1], "doc_pdf", "sha256:" + "a" * 64, arguments["content_hash"],
                         RESULT_KEY)]
+
+
+def test_mcp_plan_rejects_old_artifact_backed_pdf_conversion_form() -> None:
+    """옛 PDF 변환본 형태(artifact 본문 + 원본 쌍)는 호환 경로 없이 거절한다."""
+    body = _source_bound_pdf_plan()
+    arguments = body["proposal"]["operations"][0]["arguments"]
+    arguments.pop("content_result_key")
+    arguments["content_artifact_id"] = "converted-markdown"
+    body["proposal"]["artifacts"] = [{
+        "id": "converted-markdown", "content_hash": arguments["content_hash"], "purpose": "create_document",
+        "document_id": None, "base_version": None, "target": None, "markdown": "# 보고서\n",
+    }]
+    with pytest.raises(Exception):
+        McpAgentProposalRequest.model_validate(body)
 
 
 def test_mcp_plan_rejects_pdf_result_key_outside_conversion_results() -> None:
