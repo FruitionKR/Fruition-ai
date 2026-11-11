@@ -92,7 +92,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/skill-execution/folder-sources/read` (agent_worker의 폴더 정리 본문 중복 확인) | `pipeline/agent_worker.py`의 `_build_folder_content_reader` |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/read/{tool_name}`, `POST /internal/agent/tools/execute/{tool_name}`, `POST /internal/agent/runs/{run_id}/plan-ready`(승인 대기·종료·되묻기 알림) | `app/modules/agent_run/infrastructure/backend_tool_gateway.py`:28,52,69 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/mcp/document-edit-context` | `app/modules/agent_run/infrastructure/mcp_document_edit_context.py`; proposal 전에 현재 authz/version/body/hash/parent를 다시 확인 |
-| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/documents/{document_id}/mcp-wiki-source` | `app/modules/mcp_wiki_draft/infrastructure/backend_source_reader.py`; 현재 `wiki.ingest`+read 판정 뒤 한 coherent source version/hash/ordered-block snapshot |
+| document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/documents/{document_id}/mcp-wiki-source` | `app/modules/mcp_wiki_draft/infrastructure/backend_source_reader.py`; 현재 `wiki.ingest`+read 판정 뒤 한 coherent display_name/source version/hash/ordered-block snapshot |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/mcp/approvals/lookup`, `POST /internal/agent/mcp/receipts/lookup` | enqueue 직전 예약 validity와 불명확한 실행의 body-free receipt를 fail-closed 조회 |
 | document-svc (`AGENT_BACKEND_URL`, `X-Agent-Service-Token`) | `POST /internal/agent/tools/rollback/{run_id}/changes`, `.../changes/{change_id}`, `.../rollback/{run_id}/finalize-edits` | `app/modules/task_cancellation/infrastructure/backend_rollback.py`:12,18,20 |
 | access-svc (`ACCESS_INTERNAL_BASE_URL`) | `GET /internal/authz/workspaces/{workspace_id}/users/{user_id}` | `app/modules/skill/infrastructure/workspace_authorization.py`:19 |
@@ -114,13 +114,13 @@ agent_worker(`pipeline/agent_worker.py`)는 `AGENT_BACKEND_URL`을 쓴다. agent
 | `ai.ingest.command` | 수신 | `app/workers/ingest_worker.py`:52 | `core/document/repository/IngestCommandOutbox.java`:56,73 |
 | `ai.query.command` | 수신 | `app/workers/task_worker.py`:82 (`AI_COMMAND_TOPIC`) | `core/query/service/QueryRunService.java`:74 |
 | `ai.agent.command` | 수신 | 같은 worker를 다른 토픽으로 배치 | `core/agent/service/AgentTurnService.java`:131 |
-| `ai.maintenance.command` | 수신·발행 | `app/workers/task_worker.py`, ingest 후속은 `ingest_worker.py`:56 | `core/wikimaintenance/service/WikiMaintenanceService.java`:66, `core/aihistory/service/RestoreExecuteService.java`:132, `core/mcp/McpWikiApprovalService.java`(`acceptPublication`, `mcp_publication_index`) |
+| `ai.maintenance.command` | 수신·발행 | `app/workers/task_worker.py`, ingest 후속은 `ingest_worker.py`:56 | `core/wikimaintenance/service/WikiMaintenanceService.java`:66, `core/aihistory/service/RestoreExecuteService.java`:132, `core/mcp/McpWikiApprovalService.java`(`acceptPublication`), `core/wiki/service/WikiPageEditService.java`(직접 편집) — 둘 다 `embedding_recovery` |
 | `ai.task.event` | 발행 | `app/workers/{ingest,task}_worker.py` | 소비: `core/aitask/service/AiTaskResultConsumer.java` |
 | `document.edit.event` | 수신 | `app/workers/edit_event_consumer.py`:34 | `core/document/service/PostgresDocumentEditOutboxPublisher.java`:69 |
 
 `task_worker.py`는 하나의 실행 파일이고 `kind`(`query`·`agent`·`lint`·`meeting_notes`·`meeting_transcription`·`post_ingest`·
 `restore_ingest`·`restore_lint`)로 분기한다(`app/workers/task_worker.py`의 `_handle`).
-`mcp_publication_index`는 MCP 위키 발행 뒤 0대 maintenance worker를 깨우는 command다. `consume()`의 `process`가 `_handle` 전에
+`embedding_recovery`는 MCP 위키 발행·웹 위키 직접 편집 뒤 0대 maintenance worker를 깨우는 command다(pipeline-api는 발행만 하고 임베딩하지 않는다). `consume()`의 `process`가 `_handle` 전에
 받아 실행 기록·과금·`ai.task.event` 없이 누락 임베딩 복구를 끝까지 돌린 뒤 offset을 커밋한다. 인프라 실패는 커밋하지 않고,
 페이지별 실패는 미완료 상태로 남겨 다음 복구가 다시 고른다.
 document-svc는 모든 AI command를 Postgres outbox에 쓰고

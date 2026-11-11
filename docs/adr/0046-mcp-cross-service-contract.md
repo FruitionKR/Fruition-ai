@@ -28,7 +28,7 @@ MCP는 access의 OAuth 인가, document의 리소스 인가·승인·수수료, 
 2. access-svc가 OAuth authorization server와 grant·workspace 정책을 소유한다. MCP 서버는 토큰을 발급하거나 다른 서비스로 전달하지 않는다.
 3. ai-svc는 MCP 프로토콜을 처리하지 않는다. document-svc만 기존 서비스 토큰으로 ai-svc를 호출한다.
 4. MCP 버전은 `2025-11-25`, Java SDK는 호환되는 정식 `2.1.x`로 시작한다. 세션은 상태의 소유권 증거가 아니며 지속 상태는 아래 handle로 식별한다.
-5. OAuth만 지원한다. PAT, 조직 공용 고정 헤더, Dynamic Client Registration, sampling, elicitation, MCP 안의 승인 tool은 제공하지 않는다.
+5. OAuth만 지원한다. PAT, 조직 공용 고정 헤더, Dynamic Client Registration, sampling, elicitation, MCP 안의 승인 tool은 제공하지 않는다. 승인 화면을 여는 URL 모드 elicitation만 [0047](0047-mcp-approval-url-elicitation.md)이 예외로 제안한다(제안 상태).
 6. 쓰기는 제안만 만들고 사람의 웹 승인 뒤 실행한다. MCP 경로에서 생성형 서버 LLM을 호출하지 않는다.
 
 ### Transport, tool definition, audit
@@ -36,7 +36,7 @@ MCP는 access의 OAuth 인가, document의 리소스 인가·승인·수수료, 
 - 운영 MCP resource/Streamable HTTP endpoint와 OAuth redirect/metadata URL은 HTTPS만 허용한다. TLS termination 뒤에는 신뢰한 proxy의 canonical scheme/host만 사용하고 client가 보낸 forwarded header를 그대로 신뢰하지 않는다. cleartext 또는 canonical resource와 다른 scheme/host는 redirect로 보정하지 않고 거절한다.
 - Streamable HTTP request의 `Origin`이 있으면 canonical origin allowlist와 scheme/host/port를 exact 비교한다. 허용 origin은 통과하고 malformed/null/mismatched origin은 data/tool 처리 전에 403으로 거절한다. native client가 `Origin`을 보내지 않는 경우는 OAuth/token/current-grant 검사를 모두 거친 뒤 허용하며, missing origin을 anonymous/auth bypass로 쓰지 않는다. 지원하는 POST와 GET/DELETE session route에 같은 규칙을 적용한다.
 - request body는 decompression 후 4 MiB hard limit이며 초과 body를 parse하거나 일부 수락하지 않는다. endpoint별 더 작은 상한 값은 해당 release gate에서 정한다.
-- 공개 tool 이름·설명·input JSON Schema는 source-controlled static `mcp-tools.v1` catalog다. v1 이름은 `search_wiki`, `get_wiki_page`, `find_documents`, `get_document`, `propose_document_edit`, `propose_plan`, `start_ingest`, `resume_ingest`, `get_window`, `submit_window`, `finalize_ingest`, `submit_lint_changes`의 닫힌 목록이며 단계별로 gate를 통과한 subset만 노출한다. 승인/apply/result 조회는 MCP tool이 아니다. catalog/schema가 바뀌면 version과 변경 내역을 함께 올린다. user/workspace가 만든 title/content, client text, Skill name/body를 definition/description/schema/default/example/enum에 넣지 않는다. 팀 Skill과 write-before-launch tool은 목록에도 노출하지 않는다.
+- 공개 tool 이름·설명·input JSON Schema는 source-controlled static `mcp-tools.v1` catalog다. v1 이름은 `search_wiki`, `get_wiki_page`, `find_documents`, `get_document`, `propose_document_edit`, `propose_plan`, `start_ingest`, `resume_ingest`, `get_window`, `submit_window`, `finalize_ingest`, `submit_lint_changes`의 닫힌 목록이며(웹 직접 업로드를 감싸는 `start_document_upload`, `get_upload_part_urls`, `complete_document_upload` 추가와 업로드의 승인 예외는 [ADR 0048](0048-mcp-document-upload.md)) 단계별로 gate를 통과한 subset만 노출한다. 승인/apply/result 조회는 MCP tool이 아니다. catalog/schema가 바뀌면 version과 변경 내역을 함께 올린다. user/workspace가 만든 title/content, client text, Skill name/body를 definition/description/schema/default/example/enum에 넣지 않는다. 팀 Skill과 write-before-launch tool은 목록에도 노출하지 않는다.
 - document는 모든 tool attempt에 unknown field 없는 body-free audit v1을 기록한다: `{audit_id, occurred_at, user_id, workspace_id, client_id, grant_id, tool_name, target_ids, result, error_code, origin}`. `target_ids`는 검증된 existing ID의 중복 없는 목록이고, target 없는 search는 빈 목록이다. `result`는 `ALLOWED | DENIED | SUCCEEDED | FAILED | UNKNOWN`; audit에는 request/response body, query, snippet, Markdown, quote, token, authorization code, artifact를 넣지 않는다. 보존 기간은 launch gate다.
 - 모든 write 결과/run/draft/receipt/publication event에는 server-resolved `user_id` author와 `origin=MCP_CLIENT`, grant/client를 남긴다. downstream service audit도 이 provenance를 쓰며 MCP bearer token이나 body를 복사하지 않는다.
 
@@ -266,7 +266,7 @@ External input은 `{ "query": "<nonblank bounded text>", "cursor": null, "page_s
 
 ### `get_wiki_page`
 
-External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<existing wiki page id>" }`뿐이다. client가 workspace/user/cursor를 보내지 않으며 document가 현재 authorization을 검증해 workspace context를 만든다. document는 service authentication으로 기존 AI route `GET /wiki/pages/{page_id}?workspace_id=<validated context>&mcp_read=true`를 호출한다. `mcp_read` 없는 legacy GET 계약은 바꾸지 않는다.
+External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<existing wiki page id>" }`뿐이다. client가 workspace/user/cursor를 보내지 않으며 document가 현재 authorization을 검증해 workspace context를 만든다. document는 웹 상세 조회(`WikiService.read`, 기존 AI route `GET /wiki/pages/{page_id}?workspace_id=<validated context>`)를 그대로 써서 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 본문을 고른다. MCP 전용 AI route는 두지 않는다(2026-11 `mcp_read` 분기 제거).
 
 ```json
 {
@@ -282,7 +282,7 @@ External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<ex
 
 응답은 정확히 `schema_version`, `page_id`, `page_type`, `title`, `body`, `content_hash`, `data_boundary`의 일곱 text field다. `version`, `evidence`, `quote`, `next_cursor`, `truncated`, chunk 또는 raw-hash field는 없다. body는 한 번에 반환되며 비어 있을 수 있다. body·metadata·전체 response 중 어느 하나가 bounded limit을 넘으면 조용히 자르지 않고 `RESPONSE_LIMIT_EXCEEDED`로 거절한다.
 
-AI는 active page의 현재 metadata/body가 read 중 바뀌지 않았는지 확인한 뒤, raw UTF-8 body의 SHA-256을 internal `content_hash`로 반환한다. document는 이 raw hash를 먼저 검증한 뒤 기존 Markdown sanitizer로 title/body를 neutralize하고, public `content_hash`를 **반환한 sanitized body의 exact UTF-8 SHA-256**으로 다시 계산한다. 따라서 세 identity를 섞지 않는다: AI raw body/storage identity, MCP public returned-representation identity, 그리고 검색의 version/hash/evidence identity는 각각 별개다. 이 read는 immutable publication, approval/apply identity 또는 I8 publication identity를 주장하지 않으며 I8을 기다리지 않는다.
+document는 본문을 고른 뒤 page metadata(`page_type`, `title`, `markdown_uri`, `status`, `updated_at`)와 최신 revision을 다시 읽어 read 중 바뀌었거나 active가 아니면 retryable `PAGE_CHANGED`로 거절한다. 전체 읽기는 `MCP_WIKI_PAGE_DEADLINE_MS` 안에 끝나야 하고 넘으면 `DEPENDENCY_UNAVAILABLE`이다. 저장 객체를 읽었는데 비어 있는 본문은 빈 `body`로 정상 반환하고, 끝내 본문을 구하지 못하면 `DEPENDENCY_UNAVAILABLE`이다. document는 기존 Markdown sanitizer로 title/body를 neutralize하고, public `content_hash`를 **반환한 sanitized body의 exact UTF-8 SHA-256**으로 계산한다. 따라서 identity를 섞지 않는다: 저장 본문 identity, MCP public returned-representation identity, 그리고 검색의 version/hash/evidence identity는 각각 별개다. 이 read는 immutable publication, approval/apply identity 또는 I8 publication identity를 주장하지 않으며 I8을 기다리지 않는다.
 
 ### `find_documents`
 
@@ -402,7 +402,10 @@ operation top-level shape와 argument key 집합은 기존 `AgentPlanOperation`/
 | `move_document` | existing document, positive base | `document_id`, `folder_id`(folder ID/null/result ref), `position`(null 또는 0 이상 integer), `base_version` |
 | `rename_document` | existing document, positive base | `document_id`, `display_name`(nonblank bounded text), `base_version` |
 | `create_document` | `target_type=document`, target/base null | `display_name`, `folder_id`(folder ID/null/result ref), `content_artifact_id`, `content_hash` |
+| `create_document`(MCP PDF 변환본) | `target_type=document`, target/base null | `display_name`, `folder_id`(folder ID/null/result ref), `content_result_key`(`tmp/mcp-convert/{workspace_id}/{conversion_id}/final.json`), `content_hash`, `source_document_id`, `source_content_hash`. artifact를 싣지 않는다 |
 | `apply_document_edit` | existing document, positive base | `document_id`, `base_version`, `target`, `content_artifact_id`, `content_hash` |
+
+PDF 변환본 `create_document`는 Fruition-document `finalize_pdf_conversion`의 MCP proposal에서만 받고 내부 Agent planning(LLM) 계획은 받지 않는다. 본문은 artifact가 아니라 같은 workspace·user의 MCP PDF 변환 세션이 finalize한 결과 key와 그 `content_hash`다. document가 승인·실행 때 원본 PDF 권한과 `source_content_hash`를 다시 확인하고, 실행 때 key에서 결과를 읽어 hash를 확인한 뒤 웹 변환과 같은 코드로 저장한다(`docs/api/agent.md`). 아래 artifact 참조 규칙(모든 문서 mutation이 artifact 하나를 참조)은 이 변형에 적용하지 않는다.
 
 result reference는 다른 object 모양을 허용하지 않는다. destination folder는 `{ "$operation_result": "<earlier create_folder operation id>", "field": "id" }`, version은 `{ "$operation_result": "<earlier same-target operation id>", "field": "current_version" }`만 허용한다. reference한 operation은 `depends_on`에 있어야 한다. direct scalar target/base/parent는 대응 top-level 값과 같아야 하고 result ref는 위 null/dependency 규칙을 따라야 한다. hierarchy snapshot에 없는 target/destination, 자기 하위 folder 이동, target folder 자체의 이동/rename, folder 범위 이탈도 거절한다.
 

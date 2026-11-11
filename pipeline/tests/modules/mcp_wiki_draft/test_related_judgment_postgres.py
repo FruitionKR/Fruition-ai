@@ -30,10 +30,14 @@ def test_related_finalize_frozen_apply_and_target_drift(monkeypatch, drift):
         assert target in draft["target_pages"]
         frozen = draft["normalized_submissions"]
         assert [w["contributions"][0]["links"][0]["source_statement_id"] for w in frozen] == ["statement-1", "statement-1"]
-        recalculated, _ = h.apply_repository_module._recalculate(conn, draft)
+        blocks = [dict(row) for row in conn.execute(
+            "SELECT block_id,ordinal,text,content_hash FROM mcp_wiki_source_blocks WHERE snapshot_id=%s ORDER BY ordinal",
+            (draft["snapshot_id"],),
+        ).fetchall()]
+        recalculated = h.calculation.preview_ingest(conn, run=draft, submissions=list(frozen), source_blocks=blocks)
         assert recalculated["preview"] == draft["preview"]
-        related = [link for link in recalculated["publication_plan"]["wiki_links"] if link["link_type"] == "concept_related_to"]
-        assert len(related) == 1 and related[0]["to_page_id"] == "target"
+        related = [key for key, _ in recalculated["calculation_inputs"]["effect"] if key[0] == "link" and key[2] == "concept_related_to"]
+        assert related == [["link", "new:concept:incoming", "concept_related_to", "target"]]
         conn.execute("INSERT INTO document_derived_state(document_id,workspace_id,last_edit_revision,last_edit_hash,last_edited_at) "
                      "VALUES ('doc_1','workspace-1',7,%s,now())",
                      (started["source_snapshot"]["source_content_hash"].removeprefix("sha256:"),))

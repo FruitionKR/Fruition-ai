@@ -57,6 +57,8 @@ ALTER TABLE mcp_wiki_ingest_runs DROP CONSTRAINT IF EXISTS mcp_wiki_ingest_runs_
 ALTER TABLE mcp_wiki_ingest_runs ADD CONSTRAINT mcp_wiki_ingest_runs_state_check CHECK (
     state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL','APPLYING','PUBLISHED','NO_CHANGE','CONFLICTED','HALTED','UNKNOWN','EXPIRED','CANCELLED','INVALIDATED')
 );
+-- Document source callback의 display_name. 소스 페이지 제목으로 쓴다. 이 컬럼 추가 이전에 만든 run만 NULL이다.
+ALTER TABLE mcp_wiki_ingest_runs ADD COLUMN IF NOT EXISTS source_display_name varchar(255);
 DROP INDEX IF EXISTS uq_mcp_wiki_active_document;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_mcp_wiki_active_document
     ON mcp_wiki_ingest_runs(document_id)
@@ -318,6 +320,27 @@ CREATE INDEX IF NOT EXISTS idx_wiki_pages_workspace
     ON wiki_pages (workspace_id, status, updated_at DESC);
 
 ALTER TABLE wiki_pages ALTER COLUMN title TYPE text;
+
+-- 예전 MCP 편입은 소스 페이지 slug를 문서 ID 그대로(`doc_...`) 썼다. 웹 편입과 같은 slug(slugify)로 바꿔
+-- 재편입이 같은 소스 페이지를 쓰게 한다. 웹 slug(slugify)는 소문자·숫자·한글·`-`만 쓰므로 그 밖의 글자가 있는 소스 slug만 고친다.
+-- 같은 문서의 웹 소스 페이지가 이미 있으면 고유 키가 겹치므로 그대로 둔다.
+UPDATE wiki_pages page
+SET slug = fixed.slug
+FROM (
+    SELECT id, workspace_id, slug, count(*) OVER (PARTITION BY workspace_id, slug) AS twins
+    FROM (
+        SELECT id, workspace_id, trim(both '-' FROM regexp_replace(lower(slug), '[^a-z0-9가-힣]+', '-', 'g')) AS slug
+        FROM wiki_pages
+        WHERE page_type = 'source' AND slug ~ '[^a-z0-9가-힣-]'
+    ) renamed
+) fixed
+WHERE page.id = fixed.id
+  AND fixed.slug <> ''
+  AND fixed.twins = 1
+  AND NOT EXISTS (
+      SELECT 1 FROM wiki_pages other
+      WHERE other.workspace_id = fixed.workspace_id AND other.page_type = 'source' AND other.slug = fixed.slug
+  );
 
 -- 자동 동일성에 쓸 수 있다고 확인된 별칭만 둔다. 기존 Markdown 별칭은 출처 불명이라 이 표로 역채우지 않는다.
 CREATE TABLE IF NOT EXISTS wiki_concept_identity_aliases (

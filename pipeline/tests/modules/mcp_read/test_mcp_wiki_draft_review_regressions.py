@@ -37,7 +37,7 @@ def intake(monkeypatch):
         monkeypatch.setattr(app, "load_intake_limits", lambda: limits)
         policy = app.SubmissionPolicy(10, 10, 10, 10, 100, 100, 100, 0.5, (re.compile("NEVER_MATCH"),), "review-v1", "review-eval")
         monkeypatch.setattr(app, "load_submission_policy", lambda: policy)
-        source = {"source_version": 1, "source_content_hash": "sha256:" + "a" * 64, "blocks": [
+        source = {"source_version": 1, "source_content_hash": "sha256:" + "a" * 64, "display_name": "Review Doc", "blocks": [
             {"block_id": f"B{i}", "ordinal": i, "text": text, "content_hash": "sha256:" + hashlib.sha256(text.encode()).hexdigest()}
             for i, text in enumerate(("alpha", "beta"), 1)
         ]}

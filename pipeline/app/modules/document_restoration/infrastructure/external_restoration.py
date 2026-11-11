@@ -2,6 +2,8 @@
 외부 AI가 낸 결과를 기존 검증(valid_replacement·clean_description)으로 걸러 기존 조립(assemble)로 Markdown을 만든다.
 
 내부 공급사 호출은 하지 않는다. 창 하나는 selective repair의 요청 하나(쪽·종류·이어진 표 묶음) 또는 그림 하나다.
+기존 복원의 재시도(retry_blocks)도 같다. 떨어진 블록마다(합친 표가 거부되면 조각마다) 한 블록 재시도 창이 생긴다.
+재시도 창의 입력은 PDF가 있는 전처리 때 미리 만들어 둔다(followups).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from app.modules.document_restoration.infrastructure.selective_repair_with_provi
     page_markdown,
     rejected_candidates,
     repair_request,
+    retry_blocks,
     save_merged,
     save_replacements,
     select_candidates,
@@ -49,30 +52,43 @@ def build_windows(pdf_file: Path, output_dir: Path, manifest_file: Path, detecte
     image_dir.mkdir(parents=True, exist_ok=True)
     windows: list[dict[str, Any]] = []
 
+    stored: dict[str, str] = {}
+
     def store(images: list[str]) -> list[str]:
-        paths = []
+        # 재시도 창은 묶음 요청과 같은 쪽 이미지·crop을 다시 쓰므로 같은 이미지는 한 번만 저장한다.
         for data_url in images:
-            index = len(list(image_dir.iterdir()))
-            path = image_dir / f"{index:05d}.png"
-            path.write_bytes(base64.b64decode(data_url.split(",", 1)[1]))
-            paths.append(str(path.relative_to(output_dir)))
-        return paths
+            if data_url not in stored:
+                path = image_dir / f"{len(stored):05d}.png"
+                path.write_bytes(base64.b64decode(data_url.split(",", 1)[1]))
+                stored[data_url] = str(path.relative_to(output_dir))
+        return [stored[data_url] for data_url in images]
 
     for (page, lane, chain_head), blocks in group_candidates(select_candidates(manifest)).items():
-        request = repair_request(
-            pdf_file, lane, prompts[lane], blocks,
-            chained=bool(chain_head),
-            body_only=all(block.get("scope") == "page_body" for block in blocks),
-            fragments=fragments, pages=pages, page_images={},
-            block_images={block["id"]: block_image(output_dir, pdf_file, block) for block in blocks},
-        )
+        body_only = all(block.get("scope") == "page_body" for block in blocks)
+        page_images: dict[int, str] = {}
+        block_images = {block["id"]: block_image(output_dir, pdf_file, block) for block in blocks}
+
+        def request(request_blocks: list[dict[str, Any]], chained: bool = False) -> dict[str, Any]:
+            return repair_request(
+                pdf_file, lane, prompts[lane], request_blocks, chained=chained, body_only=body_only,
+                fragments=fragments, pages=pages, page_images=page_images, block_images=block_images,
+            )
+
+        base = request(blocks, chained=bool(chain_head))
+        base_images = store(base["images"])
+        followups = {}
+        for block in blocks:
+            single = request([block])
+            followups[block["id"]] = {"instructions": single["prompt"], "payload": single["payload"],
+                                      "result_schema": OUTPUT_SCHEMA, "images": store(single["images"])}
         windows.append({
             "kind": "repair", "lane": lane, "page": page,
             # 이어진 표는 첫 조각만 묻는다(기존 복원과 같음). 나머지 조각은 첫 조각이 받아들여지면 합쳐진다.
             "result_block_ids": [blocks[0]["id"]] if chain_head else [block["id"] for block in blocks],
             "chain_block_ids": [block["id"] for block in blocks] if chain_head else [],
-            "instructions": request["prompt"], "payload": request["payload"],
-            "result_schema": OUTPUT_SCHEMA, "images": store(request["images"]),
+            "instructions": base["prompt"], "payload": base["payload"],
+            "result_schema": OUTPUT_SCHEMA, "images": base_images,
+            "followups": followups,
         })
     if describe_figures:
         prompt = (PROMPT_DIR / "figure_description.md").read_text(encoding="utf-8")
@@ -83,6 +99,8 @@ def build_windows(pdf_file: Path, output_dir: Path, manifest_file: Path, detecte
                 "result_block_ids": [figure["id"]], "chain_block_ids": [],
                 "instructions": prompt, "payload": {"task": "figure_description", "page": figure["page"]},
                 "result_schema": FIGURE_SCHEMA, "images": [str(figure["asset"])],
+                # 기존 그림 설명은 다시 묻지 않는다.
+                "followups": {},
             })
     path = output_dir / WINDOWS_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,11 +135,27 @@ def validate_result(window: dict[str, Any], result: Any, blocks: dict[str, dict[
     return [block["id"] for block in rejected_candidates(expected, result, fragments)]
 
 
+def followup_block_ids(window: dict[str, Any], result: Any, blocks: dict[str, dict[str, Any]],
+                       fragments: dict[str, str]) -> list[str]:
+    """이 창 결과 뒤에 한 블록 재시도 창으로 물을 block id다. 재시도 창과 그림 창은 더 묻지 않는다."""
+    if not window["followups"]:
+        return []
+    chain = window["chain_block_ids"]
+    expected = [blocks[block_id] for block_id in (chain or window["result_block_ids"])]
+    return [block["id"] for block in retry_blocks(expected, result, fragments, chained=bool(chain))]
+
+
+def followup_window(window: dict[str, Any], block_id: str) -> dict[str, Any]:
+    return {**window, **window["followups"][block_id], "result_block_ids": [block_id], "chain_block_ids": [],
+            "followups": {}}
+
+
 def assemble_external(output_dir: Path, manifest_file: Path, detected_markdown: Path,
                       results: list[tuple[dict[str, Any], Any]]) -> tuple[str, dict[str, Any]]:
     """받아들인 창 결과를 기존 결과 파일로 쓰고 기존 조립으로 Markdown과 복원 요약을 만든다.
 
-    떨어진 block은 기존 복원과 같이 repair_rejected로 남겨 조립이 원문 대체 안내를 붙인다.
+    떨어진 block은 기존 복원과 같이 repair_rejected로 남겨 조립이 원문 대체 안내를 붙인다. results는 재시도 창이
+    그 원래 창 뒤에 오는 순서이고, 재시도에서 받아들여진 block은 실패에서 뺀다.
     """
     blocks, fragments = load_context(manifest_file, detected_markdown)
     failures: dict[str, str] = {}
@@ -135,6 +169,8 @@ def assemble_external(output_dir: Path, manifest_file: Path, detected_markdown: 
                 path.write_text(json.dumps(cleaned, ensure_ascii=False) + "\n", encoding="utf-8")
             continue
         counts = save_replacements(output_dir, expected, result, RECOVERY_SOURCE, fragments)
+        for block in expected:
+            failures.pop(block["id"], None)
         for block in rejected_candidates(expected, result, fragments):
             failures[block["id"]] = "repair_rejected"
         if window["chain_block_ids"] and counts["replace"] == 1:

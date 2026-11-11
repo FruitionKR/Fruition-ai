@@ -364,6 +364,18 @@ def apply_restored_wiki_state_and_cleanup(
                         pending_deltas,
                         publication_id=publication_id(operation_id),
                     )
+                if publication["kind"] == "MANUAL_EDIT":
+                    # 직접 편집은 API에서 임베딩하지 않는다. 웹 lint처럼 미완료로 예약해 maintenance worker 복구가 고르게 한다.
+                    from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
+                    from app.modules.wiki_embedding.infrastructure.postgres_wiki_page_embedding_repository import (
+                        reserve_page_embeddings,
+                    )
+
+                    reserve_page_embeddings(
+                        conn,
+                        [str(page["page_id"]) for page in changed_pages if str(page["page_id"]) not in skipped_page_ids],
+                        BgeM3EmbeddingModel().model_name,
+                    )
                 publication["event"] = finalize_publication(
                     conn,
                     operation_id=operation_id,
@@ -1164,19 +1176,31 @@ def get_document_wiki_context(
             """,
             (document_id, workspace_id),
         ).fetchall()
-        snapshot = (
-            conn.execute(
-                "SELECT source_content_hash FROM source_block_snapshots WHERE document_id = %s",
-                (document_id,),
-            ).fetchone()
-            if blocks
-            else None
-        )
+        source_content_hash = last_ingested_source_hash(conn, document_id, workspace_id) if blocks else None
     return {
         "pages": [dict(page) for page in pages],
-        "source_content_hash": snapshot["source_content_hash"] if snapshot else None,
+        "source_content_hash": source_content_hash,
         "source_blocks": [dict(block) for block in blocks],
     }
+
+
+def last_ingested_source_hash(conn: psycopg.Connection, document_id: str, workspace_id: str) -> str | None:
+    """마지막으로 성공한 편입(웹·MCP)의 입력 Markdown SHA-256. 블록 스냅샷은 발행과 같은 트랜잭션에서 쓰이고
+    휴지통 이동이 지운다. document-svc 블록 stale 판정과 MCP 같은 내용 재편입 거절이 같은 값을 쓴다."""
+    row = conn.execute(
+        """
+        SELECT snapshot.source_content_hash
+        FROM source_block_snapshots snapshot
+        WHERE snapshot.document_id = %s
+          AND EXISTS (SELECT 1 FROM source_blocks block WHERE block.document_id = snapshot.document_id)
+          AND EXISTS (
+              SELECT 1 FROM document_wiki_links link
+              WHERE link.document_id = snapshot.document_id AND link.workspace_id = %s
+          )
+        """,
+        (document_id, workspace_id),
+    ).fetchone()
+    return str(row["source_content_hash"]) if row else None
 
 
 def delete_document_wiki_data(workspace_id: str, document_id: str) -> None:
@@ -1651,17 +1675,13 @@ def finish_pipeline_run(
             if active is None or active["status"] != "running":
                 raise PipelineRunCancelledError("Pipeline run no longer accepts outputs.")
             if document_id:
-                # 복구한 문서를 다시 편입했으므로 되돌리기 대상에서 다시 제외하지 않는다.
-                conn.execute(
-                    "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
-                    (workspace_id, document_id),
-                )
-                _reset_document_quality_review(conn, str(document_id), str(workspace_id), run_id)
-                embedded_page_ids = _persist_wiki_outputs(
-                    conn, document_id, manifest, manual_source_markdown,
-                    apply_rebuilt_pages=_apply_restored_wiki_state,
-                    prune_references=_prune_dangling_references,
-                    cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
+                embedded_page_ids = apply_ingest_outputs(
+                    conn,
+                    document_id=str(document_id),
+                    workspace_id=str(workspace_id),
+                    ingest_run_id=run_id,
+                    manifest=manifest,
+                    manual_source_markdown=manual_source_markdown,
                     artifact_writer=publication_writer,
                 )
                 if not publication_prepared:
@@ -1673,45 +1693,14 @@ def finish_pipeline_run(
                         database_connect=connect,
                     )
                     publication_prepared = True
-                if manifest.get("operation_id"):
-                    # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
-                    record_pending_contributions(
-                        conn, str(workspace_id), str(manifest["operation_id"]), str(document_id),
-                        list(manifest.get("operation_artifacts") or []),
-                        publication_id=publication_id(operation_id),
-                    )
-                post_ingest = manifest.get("post_ingest")
-                if isinstance(post_ingest, dict):
-                    post_ingest["page_ids"] = embedded_page_ids
-                manifest["source_contribution"] = _source_contribution_payload(manifest)
-                result = normalize_operation_result({
-                    "operation_id": operation_id,
-                    "operation_type": "ingest",
-                    "status": "succeeded",
-                    "workspace_id": str(workspace_id),
-                    "user_id": str(user_id),
-                    "target_document_id": str(document_id),
-                    "summary": "Wiki ingest를 완료했습니다.",
-                    "changed_pages": [
-                        {**item, "contribution_stored": bool(item.get("contribution_key"))}
-                        for item in manifest.get("operation_artifacts") or []
-                    ],
-                    "failed_pages": [],
-                    "deleted_pages": manifest.get("deleted_pages") or [],
-                    "link_changes": None,
-                    "failed_actions": None,
-                    "ledger_contributions": [],
-                })
-                event = finalize_publication(
+                finalize_ingest_publication(
                     conn,
-                    operation_id=operation_id,
+                    document_id=str(document_id),
                     workspace_id=str(workspace_id),
                     user_id=str(user_id),
-                    kind="INGEST",
-                    outcome=("PUBLISHED" if result["changed_pages"] or result["deleted_pages"] else "NO_CHANGE"),
-                    result=result,
+                    manifest=manifest,
+                    page_ids=embedded_page_ids,
                 )
-                manifest["publication_result"] = event["result"]
                 manifest = _stored_manifest(manifest)
             conn.execute(
                 """
@@ -1732,6 +1721,91 @@ def finish_pipeline_run(
     if document_id:
         _mark_derived_state_ingested(document_id, expected_source_hash)
     return embedded_page_ids
+
+
+def apply_ingest_outputs(
+    conn: psycopg.Connection,
+    *,
+    document_id: str,
+    workspace_id: str,
+    ingest_run_id: str | None,
+    manifest: dict[str, Any],
+    manual_source_markdown: str | None,
+    artifact_writer: Callable[[str, str, str], str],
+) -> list[str]:
+    """편입 결과를 공개 상태에 반영하는 본체. 웹 편입과 MCP 편입이 같은 코드를 탄다.
+
+    호출자가 개념 잠금과 트랜잭션을 잡는다. 발행 기록은 `finalize_ingest_publication`이 같은 트랜잭션에서 남긴다.
+    `ingest_run_id`는 품질 평가 행이 가리킬 pipeline run이다. pipeline run이 없는 MCP 편입은 None이다.
+    돌려주는 값은 임베딩을 다시 만들 페이지 id다.
+    """
+    # 복구한 문서를 다시 편입했으므로 되돌리기 대상에서 다시 제외하지 않는다.
+    conn.execute(
+        "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
+        (workspace_id, document_id),
+    )
+    _reset_document_quality_review(conn, document_id, workspace_id, ingest_run_id)
+    page_ids = _persist_wiki_outputs(
+        conn, document_id, manifest, manual_source_markdown,
+        apply_rebuilt_pages=_apply_restored_wiki_state,
+        prune_references=_prune_dangling_references,
+        cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
+        artifact_writer=artifact_writer,
+    )
+    operation_id = str(manifest["operation_id"])
+    # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
+    record_pending_contributions(
+        conn, workspace_id, operation_id, document_id,
+        list(manifest.get("operation_artifacts") or []),
+        publication_id=publication_id(operation_id),
+    )
+    return page_ids
+
+
+def finalize_ingest_publication(
+    conn: psycopg.Connection,
+    *,
+    document_id: str,
+    workspace_id: str,
+    user_id: str,
+    manifest: dict[str, Any],
+    page_ids: list[str],
+) -> dict[str, Any]:
+    """`apply_ingest_outputs`와 같은 트랜잭션에서 발행 결과를 확정한다. 돌려주는 값은 발행 이벤트다."""
+    operation_id = str(manifest["operation_id"])
+    post_ingest = manifest.get("post_ingest")
+    if isinstance(post_ingest, dict):
+        post_ingest["page_ids"] = page_ids
+    manifest["source_contribution"] = _source_contribution_payload(manifest)
+    result = normalize_operation_result({
+        "operation_id": operation_id,
+        "operation_type": "ingest",
+        "status": "succeeded",
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "target_document_id": document_id,
+        "summary": "Wiki ingest를 완료했습니다.",
+        "changed_pages": [
+            {**item, "contribution_stored": bool(item.get("contribution_key"))}
+            for item in manifest.get("operation_artifacts") or []
+        ],
+        "failed_pages": [],
+        "deleted_pages": manifest.get("deleted_pages") or [],
+        "link_changes": None,
+        "failed_actions": None,
+        "ledger_contributions": [],
+    })
+    event = finalize_publication(
+        conn,
+        operation_id=operation_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        kind="INGEST",
+        outcome=("PUBLISHED" if result["changed_pages"] or result["deleted_pages"] else "NO_CHANGE"),
+        result=result,
+    )
+    manifest["publication_result"] = event["result"]
+    return event
 
 
 def _mark_derived_state_ingested(
@@ -1787,8 +1861,14 @@ def checkpoint_pipeline_run(run_id: str, manifest: dict[str, Any]) -> None:
         )
 
 
-def _reset_document_quality_review(conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str) -> None:
+def _reset_document_quality_review(
+    conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str | None,
+) -> None:
     """문서의 품질 상태를 이번 편입 기준으로 비운다. 옛 편입의 평가 결과는 더 이상 이 문서의 상태가 아니다."""
+    if run_id is None:
+        # MCP 편입은 pipeline run이 없어 평가 행이 가리킬 run이 없다. 평가 전 상태(행 없음)로 둔다.
+        conn.execute("DELETE FROM document_quality_reviews WHERE document_id = %s", (document_id,))
+        return
     conn.execute(
         """
         INSERT INTO document_quality_reviews (document_id, workspace_id, ingest_run_id)

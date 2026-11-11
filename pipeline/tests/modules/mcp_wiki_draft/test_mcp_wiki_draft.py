@@ -43,6 +43,7 @@ from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import rebuild_concept_page
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as wiki_repository
+from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as output_persistence
 from app.modules.wiki_ingestion.infrastructure.document_ingest_lock import ActiveIngestRunError
 from app.modules.wiki_ingestion.infrastructure.object_storage import client as storage_client, read_text_object, write_text_object
 
@@ -96,12 +97,16 @@ def isolated_state(monkeypatch):
     for key, value in CONFIG.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "agent-test-token")
+    # MCP 편입은 웹 편입 반영 코드를 그대로 탄다. 테스트가 바꾼 원장 조회를 웹 반영에도 쓴다.
+    for module in (output_persistence, wiki_repository):
+        monkeypatch.setattr(module, "read_contributions", lambda *args: calculation.read_contributions(*args))
     with _connect() as conn:
         conn.execute(
             "TRUNCATE mcp_wiki_publication_outbox,mcp_wiki_publication_results,mcp_wiki_draft_idempotency,mcp_wiki_lint_source_blocks,mcp_wiki_drafts,mcp_wiki_window_submissions,mcp_wiki_windows,"
             "mcp_wiki_source_blocks,mcp_wiki_ingest_runs,pipeline_runs,ai_task_changes,ai_task_runs,ai_purged_scopes,"
             "wiki_page_entry_references,wiki_page_entries,wiki_source_manual_links,document_wiki_links,wiki_page_links,"
-            "wiki_pending_contributions,wiki_publications,wiki_pages,source_blocks,source_block_snapshots,document_derived_state CASCADE"
+            "wiki_pending_contributions,wiki_publications,wiki_pages,source_blocks,source_block_snapshots,document_derived_state,"
+            "wiki_page_embeddings,wiki_embedding_units,wiki_embedding_vectors,document_quality_reviews CASCADE"
         )
     api.app.dependency_overrides.pop(get_mcp_wiki_draft_intake, None)
     yield
@@ -120,8 +125,9 @@ def _actor(tool: str, grant_id: str, **changes) -> dict:
 
 
 class Source:
-    def __init__(self, blocks: list[tuple[str, str]] | None = None):
+    def __init__(self, blocks: list[tuple[str, str]] | None = None, display_name: str = "Source document"):
         self.blocks = blocks or [("B0001", "Alpha concept has evidence."), ("B0002", "Beta concept has support.")]
+        self.display_name = display_name
         self.calls = 0
 
     def read(self, actor, document_id, _limits):
@@ -134,6 +140,7 @@ class Source:
         body = "".join(record["text"] for record in records)
         return {
             "schema_version": "mcp.wiki-source.v1", "document_id": document_id,
+            "display_name": self.display_name,
             "workspace_id": actor.workspace_id, "source_version": 7,
             "source_content_hash": "sha256:" + sha256(body.encode()).hexdigest(),
             "mime_type": "text/markdown", "blocks": records,
@@ -249,7 +256,8 @@ def _apply_payload(grant_id: str, preview: dict, **changes) -> ApplyWikiDraftReq
         "schema_version": "mcp.wiki-apply.v1",
         "actor": _actor("apply_wiki_draft", grant_id),
         "approval_id": str(uuid4()),
-        "operation_id": "document-apply-operation-1",
+        # 불변 발행 객체 key에 들어가므로 테스트마다 다른 작업 id를 쓴다(같은 key·다른 본문은 충돌이다).
+        "operation_id": f"document-apply-operation-{uuid4()}",
         "draft_id": preview["draft_id"],
         "draft_version": preview["draft_version"],
         "draft_hash": preview["draft_hash"],
@@ -1211,22 +1219,24 @@ def test_apply_public_state_recheck_conflicts_before_any_public_effect(monkeypat
     started = _complete_intake(intake, grant)
     finalized = intake.finalize(started["run_id"], _finalize_payload(grant, started))
     payload = _apply_payload(grant, finalized)
-    real_calculate = apply_repository_module.calculate_ingest_preview
+    real_publish = apply_repository_module.publish_ingest
 
     def changed_state(*args, **kwargs):
-        result = real_calculate(*args, **kwargs)
-        result["preview"] = {**result["preview"], "public_state_hash": "sha256:" + "f" * 64}
-        return result
+        calculation_result, page_ids, manifest = real_publish(*args, **kwargs)
+        calculation_result["preview"] = {**calculation_result["preview"], "public_state_hash": "sha256:" + "f" * 64}
+        return calculation_result, page_ids, manifest
 
-    monkeypatch.setattr(apply_repository_module, "calculate_ingest_preview", changed_state)
+    monkeypatch.setattr(apply_repository_module, "publish_ingest", changed_state)
     result = McpWikiDraftApply(
         PostgresMcpWikiApplyRepository(), _ValidApprovalAuthority()
     ).apply(payload.draft_id, payload)
     assert result["state"] == "CONFLICTED"
     assert result["error_code"] == "PUBLIC_STATE_CHANGED"
     with _connect() as conn:
+        # 웹 반영을 실제로 실행한 뒤 해시를 맞추므로 savepoint가 공개 상태를 되돌린다. 발행 기록은 준비만 남는다.
         assert conn.execute("SELECT count(*) AS count FROM wiki_pages").fetchone()["count"] == 0
-        assert conn.execute("SELECT count(*) AS count FROM wiki_publications").fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM wiki_pending_contributions").fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM wiki_publications WHERE state<>'PREPARED'").fetchone()["count"] == 0
         assert conn.execute("SELECT count(*) AS count FROM mcp_wiki_publication_outbox").fetchone()["count"] == 0
 
 
@@ -1371,7 +1381,8 @@ def test_finalize_combines_same_concept_and_local_statement_id_across_windows():
         inputs = conn.execute(
             "SELECT calculation_inputs FROM mcp_wiki_drafts WHERE draft_id=%s", (started["draft_id"],),
         ).fetchone()["calculation_inputs"]
-    assert len(inputs["identity_decisions"]) == 1
+    concept_pages = [key for key, _value in inputs["effect"] if key[0] == "page" and key[1].startswith("new:concept:")]
+    assert concept_pages == [["page", "new:concept:alpha"]]
 
 
 def test_full_preview_replays_invalidation_reference_cascade_and_unique_revival(monkeypatch):
@@ -1469,7 +1480,7 @@ def test_full_preview_replays_invalidation_reference_cascade_and_unique_revival(
             "SELECT block_id,ordinal,text,content_hash FROM mcp_wiki_source_blocks WHERE snapshot_id=%s ORDER BY ordinal",
             (run["snapshot_id"],),
         ).fetchall()]
-        same = calculation.calculate_ingest_preview(
+        same = calculation.preview_ingest(
             conn, run=run, submissions=list(draft["normalized_submissions"]), source_blocks=blocks,
         )["preview"]
         assert same["draft_hash"] == preview["draft_hash"]
@@ -1478,7 +1489,7 @@ def test_full_preview_replays_invalidation_reference_cascade_and_unique_revival(
             "VALUES ('workspace-1','baseline-drift',%s,'Drift','',ARRAY[]::text[],ARRAY[]::text[],ARRAY[]::text[],ARRAY[]::text[])",
             (referring,),
         )
-        changed = calculation.calculate_ingest_preview(
+        changed = calculation.preview_ingest(
             conn, run=run, submissions=list(draft["normalized_submissions"]), source_blocks=blocks,
         )["preview"]
         assert changed["public_state_hash"] != preview["public_state_hash"]
@@ -1488,8 +1499,9 @@ def test_full_preview_replays_invalidation_reference_cascade_and_unique_revival(
 def test_finalize_blocks_missing_active_contribution_ledger(monkeypatch):
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO wiki_pages(id,page_type,title,slug,user_id,workspace_id,status,created_at,updated_at) "
-            "VALUES ('alpha-active','concept','Alpha','alpha','user-1','workspace-1','active',now(),now())"
+            "INSERT INTO wiki_pages(id,page_type,title,slug,markdown_uri,user_id,workspace_id,status,created_at,updated_at) "
+            "VALUES ('alpha-active','concept','Alpha','alpha',%s,'user-1','workspace-1','active',now(),now())",
+            (write_text_object("baseline/alpha-active.md", "# Alpha\n"),),
         )
     monkeypatch.setattr(calculation, "read_contributions", lambda page_ids, workspace_id: [])
     grant = str(uuid4())
@@ -1505,8 +1517,9 @@ def test_finalize_blocks_missing_active_contribution_ledger(monkeypatch):
 def test_finalize_blocks_contradictory_pending_contribution(monkeypatch):
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO wiki_pages(id,page_type,title,slug,user_id,workspace_id,status,created_at,updated_at) "
-            "VALUES ('alpha-active','concept','Alpha','alpha','user-1','workspace-1','active',now(),now())"
+            "INSERT INTO wiki_pages(id,page_type,title,slug,markdown_uri,user_id,workspace_id,status,created_at,updated_at) "
+            "VALUES ('alpha-active','concept','Alpha','alpha',%s,'user-1','workspace-1','active',now(),now())",
+            (write_text_object("baseline/alpha-active.md", "# Alpha\n"),),
         )
         conn.execute(
             "INSERT INTO wiki_pending_contributions(page_id,operation_id,workspace_id,document_id,object_key,active,sequence_revision,publication_id) "
@@ -1634,8 +1647,8 @@ def test_controlled_document_http_contract_is_exact(monkeypatch, tool_name):
     actor = McpWikiActorRequest.model_validate(_actor(tool_name, grant))
     text = "Alpha source"
     response = {
-        "schema_version": "mcp.wiki-source.v1", "document_id": "doc_1", "workspace_id": "workspace-1",
-        "source_version": 3, "source_content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        "schema_version": "mcp.wiki-source.v1", "document_id": "doc_1", "display_name": "회의록",
+        "workspace_id": "workspace-1", "source_version": 3, "source_content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
         "mime_type": "text/plain", "blocks": [{
             "block_id": "B0001", "ordinal": 1, "text": text,
             "content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
@@ -1665,6 +1678,122 @@ def test_controlled_document_http_contract_is_exact(monkeypatch, tool_name):
         "body": {"schema_version": "mcp.wiki-source.v1", "actor": actor.model_dump()},
         "timeout": 7,
     }
+
+
+@pytest.mark.parametrize("display_name", [
+    None, "", "   ", "x" * 256, "제목\nsource_file: evil", "제목\r", "제목\t탭", "제목\x00", "제목\x85",
+    "제목\u2028줄", "제목\u2029문단",
+])
+def test_document_source_display_name_is_required_bounded_untrusted_text(monkeypatch, display_name):
+    actor = McpWikiActorRequest.model_validate(_actor("start_ingest", str(uuid4())))
+    text = "Alpha source"
+    response = {
+        "schema_version": "mcp.wiki-source.v1", "document_id": "doc_1", "workspace_id": "workspace-1",
+        "source_version": 3, "source_content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        "mime_type": "text/plain", "blocks": [{
+            "block_id": "B0001", "ordinal": 1, "text": text,
+            "content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        }],
+    }
+    if display_name is not None:
+        response["display_name"] = display_name
+
+    class HttpResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def read(self, _limit):
+            return json.dumps(response).encode()
+
+    monkeypatch.setattr(backend_source_reader, "urlopen", lambda _request, timeout: HttpResponse())
+    limits = __import__("app.modules.mcp_wiki_draft.application", fromlist=["load_intake_limits"]).load_intake_limits()
+    with pytest.raises(McpWikiDraftError) as rejected:
+        BackendMcpWikiSourceReader("https://document.internal", "service-token", 7).read(actor, "doc_1", limits)
+    assert rejected.value.code == "DEPENDENCY_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("display_name", [
+    "Screenshot 2026-11-11 at 2.09.40\u202fPM", "붙여넣은\u00a0이름", "Q3: plan # draft", "- 목록 같은 이름", "제목\u202e",
+])
+def test_document_source_display_name_accepts_names_document_accepts(monkeypatch, display_name):
+    actor = McpWikiActorRequest.model_validate(_actor("start_ingest", str(uuid4())))
+    text = "Alpha source"
+    response = {
+        "schema_version": "mcp.wiki-source.v1", "document_id": "doc_1", "display_name": display_name,
+        "workspace_id": "workspace-1", "source_version": 3,
+        "source_content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        "mime_type": "text/plain", "blocks": [{
+            "block_id": "B0001", "ordinal": 1, "text": text,
+            "content_hash": "sha256:" + sha256(text.encode()).hexdigest(),
+        }],
+    }
+
+    class HttpResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def read(self, _limit):
+            return json.dumps(response).encode()
+
+    monkeypatch.setattr(backend_source_reader, "urlopen", lambda _request, timeout: HttpResponse())
+    limits = __import__("app.modules.mcp_wiki_draft.application", fromlist=["load_intake_limits"]).load_intake_limits()
+    result = BackendMcpWikiSourceReader("https://document.internal", "service-token", 7).read(actor, "doc_1", limits)
+    assert result["display_name"] == display_name
+
+
+@pytest.mark.parametrize("display_name", [
+    "Screenshot 2026-11-11 at 2.09.40\u202fPM", "붙여넣은\u00a0이름", "Q3: plan # draft", "- 목록 같은 이름",
+])
+def test_source_page_renders_display_name_verbatim_with_safe_frontmatter(display_name):
+    yaml = pytest.importorskip("yaml")
+    markdown = calculation.build_ingest_manifest(
+        run={"document_id": "doc_1", "source_display_name": display_name, "user_id": "user-1",
+             "workspace_id": "workspace-1", "source_content_hash": "sha256:" + "0" * 64},
+        submissions=[], source_blocks=[], current_source_blocks=[], concept_index=[], operation_id="operation",
+    )["source_page"]["markdown"]
+    assert f"\n# {display_name}\n" in markdown
+    line = next(item for item in markdown.split("---\n")[1].splitlines() if item.startswith("source_file:"))
+    assert yaml.safe_load(line) == {"source_file": display_name}
+
+
+@pytest.mark.parametrize("existing_source_page", [False, True])
+def test_source_page_title_is_document_display_name_not_document_id(monkeypatch, existing_source_page):
+    # 웹 편입처럼 기존 소스 페이지의 수동 기여를 원장에서 찾는다. 이 문서에는 기여가 없다.
+    monkeypatch.setattr(calculation, "read_contributions", lambda *_args: [])
+    if existing_source_page:
+        # 이전 MCP 편입이 문서 ID를 제목으로 남긴 소스 페이지를 재편입이 바로잡는다.
+        # 예전 MCP slug(`doc_1`)는 스키마 적용이 웹 slug(`doc-1`)로 바꾼다(test_publication_schema_upgrade_review).
+        uri = write_text_object("baseline/doc-1-source.md", "# doc_1\n")
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO wiki_pages(id,page_type,title,slug,markdown_uri,user_id,workspace_id,status,created_at,updated_at) "
+                "VALUES ('source-page','source','doc_1','doc-1',%s,'user-1','workspace-1','active',now(),now())",
+                (uri,),
+            )
+            conn.execute(
+                "INSERT INTO document_wiki_links(document_id,wiki_page_id,relation_type,workspace_id,created_at) "
+                "VALUES ('doc_1','source-page','source_of','workspace-1',now())"
+            )
+    grant = str(uuid4())
+    intake = _intake(Source(display_name="회의록 2026-11"))
+    started = _complete_intake(intake, grant)
+    finalized = intake.finalize(started["run_id"], _finalize_payload(grant, started))
+    preview = intake.preview(started["draft_id"], 1, "workspace-1", "user-1")
+    source_change = next(item for item in preview["changes"] if item["kind"] == "SOURCE_PAGE")
+    assert source_change["action"] == ("UPDATE" if existing_source_page else "ADD")
+    assert "\n# 회의록 2026-11\n" in source_change["after_text"]
+    assert 'source_file: "회의록 2026-11"\n' in source_change["after_text"]
+
+    result = McpWikiDraftApply(PostgresMcpWikiApplyRepository(), _ValidApprovalAuthority()).apply(
+        finalized["draft_id"], _apply_payload(grant, finalized)
+    )
+    assert result["state"] == "PUBLISHED"
+    with _connect() as conn:
+        page = conn.execute("SELECT id,title,markdown_uri FROM wiki_pages WHERE page_type='source'").fetchone()
+    assert page["title"] == "회의록 2026-11"
+    assert "\n# 회의록 2026-11\n" in read_text_object(page["markdown_uri"])
 
 
 def test_finalized_draft_keeps_web_ingest_fenced_until_expiry():

@@ -38,7 +38,7 @@ RESPONSE = {
 
 def fake_use_case() -> Mock:
     use_case = Mock()
-    use_case.limits = WikiSearchLimits(512, 5, 10, 4096, 1000, 8192, 8192, 20, 100, 1024)
+    use_case.limits = WikiSearchLimits(512, 5, 1000, 8192, 8192, 1024, 100, 4096)
     use_case.execute.return_value = RESPONSE
     return use_case
 
@@ -136,7 +136,7 @@ def test_route_accepts_exact_dto_on_internal_router() -> None:
 
 def test_route_rejects_request_before_materializing_more_than_configured_bytes() -> None:
     use_case = fake_use_case()
-    use_case.limits = WikiSearchLimits(512, 5, 10, 4096, 1000, 10, 8192, 20, 100, 1024)
+    use_case.limits = WikiSearchLimits(512, 5, 1000, 10, 8192, 1024, 100, 4096)
     with (
         patch.dict(os.environ, {"INTERNAL_CALLBACK_TOKEN": "internal-test-token"}),
         patch.object(api.database, "ensure_ai_schema"),
@@ -170,14 +170,12 @@ def test_search_configuration_requires_explicit_positive_values_and_key(monkeypa
     configured = {
         "MCP_WIKI_SEARCH_MAX_STRING_CHARS": "512",
         "MCP_WIKI_SEARCH_MAX_PAGE_SIZE": "5",
-        "MCP_WIKI_SEARCH_MAX_CANDIDATES": "10",
-        "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES": "4096",
         "MCP_WIKI_SEARCH_DEADLINE_MS": "1000",
         "MCP_WIKI_SEARCH_MAX_REQUEST_BYTES": "8192",
         "MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES": "8192",
-        "MCP_WIKI_SEARCH_MAX_SCAN_PAGES": "20",
-        "MCP_WIKI_SEARCH_MAX_SCAN_UNITS": "100",
         "MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS": "1024",
+        "MCP_WIKI_SEARCH_MAX_SCAN_UNITS": "100",
+        "MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES": "4096",
         "MCP_WIKI_SEARCH_CURSOR_HMAC_KEY": "test-cursor-key-that-is-at-least-32-bytes",
     }
     for name, value in configured.items():
@@ -185,18 +183,18 @@ def test_search_configuration_requires_explicit_positive_values_and_key(monkeypa
 
     config, key = routes.load_search_config()
 
-    assert config.max_candidates == 10
     assert config.max_page_size == 5
-    assert config.max_scan_pages == 20
+    assert config.max_vector_dimensions == 1024
+    assert (config.max_scan_units, config.max_candidate_bytes) == (100, 4096)
     assert key == configured["MCP_WIKI_SEARCH_CURSOR_HMAC_KEY"].encode()
 
-    monkeypatch.setenv("MCP_WIKI_SEARCH_MAX_PAGE_SIZE", "11")
+    monkeypatch.setenv("MCP_WIKI_SEARCH_MAX_PAGE_SIZE", "0")
     try:
         routes.load_search_config()
     except Exception as exc:
         assert getattr(exc, "code", None) == "DEPENDENCY_UNAVAILABLE"
     else:
-        raise AssertionError("page size above candidate limit must fail closed")
+        raise AssertionError("nonpositive page size must fail closed")
 
 
 def _post_search(use_case, payload):

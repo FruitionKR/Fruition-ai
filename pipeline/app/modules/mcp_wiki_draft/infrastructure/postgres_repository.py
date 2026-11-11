@@ -27,10 +27,11 @@ from app.modules.mcp_wiki_draft.application import (
 from app.modules.mcp_wiki_draft.calculation import (
     PreviewCalculationError,
     SemanticMergeError,
-    calculate_ingest_preview,
     freeze_server_concept_merges,
+    preview_ingest,
 )
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import last_ingested_source_hash
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
     FinalizeIngestRequest,
     McpWikiActorRequest,
@@ -108,17 +109,24 @@ class PostgresMcpWikiDraftRepository:
                 if replay is not None:
                     return replay
                 reject_other_active_ingest(conn, payload.document_id, run_id)
+                if last_ingested_source_hash(conn, payload.document_id, payload.actor.workspace_id) == str(
+                    source["source_content_hash"]
+                ).removeprefix("sha256:"):
+                    # 같은 내용을 다시 편입하면 같은 위키를 다시 써 비용만 든다. 문서를 고친 뒤에는 다시 편입할 수 있다.
+                    raise McpWikiDraftError(
+                        409, "ALREADY_INGESTED", "The current document content is already ingested; edit it before ingesting again.",
+                    )
                 _check_active_limits(conn, payload.actor, limits, source_bytes)
                 conn.execute(
                     "INSERT INTO mcp_wiki_ingest_runs "
                     "(run_id,draft_id,snapshot_id,document_id,workspace_id,user_id,grant_id,client_id,policy_generation,origin,spec_version,"
-                    "source_version,source_content_hash,source_block_count,source_bytes,state,next_window_ordinal,submitted_window_count,ttl_seconds,expires_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE_WINDOWING',1,0,%s,now()+make_interval(secs=>%s))",
+                    "source_version,source_content_hash,source_display_name,source_block_count,source_bytes,state,next_window_ordinal,submitted_window_count,ttl_seconds,expires_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE_WINDOWING',1,0,%s,now()+make_interval(secs=>%s))",
                     (
                         run_id, draft_id, snapshot_id, payload.document_id, payload.actor.workspace_id,
                         payload.actor.user_id, payload.actor.grant_id, payload.actor.client_id,
                         payload.actor.policy_generation, payload.actor.origin, payload.actor.spec_version,
-                        source["source_version"], source["source_content_hash"], len(source["blocks"]),
+                        source["source_version"], source["source_content_hash"], source["display_name"], len(source["blocks"]),
                         source_bytes, limits.run_ttl_seconds, limits.run_ttl_seconds,
                     ),
                 )
@@ -541,7 +549,7 @@ class PostgresMcpWikiDraftRepository:
                         conn, workspace_id=str(row["workspace_id"]), submissions=submissions,
                         judge=self._concept_judge() if payload.jev_allowed else None,
                     )
-                calculation = calculate_ingest_preview(
+                calculation = preview_ingest(
                     conn, run=dict(row), submissions=submissions, source_blocks=source_blocks
                 )
             except SemanticMergeError as exc:

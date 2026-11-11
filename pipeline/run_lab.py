@@ -540,36 +540,6 @@ def _resolve_pipeline_concepts(
             ensure_dir(out / "raw_llm_outputs") / "concept_resolution.json",
             raw_resolution,
         )
-    resolutions = normalize_resolution_output(
-        raw_resolution,
-        normalized["concept_ledger"],
-        existing_concepts,
-        normalized.setdefault("warnings", []),
-    )
-    hint_resolutions = normalize_hint_resolution_output(
-        raw_resolution,
-        missing_related_hints,
-        normalized["concept_ledger"],
-        existing_concepts,
-        normalized.setdefault("warnings", []),
-    )
-    resolved = apply_concept_resolutions(
-        normalized,
-        resolutions,
-        existing_concepts,
-        hint_resolutions,
-    )
-    resolved = allocate_concept_slugs(resolved, concept_index)
-    resolved_candidates = assembler.candidate_claims(resolved)
-    resolved["concept_update_decisions"] = normalize_concept_update_decisions(
-        {"concept_update_decisions": concept_update_decisions},
-        concepts=[
-            *resolved.get("concept_ledger", []),
-            *resolved.get("existing_concept_index", []),
-        ],
-        candidates=resolved_candidates,
-        concept_slug_map=resolved.get("concept_slug_map", {}),
-    )
     # 세부 항목을 상위 항목 페이지의 하위 항목으로 옮긴다(ADR 0042). 배정과 같은 하위 항목 판정은 Jev가 있으면 Jev,
     # 없으면 편입 LLM이 한다. 상위 후보는 임베딩 서버로만 고르고, 서버가 없으면 배정하지 않는다.
     # 같은 하위 항목 후보는 Jev면 DB에 저장된 sub_entry 벡터로 고른다. 기존 하위 항목은 DB 개념 목록에만 있다.
@@ -587,21 +557,17 @@ def _resolve_pipeline_concepts(
         judge_same = (
             llm_same_entry_judge(llm, read_prompt("prompts/concept_same_entry.system.md"), similarity) if similarity else None
         )
-    # 기존 개념과 같다고 판정받은 섹션·언급은 이미 그 개념의 근거라 하위 항목으로 배정하지 않는다.
-    same_candidate_ids = {
-        item["candidate_id"] for item in resolved["concept_update_decisions"] if item.get("decision") == "same_concept"
-    }
-    resolved = apply_concept_entries(
-        resolved,
+    resolved = resolve_judged_concepts(
+        normalized,
+        raw_resolution,
+        concept_update_decisions,
+        concept_index,
         judge_part_of=judge_part_of,
         judge_same=judge_same,
         similarity=similarity,
-        consumed_terms={
-            (candidate["candidate_type"], candidate["slug"])
-            for candidate in resolved_candidates
-            if candidate["candidate_id"] in same_candidate_ids
-        },
     )
+    resolutions = resolved["concept_resolutions"]
+    hint_resolutions = resolved["hint_resolutions"]
     log.emit(
         "4-보조. Concept Resolution",
         "Concept resolution과 근거 갱신 후보 판단을 병렬 실행하고 canonical slug를 반영했습니다.",
@@ -633,6 +599,70 @@ def _resolve_pipeline_concepts(
         },
     )
     return resolved
+
+
+def resolve_judged_concepts(
+    normalized: dict[str, Any],
+    raw_resolution: dict[str, Any],
+    concept_update_decisions: list[dict[str, Any]],
+    concept_index: list[dict[str, Any]],
+    *,
+    judge_part_of: Any = None,
+    judge_same: Any = None,
+    similarity: Any = None,
+) -> dict[str, Any]:
+    """AI 판정(개념 병합·연결, 근거 갱신, 하위 항목) 뒤의 개념 확정 단계. 웹 편입과 MCP 편입이 같이 쓴다.
+
+    MCP는 판정을 사용자 AI·고정된 Jev 결과로 대신하고 이 함수부터 웹과 같은 코드를 탄다.
+    """
+    existing_concepts = [
+        concept for concept in concept_index if concept.get("status", "active") == "active"
+    ]
+    resolutions = normalize_resolution_output(
+        raw_resolution,
+        normalized["concept_ledger"],
+        existing_concepts,
+        normalized.setdefault("warnings", []),
+    )
+    hint_resolutions = normalize_hint_resolution_output(
+        raw_resolution,
+        normalized.get("missing_related_concept_hints", []),
+        normalized["concept_ledger"],
+        existing_concepts,
+        normalized.setdefault("warnings", []),
+    )
+    resolved = apply_concept_resolutions(
+        normalized,
+        resolutions,
+        existing_concepts,
+        hint_resolutions,
+    )
+    resolved = allocate_concept_slugs(resolved, concept_index)
+    resolved_candidates = MeaningClusterArtifactAssembler().candidate_claims(resolved)
+    resolved["concept_update_decisions"] = normalize_concept_update_decisions(
+        {"concept_update_decisions": concept_update_decisions},
+        concepts=[
+            *resolved.get("concept_ledger", []),
+            *resolved.get("existing_concept_index", []),
+        ],
+        candidates=resolved_candidates,
+        concept_slug_map=resolved.get("concept_slug_map", {}),
+    )
+    # 기존 개념과 같다고 판정받은 섹션·언급은 이미 그 개념의 근거라 하위 항목으로 배정하지 않는다.
+    same_candidate_ids = {
+        item["candidate_id"] for item in resolved["concept_update_decisions"] if item.get("decision") == "same_concept"
+    }
+    return apply_concept_entries(
+        resolved,
+        judge_part_of=judge_part_of,
+        judge_same=judge_same,
+        similarity=similarity,
+        consumed_terms={
+            (candidate["candidate_type"], candidate["slug"])
+            for candidate in resolved_candidates
+            if candidate["candidate_id"] in same_candidate_ids
+        },
+    )
 
 
 def _prepare_source_page_assembly(

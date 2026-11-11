@@ -25,7 +25,7 @@ Accepted
   - source 페이지의 개념 링크(`source_mentions_concept`)는 자동 링크가 문서 연결에서 파생되므로(ADR 0042 결정 5) 사람이 쓴 추가·삭제를 `wiki_source_manual_links`에 수동 의도로 따로 남긴다. 자동 링크가 이미 있어도 새 slug는 수동 지원으로 남고, 수동 삭제는 자동 링크보다 우선한다. source 스냅샷 복원은 그 스냅샷까지의 수동 기여로 이 의도를 다시 재생한다.
   - 손대지 않은 링크와, 본문에 없던 기존 edge는 그대로 둔다.
   - 없는 slug는 본문에만 남긴다. slug는 정확히 일치해야 한다(제목으로 찾지 않는다).
-- **인용·임베딩**: 저장된 본문의 블록 참조로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다. 근거 문서 연결(`document_wiki_links`)은 바꾸지 않는다.
+- **인용·임베딩**: 저장된 본문의 블록 참조로 임베딩 단위를 다시 만들고 페이지 임베딩을 미완료로 예약한다(2026-11 개정: pipeline-api가 BGE-M3를 올리지 않도록 임베딩은 document-svc의 `embedding_recovery` command로 깨운 maintenance worker가 만든다, ADR-0026). 근거 문서 연결(`document_wiki_links`)은 바꾸지 않는다.
 - **이름·요약**: 수동 저장과, 수동 기여가 있는 복구는 `title`·`summary`를 바꾸지 않는다. 이름은 `rename` API로만 바꾼다. 본문 첫 `# 제목`은 없을 수 있어 이름의 근거로 쓰지 않는다.
 - **concept 복구**: 남길 기여에 수동 기여가 있으면 마지막 수동 본문을 기준으로 삼는다.
   - 그 뒤 AI 기여의 근거만 재편입과 같은 방식(`append_concept_evidence`)으로 덧붙인다. 그 전 AI 기여는 사람이 본 본문에 이미 들어 있다.

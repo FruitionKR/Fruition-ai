@@ -29,6 +29,7 @@ from app.modules.agent_run.domain.entities import (
     McpProposalResult,
     StartAgentRunArtifact,
 )
+from app.modules.agent_run.domain.edit_preview import build_edit_preview
 from app.modules.agent_run.domain.plan import (
     DOCUMENT_PURGED_ERROR_CODE,
     NOT_SELECTED_ERROR_CODE,
@@ -264,7 +265,9 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             # 수정안은 run과 같은 트랜잭션에서 만들어 만료 시각이 run 생성 + 1일이다. 행이 지워진 뒤에는 이 값으로 답한다.
             run = conn.execute(
                 """
-                SELECT current_plan_id, LEAST(created_at + interval '1 day', now()) AS removed_expires_at
+                SELECT current_plan_id, LEAST(created_at + interval '1 day', now()) AS removed_expires_at,
+                       created_at + interval '1 day' AS content_expires_at,
+                       created_at + interval '1 day' <= now() AS content_expired
                 FROM agent_runs WHERE id = %s AND workspace_id = %s AND user_id = %s
                 """,
                 (run_id, workspace_id, user_id),
@@ -274,6 +277,7 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             rows = conn.execute(
                 """
                 SELECT operation.id AS operation_id, operation.tool_name, operation.base_version,
+                       operation.arguments, operation.reason,
                        artifact.id AS artifact_id,
                        artifact.document_id, artifact.display_name, artifact.summary, artifact.preview_object_key,
                        artifact.expires_at,
@@ -293,12 +297,18 @@ class PostgresAgentRunRepository(AgentRunRepositoryPort, AgentApprovalRepository
             ).fetchall()
         # 객체가 남아 있으면 만료 뒤에도 내용을 돌려준다. 화면은 expires_at이 지났는지로 수락을 막으며 이유를 보여 주므로,
         # 정리로 지워진 수정안도 null이 아닌 지난 시각으로 답한다. null이면 만료가 아니라 수락이 열린다.
-        previews = [_edit_preview_item(row) for row in rows]
-        expiries = [
-            row["expires_at"] if row["artifact_id"] else run["removed_expires_at"]
-            for row in rows
-            if row["expires_at"] is not None or not row["artifact_id"]
-        ]
+        previews: list[dict[str, object] | None] = []
+        expiries = []
+        for row in rows:
+            if "content_result_key" in row["arguments"]:
+                # MCP PDF 변환본: artifact 대신 변환 결과에서 만들고 수정안 artifact와 같이 run 생성 + 1일에 만료한다.
+                preview = _converted_preview_item(row, run["content_expired"])
+                expiries.append(run["content_expires_at"] if preview else run["removed_expires_at"])
+            else:
+                preview = _edit_preview_item(row)
+                if row["expires_at"] is not None or not row["artifact_id"]:
+                    expiries.append(row["expires_at"] if row["artifact_id"] else run["removed_expires_at"])
+            previews.append(preview)
         return {
             "items": [preview for preview in previews if preview is not None],
             "expires_at": min(expiries, default=None),
@@ -1145,6 +1155,33 @@ def _edit_preview_item(row: dict[str, Any]) -> dict[str, object] | None:
     }
 
 
+def _converted_preview_item(row: dict[str, Any], expired: bool) -> dict[str, object] | None:
+    """MCP PDF 변환본 미리 보기. 승인 뒤 저장할 조립 결과(final.json)를 읽어 승인 hash와 대조하고 새 문서 미리 보기를 만든다.
+
+    결과 object가 없을 때 계획이 만료됐으면 None이고, 아직 승인할 수 있는 계획이면 오류다(수정안 artifact와 같다).
+    """
+    from app.modules.mcp_pdf_conversion.service import converted_preview_markdown
+
+    arguments = row["arguments"]
+    try:
+        raw = read_text_object(str(arguments["content_result_key"]))
+    except Exception as exc:
+        if expired and is_missing_object_error(exc):
+            return None
+        raise
+    if f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}" != arguments["content_hash"]:
+        raise ValueError("MCP PDF conversion result does not match the approved hash.")
+    return {
+        "operation_id": row["operation_id"],
+        "tool_name": row["tool_name"],
+        "document_id": None,
+        "display_name": str(arguments["display_name"]),
+        "base_version": None,
+        "summary": row["reason"] or "",
+        **build_edit_preview("", converted_preview_markdown(raw)),
+    }
+
+
 def _has_unavailable_artifact(
     conn: Any,
     run_id: str,
@@ -1165,10 +1202,15 @@ def _has_unavailable_artifact(
         LEFT JOIN agent_run_artifacts artifact
           ON artifact.id = operation.arguments->>'content_artifact_id' AND artifact.run_id = %s
         WHERE operation.plan_id = %s
-          AND jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
           AND (%s::text[] IS NULL OR operation.id = ANY(%s::text[]))
           AND (NOT %s OR operation.error_code IS DISTINCT FROM %s)
-          AND (artifact.id IS NULL OR artifact.expires_at <= now())
+          AND (
+            (jsonb_typeof(operation.arguments->'content_artifact_id') = 'string'
+             AND (artifact.id IS NULL OR artifact.expires_at <= now()))
+            -- MCP PDF 변환본은 artifact 대신 변환 결과 key를 싣는다. 수정안 artifact와 같이 run 생성 + 1일에 만료한다.
+            OR (jsonb_typeof(operation.arguments->'content_result_key') = 'string'
+                AND (SELECT created_at + interval '1 day' FROM agent_runs WHERE id = %s) <= now())
+          )
         LIMIT 1
         """,
         (
@@ -1178,6 +1220,7 @@ def _has_unavailable_artifact(
             list(operation_ids) if operation_ids is not None else None,
             ignore_purged,
             DOCUMENT_PURGED_ERROR_CODE,
+            run_id,
         ),
     ).fetchone()
     return row is not None

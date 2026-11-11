@@ -2,7 +2,8 @@
 
 기존 변환 파이프라인을 그대로 따른다. 전처리(AnyDoc crop-first 준비)는 converter worker가 기존 batch·journal로 하고,
 기존 selective repair·그림 설명이 공급사에 보내던 요청을 창으로 외부 AI에 준다. 외부 AI 결과는 기존 검증을 거쳐
-기존 조립으로 Markdown이 된다. 이 모듈은 공급사를 부르지 않는다.
+기존 조립으로 Markdown이 된다. 떨어진 블록은 기존 복원의 재시도 규칙(retry_blocks)대로 한 블록 재시도 창이 된다.
+이 모듈은 공급사를 부르지 않는다. 쪽 번호 바꾸기·이미지 asset 분리·저장은 승인 뒤 document가 웹 변환과 같은 코드로 한다.
 """
 
 from __future__ import annotations
@@ -26,19 +27,22 @@ from app.modules.document_restoration.infrastructure.crop_first_with_anydoc impo
 from app.modules.document_restoration.infrastructure.external_restoration import (
     WINDOWS_FILE,
     assemble_external,
+    followup_block_ids,
+    followup_window,
     load_context,
     validate_result,
 )
 from app.modules.wiki_ingestion.infrastructure.object_storage import bucket_name, client
 
 SCHEMA = "mcp.pdf-conversion.v1"
-# 기존 복원의 "한 번 묻고 떨어진 블록만 한 번 더"와 같은 시도 수다.
-MAX_ATTEMPTS = 2
-# 조립 결과는 document propose_plan artifact로 승인에 들어간다. 그 요청 상한(McpPlanProposalService 4MiB)과 같다.
-MAX_MARKDOWN_BYTES = 4 * 1024 * 1024
+# 기존 복원처럼 창(요청)마다 한 번 묻는다. 다시 묻기는 같은 창이 아니라 떨어진 블록의 재시도 창으로 한다.
+MAX_ATTEMPTS = 1
 MANIFEST = Path("layout") / "auto" / "batch.crop_first_manifest.json"
 DETECTED = Path("final") / "batch.detected.md"
-_PAGE = re.compile(r"<!-- page (\d{1,6}) -->")
+# 조립 결과 위치. tmp/ lifecycle(7일)이 지운다. 승인 계획은 run 생성 + 1일에 만료하고, 결과가 지워지기 전에 만료하도록
+# finalize 뒤 RESULT_PROPOSAL_DAYS 안에서만 승인 계획을 받는다.
+RESULT_PREFIX = "tmp/mcp-convert/"
+RESULT_PROPOSAL_DAYS = 6
 
 
 class McpPdfConversionError(Exception):
@@ -169,6 +173,18 @@ def _windows(conn, row: dict[str, Any]) -> list[dict[str, Any]]:
             window_id = str(uuid.uuid5(uuid.UUID(str(row["conversion_id"])), f"{prefix}{index}"))
             windows.append({**window, "window_id": window_id, "segment": segment,
                             "window_hash": _sha256(_canonical({"prefix": prefix, "index": index, "window": window}))})
+    # 제출이 만든 재시도 창은 제출 순서대로 뒤에 붙는다. 창 번호는 한 번 정해지면 바뀌지 않는다.
+    by_id = {window["window_id"]: window for window in windows}
+    for submission in conn.execute(
+            "SELECT window_id, response FROM mcp_pdf_conversion_submissions WHERE conversion_id = %s "
+            "ORDER BY created_at, window_id", (row["conversion_id"],)).fetchall():
+        parent = by_id[str(submission["window_id"])]
+        for block_id in submission["response"]["followup_block_ids"]:
+            window = {**followup_window(parent, block_id),
+                      "window_id": str(uuid.uuid5(uuid.UUID(parent["window_id"]), block_id)),
+                      "window_hash": _sha256(_canonical({"parent": parent["window_hash"], "block_id": block_id}))}
+            windows.append(window)
+            by_id[window["window_id"]] = window
     return windows
 
 
@@ -197,6 +213,8 @@ def read_window(conversion_id: str, actor: dict[str, Any], ordinal: int) -> dict
 def submit(conversion_id: str, actor: dict[str, Any], window_id: str, window_hash: str, idempotency_key: str,
            request_hash: str, result: Any) -> dict[str, Any]:
     with _connect() as conn:
+        # 창 목록(재시도 창 번호)이 제출로 늘어나므로 세션을 먼저 잠근다.
+        conn.execute("SELECT 1 FROM mcp_pdf_conversions WHERE conversion_id = %s FOR UPDATE", (conversion_id,))
         row = _owned(conn, conversion_id, actor)
         replay = conn.execute("SELECT request_hash, response FROM mcp_pdf_conversion_submissions "
                               "WHERE conversion_id = %s AND idempotency_key = %s", (conversion_id, idempotency_key)).fetchone()
@@ -212,7 +230,6 @@ def submit(conversion_id: str, actor: dict[str, Any], window_id: str, window_has
             raise _not_found()
         if window["window_hash"] != window_hash:
             raise McpPdfConversionError(409, "STALE_WINDOW", "Window changed.")
-        conn.execute("SELECT 1 FROM mcp_pdf_conversions WHERE conversion_id = %s FOR UPDATE", (conversion_id,))
         attempt = 1 + conn.execute("SELECT count(*) AS n FROM mcp_pdf_conversion_submissions "
                                    "WHERE conversion_id = %s AND window_id = %s", (conversion_id, window_id)).fetchone()["n"]
         if attempt > MAX_ATTEMPTS:
@@ -227,12 +244,15 @@ def submit(conversion_id: str, actor: dict[str, Any], window_id: str, window_has
                 rejected = validate_result(window, result, blocks, fragments)
             except ValueError as exc:
                 raise McpPdfConversionError(400, "INVALID_INPUT", str(exc)) from None
+            followups = followup_block_ids(window, result, blocks, fragments)
         submitted = conn.execute("SELECT count(DISTINCT window_id) AS n FROM mcp_pdf_conversion_submissions "
                                  "WHERE conversion_id = %s", (conversion_id,)).fetchone()["n"] + (attempt == 1)
         response = {
             "schema_version": SCHEMA, "conversion_id": conversion_id, "window_id": window_id, "attempt": attempt,
             "max_attempts": MAX_ATTEMPTS, "accepted": not rejected, "rejected_block_ids": rejected,
-            "submitted_window_count": submitted, "window_count": len(windows),
+            "followup_block_ids": followups,
+            "new_window_ordinals": list(range(len(windows) + 1, len(windows) + len(followups) + 1)),
+            "submitted_window_count": submitted, "window_count": len(windows) + len(followups),
         }
         conn.execute("INSERT INTO mcp_pdf_conversion_submissions(conversion_id, window_id, attempt, window_hash, "
                      "idempotency_key, request_hash, result, response) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -241,13 +261,8 @@ def submit(conversion_id: str, actor: dict[str, Any], window_id: str, window_has
         return response
 
 
-def renumber_pages(markdown: str, first_page: int) -> str:
-    """document ConvertedMarkdownChunks.renumberPages와 같다. 묶음 안 쪽 번호(1부터)를 원본 쪽 번호로 바꾼다."""
-    return _PAGE.sub(lambda match: f"<!-- page {int(match.group(1)) + first_page - 1} -->", markdown)
-
-
 def finalize(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
-    """모든 창이 한 번 이상 제출됐을 때 기존 조립으로 Markdown을 만든다. 같은 세션은 같은 결과를 다시 돌려준다."""
+    """모든 창(재시도 창 포함)이 제출됐을 때 기존 조립으로 묶음별 Markdown을 만든다. 같은 세션은 같은 결과를 다시 돌려준다."""
     with _connect() as conn:
         conn.execute("SELECT 1 FROM mcp_pdf_conversions WHERE conversion_id = %s FOR UPDATE", (conversion_id,))
         row = _owned(conn, conversion_id, actor)
@@ -277,21 +292,24 @@ def finalize(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
                 markdown, part = assemble_external(root, root / MANIFEST, root / DETECTED, results)
                 keep |= external_urls((root / DETECTED).read_text(encoding="utf-8"))
                 markdown = embed_local_image_links(markdown, root / "final" / "external.restored.md", root)
-            chunks.append(renumber_pages(markdown, first).strip())
+            chunks.append((first, markdown.strip()))
             summary["broken_pages"] += part["broken_pages"]
             summary["repaired_pages"] += part["repaired_pages"]
             summary["fallback_pages"] += [{**page, "page": first - 1 + int(page["page"])} for page in part["fallback_pages"]]
             rejected += part["rejected_block_ids"]
         # 원문(AnyDoc 추출)에 있던 링크만 남기고, 외부 AI가 새로 넣은 외부 링크·이미지는 글자로 바꾼다.
-        markdown = sanitize_ai_markdown("\n\n".join(chunks).strip() + "\n", keep_urls=frozenset(keep))
-        if len(markdown.encode("utf-8")) > MAX_MARKDOWN_BYTES:
-            raise McpPdfConversionError(413, "SOURCE_LIMIT_EXCEEDED", "Converted Markdown exceeds the proposal limit.")
-        content_hash = _sha256(markdown.encode("utf-8"))
-        # 기존 변환 결과처럼 Markdown은 tmp/convert/에 두고 key만 돌려준다(이미지 data: URI로 응답 한도를 넘는다).
-        result_key = f"tmp/convert/mcp/{row['workspace_id']}/{conversion_id}/final.md"
-        data = markdown.encode("utf-8")
+        # 묶음마다 쪽 번호는 묶음 안 번호(1부터) 그대로 둔다. 웹 변환 batch 결과처럼 document가 저장 때 시작 쪽으로
+        # 바꾸고(ConvertedMarkdownChunks.renumberPages) 이미지를 asset으로 뺀다.
+        data = _canonical([
+            {"page_start": first, "markdown": sanitize_ai_markdown(markdown + "\n", keep_urls=frozenset(keep))}
+            for first, markdown in chunks
+        ])
+        content_hash = _sha256(data)
+        # key와 hash만 승인 계획에 싣는다. 승인 전에는 아무것도 저장하지 않는다. 결과는 승인 계획보다 오래 남아야 하므로
+        # tmp/convert/(1일)가 아니라 tmp/ 7일 lifecycle 아래(RESULT_PREFIX)에 둔다.
+        result_key = f"{RESULT_PREFIX}{row['workspace_id']}/{conversion_id}/final.json"
         storage.put_object(bucket_name(), result_key, io.BytesIO(data), length=len(data),
-                           content_type="text/markdown; charset=utf-8")
+                           content_type="application/json")
         response = {
             "schema_version": SCHEMA, "conversion_id": conversion_id, "source_document_id": row["document_id"],
             "source_content_hash": row["source_content_hash"], "content_hash": content_hash, "result_key": result_key,
@@ -302,11 +320,28 @@ def finalize(conversion_id: str, actor: dict[str, Any]) -> dict[str, Any]:
         return response
 
 
+_DATA_IMAGE = re.compile(r"(data:image/(?:png|jpeg|gif);base64,)[A-Za-z0-9+/=]+")
+
+
+def converted_preview_markdown(result: str) -> str:
+    """승인 화면 미리 보기용 본문. 저장할 때(document)처럼 묶음을 빈 줄로 잇는다.
+
+    이미지 바이트(data: URI)는 저장 때 asset으로 분리되는 내용이라 미리 보기에서는 줄인다. 쪽 번호는 묶음 안 번호다.
+    """
+    merged = ""
+    for batch in json.loads(result):
+        markdown = _DATA_IMAGE.sub(r"\1…", str(batch["markdown"]))
+        merged = markdown if not merged else merged.rstrip() + "\n\n" + markdown
+    return merged
+
+
 def finalized_conversion_exists(workspace_id: str, user_id: str, document_id: str, source_content_hash: str,
-                                content_hash: str) -> bool:
-    """propose_plan의 원본 연결 create_document가 이 사용자의 조립 결과 그대로인지."""
+                                content_hash: str, result_key: str) -> bool:
+    """propose_plan의 원본 연결 create_document가 이 사용자의 조립 결과(key·hash) 그대로인지."""
     with _connect() as conn:
         return conn.execute(
             "SELECT 1 FROM mcp_pdf_conversions WHERE workspace_id=%s AND user_id=%s AND document_id=%s "
-            "AND source_content_hash=%s AND final_markdown_hash=%s",
-            (workspace_id, user_id, document_id, source_content_hash, content_hash)).fetchone() is not None
+            "AND source_content_hash=%s AND final_markdown_hash=%s AND final_response->>'result_key' = %s "
+            "AND finalized_at > now() - %s * interval '1 day'",
+            (workspace_id, user_id, document_id, source_content_hash, content_hash, result_key,
+             RESULT_PROPOSAL_DAYS)).fetchone() is not None

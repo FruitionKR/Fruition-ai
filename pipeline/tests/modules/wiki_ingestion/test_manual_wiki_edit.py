@@ -456,19 +456,23 @@ def test_save_manual_edit_allows_member_other_than_last_ingester(ai_database) ->
     assert {"to_page_id": "C3"} in links
 
 
-def test_manual_edit_route_starts_embedding_and_returns_404_for_missing_page(monkeypatch) -> None:
+def test_manual_edit_route_does_not_embed_in_api_and_returns_404_for_missing_page(monkeypatch) -> None:
     from fastapi import HTTPException
 
+    from app.modules.wiki_embedding.infrastructure import bge_m3_embedding_model, threaded_wiki_embedding_job
     from app.modules.wiki_ingestion.interfaces.http import routes
     from app.modules.wiki_ingestion.interfaces.http.schemas import WikiPageManualEditIn
 
-    job = Mock()
-    monkeypatch.setattr(routes, "get_wiki_embedding_job", lambda: job)
+    # 웹 편입처럼 pipeline-api는 발행만 한다. 임베딩 작업·로컬 BGE-M3를 건드리면 실패한다.
+    def no_local_embedding(*_args):
+        raise AssertionError("pipeline-api must not embed")
+
+    monkeypatch.setattr(bge_m3_embedding_model, "_load_sentence_transformer", no_local_embedding)
+    monkeypatch.setattr(threaded_wiki_embedding_job.ThreadedWikiEmbeddingJob, "start", no_local_embedding)
     payload = WikiPageManualEditIn(user_id="user", workspace_id="ws", operation_id="op-m", markdown="본문")
     monkeypatch.setattr(routes.database, "save_manual_wiki_edit", lambda *_args: {"page_id": "C1"})
 
     assert routes.save_manual_wiki_edit("C1", payload) == {"page_id": "C1"}
-    job.start.assert_called_once_with("op-m", ["C1"])
 
     monkeypatch.setattr(routes.database, "save_manual_wiki_edit", lambda *_args: None)
     with pytest.raises(HTTPException) as error:

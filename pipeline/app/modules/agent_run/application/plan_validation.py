@@ -30,8 +30,9 @@ TARGET_FOLDER_NOTE_EN = (
 )
 OUT_OF_SCOPE_NOTE_EN = "Removed {count} operations that move items outside the target folder from the plan."
 # MCP 외부 AI PDF 변환본 생성. 원본 PDF와 그 hash를 승인 인자에 고정하고 Document가 승인·실행 때 다시 확인한다.
+# 본문은 artifact가 아니라 변환 조립 결과 key·hash다. Document가 실행 때 저장소에서 읽어 hash를 확인한다.
 SOURCE_BOUND_CREATE_DOCUMENT_ARGUMENTS = {
-    "display_name", "folder_id", "content_artifact_id", "content_hash",
+    "display_name", "folder_id", "content_result_key", "content_hash",
     "source_document_id", "source_content_hash",
 }
 
@@ -368,7 +369,7 @@ def _validate_plan_against_hierarchy(
                 target_folder = items.get(destination)
                 if target_folder is None or target_folder.get("type") != "folder":
                     raise ValueError("Agent plan destination folder must exist.")
-        if operation.tool_name in {"create_document", "apply_document_edit"}:
+        if operation.tool_name in {"create_document", "apply_document_edit"} and not source_bound:
             _validate_artifact_arguments(operation)
             _validate_artifact_reference(operation, content_artifacts)
         references = _operation_references(operation.arguments)

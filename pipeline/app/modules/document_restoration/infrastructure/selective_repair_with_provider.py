@@ -742,6 +742,32 @@ def rejected_candidates(
     ]
 
 
+def retry_blocks(
+    blocks: list[dict[str, Any]],
+    result: dict[str, Any],
+    fragments: dict[str, str] | None = None,
+    *,
+    chained: bool,
+) -> list[dict[str, Any]]:
+    """한 요청 결과 뒤에 블록 하나씩 한 번 더 물을 블록이다. MCP 외부 AI 변환도 같은 규칙을 쓴다.
+
+    이어진 표는 첫 조각 하나로 묻는다. 그 조각이 받아들여진 교체가 아니면 합친 표를 버리고 조각마다 다시 묻는다.
+    그 밖의 묶음은 검증에서 떨어진 블록만 다시 묻는다.
+    """
+    if not chained:
+        return rejected_candidates(blocks, result, fragments)
+    head = blocks[0]
+    item = {entry["block_id"]: entry for entry in result["results"]}[head["id"]]
+    merged = item["action"] == "replace" and valid_replacement(
+        head["type"],
+        normalize_replacement(head["type"], str(item["replacement"])),
+        head.get("required_tokens"),
+        scope=str(head.get("scope", "block")),
+        source_text=block_markdown(head, fragments),
+    )
+    return [] if merged else blocks
+
+
 def repair_request(
     pdf_file: Path,
     lane: str,
@@ -865,12 +891,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         fallback_usage: list[dict[str, Any]] = []
         batch_error: str | None = None
         if chain_head:
-            merged = False
+            # 합친 표가 거부되면 조각마다 따로 복원한다(retry_blocks).
+            fallback_blocks = blocks
             try:
                 result, usage = request(blocks, chained=True)
-                merged = save_replacements(
-                    args.output_dir, blocks[:1], result, provider, fragments
-                )["replace"] == 1
+                save_replacements(args.output_dir, blocks[:1], result, provider, fragments)
+                fallback_blocks = retry_blocks(blocks, result, fragments, chained=True)
             except (
                 TimeoutError,
                 urllib.error.URLError,
@@ -880,11 +906,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 OSError,
             ) as exc:
                 batch_error = type(exc).__name__
-            if merged:
+            if not fallback_blocks:
                 save_merged(args.output_dir, blocks[0], blocks[1:], provider)
                 counts["replace"] += 1
-            # 합친 표가 거부되면 조각마다 따로 복원한다.
-            fallback_blocks = [] if merged else blocks
         else:
             try:
                 result, usage = request(blocks)
@@ -893,7 +917,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 for name, count in batch_counts.items():
                     counts[name] += count
-                fallback_blocks = rejected_candidates(blocks, result, fragments)
+                fallback_blocks = retry_blocks(blocks, result, fragments, chained=False)
                 counts["rejected"] -= len(fallback_blocks)
             except (
                 TimeoutError,

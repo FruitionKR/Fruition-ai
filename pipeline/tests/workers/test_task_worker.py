@@ -2123,8 +2123,11 @@ def _run_first_turn(send_error=None, relay_error=None):
 
         consumer.getmany = getmany
         producer.send_and_wait = send
-        with (patch.dict(task_worker.os.environ, {"AI_DATABASE_URL": "unused"})
-              if relay_error is not None else nullcontext()), \
+        # relay 실패 경우만 ai_db 기동 relay를 켠다. CI가 AI_DATABASE_URL을 두어도 기본 경우는 끈 상태로 본다.
+        environ = {key: value for key, value in task_worker.os.environ.items() if key != "AI_DATABASE_URL"}
+        if relay_error is not None:
+            environ["AI_DATABASE_URL"] = "unused"
+        with patch.dict(task_worker.os.environ, environ, clear=True), \
                 patch.object(task_worker.database, "ensure_ai_schema"), \
                 patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
@@ -2318,7 +2321,7 @@ def _run_consume(handled: list, kind: str = "query", *, command=None, emitted=No
     return asyncio.run(run_test())
 
 
-_INDEX_WAKE = {"kind": "mcp_publication_index", "run_id": "mcp-index:event-1", "workspace_id": "w"}
+_INDEX_WAKE = {"kind": "embedding_recovery", "run_id": "mcp-index:event-1", "workspace_id": "w"}
 
 
 def test_mcp_publication_wake_recovers_embeddings_before_commit_without_task_event() -> None:
@@ -2334,6 +2337,23 @@ def test_mcp_publication_wake_recovers_embeddings_before_commit_without_task_eve
     # 실행 기록·결과 이벤트 없이 임베딩 복구를 끝낸 뒤에만 offset을 커밋한다.
     assert order == [("recover", "mcp-index:event-1")]
     assert events == [] and emitted == []
+    consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
+
+
+def test_retired_mcp_publication_index_kind_is_rejected_and_committed_during_rollout() -> None:
+    # 이름을 바꾼 뒤 남은 옛 command는 user_id가 없어 잘못된 입력으로 확정되고 커밋된다. worker를 멈추지 않는다.
+    from aiokafka import TopicPartition
+
+    job = MagicMock()
+    emitted = []
+    old = {"kind": "mcp_publication_index", "run_id": "mcp-index:event-0", "workspace_id": "w"}
+
+    consumer, events, _ = _run_consume(
+        [ValueError("Unsupported task kind.")], command=old, emitted=emitted, job=job,
+    )
+
+    job.recover.assert_not_called()
+    assert events == ["failed"] and emitted[0]["error"] == task_worker.INPUT_REJECTED
     consumer.commit.assert_awaited_once_with({TopicPartition("t", 3): 43})
 
 

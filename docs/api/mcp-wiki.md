@@ -57,28 +57,29 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
 }
 ```
 
-`page_type`은 `SOURCE | CONCEPT`다. page ID는 기존 varchar 도메인 ID를 그대로 쓰며 UUID로 바꾸지 않는다. `version`은 published page의 `updated_at` microsecond 값이고, `content_hash`는 그 변경 이후 완료된 현재 embedding model의 stored page representation hash다. 결과에는 raw Markdown/object URI/internal payload가 없고 title/snippet/evidence만 있으며 모든 workspace text는 `UNTRUSTED_WORKSPACE_CONTENT` 데이터다. link/image 객체는 반환하지 않는다.
+`page_type`은 `SOURCE | CONCEPT`다. page ID는 기존 varchar 도메인 ID를 그대로 쓰며 UUID로 바꾸지 않는다. `version`은 published page의 `updated_at` microsecond 값이고, `content_hash`는 page 제목과 그 page의 현재 embedding unit ID 목록(unit ID는 page·종류·block·본문의 해시)을 묶은 SHA-256이다. page embedding 완료 여부와 무관하며, 제목이나 검색 unit이 바뀌면 달라진다. 결과에는 raw Markdown/object URI/internal payload가 없고 title/snippet/evidence만 있으며 모든 workspace text는 `UNTRUSTED_WORKSPACE_CONTENT` 데이터다. link/image 객체는 반환하지 않는다.
 
 `snippet`은 별도 page read로 이어지는 의도적으로 길이를 제한한 검색 excerpt다. snippet 상한에서 잘릴 수 있지만 이는 결과 pagination을 뜻하지 않으므로 top-level `truncated`는 `next_cursor` 유무만 나타낸다.
 
 ## 4. 검색 경계
 
-- active page와 요청 actor의 exact `workspace_id`만 SQL 후보에 포함한다.
-- 완전한 workspace 검색 scope가 명시적 page/unit/text-byte/vector-dimension cap 안인지 cap+1 metadata probe로 먼저 판정한다. 초과하면 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`로 거부하고 unit text rank/vector unnest를 실행하지 않는다.
-- admission에 성공한 scope는 전체 page metadata와 unit text의 lexical score, 전체 current page vector의 semantic score를 계산한 후에만 candidate limit을 적용한다. evidence 배열과 statement timeout도 응답 slicing 전에 적용한다.
-- 현재 page update 뒤 완료된 stored page vector만 후보 publication identity에 쓴다. relevant unit의 완료 stored vector가 있으면 semantic rerank에 쓰고, 없으면 semantic score 0으로 두며 본문을 즉석 임베딩하지 않는다. 질문은 한 번만 임베딩한다.
-- 기존 `Bm25Searcher`, stored dense score, 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
-- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 이미 bounded된 검색 후보의 snippet unit(본문·document-qualified block ref·unit 종류·가중치)뿐이며 workspace 전체 unit을 다시 읽지 않는다. 본문·블록·문서가 같은 후보는 하나로 묶고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 후보를 고른 순서로 앞에 두고 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
+MCP 검색은 웹 질의의 근거 선택과 같은 코드를 쓴다. MCP 전용 코드는 외부 호출 경계뿐이다: [ADR 0046](../adr/0046-mcp-cross-service-contract.md)대로 후보 조회 단계의 개수·총 text bytes·deadline 상한, 그리고 클라이언트에 돌려주는 page size·snippet·응답 byte·cursor·결과 projection·`UNTRUSTED_WORKSPACE_CONTENT` 표시다.
+
+- 후보: 웹 `JevEvidenceSelector`와 같이 `PostgresWikiRepository.list_workspace_embedding_units`로 요청 actor의 exact `workspace_id`에 있는 active source·concept page의 embedding unit을 읽고, `group_candidates`로 (본문, document-qualified block ref, 문서)가 같은 unit을 하나로 묶고 dense·BM25 점수를 한 번 계산한다. 웹과 같은 `StoredWikiPageEmbeddingSearch.without_live_embedding()`·`Bm25Searcher`를 쓰므로 완료된 unit vector가 있으면 dense 점수에 쓰고, 없으면 dense 0으로 두며 본문을 즉석 임베딩하지 않는다. page embedding(`wiki_page_embeddings`)이 없거나 page 변경 뒤 아직 다시 계산되지 않아도 unit만 있으면 찾는다. 질문은 한 번만 임베딩한다.
+- 후보 조회 상한(ADR 0046): unit을 `MAX_SCAN_UNITS + 1`행까지만 읽고, 행 수가 `MAX_SCAN_UNITS`를 넘거나 읽은 unit 본문의 UTF-8 byte 합이 `MAX_CANDIDATE_BYTES`를 넘으면 정렬 전에 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`("scope exceeds configured capacity")로 거절한다. 임의 일부만 검색해 recall을 버리지 않는다. unit 조회와 page metadata 조회에는 남은 MCP deadline을 `statement_timeout`으로 걸고, 시간을 넘기면 재시도할 수 있는 `503 DEPENDENCY_UNAVAILABLE`이다. 웹은 같은 함수를 인자 없이 불러 상한 없이 읽는다.
+- 기본 결과 순서는 웹이 Jev 없이 근거 점수를 매길 때 쓰는 질문 언어별 비중([ADR 0009](../adr/0009-query-pipeline.md): 한글이 있으면 BM25 10%, 없으면 40%, `evidence_embedding_weight`)이다. 웹 fallback(`EvidenceSelector`)은 여기에 graph 탐색 page의 역할·일치 가산점을 더하지만 MCP 검색에는 graph 탐색이 없어 그 가산점은 쓰지 않는다. 이 순서 상위 `CANDIDATE_LIMIT`(200)개 unit 후보를 page 결과로 바꾼다. 후보 순서대로 처음 나온 page를 결과로 두고, 그 page를 처음 가리킨 unit이 snippet과 evidence가 된다. 묶인 후보가 여러 page를 가리키면 각 page가 같은 snippet을 가진다. 그 사이 삭제된 page는 결과에서 뺀다.
+- 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
+- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙(`select_evidence`)으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 웹 Jev 근거 선택과 같은 BGE-M3 0.75 + BM25 0.25 순위([ADR-0027](../adr/0027-jev-selective-judge.md))에서 웹과 같은 상위 `CANDIDATE_LIMIT`(200)개다. Jev 비용은 웹과 같이 사용자 크레딧으로 낸다. 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 unit이 가리키는 page 중 기본 결과에 있는 page를 고른 순서로 앞에 두고 그 unit을 snippet으로 쓰며, 나머지는 기본 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
 - query embedding 호출은 model usage ledger의 `kind=mcp_wiki_search_query_embedding`으로 answer generation과 분리해 기록한다.
 - 검색 실행은 API event loop 밖의 worker thread에서 수행하고, deadline-aware remote embedding transport만 허용한다. 로컬 model fallback은 이 endpoint에서 지원하지 않는다.
 
-Candidate retrieval은 admission에 성공한 작은 scope에서 lexical match와 semantic-only page를 모두 유지한다. 현재 array vector schema에는 index-supported nearest-neighbor 연산이 없으므로 cap을 넘는 workspace는 임의 prefix 검색으로 recall을 버리지 않고 명시적 capacity error로 거부한다. 대규모 workspace 지원은 실제 vector index/schema·deployment 결정 후에 별도로 해결해야 한다.
+현재 array vector schema에는 index-supported nearest-neighbor 연산이 없어 웹과 같이 workspace의 unit 전체를 읽고 dense 점수를 Python에서 계산한다. 호출당 작업량은 unit 수에 비례하므로(로컬 측정 약 0.4ms/unit, 1024차원) 상한을 넘는 workspace는 capacity error로 거절한다. 대규모 workspace 지원은 실제 vector index/schema·deployment 결정 후에 별도로 해결해야 한다.
 
 ## 5. Cursor
 
-Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant/client/policy/spec/tool, query hash, page size, 정렬 버전, offset, 전체 bounded 후보의 ordered page ID/version/content hash/document-qualified evidence locator를 묶는다. durable snapshot/cache는 만들지 않는다.
+Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant/client/policy/spec/tool, query hash, page size, 정렬 버전(`mcp-wiki-web-evidence-v2`), offset, 전체 후보의 순서(page ID, snippet unit ID)와, 그 후보들의 page ID/version/content hash/snippet unit ID/document-qualified evidence locator를 묶은 SHA-256 digest를 담는다. cursor가 `MAX_REQUEST_BYTES`를 넘으면 `413 RESPONSE_LIMIT_EXCEEDED`다. 이전 정렬 버전의 cursor는 `HANDLE_NOT_FOUND`다. durable snapshot/cache는 만들지 않는다.
 
-다음 페이지마다 같은 bounded 검색을 다시 실행하되 Jev와 하이브리드 정렬은 다시 하지 않는다. 현재 후보의 page ID/version/hash/evidence가 cursor에 고정한 후보 집합과 같으면 cursor의 순서를 그대로 쓴다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, 후보 집합이나 page version/hash/evidence가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
+다음 페이지마다 같은 검색을 다시 실행하되 Jev는 다시 부르지 않는다. 현재 하이브리드 page 집합과 각 page의 version/hash, snippet unit, evidence가 cursor에 고정한 값과 같으면 cursor의 순서를 그대로 쓴다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, 후보 집합이나 page version/hash/evidence가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
 
 ## 6. 설정과 비활성 상태
 
@@ -86,22 +87,20 @@ Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant
 
 - `MCP_WIKI_SEARCH_MAX_STRING_CHARS`
 - `MCP_WIKI_SEARCH_MAX_PAGE_SIZE`
-- `MCP_WIKI_SEARCH_MAX_CANDIDATES` (`MAX_PAGE_SIZE` 이상)
-- `MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES`
 - `MCP_WIKI_SEARCH_DEADLINE_MS`
 - `MCP_WIKI_SEARCH_MAX_REQUEST_BYTES`
 - `MCP_WIKI_SEARCH_MAX_RESPONSE_BYTES`
-- `MCP_WIKI_SEARCH_MAX_SCAN_PAGES` (`MAX_CANDIDATES` 이상)
-- `MCP_WIKI_SEARCH_MAX_SCAN_UNITS`
 - `MCP_WIKI_SEARCH_MAX_VECTOR_DIMENSIONS`
+- `MCP_WIKI_SEARCH_MAX_SCAN_UNITS`
+- `MCP_WIKI_SEARCH_MAX_CANDIDATE_BYTES`
 
 `MCP_WIKI_SEARCH_CURSOR_HMAC_KEY`는 UTF-8 32 bytes 이상이어야 한다. 하나라도 없거나 잘못되면 API는 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다. 테스트 값은 focused test가 직접 주입하며 제품 상한이나 TTL을 뜻하지 않는다.
 
-`MAX_CANDIDATE_BYTES`는 candidate response만이 아니라 admission에서 검사하는 전체 title/slug/summary/unit text UTF-8 byte 합의 상한이다. page/unit/vector cap을 넘는 workspace는 같은 상태에서 재시도해도 성공하지 않는 capacity error를 반환한다.
+`MAX_VECTOR_DIMENSIONS`는 embedding 서버가 돌려준 질문 vector 차원의 상한이며, 차원이 다른 저장 vector는 dense 0이다. `MAX_SCAN_UNITS`는 workspace 검색 unit 행 수, `MAX_CANDIDATE_BYTES`는 그 unit 본문 UTF-8 byte 합의 상한이며, 넘는 workspace는 같은 상태에서 재시도해도 성공하지 않는 capacity error를 반환한다. 예전 `MCP_WIKI_SEARCH_MAX_CANDIDATES`·`MAX_SCAN_PAGES`는 더 읽지 않는다.
 
 Query embedding에는 `EMBEDDING_SERVICE_URL`, `INTERNAL_CALLBACK_TOKEN`, `EMBEDDING_MODEL_NAME`이 필요하다. Remote transport는 남은 MCP deadline보다 오래 기다리지 않으며, service URL이 없으면 local inference로 fallback하지 않고 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다.
 
-Embedding/provider, bounded SQL statement, BM25 검색의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. 다만 model-usage ledger/DB connection 수립과 이미 시작한 Python BM25 함수는 강제 중단되지 않으며, 입력 cap과 전·후 deadline check로 제한한다.
+Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. unit·page metadata 조회 SQL은 남은 deadline의 statement timeout으로 끊는다. model-usage ledger/DB connection 수립, 저장 vector 조회와 Python 점수 계산은 강제 중단되지 않으며, 후보 행·byte 상한과 전·후 deadline check로 제한한다.
 
 ## 7. 오류
 
@@ -115,45 +114,21 @@ Embedding/provider, bounded SQL statement, BM25 검색의 deadline check는 work
 
 검색은 active published rows만 읽고 draft/source snapshot/cursor row를 만들지 않는다. Cursor가 stateless라 AI purge/TTL 대상도 추가하지 않는다. page 변경은 다음 요청에서 새 bounded snapshot과 비교해 stale 처리한다.
 
-## 10. Bounded `get_wiki_page`
+## 10. `get_wiki_page`
 
-MCP public tool input은 existing bounded ID grammar의 `{ "page_id": "..." }`뿐이다. document-svc가 검증된 authorization context의 workspace로 다음을 호출한다.
-
-`GET /wiki/pages/{page_id}?workspace_id=<validated context>&mcp_read=true`
-
-`mcp_read` 없는 legacy GET은 바꾸지 않는다. AI mode는 다음 일곱 text field만 반환한다.
-
-```json
-{
-  "schema_version": "mcp.wiki-page.v1",
-  "page_id": "page-a",
-  "page_type": "CONCEPT",
-  "title": "페이지 제목",
-  "body": "# 제목\n\n본문\n",
-  "content_hash": "sha256:0cbe37d6300159221d66c8bdc45b489caa97abdc10726d12af7a2417497f14c8",
-  "data_boundary": "UNTRUSTED_WORKSPACE_CONTENT"
-}
-```
-
-표시한 hash는 예시 body의 exact UTF-8 bytes SHA-256이다. 빈 `body`도 유효하다. 응답에는 `version`, evidence/quote, cursor, chunk, `next_cursor`, `truncated`, raw-hash field가 없다.
-
-AI는 validated workspace의 active page만 읽고 read 중 metadata/body가 바뀌지 않았는지 확인한다. exact raw returned UTF-8 body를 hash하며, Document는 그 internal hash를 먼저 검증한 뒤 기존 Markdown sanitizer를 title/body에 적용하고 exact sanitized UTF-8 body의 public hash를 반환한다. public hash는 returned representation만 식별하며 raw storage identity, search embedding/version/evidence identity, approval/apply identity, I8 publication identity가 아니다.
-
-page limit은 모두 양수로 명시한다: `MCP_WIKI_PAGE_MAX_ID_CHARS`, `MCP_WIKI_PAGE_MAX_METADATA_BYTES`, `MCP_WIKI_PAGE_MAX_BODY_BYTES`, `MCP_WIKI_PAGE_MAX_RESPONSE_BYTES`, `MCP_WIKI_PAGE_DEADLINE_MS`, `MCP_WIKI_PAGE_DB_CONNECT_TIMEOUT_MS`, `MCP_WIKI_PAGE_DB_STATEMENT_TIMEOUT_MS`, `MCP_WIKI_PAGE_STORAGE_CONNECT_TIMEOUT_MS`, `MCP_WIKI_PAGE_STORAGE_READ_TIMEOUT_MS`. response bytes는 body bytes보다 커야 하며 운영 기본값은 문서화하지 않는다. oversize metadata/body/envelope는 자르지 않고 `413 RESPONSE_LIMIT_EXCEEDED`; invalid ID는 `400 INVALID_INPUT`; 없는 page는 `404 PAGE_NOT_FOUND`; read 중 변경은 retryable `409 PAGE_CHANGED`; invalid configuration, storage/DB failure, bad UTF-8, timeout은 `503 DEPENDENCY_UNAVAILABLE`이다.
-
-구현은 bounded current-body consistency check만 증명하며 immutable publication, atomic cross-store snapshot, live provider 보장, hard end-to-end deadline을 뜻하지 않는다. I8을 기다리지 않는다.
+AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki_page`는 웹 상세 조회(`WikiService.read`)를 그대로 쓰고, 그 조회가 부르는 기존 `GET /wiki/pages/{page_id}?workspace_id=...`와 읽기 뒤 변경 확인용 `POST /wiki/pages/lookup`만 AI에 닿는다. 본문은 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 고른다. 빈 본문 정상 반환·`PAGE_CHANGED`·읽기 deadline·크기 제한·sanitize·`mcp.wiki-page.v1` 응답·hash는 document-svc의 MCP 경계가 맡는다(Fruition-document `docs/api/mcp-read.md`).
 
 ## 11. 구현 파일
 
 - application/cursor: `pipeline/app/modules/mcp_read/application/wiki_search.py`
-- bounded PostgreSQL candidate adapter: `pipeline/app/modules/mcp_read/infrastructure/postgres_wiki_search_repository.py`
-- bounded page read: `pipeline/app/modules/mcp_read/application/wiki_page.py`, `infrastructure/bounded_wiki_page_repository.py`, and the `mcp_read=true` branch in `wiki_ingestion/interfaces/http/routes.py`
+- 웹 근거 후보 adapter(후보 조회 상한·page version/hash projection): `pipeline/app/modules/mcp_read/infrastructure/web_wiki_search_candidates.py`, 공유 후보 묶기·정렬 `pipeline/app/modules/query/infrastructure/jev_evidence_selector.py`의 `group_candidates`·`order_candidates`
+- Jev 근거 판정 adapter: `pipeline/app/modules/mcp_read/infrastructure/jev_wiki_search_evidence.py`
 - exact DTO/route: `pipeline/app/modules/mcp_read/interfaces/http/{schemas,routes}.py`
 - composition root: `pipeline/api.py`
 
 ## 12. 연동 상태와 한계
 
-- bounded four-tool code slice: `search_wiki`, `find_documents`, `get_document`, `get_wiki_page`가 catalog에 있고, Document page client가 current authorization 뒤 bounded AI GET mode를 호출한다.
+- bounded four-tool code slice: `search_wiki`, `find_documents`, `get_document`, `get_wiki_page`가 catalog에 있고, `get_wiki_page`는 current authorization 뒤 웹 상세 조회(`WikiService.findById`)를 그대로 쓴다.
 - 아웃바운드 호출: deadline-aware embedding service로 query embedding 1회; 미설정이면 fail closed
 - inherited controlled evidence: AI는 focused 48개와 real PostgreSQL/MinIO 18개, Document는 real PostgreSQL/MinIO와 controlled HTTPS를 포함한 10개(6+2+2) 검사가 있다. incoming SDK harness는 MockHttp 기반이다.
 - 이는 release 또는 I2 전체 readiness가 아니다. live socket/proxy/Claude client proof가 없고, 이전 architectural failure 여섯 건도 passed로 기록하지 않는다. MCP public transport/current access authorization과 I3–I6/I8–I9 release work는 이 증거 범위 밖이다.
@@ -171,7 +146,7 @@ page limit은 모두 양수로 명시한다: `MCP_WIKI_PAGE_MAX_ID_CHARS`, `MCP_
 | `POST /internal/mcp/wiki/ingest-runs/{run_id}/finalize` | `{schema_version,actor,idempotency_key,request_hash,snapshot_id,expected_submitted_window_count,jev_allowed?}` | 모든 ordered window를 검증하고 frozen `draft_version=1`과 `AWAITING_WEB_APPROVAL` response를 한 번만 생성 |
 | `GET /internal/mcp/wiki/drafts/{draft_id}/preview?draft_version=1` | body 없음; `X-MCP-Workspace-Id`, `X-MCP-User-Id` | owner-bound exact `mcp.wiki-preview.v1` full preview; missing/wrong owner는 `404` |
 
-Start는 client source/version/hash/bytes/URI를 받지 않는다. AI가 고정 Document origin의 `POST /internal/documents/{document_id}/mcp-wiki-source`를 `X-Agent-Service-Token`으로 한 번 호출한다. callback request는 exact `{schema_version:"mcp.wiki-source.v1",actor}`이고 response는 exact `{schema_version,document_id,workspace_id,source_version,source_content_hash,mime_type,blocks[{block_id,ordinal,text,content_hash}]}`다. Document는 한 coherent current read에서 Markdown/txt/기존 converted text의 version/hash/ordered blocks를 만들며 PDF parser나 caller URL/bearer를 추가하지 않는다.
+Start는 client source/version/hash/bytes/URI를 받지 않는다. AI가 고정 Document origin의 `POST /internal/documents/{document_id}/mcp-wiki-source`를 `X-Agent-Service-Token`으로 한 번 호출한다. callback request는 exact `{schema_version:"mcp.wiki-source.v1",actor}`이고 response는 exact `{schema_version,document_id,display_name,workspace_id,source_version,source_content_hash,mime_type,blocks[{block_id,ordinal,text,content_hash}]}`다. Document는 한 coherent current read에서 현재 표시 이름과 Markdown/txt/기존 converted text의 version/hash/ordered blocks를 만들며 PDF parser나 caller URL/bearer를 추가하지 않는다. AI는 `display_name`을 신뢰할 수 없는 텍스트로 본다. Document 업로드·이름 변경이 받는 이름(비ASCII 공백·서식 문자 포함)은 그대로 받고, 공백만 있거나 255자를 넘거나 줄을 끊는 문자(Unicode Cc·Zl·Zp)를 담으면 거절한다. 통과한 값은 run snapshot(`source_display_name`)에 고정되고, preview·apply가 SOURCE 페이지 제목·본문 제목·`source_file`로 쓴다. frontmatter의 `source_file`은 JSON 문자열(YAML 큰따옴표 스칼라)로 써서 `: `·`#`·앞의 `-`가 frontmatter를 깨지 않는다. 기존 SOURCE 페이지 제목도 이 값으로 바뀐다. 같은 문서의 현재 내용이 이미 편입돼 있으면(마지막 성공 편입의 입력 Markdown SHA-256 = `source_block_snapshots.source_content_hash`가 현재 `source_content_hash`와 같으면, 웹·MCP 편입 공통) run을 만들지 않고 `409 ALREADY_INGESTED`로 거절한다. Document 블록 stale 판정과 같은 값이며, 문서를 고쳐 해시가 바뀌면 다시 편입할 수 있다. 휴지통 이동은 이 스냅샷을 지우므로 복원한 문서는 다시 편입할 수 있다.
 
 `submit_window`는 자유 Markdown이 아니라 concept → statement → internal evidence `{snapshot_id,block_id,quote}`와 closed `concept_related_to` link만 받는다. 각 statement는 nonempty evidence가 필요하고 locator가 현재 window에 속하며 quote가 block의 exact nonblank substring인지 검사한다. 외부 URL/image/unsafe markup과 운영에서 정한 instruction regex를 거절하고 sanitizer가 바꾸지 않는 text만 저장한다. configured lexical overlap은 보조 휴리스틱이며 사실성·prompt-injection 부재를 보장하지 않는다.
 
@@ -187,9 +162,9 @@ Finalize와 `POST /internal/mcp/wiki/lint-drafts`는 최상위 boolean `jev_allo
 
 Finalize request hash에는 run path, server snapshot mapping, ordered window/hash/accepted-submission hash, normalized stored contributions와 internal evidence locator/quote가 들어간다. transport invocation metadata만 빠진다. complete sequence/count/source coverage가 아니면 전부 거절하며, 같은 intent의 동시 또는 다른-key retry는 최초 frozen response를 반환하고 바뀐 intent는 충돌한다. finalize 뒤 submission은 수정할 수 없다.
 
-Full preview는 기존 contribution JSON replay와 pending-ledger reconciliation, I7 title/verified-alias identity 및 occupied-slug allocation, common invalidation replay와 dangling-entry-reference prune를 공유한다. source page before/after, submitted statements와 exact evidence, old-evidence invalidation, no-new-contribution page deletion, entry/link/reference cascade, unique deleted-page revival의 manual link를 stable change ID 순서로 모두 담는다. 원장 재생으로 사라지는 개념 문장도 `CONCEPT_STATEMENT/REMOVE`로 표시하며 교체는 `REMOVE`와 `ADD`로 표시한다. active page의 remote/pending ledger가 없거나 모순되면 `LEDGER_RECONCILIATION_PENDING`으로 전체 finalize를 보류한다.
+Full preview는 웹 편입 반영 코드를 그대로 실행해 만든다. MCP가 바꾸는 것은 AI 단계(추출·개념 판단)뿐이다. 제출한 창 기여를 웹 추출 결과(의미 노트)로 바꾼 뒤 웹 `SemanticNormalizer`, `run_lab.resolve_judged_concepts`(이름 일치 → 고정한 Jev·클라이언트 판단 → `allocate_concept_slugs`), skeleton 페이지 조립, `build_concept_contributions`로 웹과 같은 manifest를 만든다. 이어서 웹 `apply_ingest_outputs`(휴지통 표시 해제, 품질 상태 초기화, `persist_wiki_outputs`, 대기 기여 기록)를 savepoint 안에서 실행해 본 뒤 되돌린다. 객체 저장소에는 쓰지 않는다. 반영 전·후 공개 상태를 비교해 source page before/after, 제출 문장과 exact evidence, 무효화된 근거, 삭제되는 페이지, entry/link/reference 연쇄, 삭제 페이지 부활의 manual link를 stable change ID 순서로 모두 담는다. 원장 재생으로 사라지는 개념 문장도 `CONCEPT_STATEMENT/REMOVE`로 표시하며 교체는 `REMOVE`와 `ADD`로 표시한다. 이번 편입이 기여하는 기존 active 개념 페이지의 remote/pending ledger가 없거나 모순되면 `LEDGER_RECONCILIATION_PENDING`으로 전체 finalize를 보류한다. page ID와 slug는 웹 identity 규칙이 정한다. 새 페이지 ID는 실행마다 달라 미리보기에서는 `new:<page_type>:<slug>`로 표시한다. 웹 생성 평가 가드(원문에 없는 숫자·근거 없는 핵심 개념 검사)는 AI 출력 품질 검사라 MCP에서는 제출 검증이 대신한다. 사람이 고친 SOURCE 본문은 웹 편입과 같이 덮어쓰지 않는다.
 
-`public_state_hash`는 실제 영향 closure의 committed body URI/version/hash와 entry/link/reference/manual/document-link baseline을 묶고, `draft_hash`는 INGEST kind, source/target snapshots, normalized submissions, 전체 ordered changes, public-state hash를 묶는다. draft에는 이 immutable 계산 입력과 preview만 저장하며 별도 historical wiki store를 만들지 않는다. 계산은 public page/body/contribution/outbox/journal/cache/callback을 쓰지 않고 object storage는 기존 committed body/contribution을 읽기만 한다.
+`public_state_hash`는 반영이 바꾸는 기존 페이지의 committed body URI/version/hash와 그 페이지의 entry/link/reference/manual/document-link/alias 행, 문서의 source block·휴지통 표시의 반영 전 상태를 묶는다. `draft_hash`는 INGEST kind, source/target snapshots, normalized submissions, 전체 ordered changes, public-state hash에 더해 보이지 않는 반영(개념 본문 해시, 문서 연결, 별칭, 블록)을 effect로 묶는다. 웹 본문은 근거 id에 작업 ID를 싣으므로 본문 해시는 작업 ID를 자리표시로 바꿔 계산해 미리보기(draft ID)와 적용(document 작업 ID)이 같은 값을 낸다. draft에는 이 immutable 계산 입력과 preview만 저장하며 별도 historical wiki store를 만들지 않는다. 계산은 savepoint를 되돌리므로 public page/body/contribution/outbox/journal/cache/callback을 남기지 않고 object storage는 기존 committed body/contribution을 읽기만 한다.
 
 `pipeline_runs`와 MCP run은 같은 document advisory fence를 사용해 수동/자동/upload-conversion ingest와 동시 active ownership을 만들지 않는다. 인간 window 처리 동안 workspace concept lock은 잡지 않는다. task journal cancel은 unpublished run을 `CANCELLED`로 닫고 maintenance worker는 stored configured inactivity expiry를 `EXPIRED`로 닫는다. user/workspace purge fence 뒤 run/block/window/submission/idempotency를 지우며 delayed command는 되살리지 않는다.
 
@@ -205,11 +180,11 @@ Apply는 `X-Agent-Service-Token`으로 보호된 `POST /internal/mcp/wiki/drafts
 
 첫 claim 뒤 AI는 고정 Document endpoint `POST /internal/mcp/wiki/approvals/lookup`에 exact `mcp.wiki-approval-lookup.v1`을 보내고 exact `{schema_version,status,reason}`만 받는다. `VALID`은 Document가 persisted explicit approval, pair/draft/actor/source binding, full open reservation, current approved-execution Access permission과 authoritative source를 모두 확인했다는 뜻이다. `UNKNOWN`은 `AUTHZ_UNAVAILABLE`로 result를 남겨 대사 대상으로 유지하고, `FENCED`는 `HALTED`, invalid/not-found는 `CONFLICTED`다. 이 repository에는 해당 Document producer가 없으며 운영 성공은 그 producer와 reservation/fee reconciliation slice에 의존한다.
 
-`VALID` 뒤 common concept lock/DB transaction에서 finalize와 같은 kind별 pure calculator를 fresh ledger/pending/public state로 다시 실행한다. source/target snapshot, complete changes, draft hash와 public-state hash 중 하나라도 다르면 public write 없이 전체 conflict다. 성공은 기존 immutable operation-key writer를 사용해 새 object만 준비하고, page/body ref, entry/link/reference/document link, pending contribution, draft/result와 legacy `ai.wiki.publication.v1` outbox, 별도 body-free `mcp.wiki.publication.v1` outbox를 한 DB commit에서 공개한다. LINT의 main contribution은 승인된 operation identity로 다시 묶고 linked merge contribution은 원 operation identity와 `linked_by_operation_id`를 보존한다. object upload 실패나 DB rollback은 이전 public state를 유지하며, commit 뒤 response loss는 immutable stored result로 복구한다.
+`VALID` 뒤 common concept lock/DB transaction에서 INGEST는 finalize와 같은 웹 반영(`apply_ingest_outputs`)을 승인된 operation ID로 실제 실행하고, 같은 계산으로 다시 만든 미리보기의 source/target snapshot, complete changes, draft hash, public-state hash를 승인값과 맞춘다. 하나라도 다르면 savepoint를 되돌려 public write 없이 전체 conflict다(준비한 발행 journal과 올린 불변 객체는 기존 abandoned-publication cleanup 대상이다). 일치하면 웹 `finalize_ingest_publication`이 legacy `ai.wiki.publication.v1` outbox를 쓰고 같은 commit에 draft/result와 별도 body-free `mcp.wiki.publication.v1` outbox를 공개한다. LINT는 fresh replay/target closure로 재검증한 뒤 웹 lint 발행(`persist_lint_operation_result`, `finalize_lint_publication`)을 그대로 탄다. main contribution은 승인된 operation identity로 다시 만들고 linked merge contribution은 원 operation identity와 `linked_by_operation_id`를 보존한다. outcome은 웹 규칙을 따른다(변경 기록이나 삭제 페이지가 있으면 `PUBLISHED`). 단, 승인한 INGEST 미리보기의 반영 effect가 비어 있으면(공개 상태가 그대로) 같은 계산을 savepoint에서 다시 해 상태가 그대로인지만 확인하고 페이지·불변 객체·대기 기여·임베딩을 남기지 않은 채 `NO_CHANGE`(`changed=false`, 무료)로 끝낸다. 웹 편입은 같은 문장도 작업 ID가 붙은 근거로 기존 개념 본문에 덧붙이므로 개념 기여가 있는 재편입은 보통 `PUBLISHED`다. 임베딩은 웹 편입과 같은 곳에서 같은 방식으로 만든다: 웹 편입 worker가 발행만 하고 `post_ingest`로 maintenance worker에 맡기듯, pipeline-api의 apply는 `DeferredWikiEmbeddingJob`으로 발행만 하고 BGE-M3를 올리지 않는다(LINT는 웹 lint처럼 임베딩 예약을 남긴다). 페이지는 아래 `embedding_recovery` 깨우기를 받은 maintenance worker가 웹 `post_ingest`와 같은 `build_wiki_embeddings`로 임베딩한다. object upload 실패나 DB rollback은 이전 public state를 유지하며, commit 뒤 response loss는 immutable stored result로 복구한다.
 
 Body-free read는 `GET /internal/mcp/wiki/publication-results/{approval_id}/{operation_id}`이며 같은 service token과 trusted Document-derived `X-MCP-Workspace-Id`, `X-MCP-User-Id`를 요구한다. exact `mcp.wiki-result.v1` state는 `APPLYING | PUBLISHED | NO_CHANGE | CONFLICTED | HALTED | UNKNOWN | NOT_FOUND`; `PUBLISHED/NO_CHANGE`만 immutable terminal publication evidence다. absence나 transport failure는 미실행 증거가 아니다. Exact I0 event는 durable MCP outbox에서 service-auth `POST /internal/mcp/wiki/publications/receipt`로 at-least-once 전달하며 `MCP_WIKI_PUBLICATION_RECEIPT_TIMEOUT_SECONDS`가 필수다. 2xx만 sent로 표시하고 transport/409는 pending retry로 남긴다. 이 body-free HTTP receipt는 legacy normalized-result Kafka outbox와 별개이며, AI delivery 자체는 Document fee decision의 내용을 추론하거나 remote ledger와 원자성을 주장하지 않는다.
 
-검색 인덱싱 깨우기: Document `McpWikiApprovalService.acceptPublication`은 변경이 있는 publication event를 받으면 같은 inbox transaction에서 `ai_command_outbox`에 `{kind:"mcp_publication_index", run_id:"mcp-index:<event_id>", workspace_id}`를 쌓고 기존 publisher가 `ai.maintenance.command`로 보낸다(같은 event 재수신은 `run_id` UNIQUE로 한 번). maintenance worker는 누락 임베딩을 전역 복구한 뒤에만 offset을 커밋한다. DB·모델 같은 인프라 실패는 커밋하지 않아 재전달되고, 특정 페이지 실패(예: Markdown 누락)는 `failed`/미완료로 남겨 커밋하며 기동·10분 주기·다음 깨우기 복구가 다시 시도한다. worker가 0대면 그 재시도는 다음 maintenance command까지 미뤄진다.
+검색 인덱싱 깨우기: Document `McpWikiApprovalService.acceptPublication`은 변경이 있는 publication event를 받으면 같은 inbox transaction에서 `ai_command_outbox`에 `{kind:"embedding_recovery", run_id:"mcp-index:<event_id>", workspace_id}`를 쌓고 기존 publisher가 `ai.maintenance.command`로 보낸다(같은 event 재수신은 `run_id` UNIQUE로 한 번). maintenance worker는 누락 임베딩을 전역 복구한 뒤에만 offset을 커밋한다. DB·모델 같은 인프라 실패는 커밋하지 않아 재전달되고, 특정 페이지 실패(예: Markdown 누락)는 `failed`/미완료로 남겨 커밋하며 기동·10분 주기·다음 깨우기 복구가 다시 시도한다. worker가 0대면 그 재시도는 다음 maintenance command까지 미뤄진다. 이 깨우기가 MCP 발행 페이지를 임베딩하는 유일한 시작점이다. Document는 apply 응답이 `PUBLISHED`면 곧바로 결과를 조회해 `acceptPublication`을 부르고(놓치면 60초 주기 `reconcilePending`), 그 command가 0대 worker를 KEDA로 깨운다. 깨어난 worker는 기동 시 대기 중인 body-free receipt도 보낸다. receipt는 Document가 같은 event를 이미 받았으면 그대로 멱등 처리되며, 변경 없는(`NO_CHANGE`) 발행의 receipt는 다음 maintenance 기동 때 보낸다.
 
 Apply claim 뒤 inactivity expiry는 unresolved approved publication을 제거하지 않는다. purge는 먼저 `ai_purged_scopes` fence와 write locks를 commit한 뒤 body/object/result/outbox를 owning-scope 순서로 지운다. publication 전 cancel은 `HALTED/CANCELLED`로 닫고 unpublished immutable objects는 existing recovery cleanup 대상이다. atomic commit 뒤 cancel은 public rows나 immutable result를 generic rollback하지 않으며 기존 explicit restore/replay command를 사용한다.
 

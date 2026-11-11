@@ -29,6 +29,10 @@ Kafka 리밸런스로 실행 중인 작업이 다른 worker에 재전달되면 �
 
 Query·Agent·maintenance worker는 `AI_TASK_CONCURRENCY`(기본 1)건을 한 프로세스에서 동시에 처리한다. 같은 Kafka key(query·agent는 `session_id`, maintenance는 `workspace_id`)는 offset 순서로 하나씩 실행하고 다른 key는 병렬이다. offset은 앞선 fetch 분이 모두 끝난 지점까지만 partition별로 커밋하며, 용량이 차면 partition을 pause한 채 poll을 계속한다. 재전달된 실행 중 작업은 seek하지 않고 제자리에서 5초 간격으로 기다리고, 리밸런스 때는 끝난 연속 offset만 커밋한다. 재시도할 수 없는 실패는 다른 in-flight 작업이 끝난 뒤 프로세스를 종료해 재전달에 맡긴다. 근거는 [ADR 0036](adr/0036-task-worker-concurrency.md)을 따른다.
 
+## 위키 페이지 임베딩 위치
+
+발행한 위키 페이지의 임베딩은 maintenance worker가 프로세스 안의 BGE-M3로 만든다. 웹 편입은 ingest worker가 발행만 하고 `post_ingest` command로, MCP 위키 승인 적용과 웹 위키 직접 편집(`PUT /wiki/pages/{page_id}/manual-edit`)은 pipeline-api가 발행만 하고 Document의 `embedding_recovery` command로 이 worker를 깨운다([docs/api/mcp-wiki.md](api/mcp-wiki.md)). 직접 편집은 웹 lint처럼 페이지 임베딩을 미완료로 예약해 worker 복구가 고르게 한다. pipeline-api(메모리 한도 2Gi)는 이 경로에서 BGE-M3를 올리지 않는다. 질의 임베딩과 Jev 후보 임베딩은 `EMBEDDING_SERVICE_URL`의 embedding-server를 쓴다([ADR-0026](adr/0026-embedding-server.md)).
+
 ## 선택적 Jev 판단
 
 Agent 라우팅, Query 근거 선택(MCP `search_wiki` 새 검색의 후보 정렬 포함, [docs/api/mcp-wiki.md](api/mcp-wiki.md)), ingest 개념 병합(후속 편입의 핵심 개념-클러스터 판정과 lint 승격 개념 판정 포함, [ADR-0037](adr/0037-meaning-cluster-promotion.md). 하위 항목 배정과 lint 페이지 이동의 `part_of` 쌍 판정과 같은 하위 항목 찾기도 같은 설정을 따르며, 꺼져 있으면 이름 규칙만 쓴다. 같은 하위 항목 찾기는 저장된 `sub_entry` 벡터로 후보 10개만 묻고 임베딩 서버를 쓸 수 없으면 이름 일치만 본다, [ADR-0042](adr/0042-hierarchical-concept-pages.md)), Skill 의도 분류, 폴더 내용 조회의 폴더 지목, AI 편집의 세부 분류([ADR-0043](adr/0043-edit-detail-classification.md))는 기능별 설정(`JEV_ROUTING_ENABLED`·`JEV_EVIDENCE_ENABLED`·`JEV_CONCEPT_MERGE_ENABLED`·`JEV_SKILL_INTENT_ENABLED`·`JEV_FOLDER_LOOKUP_ENABLED`·`JEV_EDIT_DETAIL_ENABLED`)과 `TYPESAFE_API_KEY`가 있을 때만 TypeSafe Jev로 판정한다. 설정의 기본값은 모두 켜짐이고, 오류가 있으면 경로별로 `false`로 끈다. 설정이 꺼져 있거나 키가 없으면 기존 LLM·검색 경로를 쓴다. Jev 호출이 실패하거나 크레딧이 소진되면 그 요청을 기존 경로로 처리한다. 경로별 범위와 대체 조건은 [ADR-0027](adr/0027-jev-selective-judge.md)을 참고한다.

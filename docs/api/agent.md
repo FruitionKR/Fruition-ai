@@ -27,11 +27,13 @@ artifact의 document/base/target/id/raw UTF-8 `sha256:` hash는 모두 같아야
 `target_folder_id`, 정확한 v1 operation 1~20개와 각 문서 mutation이 한 번씩 참조하는 artifact를 받는다.
 operation은 `create_folder|rename_folder|move_folder|move_document|rename_document|create_document|apply_document_edit`
 중 하나이고 unknown field, 잘못된 result reference/dependency, 오래된 hierarchy/version, 범위 밖 대상은 거절한다.
-MCP 외부 AI PDF 변환본(Fruition-document `finalize_pdf_conversion`)은 `create_document` 인자에 `source_document_id`(원본 PDF
-문서 ID)와 `source_content_hash`(`sha256:` 64 hex)를 함께 담는다. 둘 중 하나만 오면 거절한다. 이 인자는 MCP proposal 경로에서만
-받으며 내부 Agent planning(LLM) 계획은 받지 않는다. artifact는 같은 workspace·user의 [MCP PDF 변환 세션](tasks.md#mcp-외부-ai-pdf-변환-세션)이
-조립해 finalize한 Markdown과 hash가 같아야 한다(아니면 `INVALID_INPUT`). 서버가 조립·sanitize한 결과라 일반 `create_document`의
-sanitize 일치 검사는 하지 않는다. 두 값은 승인된 operation 인자에 그대로 남아 document-svc가 승인·실행 때 원본 권한과 hash를 다시 확인한다.
+MCP 외부 AI PDF 변환본(Fruition-document `finalize_pdf_conversion`)의 `create_document` 인자는 정확히 `display_name`, `folder_id`,
+`content_result_key`, `content_hash`, `source_document_id`(원본 PDF 문서 ID), `source_content_hash`(`sha256:` 64 hex)다. 하나라도
+빠지면 거절한다. 이 인자는 MCP proposal 경로에서만 받으며 내부 Agent planning(LLM) 계획은 받지 않는다. 본문은 artifact로 싣지 않는다:
+`content_result_key`(`tmp/mcp-convert/{workspace_id}/{conversion_id}/final.json`)와 `content_hash`가 같은 workspace·user의
+[MCP PDF 변환 세션](tasks.md#mcp-외부-ai-pdf-변환-세션)이 finalize한 결과 key·hash와 같고 finalize 뒤 6일 안이어야 한다(아니면
+`INVALID_INPUT`). 승인 화면 미리 보기는 [`edit-previews`](#summary-get-agent-runs-run-id-edit-previews)가 이 결과로 만든다. 값은 승인된 operation 인자에 그대로 남아 document-svc가 승인·실행 때 원본 권한과 hash를
+다시 확인하고, 실행 때 key에서 결과를 읽어 hash를 확인한 뒤 웹 변환과 같은 코드로 저장한다.
 
 `propose_skill_definition`의 `proposal`은 `{request_summary, definition}`이고 `definition`은
 `POST /skills/mcp-acceptances`의 정의와 같은 필드를 모두(생략 값은 `null`) 보낸다. AI는 LLM 없이
@@ -548,6 +550,12 @@ type AgentDocumentEditPreview = {
   hunks: { before_start: number; after_start: number; lines: { type: "context" | "delete" | "insert"; text: string }[] }[];
 };
 ```
+
+MCP PDF 변환본 `create_document`(artifact 없이 `content_result_key`를 싣는 작업)도 같은 모양의 항목(`tool_name:"create_document"`,
+`document_id`·`base_version` null, `display_name`은 승인 인자의 이름, `summary`는 작업 사유)을 돌려준다. AI가 결과 object를 읽어
+승인 `content_hash`와 대조하고(다르면 오류) 묶음을 빈 줄로 이은 본문을 새 문서 미리 보기로 만든다. 이미지 바이트(`data:` URI)는
+`data:image/...;base64,…`로 줄이고 쪽 번호는 묶음 안 번호다(저장 때 document가 바꾼다). 다른 수정안처럼 run 생성 + 1일에 만료하며
+(`expires_at`, 승인 거절도 같다), 만료 뒤 결과 object가 없으면 항목에서 빠진다.
 
 줄 번호는 1부터 시작하고 문맥은 3줄이다. 계획이 없거나 미리 보기가 없는 run은 `items: []`, `expires_at: null`이다. 객체가 남아 있으면 만료 뒤에도 내용을 돌려주므로 화면이 `expires_at`으로 수락을 막는다. [정리](#expired-artifact-cleanup)로 수정안이 지워지면 그 문서는 `items`에서 빠지고 `expires_at`은 지난 시각이다. 응답 형식은 같고 5xx가 아니다.
 

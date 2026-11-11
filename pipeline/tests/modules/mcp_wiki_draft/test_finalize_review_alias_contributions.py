@@ -1,27 +1,12 @@
 """Regression: distinct accepted names resolving to one page retain every claim."""
-from types import SimpleNamespace
 from uuid import uuid4
 
 from app.modules.mcp_wiki_draft import calculation
 
 
-def test_title_and_official_alias_keep_both_contributions(monkeypatch):
-    index = [{"id": "page1", "slug": "alpha", "title": "Alpha", "identity_aliases": ["Official alias"], "status": "active"}]
-    monkeypatch.setattr(calculation, "load_concept_identity_index", lambda *args, **kwargs: index)
-    monkeypatch.setattr(calculation, "read_contributions", lambda *args: [])
-    monkeypatch.setattr(calculation, "with_pending_contributions", lambda *args, **kwargs: [])
-    monkeypatch.setattr(calculation, "replay_concept_page_with_operation", lambda **kwargs: ([], SimpleNamespace(
-        markdown="", entries=[], supported_links=[], deleted=False,
-    )))
-
-    class Connection:
-        def execute(self, *args):
-            return self
-        def fetchall(self):
-            return []
-        def fetchone(self):
-            return None
-
+def test_title_and_official_alias_keep_both_contributions():
+    index = [{"page_id": "page1", "slug": "alpha", "title": "Alpha", "identity_aliases": ["Official alias"],
+              "status": "active", "definition": ""}]
     snapshot_id = str(uuid4())
     concepts = [
         {"concept_name": name, "statements": [{
@@ -33,17 +18,18 @@ def test_title_and_official_alias_keep_both_contributions(monkeypatch):
             ("Official alias", "s2", "Second fact", "B2"),
         )
     ]
-    result = calculation.calculate_ingest_preview(
-        Connection(),
-        run={"workspace_id": "ws", "document_id": "doc1", "draft_id": str(uuid4()),
-             "snapshot_id": snapshot_id, "source_version": 1, "source_content_hash": "sha256:" + "a" * 64},
+    manifest = calculation.build_ingest_manifest(
+        run={"workspace_id": "ws", "document_id": "doc1", "user_id": "user",
+             "source_content_hash": "sha256:" + "a" * 64, "source_display_name": "Doc1"},
         submissions=[{"window_ordinal": 1, "contributions": concepts}],
-        source_blocks=[{"block_id": "B1", "text": "First fact"}, {"block_id": "B2", "text": "Second fact"}],
+        source_blocks=[{"block_id": "B1", "ordinal": 1, "text": "First fact"},
+                       {"block_id": "B2", "ordinal": 2, "text": "Second fact"}],
+        current_source_blocks=[],
+        concept_index=index,
+        operation_id="operation",
     )
-    contribution = result["calculation_inputs"]["contributions"]["alpha"]
+    # 웹 이름 일치가 제목과 공식 별칭을 같은 페이지로 합친다. 두 문장 모두 그 페이지 기여에 남는다.
+    assert [item["slug"] for item in manifest["normalized"]["concept_ledger"]] == ["alpha"]
+    contribution = manifest["concept_contributions"]["alpha"]
     assert {item["claim"] for item in contribution["evidence_units"]} == {"First fact", "Second fact"}
     assert {item["block_id"] for item in contribution["source_blocks"]} == {"B1", "B2"}
-    statements = [item for item in result["preview"]["changes"] if item["kind"] == "CONCEPT_STATEMENT"]
-    assert {item["after_text"] for item in statements} == {"First fact", "Second fact"}
-    assert {item["page_id"] for item in statements} == {"page1"}
-    assert {item["evidence"][0]["snapshot_id"] for item in statements} == {snapshot_id}

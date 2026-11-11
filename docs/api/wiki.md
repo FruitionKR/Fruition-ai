@@ -1176,7 +1176,7 @@ curl -X PATCH "$PIPELINE/wiki/pages/<value>/rename" \
 - `wiki/{workspace_id}/pages/{page_id}/ops/{operation_id}.md`(본문)와 `.json`(수동 기여)을 쓴다.
 - `wiki_pages.markdown_uri`를 새 본문으로 바꾼다. 이름·요약은 바꾸지 않는다(이름은 `rename`으로만 바꾼다).
 - 이전 본문과 새 본문의 `[[slug]]` 차이를 `wiki_page_links`에 반영한다. 지운 slug는 그 대상으로 가는 edge를 종류와 무관하게 지우고, 새 slug는 같은 워크스페이스의 활성 페이지가 있을 때만 edge를 만든다(source 페이지는 `source_mentions_concept`, concept 페이지는 `related_to`). source 페이지의 개념 링크는 수동 의도(`wiki_source_manual_links`)로 남겨 자동 파생 링크와 합친다. 자동 링크가 있어도 새 slug는 수동 지원으로 남고, 수동 삭제가 자동보다 우선한다(ADR 0042 결정 5).
-- 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 임베딩 job을 시작한다.
+- 본문의 블록 참조(`[doc:B0001]`)로 임베딩 단위를 다시 만들고 페이지 임베딩을 미완료로 예약한다. pipeline-api는 임베딩하지 않으며, document-svc가 같은 트랜잭션에서 보내는 `embedding_recovery` command로 깨운 maintenance worker가 임베딩한다(ADR-0026).
 - 같은 `operation_id` 재요청은 다시 쓰지 않고 같은 결과를 돌려준다. 이때 `content_hash`는 요청 본문이 아니라 저장된 본문의 해시다.
 
 #### 3. Auth 필요 여부

@@ -5250,13 +5250,6 @@ paths:
         schema:
           title: Workspace Id
           type: string
-      - in: query
-        name: mcp_read
-        required: false
-        schema:
-          default: false
-          title: Mcp Read
-          type: boolean
       - in: header
         name: X-Internal-Token
         required: false

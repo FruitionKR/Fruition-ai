@@ -9,8 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from psycopg.errors import UniqueViolation
 
-from app.modules.mcp_read.application.wiki_page import WikiPageReadError
-from app.modules.mcp_read.interfaces.http.routes import _error, get_page_read_use_case
 from app.modules.wiki_ingestion.application.models import (
     PipelineRunCommand,
     PipelineRunRegistration,
@@ -31,7 +29,6 @@ from app.modules.wiki_ingestion.interfaces.http.dependencies import (
     pipeline_log_uri,
     get_pipeline_run_repository,
     get_restore_wiki_pages_use_case,
-    get_wiki_embedding_job,
     get_wiki_maintenance,
 )
 from app.modules.wiki_ingestion.interfaces.http.schemas import (
@@ -68,21 +65,7 @@ def lookup_wiki_pages(payload: WikiPageLookupIn) -> list[dict[str, Any]]:
 
 
 @router.get("/wiki/pages/{page_id}", tags=["wiki"])
-def get_wiki_page(page_id: str, workspace_id: str, mcp_read: bool = False) -> Any:
-    if mcp_read:
-        try:
-            return get_page_read_use_case().execute(workspace_id=workspace_id, page_id=page_id)
-        except WikiPageReadError as exc:
-            return _error(exc)
-        except Exception:  # noqa: BLE001 - HTTP boundary must not expose dependency details.
-            return _error(
-                WikiPageReadError(
-                    503,
-                    "DEPENDENCY_UNAVAILABLE",
-                    "Wiki page read is temporarily unavailable.",
-                    retryable=True,
-                )
-            )
+def get_wiki_page(page_id: str, workspace_id: str) -> Any:
     page = database.get_wiki_page(workspace_id, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
@@ -116,10 +99,7 @@ def save_manual_wiki_edit(page_id: str, payload: WikiPageManualEditIn) -> dict[s
     )
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
-    try:
-        get_wiki_embedding_job().start(payload.operation_id, [page_id])
-    except Exception:
-        logger.warning("manual edit embedding start failed after publication commit", exc_info=True)
+    # 웹 편입처럼 여기서는 발행만 한다. document-svc가 embedding_recovery로 maintenance worker를 깨워 임베딩한다(ADR-0026).
     return page
 
 
