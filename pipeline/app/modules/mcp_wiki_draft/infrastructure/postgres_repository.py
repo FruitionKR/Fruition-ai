@@ -27,8 +27,8 @@ from app.modules.mcp_wiki_draft.application import (
 from app.modules.mcp_wiki_draft.calculation import (
     PreviewCalculationError,
     SemanticMergeError,
-    calculate_ingest_preview,
     freeze_server_concept_merges,
+    preview_ingest,
 )
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
@@ -541,7 +541,7 @@ class PostgresMcpWikiDraftRepository:
                         conn, workspace_id=str(row["workspace_id"]), submissions=submissions,
                         judge=self._concept_judge() if payload.jev_allowed else None,
                     )
-                calculation = calculate_ingest_preview(
+                calculation = preview_ingest(
                     conn, run=dict(row), submissions=submissions, source_blocks=source_blocks
                 )
             except SemanticMergeError as exc:

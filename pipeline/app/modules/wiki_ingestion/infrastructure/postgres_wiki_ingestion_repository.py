@@ -1651,17 +1651,13 @@ def finish_pipeline_run(
             if active is None or active["status"] != "running":
                 raise PipelineRunCancelledError("Pipeline run no longer accepts outputs.")
             if document_id:
-                # 복구한 문서를 다시 편입했으므로 되돌리기 대상에서 다시 제외하지 않는다.
-                conn.execute(
-                    "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
-                    (workspace_id, document_id),
-                )
-                _reset_document_quality_review(conn, str(document_id), str(workspace_id), run_id)
-                embedded_page_ids = _persist_wiki_outputs(
-                    conn, document_id, manifest, manual_source_markdown,
-                    apply_rebuilt_pages=_apply_restored_wiki_state,
-                    prune_references=_prune_dangling_references,
-                    cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
+                embedded_page_ids = apply_ingest_outputs(
+                    conn,
+                    document_id=str(document_id),
+                    workspace_id=str(workspace_id),
+                    ingest_run_id=run_id,
+                    manifest=manifest,
+                    manual_source_markdown=manual_source_markdown,
                     artifact_writer=publication_writer,
                 )
                 if not publication_prepared:
@@ -1673,45 +1669,14 @@ def finish_pipeline_run(
                         database_connect=connect,
                     )
                     publication_prepared = True
-                if manifest.get("operation_id"):
-                    # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
-                    record_pending_contributions(
-                        conn, str(workspace_id), str(manifest["operation_id"]), str(document_id),
-                        list(manifest.get("operation_artifacts") or []),
-                        publication_id=publication_id(operation_id),
-                    )
-                post_ingest = manifest.get("post_ingest")
-                if isinstance(post_ingest, dict):
-                    post_ingest["page_ids"] = embedded_page_ids
-                manifest["source_contribution"] = _source_contribution_payload(manifest)
-                result = normalize_operation_result({
-                    "operation_id": operation_id,
-                    "operation_type": "ingest",
-                    "status": "succeeded",
-                    "workspace_id": str(workspace_id),
-                    "user_id": str(user_id),
-                    "target_document_id": str(document_id),
-                    "summary": "Wiki ingest를 완료했습니다.",
-                    "changed_pages": [
-                        {**item, "contribution_stored": bool(item.get("contribution_key"))}
-                        for item in manifest.get("operation_artifacts") or []
-                    ],
-                    "failed_pages": [],
-                    "deleted_pages": manifest.get("deleted_pages") or [],
-                    "link_changes": None,
-                    "failed_actions": None,
-                    "ledger_contributions": [],
-                })
-                event = finalize_publication(
+                finalize_ingest_publication(
                     conn,
-                    operation_id=operation_id,
+                    document_id=str(document_id),
                     workspace_id=str(workspace_id),
                     user_id=str(user_id),
-                    kind="INGEST",
-                    outcome=("PUBLISHED" if result["changed_pages"] or result["deleted_pages"] else "NO_CHANGE"),
-                    result=result,
+                    manifest=manifest,
+                    page_ids=embedded_page_ids,
                 )
-                manifest["publication_result"] = event["result"]
                 manifest = _stored_manifest(manifest)
             conn.execute(
                 """
@@ -1732,6 +1697,91 @@ def finish_pipeline_run(
     if document_id:
         _mark_derived_state_ingested(document_id, expected_source_hash)
     return embedded_page_ids
+
+
+def apply_ingest_outputs(
+    conn: psycopg.Connection,
+    *,
+    document_id: str,
+    workspace_id: str,
+    ingest_run_id: str | None,
+    manifest: dict[str, Any],
+    manual_source_markdown: str | None,
+    artifact_writer: Callable[[str, str, str], str],
+) -> list[str]:
+    """편입 결과를 공개 상태에 반영하는 본체. 웹 편입과 MCP 편입이 같은 코드를 탄다.
+
+    호출자가 개념 잠금과 트랜잭션을 잡는다. 발행 기록은 `finalize_ingest_publication`이 같은 트랜잭션에서 남긴다.
+    `ingest_run_id`는 품질 평가 행이 가리킬 pipeline run이다. pipeline run이 없는 MCP 편입은 None이다.
+    돌려주는 값은 임베딩을 다시 만들 페이지 id다.
+    """
+    # 복구한 문서를 다시 편입했으므로 되돌리기 대상에서 다시 제외하지 않는다.
+    conn.execute(
+        "DELETE FROM wiki_source_tombstones WHERE workspace_id = %s AND document_id = %s",
+        (workspace_id, document_id),
+    )
+    _reset_document_quality_review(conn, document_id, workspace_id, ingest_run_id)
+    page_ids = _persist_wiki_outputs(
+        conn, document_id, manifest, manual_source_markdown,
+        apply_rebuilt_pages=_apply_restored_wiki_state,
+        prune_references=_prune_dangling_references,
+        cleanup_deleted_pages=_cleanup_deleted_wiki_pages,
+        artifact_writer=artifact_writer,
+    )
+    operation_id = str(manifest["operation_id"])
+    # 커밋 뒤 document-svc가 원장에 올리기 전까지 다른 작업이 이 기여를 빼고 다시 그리지 않게 한다.
+    record_pending_contributions(
+        conn, workspace_id, operation_id, document_id,
+        list(manifest.get("operation_artifacts") or []),
+        publication_id=publication_id(operation_id),
+    )
+    return page_ids
+
+
+def finalize_ingest_publication(
+    conn: psycopg.Connection,
+    *,
+    document_id: str,
+    workspace_id: str,
+    user_id: str,
+    manifest: dict[str, Any],
+    page_ids: list[str],
+) -> dict[str, Any]:
+    """`apply_ingest_outputs`와 같은 트랜잭션에서 발행 결과를 확정한다. 돌려주는 값은 발행 이벤트다."""
+    operation_id = str(manifest["operation_id"])
+    post_ingest = manifest.get("post_ingest")
+    if isinstance(post_ingest, dict):
+        post_ingest["page_ids"] = page_ids
+    manifest["source_contribution"] = _source_contribution_payload(manifest)
+    result = normalize_operation_result({
+        "operation_id": operation_id,
+        "operation_type": "ingest",
+        "status": "succeeded",
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "target_document_id": document_id,
+        "summary": "Wiki ingest를 완료했습니다.",
+        "changed_pages": [
+            {**item, "contribution_stored": bool(item.get("contribution_key"))}
+            for item in manifest.get("operation_artifacts") or []
+        ],
+        "failed_pages": [],
+        "deleted_pages": manifest.get("deleted_pages") or [],
+        "link_changes": None,
+        "failed_actions": None,
+        "ledger_contributions": [],
+    })
+    event = finalize_publication(
+        conn,
+        operation_id=operation_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        kind="INGEST",
+        outcome=("PUBLISHED" if result["changed_pages"] or result["deleted_pages"] else "NO_CHANGE"),
+        result=result,
+    )
+    manifest["publication_result"] = event["result"]
+    return event
 
 
 def _mark_derived_state_ingested(
@@ -1787,8 +1837,14 @@ def checkpoint_pipeline_run(run_id: str, manifest: dict[str, Any]) -> None:
         )
 
 
-def _reset_document_quality_review(conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str) -> None:
+def _reset_document_quality_review(
+    conn: psycopg.Connection, document_id: str, workspace_id: str, run_id: str | None,
+) -> None:
     """문서의 품질 상태를 이번 편입 기준으로 비운다. 옛 편입의 평가 결과는 더 이상 이 문서의 상태가 아니다."""
+    if run_id is None:
+        # MCP 편입은 pipeline run이 없어 평가 행이 가리킬 run이 없다. 평가 전 상태(행 없음)로 둔다.
+        conn.execute("DELETE FROM document_quality_reviews WHERE document_id = %s", (document_id,))
+        return
     conn.execute(
         """
         INSERT INTO document_quality_reviews (document_id, workspace_id, ingest_run_id)

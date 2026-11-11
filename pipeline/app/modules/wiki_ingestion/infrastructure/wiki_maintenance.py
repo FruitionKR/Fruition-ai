@@ -163,62 +163,15 @@ class PostgresWikiMaintenance(WikiMaintenancePort):
                     result["changed_pages"] = operation_artifacts
                     database.write_wiki_lint_log(result, lint_date)
                     database.apply_lint_object_changes(result)
-                    page_ids = _embedding_page_ids(result)
-                    if self._embedding_job is not None and page_ids:
-                        reserve_page_embeddings(
-                            connection,
-                            page_ids,
-                            BgeM3EmbeddingModel().model_name,
-                        )
-                    publication_result = normalize_operation_result({
-                        "operation_id": str(command.operation_id),
-                        "operation_type": "lint",
-                        "status": "succeeded",
-                        "workspace_id": command.workspace_id,
-                        "user_id": command.user_id,
-                        "target_document_id": None,
-                        "summary": f"Wiki lint로 페이지 {len(operation_artifacts)}개를 변경했습니다.",
-                        "changed_pages": [
-                            {**artifact, "contribution_stored": False}
-                            for artifact in operation_artifacts
-                        ],
-                        "failed_pages": [],
-                        "deleted_pages": result.get("deleted_pages") or [],
-                        "link_changes": None,
-                        "failed_actions": None,
-                        "ledger_contributions": result.get("ledger_contributions") or [],
-                    })
-                    pending = [
-                        {
-                            "page_id": item["page_id"],
-                            "operation_id": item["operation_id"],
-                            "document_id": item.get("document_id"),
-                            "object_key": item["contribution_key"],
-                            "active": True,
-                            "linked_by_operation_id": item.get("linked_by_operation_id"),
-                        }
-                        for item in publication_result["ledger_contributions"]
-                    ]
-                    record_pending_deltas(
+                    finalize_lint_publication(
                         connection,
-                        command.workspace_id,
-                        pending,
-                        publication_id=publication_id(str(command.operation_id)),
-                    )
-                    event = finalize_publication(
-                        connection,
-                        operation_id=str(command.operation_id),
                         workspace_id=command.workspace_id,
                         user_id=command.user_id,
-                        kind="LINT",
-                        outcome=(
-                            "PUBLISHED"
-                            if operation_artifacts or publication_result["deleted_pages"]
-                            else "NO_CHANGE"
-                        ),
-                        result=publication_result,
+                        operation_id=str(command.operation_id),
+                        result=result,
+                        operation_artifacts=operation_artifacts,
+                        reserve_embeddings=self._embedding_job is not None,
                     )
-                    result["publication_result"] = event["result"]
                 except Exception:
                     for key, before in shared_before.items():
                         _restore_object(key, before)
@@ -349,6 +302,79 @@ def _promotion_concept_system_prompt() -> str:
         "Use allowed_anchor_refs exactly as anchor_block_ids. They may be global refs like doc_id:B0001.\n"
         "Do not use refs that are not listed in allowed_anchor_refs.\n"
     )
+
+
+def finalize_lint_publication(
+    connection: Any,
+    *,
+    workspace_id: str,
+    user_id: str,
+    operation_id: str,
+    result: dict[str, Any],
+    operation_artifacts: list[dict[str, Any]],
+    reserve_embeddings: bool,
+) -> dict[str, Any]:
+    """`persist_lint_operation_result`와 같은 트랜잭션에서 lint 발행을 확정한다. 웹 lint와 MCP lint가 같이 쓴다.
+
+    임베딩할 페이지를 미완료로 예약해, 커밋 뒤 임베딩 시작이 실패해도 복구가 고르게 한다. 돌려주는 값은 발행 이벤트다.
+    """
+    page_ids = _embedding_page_ids(result)
+    if reserve_embeddings and page_ids:
+        reserve_page_embeddings(
+            connection,
+            page_ids,
+            BgeM3EmbeddingModel().model_name,
+        )
+    publication_result = normalize_operation_result({
+        "operation_id": operation_id,
+        "operation_type": "lint",
+        "status": "succeeded",
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "target_document_id": None,
+        "summary": f"Wiki lint로 페이지 {len(operation_artifacts)}개를 변경했습니다.",
+        "changed_pages": [
+            {**artifact, "contribution_stored": False}
+            for artifact in operation_artifacts
+        ],
+        "failed_pages": [],
+        "deleted_pages": result.get("deleted_pages") or [],
+        "link_changes": None,
+        "failed_actions": None,
+        "ledger_contributions": result.get("ledger_contributions") or [],
+    })
+    pending = [
+        {
+            "page_id": item["page_id"],
+            "operation_id": item["operation_id"],
+            "document_id": item.get("document_id"),
+            "object_key": item["contribution_key"],
+            "active": True,
+            "linked_by_operation_id": item.get("linked_by_operation_id"),
+        }
+        for item in publication_result["ledger_contributions"]
+    ]
+    record_pending_deltas(
+        connection,
+        workspace_id,
+        pending,
+        publication_id=publication_id(operation_id),
+    )
+    event = finalize_publication(
+        connection,
+        operation_id=operation_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        kind="LINT",
+        outcome=(
+            "PUBLISHED"
+            if operation_artifacts or publication_result["deleted_pages"]
+            else "NO_CHANGE"
+        ),
+        result=publication_result,
+    )
+    result["publication_result"] = event["result"]
+    return event
 
 
 def _embedding_page_ids(result: dict[str, Any]) -> list[str]:

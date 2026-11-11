@@ -24,6 +24,10 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
 )
 from app.modules.wiki_ingestion.infrastructure.lint_operation_artifacts import lint_contribution
 from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
+    _page_link,
+    _page_link_key,
+)
 
 
 def _text_hash(value: str) -> str:
@@ -480,30 +484,43 @@ def calculate_lint_preview(
         "target_pages": frozen_targets, "public_state_hash": public_state_hash,
         "changes": changes, "complete": True,
     }
-    publication_pages = [
+    # 웹 lint 발행(`persist_lint_operation_result`)의 입력 모양이다. 페이지 변경 기록과 재생 결과 상태를 그대로 넘긴다.
+    page_changes = [
         {
-            "page_id": page_id, "slug": str(row_by_id[page_id]["slug"]),
-            "title": rebuilt[page_id].title or row_by_id[page_id]["title"],
-            "summary": rebuilt[page_id].summary or row_by_id[page_id].get("summary"),
-            "page_type": "concept", "status": "deleted" if rebuilt[page_id].deleted else "active",
-            "markdown": "" if rebuilt[page_id].deleted else rebuilt[page_id].markdown,
-            "entries": _jsonable(rebuilt[page_id].entries),
-            "supported_links": _jsonable(rebuilt[page_id].supported_links),
-            "identity_aliases": _jsonable(rebuilt[page_id].identity_aliases),
-            "source_document_ids": _jsonable(rebuilt[page_id].source_document_ids),
+            **changes_by_page[page_id],
+            # 지우는 페이지의 기록 본문은 지우기 직전 본문이다(웹 lint와 같다).
+            "markdown": snapshots[page_id]["body"] if rebuilt[page_id].deleted else rebuilt[page_id].markdown,
         }
         for page_id in sorted(changed_ids)
     ]
-    contributions = [
-        {"page_id": page_id, "contribution": _jsonable(item)} for page_id, item in sorted(planned.items())
-    ] + [{"page_id": str(item["page_id"]), "contribution": _jsonable(item)} for item in linked]
+    state_pages = []
+    link_changes: dict[str, list[dict[str, Any]]] = {"removed_links": [], "restored_links": []}
+    for page_id in sorted(changed_ids):
+        page = rebuilt[page_id]
+        if page.deleted:
+            continue
+        state_pages.append({
+            "page_id": page_id,
+            "markdown": page.markdown,
+            "title": None,
+            "summary": None,
+            "source_document_ids": _jsonable(list(page.source_document_ids)),
+            "identity_aliases": _jsonable(list(page.identity_aliases)),
+            "entries": _jsonable(list(page.entries)),
+            "supported_links": _jsonable(list(page.supported_links)),
+        })
+        # DB 간선은 페이지 쌍 단위다. 재생한 링크의 페이지 쌍이 바뀐 것만 반영한다(웹 lint와 같다).
+        old_keys = {_page_link_key(link) for link in current[page_id].supported_links}
+        new_keys = {_page_link_key(link) for link in page.supported_links}
+        link_changes["removed_links"].extend(_page_link(key) for key in sorted(old_keys - new_keys))
+        link_changes["restored_links"].extend(_page_link(key) for key in sorted(new_keys - old_keys))
     return {
         "preview": preview,
         "publication_plan": {
-            "source_page": None, "pages": publication_pages, "contributions": contributions,
-            "document_links": _jsonable(structures["document_links"]),
-            "wiki_links": sorted(_jsonable(desired_links.values()), key=_canonical_text),
-            "entry_references": sorted(_jsonable(desired_refs.values()), key=_canonical_text),
+            "page_changes": _jsonable(page_changes),
+            "state_pages": state_pages,
+            "link_changes": link_changes,
+            "linked": _jsonable(linked),
             "deleted_page_ids": sorted(page_id for page_id in changed_ids if rebuilt[page_id].deleted),
         },
         "normalized_submissions": operations,
