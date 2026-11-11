@@ -4,6 +4,7 @@ import hashlib
 import logging
 from typing import Any
 
+from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
 from app.modules.mcp_wiki_draft.calculation import (
     PreviewCalculationError,
     _canonical_text,
@@ -23,6 +24,10 @@ from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild impo
     surviving_evidence_units,
 )
 from app.modules.wiki_ingestion.infrastructure.lint_operation_artifacts import lint_contribution
+from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
+    append_concept_evidence,
+    concept_evidence_updates,
+)
 from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
     _page_link,
@@ -230,8 +235,31 @@ def calculate_lint_preview(
             read_text=read_text_object,
         )
         rebuilt = rebuild_concept_page(loaded)
-        if rebuilt.deleted or rebuilt.markdown != snapshots[page_id]["body"]:
+        if rebuilt.deleted:
             raise PreviewCalculationError("public page contradicts its contribution ledger")
+        if rebuilt.markdown != snapshots[page_id]["body"]:
+            # Older ingest appends evidence instead of rendering the aggregate. Replay that path too.
+            if any(
+                (item.contribution or {}).get("artifact_type") not in (None, "ingest", "document")
+                or any((item.contribution or {}).get(field) for field in (
+                    "invalidated_reference_ids", "invalidated_evidence_ids", "entry_changes",
+                ))
+                for item in loaded
+            ):
+                raise PreviewCalculationError("public page contradicts its contribution ledger")
+            appended = rebuild_concept_page(loaded[:1]).markdown
+            for item in loaded[1:]:
+                appended = sanitize_ai_markdown(append_concept_evidence(
+                    appended, concept_evidence_updates(item.contribution or {}),
+                ))
+            if appended != snapshots[page_id]["body"]:
+                raise PreviewCalculationError("public page contradicts its contribution ledger")
+            try:
+                published = read_text_object(loaded[-1].markdown_key)
+            except Exception as exc:
+                raise PreviewCalculationError("failed to read contribution publication markdown") from exc
+            if published != snapshots[page_id]["body"]:
+                raise PreviewCalculationError("public page contradicts its contribution ledger")
         loaded_by_id[page_id] = loaded
         current[page_id] = rebuilt
         evidence_by_page[page_id] = surviving_evidence_units(loaded)
