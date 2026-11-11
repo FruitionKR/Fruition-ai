@@ -1172,7 +1172,21 @@ def _handle_controlled(command: dict[str, Any], event_publisher: QueryEventPubli
 def _execute_controlled(command: dict[str, Any], event_publisher: QueryEventPublisherPort | None = None) -> dict[str, Any]:
     from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
     if command["kind"] != "agent":
-        return journal.execute(command, lambda: _handle(command, event_publisher))
+        result = journal.execute(command, lambda: _handle(command, event_publisher))
+        if command["kind"] in {"restore_ingest", "restore_lint"}:
+            # HTTP restore responses enrich the committed result for the UI. Kafka's
+            # legacy result must hash identically to the durable publication, including
+            # when journal.execute replays an older cached HTTP-shaped response.
+            from app.modules.wiki_ingestion.infrastructure.wiki_publication import normalize_operation_result
+            return normalize_operation_result({
+                **result,
+                "operation_type": "restore",
+                "changed_pages": [
+                    {**page, "contribution_stored": False}
+                    for page in result.get("changed_pages") or []
+                ],
+            })
+        return result
     # agent는 journal register를 거치지 않으므로 여기서 파기 범위를 거절한다.
     with database.connect_ai() as conn:
         journal.reject_purged(conn, command)

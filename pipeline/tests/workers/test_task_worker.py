@@ -2633,3 +2633,27 @@ def test_post_ingest_records_failed_embedding_attempt_timing() -> None:
 
     assert "embedding" not in checkpoints[-1]
     assert {row["stage"]: row["status"] for row in checkpoints[-1]["stage_timings"]}["embedding"] == "failed"
+
+
+@pytest.mark.parametrize("kind", ["ingest", "lint"])
+@pytest.mark.parametrize("cached_canonical", [False, True])
+def test_restore_task_result_matches_publication_even_for_cached_http_result(kind, cached_canonical):
+    from app.modules.task_cancellation.infrastructure import postgres_task_journal as journal
+    from app.modules.wiki_ingestion.infrastructure.wiki_publication import normalize_operation_result
+    result = {"operation_id": "op", "workspace_id": "ws", "user_id": "user",
+              "operation_type": "restore" if cached_canonical else f"{kind}_restore",
+              "status": "succeeded", "target_operation_id": "target", "cluster_changes": {},
+              "changed_pages": [{"page_id": "page", "page_type": "concept",
+                                  "markdown_key": "wiki/ws/pages/page/ops/op.md", "content_hash": "sha256:x",
+                                  "markdown": "private body", "title": "private title"}],
+              "deleted_pages": ["deleted"], "link_changes": {"removed_links": [], "restored_links": []}}
+    expected = normalize_operation_result({**result, "operation_type": "restore", "changed_pages": [
+        {**result["changed_pages"][0], "contribution_stored": False}]})
+    if cached_canonical:
+        result = expected
+    with patch.object(journal, "execute", return_value=result):
+        actual = task_worker._execute_controlled({"kind": f"restore_{kind}", "run_id": "run"})
+    assert actual == expected
+    assert "markdown" not in actual["changed_pages"][0]
+    assert "cluster_changes" not in actual
+    assert actual["changed_pages"][0]["contribution_stored"] is False
