@@ -2123,8 +2123,11 @@ def _run_first_turn(send_error=None, relay_error=None):
 
         consumer.getmany = getmany
         producer.send_and_wait = send
-        with (patch.dict(task_worker.os.environ, {"AI_DATABASE_URL": "unused"})
-              if relay_error is not None else nullcontext()), \
+        # relay 실패 경우만 ai_db 기동 relay를 켠다. CI가 AI_DATABASE_URL을 두어도 기본 경우는 끈 상태로 본다.
+        environ = {key: value for key, value in task_worker.os.environ.items() if key != "AI_DATABASE_URL"}
+        if relay_error is not None:
+            environ["AI_DATABASE_URL"] = "unused"
+        with patch.dict(task_worker.os.environ, environ, clear=True), \
                 patch.object(task_worker.database, "ensure_ai_schema"), \
                 patch.object(task_worker, "COMMAND_TOPIC", "test.query.command"), \
                 patch.object(task_worker, "AIOKafkaConsumer", return_value=consumer), \
