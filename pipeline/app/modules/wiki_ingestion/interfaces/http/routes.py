@@ -9,8 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from psycopg.errors import UniqueViolation
 
-from app.modules.mcp_read.application.wiki_page import WikiPageReadError
-from app.modules.mcp_read.interfaces.http.routes import _error, get_page_read_use_case
 from app.modules.wiki_ingestion.application.models import (
     PipelineRunCommand,
     PipelineRunRegistration,
@@ -68,21 +66,7 @@ def lookup_wiki_pages(payload: WikiPageLookupIn) -> list[dict[str, Any]]:
 
 
 @router.get("/wiki/pages/{page_id}", tags=["wiki"])
-def get_wiki_page(page_id: str, workspace_id: str, mcp_read: bool = False) -> Any:
-    if mcp_read:
-        try:
-            return get_page_read_use_case().execute(workspace_id=workspace_id, page_id=page_id)
-        except WikiPageReadError as exc:
-            return _error(exc)
-        except Exception:  # noqa: BLE001 - HTTP boundary must not expose dependency details.
-            return _error(
-                WikiPageReadError(
-                    503,
-                    "DEPENDENCY_UNAVAILABLE",
-                    "Wiki page read is temporarily unavailable.",
-                    retryable=True,
-                )
-            )
+def get_wiki_page(page_id: str, workspace_id: str) -> Any:
     page = database.get_wiki_page(workspace_id, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
