@@ -12,6 +12,7 @@ from app.modules.mcp_wiki_draft.infrastructure.apply_authority import Configured
 from app.modules.mcp_wiki_draft.infrastructure.apply_repository import PostgresMcpWikiApplyRepository
 from app.modules.mcp_wiki_draft.interfaces.http.apply_schemas import ApplyWikiDraftRequest
 from app.modules.mcp_wiki_draft.interfaces.http.routes import _error, _uuid, _validated
+from app.modules.wiki_ingestion.interfaces.http.dependencies import get_wiki_embedding_job
 
 
 router = APIRouter(prefix="/internal/mcp/wiki", tags=["mcp-wiki-apply"])
@@ -20,7 +21,9 @@ _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}")
 
 @lru_cache(maxsize=1)
 def get_mcp_wiki_draft_apply() -> McpWikiDraftApply:
-    return McpWikiDraftApply(PostgresMcpWikiApplyRepository(), ConfiguredWikiApprovalAuthority())
+    return McpWikiDraftApply(
+        PostgresMcpWikiApplyRepository(get_wiki_embedding_job()), ConfiguredWikiApprovalAuthority()
+    )
 
 
 @router.post("/drafts/{draft_id}/apply")

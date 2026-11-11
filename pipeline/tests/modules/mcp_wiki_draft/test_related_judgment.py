@@ -1,10 +1,9 @@
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
 from app.modules.mcp_wiki_draft import calculation as c
-from test_semantic_merge import FakeJudge, contribution
+from test_semantic_merge import FakeJudge, contribution, manifest
 
 
 @pytest.fixture
@@ -46,8 +45,7 @@ def test_exact_cutoff_provenance_across_windows(index, length, expected, monkeyp
     })
     combined = c._combined_concepts(frozen)
     assert {link["source_statement_id"] for link in combined[0]["links"]} == {f"{i}:Incoming" for i in expected}
-    allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=combined)
-    _, links = c._normalized({"document_id": "doc", "source_display_name": "Doc"}, combined, allocated, index)
+    links = manifest(frozen, index)["links"]
     assert links == [{"source": "concept:incoming", "target": "concept:target", "relation": "concept_related_to"}]
     assert len(model.calls) == 1
     assert all(not w["contributions"][0]["links"] for w in submissions)
@@ -57,9 +55,7 @@ def test_three_statement_limit_and_post_allocation_self_link(index):
     submissions = [{"window_ordinal": i, "contributions": [contribution("Target")]} for i in range(1, 5)]
     frozen = c.freeze_server_concept_merges(None, workspace_id="w", submissions=submissions, judge=judge())
     assert [bool(w["contributions"][0]["links"]) for w in frozen] == [True, True, True, False]
-    concepts = c._combined_concepts(frozen)
-    allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=concepts)
-    assert c._normalized({"document_id": "doc", "source_display_name": "Doc"}, concepts, allocated, index)[1] == []
+    assert manifest(frozen, index)["links"] == []
 
 
 def test_foreign_and_stale_targets_fail_closed(index):
@@ -67,11 +63,9 @@ def test_foreign_and_stale_targets_fail_closed(index):
     with pytest.raises(c.SemanticMergeError):
         c.freeze_server_concept_merges(None, workspace_id="w", submissions=submissions, judge=judge(["foreign"]))
     frozen = c.freeze_server_concept_merges(None, workspace_id="w", submissions=submissions, judge=judge())
-    concepts = c._combined_concepts(frozen)
-    allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=concepts)
     index[0]["id"] = "replacement-with-same-name"
     with pytest.raises(c.SemanticMergeError):
-        c._normalized({"document_id": "doc", "source_display_name": "Doc"}, concepts, allocated, index)
+        manifest(frozen, index)
 
 
 def test_server_links_obey_existing_window_bound(index, monkeypatch):

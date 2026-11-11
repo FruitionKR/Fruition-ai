@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
-from uuid import UUID, uuid5
+from uuid import UUID
 
-from app.modules.wiki_generation.domain.concept_identity import (
-    available_concept_slug,
-    concept_name_keys,
-)
+from app.core.ai_database import connect_ai
 from app.core.jev_client import JevUnavailable
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError, load_submission_policy
-from app.modules.wiki_generation.domain.text_utils import name_key, slugify
-from app.modules.wiki_generation.infrastructure.assemble import SourcePageAssembler
+from app.modules.wiki_generation.domain.concept_identity import concept_name_keys
+from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+from app.modules.wiki_generation.domain.text_utils import name_key
+from app.modules.wiki_generation.infrastructure.assemble import (
+    ConceptPageAssembler,
+    LinkBuilder,
+    SourcePageAssembler,
+)
+from app.modules.wiki_generation.infrastructure.jev_concept_resolver import NameMatchConceptResolver
+from app.modules.wiki_generation.infrastructure.normalize import SemanticNormalizer
 from app.modules.wiki_ingestion.application.concept_contribution import (
     build_concept_contributions,
 )
@@ -22,20 +28,29 @@ from app.modules.wiki_ingestion.infrastructure.backend_document_reader import (
     read_contributions,
 )
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
-    INVALIDATION,
-    prune_dangling_entry_references,
-    rebuild_active_concept_page_from_ledger,
-    replay_concept_page_with_operation,
+    ConceptContributionError,
+    load_concept_contributions,
     surviving_evidence_units,
 )
-from app.modules.wiki_ingestion.infrastructure.object_storage import read_text_object
+from app.modules.wiki_ingestion.infrastructure.object_storage import (
+    ImmutableObjectConflict,
+    read_text_object,
+    storage_uri,
+)
 from app.modules.wiki_ingestion.infrastructure.pending_contributions import (
     with_pending_contributions,
+)
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
+    _active_manual_source_markdown as active_manual_source_markdown,
+    apply_ingest_outputs,
+    list_active_concept_index,
 )
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_writer import (
     load_concept_identity_index,
     read_optional_text_object,
 )
+from app.modules.wiki_ingestion.infrastructure.wiki_publication import PublicationConflict
+from run_lab import resolve_judged_concepts
 
 
 class PreviewCalculationError(RuntimeError):
@@ -50,10 +65,6 @@ def _hash(value: object) -> str:
     return "sha256:" + hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     ).hexdigest()
-
-
-def _stable_page_id(draft_id: str, key: str) -> str:
-    return f"wiki_page_{uuid5(UUID(draft_id), key)}"
 
 
 def _version(value: datetime) -> int:
@@ -97,60 +108,6 @@ def _page_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _allocate_identities(
-    conn,
-    *,
-    draft_id: str,
-    workspace_id: str,
-    concepts: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
-    index = load_concept_identity_index(conn, workspace_id, include_deleted=True)
-    occupied = {str(item["slug"]) for item in index}
-    allocated: dict[str, dict[str, str]] = {}
-    for concept in sorted(concepts, key=lambda item: (name_key(item["concept_name"]), item["concept_name"])):
-        incoming = {"title": concept["concept_name"], "identity_aliases": []}
-        active = [
-            item for item in index
-            if item["status"] == "active" and concept_name_keys(incoming) & concept_name_keys(item)
-        ]
-        # 웹 편입과 같은 순서: 이름 일치(코드) → 서버 판정기(Jev) → 외부 AI 판단(기존 LLM 자리). 판정기가 판정했으면
-        # 새 개념 판정이어도 외부 AI 대상은 쓰지 않는다.
-        merge_target = None
-        if len(active) != 1:
-            merge_target = (concept["server_merge_target_page_id"] if "server_merge_target_page_id" in concept
-                            else concept.get("merge_target_page_id"))
-        if merge_target is not None:
-            matches = [item for item in index if str(item["id"]) == merge_target and item["status"] == "active"]
-            if len(matches) != 1:
-                raise SemanticMergeError("semantic merge target is no longer an active workspace concept")
-            target = matches[0]
-            allocated[name_key(concept["concept_name"])] = {
-                "page_id": str(target["id"]), "slug": str(target["slug"]),
-                "prior_status": "active", "title": str(target["title"]),
-            }
-            continue
-        deleted = [
-            item for item in index
-            if item["status"] == "deleted" and concept_name_keys(incoming) & concept_name_keys(item)
-        ]
-        if len(active) == 1:
-            page_id, slug, prior = str(active[0]["id"]), str(active[0]["slug"]), "active"
-        elif not active and len(deleted) == 1:
-            page_id, slug, prior = str(deleted[0]["id"]), str(deleted[0]["slug"]), "deleted"
-        else:
-            slug = available_concept_slug(slugify(concept["concept_name"]), occupied)
-            page_id = _stable_page_id(draft_id, f"concept:{name_key(concept['concept_name'])}:{slug}")
-            prior = "new"
-        occupied.add(slug)
-        allocated[name_key(concept["concept_name"])] = {
-            "page_id": page_id,
-            "slug": slug,
-            "prior_status": prior,
-            "title": concept["concept_name"],
-        }
-    return allocated, index
-
-
 def _combined_concepts(submissions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     combined: dict[str, dict[str, Any]] = {}
     for submission in submissions:
@@ -181,100 +138,6 @@ def _combined_concepts(submissions: list[dict[str, Any]]) -> list[dict[str, Any]
                 for item in concept["links"]
             )
     return list(combined.values())
-
-
-def _normalized(
-    run: dict[str, Any],
-    concepts: list[dict[str, Any]],
-    allocated: dict[str, dict[str, str]],
-    identity_index: list[dict[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    document_id = str(run["document_id"])
-    if run.get("source_display_name") is None:
-        # 컬럼 추가 이전에 시작한 run이다. 문서 ID를 제목으로 대신 쓰지 않고 다시 시작하게 한다.
-        raise PreviewCalculationError("run predates the source display name snapshot")
-    display_name = str(run["source_display_name"])
-    evidence_units: list[dict[str, Any]] = []
-    ledger: list[dict[str, Any]] = []
-    source_key_points: list[dict[str, Any]] = []
-    links: list[dict[str, Any]] = []
-    seen_links: set[frozenset[str]] = set()
-    existing_by_id = {str(item["id"]): item for item in identity_index if item["status"] == "active"}
-    existing_by_name: dict[str, list[dict[str, Any]]] = {}
-    for item in identity_index:
-        if item["status"] == "active":
-            for key in concept_name_keys(item):
-                existing_by_name.setdefault(key, []).append(item)
-    for concept in concepts:
-        identity = allocated[name_key(concept["concept_name"])]
-        refs: list[str] = []
-        evidence_ids: list[str] = []
-        for statement in concept["statements"]:
-            evidence_ids.append(statement["statement_id"])
-            statement_refs = list(dict.fromkeys(item["block_id"] for item in statement["evidence"]))
-            refs.extend(statement_refs)
-            evidence_units.append({
-                "evidence_id": statement["statement_id"],
-                "claim": statement["text"],
-                "anchor_reference_ids": statement_refs,
-                "related_concept_slugs": [identity["slug"]],
-                "source_document_id": document_id,
-            })
-            source_key_points.append({"text": statement["text"], "anchor_reference_ids": statement_refs})
-        unique_refs = list(dict.fromkeys(refs))
-        ledger.append({
-            "title": identity["title"],
-            "slug": identity["slug"],
-            "definition": concept["statements"][0]["text"],
-            "why_page_worthy": "",
-            "aliases": [],
-            "identity_aliases": [],
-            "tags": [],
-            "mention_count": len(unique_refs),
-            "importance_score": 1.0,
-            "anchor_reference_ids": unique_refs,
-            "display_reference_ids": unique_refs,
-            "mention_reference_ids": [],
-            "evidence_claim_ids": evidence_ids,
-            "source_document_ids": [document_id],
-        })
-        for link in concept["links"]:
-            target_key = name_key(link["target_concept_name"])
-            target = allocated.get(target_key)
-            if "server_target_page_id" in link:
-                target = existing_by_id.get(link["server_target_page_id"])
-                if target is None:
-                    raise SemanticMergeError("related target is no longer an active workspace concept")
-            if target is None:
-                matches = existing_by_name.get(target_key, [])
-                if len(matches) != 1:
-                    raise PreviewCalculationError("link target concept identity is unresolved or ambiguous")
-                target = {"slug": str(matches[0]["slug"])}
-            edge = frozenset((identity["slug"], target["slug"]))
-            if len(edge) != 2 or edge in seen_links:
-                continue
-            seen_links.add(edge)
-            links.append({
-                "source": f"concept:{identity['slug']}",
-                "target": f"concept:{target['slug']}",
-                "relation": link["relation"],
-            })
-    normalized = {
-        "document": {
-            "document_id": document_id,
-            "source_path": display_name,
-            "title": display_name,
-        },
-        "semantic_notes": [{"key_points": source_key_points}],
-        "concept_ledger": ledger,
-        "evidence_units": evidence_units,
-        "source_key_points": source_key_points,
-        "categories": [],
-        "section_candidates": [],
-        "mentions": [],
-        "observations": [],
-    }
-    return normalized, links
 
 
 def _load_reconciled(conn, workspace_id: str, page_ids: list[str]) -> list[dict[str, Any]]:
@@ -451,345 +314,423 @@ def judge_asked(concept: dict[str, Any], pool: list[dict[str, Any]]) -> bool:
     return bool(concept["definition"].strip()) and any(str(item.get("definition") or "").strip() for item in pool)
 
 
-def calculate_ingest_preview(
-    conn,
+
+
+class _SubmittedConceptJudgment:
+    """웹 편입의 개념 판정기 자리. 판정은 사용자 AI 제출과 finalize에서 고정한 Jev 결과를 그대로 쓴다.
+
+    웹과 같이 `NameMatchConceptResolver`가 이름 일치를 먼저 병합하고, 이름이 맞지 않는 개념만 여기로 온다.
+    대상이 활성 개념이 아니면 새 페이지로 바꾸지 않고 실패한다(MCP 검증).
+    """
+
+    def __init__(self, concepts: list[dict[str, Any]], concept_index: list[dict[str, Any]]) -> None:
+        self._targets = {
+            name_key(concept["concept_name"]): (
+                concept["server_merge_target_page_id"] if "server_merge_target_page_id" in concept
+                else concept.get("merge_target_page_id")
+            )
+            for concept in concepts
+        }
+        self._active = {
+            str(item["page_id"]): item for item in concept_index if item.get("status", "active") == "active"
+        }
+
+    def resolve(
+        self,
+        incoming_concepts: list[dict[str, Any]],
+        existing_concepts: list[dict[str, Any]],
+        missing_related_hints: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        resolutions = []
+        for concept in incoming_concepts:
+            target_id = self._targets.get(name_key(concept["title"]))
+            if target_id is None:
+                continue
+            if len([item for item in self._active.values() if concept_name_keys(concept) & concept_name_keys(item)]) == 1:
+                # 이름이 같은 기존 개념이 하나면 외부 AI 대상보다 먼저다. slug가 같아 이름 일치에서 빠진 개념은
+                # 웹 slug 배정(allocate_concept_slugs)이 그 페이지로 보낸다.
+                continue
+            target = self._active.get(str(target_id))
+            if target is None:
+                raise SemanticMergeError("semantic merge target is no longer an active workspace concept")
+            resolutions.append({
+                "incoming_slug": concept["slug"], "decision": "merge_into", "canonical_slug": str(target["slug"]),
+            })
+        return {"resolutions": resolutions}
+
+
+def build_ingest_manifest(
     *,
     run: dict[str, Any],
     submissions: list[dict[str, Any]],
     source_blocks: list[dict[str, Any]],
+    current_source_blocks: list[dict[str, Any]],
+    concept_index: list[dict[str, Any]],
+    operation_id: str,
 ) -> dict[str, Any]:
-    workspace_id = str(run["workspace_id"])
+    """제출한 창 기여를 웹 추출 결과(의미 노트)로 바꾼 뒤 웹 편입의 AI 뒤 단계로 manifest를 만든다.
+
+    바꾸는 것은 AI 단계뿐이다. 정규화·개념 확정·slug 배정·페이지 조립·기여 생성은 웹 코드를 그대로 부른다.
+    웹 생성 평가 가드(숫자·근거 검사)는 AI 출력 품질 검사라 MCP 제출 검증이 대신한다.
+    """
     document_id = str(run["document_id"])
-    draft_id = str(run["draft_id"])
-    operation_id = draft_id
+    if run.get("source_display_name") is None:
+        # 컬럼 추가 이전에 시작한 run이다. 문서 ID를 제목으로 대신 쓰지 않고 다시 시작하게 한다.
+        raise PreviewCalculationError("run predates the source display name snapshot")
+    display_name = str(run["source_display_name"])
     concepts = _combined_concepts(submissions)
-    allocated, identity_index = _allocate_identities(
-        conn, draft_id=draft_id, workspace_id=workspace_id, concepts=concepts
+    statements = [statement for concept in concepts for statement in concept["statements"]]
+
+    def refs(statement: dict[str, Any]) -> list[str]:
+        return list(dict.fromkeys(str(item["block_id"]) for item in statement["evidence"]))
+
+    note = {
+        "chunk_id": "mcp-submission",
+        "key_points": [{"text": item["text"], "anchor_block_ids": refs(item)} for item in statements],
+        "core_concepts": [
+            {
+                "title": concept["concept_name"],
+                # MCP 기여에는 정의 칸이 없어 첫 문장을 정의로 쓴다.
+                "definition": concept["statements"][0]["text"] if concept["statements"] else "",
+                "anchor_block_ids": [ref for item in concept["statements"] for ref in refs(item)],
+            }
+            for concept in concepts
+        ],
+        "evidence_claims": [
+            {
+                "id": item["statement_id"], "claim": item["text"], "anchor_block_ids": refs(item),
+                "related_concept_hints": [concept["concept_name"]], "confidence": 1.0,
+            }
+            for concept in concepts for item in concept["statements"]
+        ],
+    }
+    document = SourceDocument(
+        document_id=document_id, title=display_name, source_path=display_name,
+        content_sha1=str(run["source_content_hash"]),
     )
-    # A title and its official alias can resolve to the same existing page.
-    by_page: dict[str, dict[str, Any]] = {}
+    blocks = [
+        SourceBlock(document_id, str(item["block_id"]), str(item["block_id"]), str(item["text"]), 0, 0)
+        for item in source_blocks
+    ]
+    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    if [item["claim"] for item in normalized["evidence_units"]] != [item["text"] for item in statements]:
+        raise PreviewCalculationError("normalized evidence does not match submitted statements")
+    initial_slug = {name_key(item["title"]): str(item["slug"]) for item in normalized["concept_ledger"]}
+    active = [item for item in concept_index if item.get("status", "active") == "active"]
+    raw_resolution = NameMatchConceptResolver(_SubmittedConceptJudgment(concepts, concept_index)).resolve(
+        normalized["concept_ledger"], active, normalized.get("missing_related_concept_hints", []),
+    )
+    resolved = resolve_judged_concepts(normalized, raw_resolution, [], concept_index)
+    slug_map = resolved.get("concept_slug_map", {})
+
+    def final_slug(name: str) -> str:
+        slug = initial_slug[name_key(name)]
+        return str(slug_map.get(slug, slug))
+
+    # 연결 판단도 AI 단계다. 제출한 연결(외부 AI)과 고정한 Jev 관련 판정을 웹 링크 모양으로 바꾼다.
+    active_by_id = {str(item["page_id"]): item for item in active}
+    active_by_name: dict[str, list[dict[str, Any]]] = {}
+    for item in active:
+        for key in concept_name_keys(item):
+            active_by_name.setdefault(key, []).append(item)
+    links = LinkBuilder().build(resolved)
+    seen = {frozenset((item["source"], item["target"])) for item in links}
     for concept in concepts:
-        page_id = allocated[name_key(concept["concept_name"])]["page_id"]
-        target = by_page.setdefault(page_id, {
-            "concept_name": concept["concept_name"], "statements": [], "links": [],
-        })
-        if concept.get("server_merge_target_page_id", concept.get("merge_target_page_id")) is not None:
-            target["concept_name"] = concept["concept_name"]
-        target["statements"].extend(concept["statements"])
-        target["links"].extend(concept["links"])
-    concepts = list(by_page.values())
-    normalized, links = _normalized(run, concepts, allocated, identity_index)
-    current_source_blocks = [dict(row) for row in conn.execute(
-        "SELECT block_id,text FROM source_blocks WHERE document_id=%s ORDER BY position NULLS LAST,block_id",
-        (document_id,),
-    ).fetchall()]
+        source = final_slug(concept["concept_name"])
+        for link in concept["links"]:
+            if "server_target_page_id" in link:
+                target_page = active_by_id.get(str(link["server_target_page_id"]))
+                if target_page is None:
+                    raise SemanticMergeError("related target is no longer an active workspace concept")
+                target = str(target_page["slug"])
+            elif name_key(link["target_concept_name"]) in initial_slug:
+                target = final_slug(link["target_concept_name"])
+            else:
+                matches = {str(item["page_id"]): item for item in active_by_name.get(name_key(link["target_concept_name"]), [])}
+                if len(matches) != 1:
+                    raise PreviewCalculationError("link target concept identity is unresolved or ambiguous")
+                target = str(next(iter(matches.values()))["slug"])
+            edge = frozenset((f"concept:{source}", f"concept:{target}"))
+            if source == target or edge in seen:
+                continue
+            seen.add(edge)
+            links.append({"source": f"concept:{source}", "target": f"concept:{target}", "relation": link["relation"]})
+
+    source_block_records = [
+        {
+            "document_id": document_id, "block_id": str(item["block_id"]), "text": str(item["text"]),
+            "position": int(item["ordinal"]), "line_start": None, "line_end": None, "block_type": None,
+        }
+        for item in source_blocks
+    ]
     incoming_by_id = {str(item["block_id"]): str(item["text"]) for item in source_blocks}
     invalidated = [
-        str(item["block_id"])
-        for item in current_source_blocks
+        str(item["block_id"]) for item in current_source_blocks
         if incoming_by_id.get(str(item["block_id"])) != str(item["text"])
     ]
-    contributions = build_concept_contributions(
-        operation_id=operation_id,
-        normalized=normalized,
-        source_blocks=source_blocks,
-        links=links,
-        source_key_points=normalized["source_key_points"],
-        invalidated_block_ids=invalidated,
-    )
-    target_by_page = {
-        page_id: {
-            **allocated[name_key(concept["concept_name"])],
-            "contribution": contributions[allocated[name_key(concept["concept_name"])]["slug"]],
-        }
-        for page_id, concept in by_page.items()
+    source_page = SourcePageAssembler().build(resolved)
+    key_points = [point for note in resolved.get("semantic_notes", []) for point in note.get("key_points", [])]
+    return {
+        "operation_id": operation_id,
+        "user_id": str(run["user_id"]),
+        "workspace_id": str(run["workspace_id"]),
+        "document_id": document_id,
+        "source_document_id": document_id,
+        "display_name": display_name,
+        "source_page": source_page,
+        "source_extraction_artifact": source_page.get("source_extraction_artifact"),
+        "source_blocks": source_block_records,
+        "source_content_hash": str(run["source_content_hash"]).removeprefix("sha256:"),
+        "source_block_changes": {"invalidated_block_ids": invalidated},
+        "concept_pages": ConceptPageAssembler().build_top(resolved, top_n=None, source_key_points=key_points),
+        "concept_contributions": build_concept_contributions(
+            operation_id=operation_id,
+            normalized=resolved,
+            source_blocks=source_block_records,
+            links=links,
+            concept_update_decisions=[],
+            invalidated_block_ids=invalidated,
+        ),
+        "links": links,
+        "meaning_clusters": {"concept_update_decisions": []},
+        "normalized": resolved,
+        "warnings": resolved.get("warnings", []),
     }
-    linked_rows = conn.execute(
-        "SELECT page.id,page.slug FROM document_wiki_links link JOIN wiki_pages page ON page.id=link.wiki_page_id "
-        "WHERE link.document_id=%s AND link.workspace_id=%s AND link.relation_type='extracted_concept' "
-        "AND page.page_type='concept' ORDER BY page.id",
-        (document_id, workspace_id),
-    ).fetchall()
-    initial_ids = sorted(set(target_by_page) | {str(row["id"]) for row in linked_rows})
-    initial_slugs = [
-        str(item["slug"])
-        for item in identity_index
-        if str(item["id"]) in initial_ids
-    ] + [value["slug"] for value in target_by_page.values()]
-    inbound = conn.execute(
-        "SELECT DISTINCT reference.page_id FROM wiki_page_entry_references reference "
-        "JOIN wiki_pages page ON page.id=reference.page_id "
-        "WHERE reference.workspace_id=%s AND reference.target_slug=ANY(%s) AND page.status='active' ORDER BY reference.page_id",
-        (workspace_id, list(dict.fromkeys(initial_slugs)) or [""]),
-    ).fetchall()
-    page_ids = sorted(set(initial_ids) | {str(row["page_id"]) for row in inbound})
-    existing_identity_ids = {str(item["id"]) for item in identity_index}
-    ledger = _load_reconciled(
-        conn, workspace_id, [page_id for page_id in page_ids if page_id in existing_identity_ids]
-    )
-    invalidated_refs = {f"{document_id}:{block_id}" for block_id in invalidated}
-    rebuilt: dict[str, Any] = {}
-    planned_contributions: dict[str, dict[str, Any]] = {}
-    removed_statements: list[dict[str, Any]] = []
-    for page_id in initial_ids:
-        target = target_by_page.get(page_id)
-        contribution = target["contribution"] if target else {
-            "schema_version": 1,
-            "artifact_type": INVALIDATION,
-            "operation_id": operation_id,
-            "document_id": document_id,
-            "invalidated_reference_ids": sorted(invalidated_refs),
-            "page_id": page_id,
-        }
-        planned_contributions[page_id] = contribution
-        try:
-            replay = replay_concept_page_with_operation(
-                workspace_id=workspace_id,
-                page_id=page_id,
-                operation_id=operation_id,
-                ledger=ledger,
-                contribution=contribution,
-                read_text=read_text_object,
-                required_citations=None if target else invalidated_refs,
-                allow_empty=bool(target and target["prior_status"] in {"new", "deleted"}),
-            )
-        except Exception as exc:
-            raise PreviewCalculationError("concept contribution replay failed") from exc
-        if replay is None:
-            if target and target["prior_status"] == "active":
-                raise PreviewCalculationError("active concept contribution ledger is missing")
-            continue
-        _loaded, rebuilt[page_id] = replay
-        removed_statements.extend(_removed_statement_changes(page_id, _loaded, contribution))
 
-    current_live = {
-        (str(row["slug"]), str(row["entry_id"]))
-        for row in conn.execute(
-            "SELECT page.slug,entry.entry_id FROM wiki_page_entries entry JOIN wiki_pages page ON page.id=entry.page_id "
-            "WHERE entry.workspace_id=%s AND page.status='active'",
-            (workspace_id,),
-        ).fetchall()
-    }
-    slug_by_id = {str(item["id"]): str(item["slug"]) for item in identity_index}
-    slug_by_id.update({value["page_id"]: value["slug"] for value in target_by_page.values()})
-    for page_id, page in rebuilt.items():
-        page_slug = slug_by_id.get(page_id, "")
-        current_live = {item for item in current_live if item[0] != page_slug}
-        if not page.deleted:
-            current_live.update((page_slug, str(entry["entry_id"])) for entry in page.entries)
-    for row in inbound:
-        page_id = str(row["page_id"])
-        if page_id in rebuilt:
-            continue
-        try:
-            replay = rebuild_active_concept_page_from_ledger(
-                workspace_id=workspace_id, page_id=page_id, ledger=ledger,
-                read_text=read_text_object,
-            )
-        except Exception as exc:
-            raise PreviewCalculationError("reference cascade replay failed") from exc
-        if replay is None:
-            raise PreviewCalculationError("reference cascade contribution ledger is missing")
-        _loaded, page = replay
-        markdown, kept, removed = prune_dangling_entry_references(
-            page.markdown, page.entries, page.supported_links, current_live
+
+# 공개 상태 행의 key 위치 중 페이지 id 자리. 새 페이지 id는 실행마다 달라 미리보기와 적용이 slug로 맞춘다.
+_PAGE_POSITIONS = {
+    "page": (1,), "entry": (1,), "link": (1, 3), "reference": (1,), "manual": (1, 2),
+    "document_link": (2,), "alias": (1,), "block": (), "tombstone": (),
+}
+_PAGE_FIELDS = ("page_type", "slug", "title", "summary", "status")
+
+
+def _public_rows(conn, workspace_id: str, document_id: str) -> dict[tuple[str, ...], dict[str, Any]]:
+    """편입이 바꿀 수 있는 공개 상태 행 전체. 본문은 불변 객체라 markdown_uri가 같으면 같다.
+
+    ponytail: 워크스페이스 행 전체를 두 번(전·후) 읽는다. 워크스페이스가 커서 느려지면 문서·개념 범위로 좁힌다.
+    """
+    rows: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in conn.execute(
+        "SELECT id,page_type,slug,title,summary,status,markdown_uri,updated_at FROM wiki_pages WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        rows[("page", str(row["id"]))] = {key: row[key] for key in (*_PAGE_FIELDS, "markdown_uri", "updated_at")}
+    for row in conn.execute(
+        "SELECT page_id,entry_id,name,parent_entry_id,definition,block_refs,slugs,aliases,tags "
+        "FROM wiki_page_entries WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        rows[("entry", str(row["page_id"]), str(row["entry_id"]))] = _jsonable(
+            {key: row[key] for key in ("name", "parent_entry_id", "definition", "block_refs", "slugs", "aliases", "tags")}
         )
-        if removed:
-            rebuilt[page_id] = {
-                "page_id": page.page_id,
-                "markdown": markdown,
-                "supported_links": tuple(kept),
-                "entries": page.entries,
-                "deleted": page.deleted,
-                "removed_references": removed,
-            }
-
-    source_row = conn.execute(
-        "SELECT page.* FROM document_wiki_links link JOIN wiki_pages page ON page.id=link.wiki_page_id "
-        "WHERE link.document_id=%s AND link.workspace_id=%s AND link.relation_type='source_of' "
-        "AND page.page_type='source' ORDER BY page.updated_at DESC LIMIT 1",
-        (document_id, workspace_id),
-    ).fetchone()
-    source_page_id = str(source_row["id"]) if source_row else _stable_page_id(draft_id, f"source:{document_id}")
-    source_before = _body(dict(source_row)) if source_row else None
-    source_after = SourcePageAssembler().build(normalized)["markdown"]
-
-    slug_to_id = {str(item["slug"]): str(item["id"]) for item in identity_index}
-    slug_to_id.update({value["slug"]: value["page_id"] for value in target_by_page.values()})
-    planned_link_ids = {
-        slug_to_id[slug]
-        for link in links
-        for slug in (
-            str(link.get("source") or "").removeprefix("concept:"),
-            str(link.get("target") or "").removeprefix("concept:"),
-        )
-        if slug in slug_to_id
-    }
-    existing_rows = conn.execute(
-        "SELECT * FROM wiki_pages WHERE workspace_id=%s AND id=ANY(%s) ORDER BY id",
-        (workspace_id, sorted(set(page_ids + ([source_page_id] if source_row else [])) | planned_link_ids)),
-    ).fetchall()
-    page_rows = {str(row["id"]): dict(row) for row in existing_rows}
-    closure_ids = sorted(page_rows)
-    structures = _structural_rows(conn, workspace_id, closure_ids)
-    endpoint_ids = {
-        str(value)
-        for item in [*structures["links"], *structures["manual_links"]]
-        for value in (item["from_page_id"], item["to_page_id"])
-    } - set(page_rows)
-    if endpoint_ids:
-        endpoint_rows = conn.execute(
-            "SELECT * FROM wiki_pages WHERE workspace_id=%s AND id=ANY(%s) ORDER BY id",
-            (workspace_id, sorted(endpoint_ids)),
-        ).fetchall()
-        page_rows.update({str(row["id"]): dict(row) for row in endpoint_rows})
-    changes = [_change("SOURCE_PAGE", "UPDATE" if source_before is not None else "ADD", source_page_id, document_id, source_before, source_after)]
-    changes.extend(removed_statements)
-    for concept in concepts:
-        target = allocated[name_key(concept["concept_name"])]
-        for statement in concept["statements"]:
-            changes.append(_change(
-                "CONCEPT_STATEMENT", "ADD", target["page_id"], statement["statement_id"], None,
-                statement["text"], statement["evidence"],
-            ))
-    for page_id, page in rebuilt.items():
-        if getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False):
-            before = page_rows.get(page_id)
-            changes.append(_change("PAGE_DELETE", "DELETE", page_id, page_id, before["title"] if before else None, None))
-        if page_id in initial_ids:
-            for block_id in invalidated:
-                changes.append(_change("EVIDENCE_INVALIDATION", "REMOVE", page_id, block_id, f"{document_id}:{block_id}", None))
-
-    current_entries = {
-        (str(item["page_id"]), str(item["entry_id"])): item for item in structures["entries"]
-    }
-    desired_entries = dict(current_entries)
-    for page_id, page in rebuilt.items():
-        desired_entries = {key: value for key, value in desired_entries.items() if key[0] != page_id}
-        if not getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False):
-            for item in page.entries if hasattr(page, "entries") else page["entries"]:
-                desired_entries[(page_id, str(item["entry_id"]))] = {"page_id": page_id, **item}
-    for key in sorted(set(current_entries) | set(desired_entries)):
-        before, after = current_entries.get(key), desired_entries.get(key)
-        if before == after:
-            continue
-        action = "ADD" if before is None else "REMOVE" if after is None else "UPDATE"
-        changes.append(_change("ENTRY", action, key[0], key[1], _canonical_text(before) if before else None, _canonical_text(after) if after else None))
-
-    current_links = {
-        (str(item["from_page_id"]), str(item["link_type"]), str(item["to_page_id"])): item
-        for item in structures["links"]
-    }
-    desired_links = dict(current_links)
-    for page_id, page in rebuilt.items():
-        deleted = getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False)
-        desired_links = {
-            key: value for key, value in desired_links.items()
-            if key[0] != page_id and (not deleted or key[2] != page_id)
+    for row in conn.execute(
+        "SELECT from_page_id,link_type,to_page_id,label,confidence FROM wiki_page_links WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        rows[("link", str(row["from_page_id"]), str(row["link_type"]), str(row["to_page_id"]))] = {
+            "label": row["label"], "confidence": row["confidence"],
         }
-        if deleted:
-            continue
-        for link in page.supported_links if hasattr(page, "supported_links") else page["supported_links"]:
-            source_id = slug_to_id.get(str(link.get("source") or "").removeprefix("concept:"))
-            target_id = slug_to_id.get(str(link.get("target") or "").removeprefix("concept:"))
-            if source_id and target_id and source_id != target_id:
-                desired_links[(source_id, str(link.get("relation") or "related_to"), target_id)] = {
-                    "from_page_id": source_id, "to_page_id": target_id,
-                    "link_type": str(link.get("relation") or "related_to"),
-                    "label": None, "confidence": None,
-                }
-    deleted_ids = {
-        page_id
-        for page_id, page in rebuilt.items()
-        if getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False)
-    }
-    linked_to_document = {
-        str(row["id"]) for row in linked_rows
-    } | {
-        page_id for page_id in target_by_page if page_id not in deleted_ids
-    }
-    manual_by_target = {
-        str(item["to_page_id"]): bool(item["present"])
-        for item in structures["manual_links"]
-        if str(item["from_page_id"]) == source_page_id
-    }
-    for page_id in sorted(linked_to_document - deleted_ids):
-        key = (source_page_id, "source_mentions_concept", page_id)
-        if manual_by_target.get(page_id) is False:
-            desired_links.pop(key, None)
-        else:
-            desired_links[key] = {
-                "from_page_id": source_page_id, "to_page_id": page_id,
-                "link_type": "source_mentions_concept", "label": None, "confidence": None,
-            }
-    for key in sorted(set(current_links) | set(desired_links)):
-        before, after = current_links.get(key), desired_links.get(key)
-        if before == after:
-            continue
-        action = "ADD" if before is None else "REMOVE" if after is None else "UPDATE"
-        changes.append(_change("LINK", action, key[0], f"{key[1]}:{key[2]}", _canonical_text(before) if before else None, _canonical_text(after) if after else None))
+    for row in conn.execute(
+        "SELECT page_id,target_slug,entry_id,parent_entry_id,name FROM wiki_page_entry_references WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        key = ("reference", str(row["page_id"]), str(row["target_slug"]), str(row["entry_id"]), str(row["parent_entry_id"] or ""))
+        rows[key] = {"name": row["name"]}
+    for row in conn.execute(
+        "SELECT from_page_id,to_page_id,present FROM wiki_source_manual_links WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        rows[("manual", str(row["from_page_id"]), str(row["to_page_id"]))] = {"present": bool(row["present"])}
+    for row in conn.execute(
+        "SELECT document_id,wiki_page_id,relation_type,confidence FROM document_wiki_links WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        key = ("document_link", str(row["document_id"]), str(row["wiki_page_id"]), str(row["relation_type"]))
+        rows[key] = {"confidence": row["confidence"]}
+    for row in conn.execute(
+        "SELECT page_id,alias,origin FROM wiki_concept_identity_aliases WHERE workspace_id=%s",
+        (workspace_id,),
+    ).fetchall():
+        rows[("alias", str(row["page_id"]), str(row["alias"]))] = {"origin": row["origin"]}
+    for row in conn.execute(
+        "SELECT block_id,text,position FROM source_blocks WHERE document_id=%s", (document_id,),
+    ).fetchall():
+        rows[("block", str(row["block_id"]))] = {"text": row["text"], "position": row["position"]}
+    if conn.execute(
+        "SELECT 1 FROM wiki_source_tombstones WHERE workspace_id=%s AND document_id=%s",
+        (workspace_id, document_id),
+    ).fetchone():
+        rows[("tombstone", document_id)] = {}
+    return rows
 
-    current_references = {
-        (
-            str(item["page_id"]), str(item["target_slug"]), str(item["entry_id"]),
-            str(item.get("parent_entry_id") or ""),
-        ): item
-        for item in structures["references"]
-    }
-    desired_references = dict(current_references)
-    for page_id, page in rebuilt.items():
-        desired_references = {
-            key: value for key, value in desired_references.items() if key[0] != page_id
-        }
-        if getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False):
-            continue
-        supported = page.supported_links if hasattr(page, "supported_links") else page["supported_links"]
-        for link in supported:
-            if link.get("relation") != "entry_reference":
+
+def _key_pages(key: tuple[str, ...]) -> list[str]:
+    return [key[index] for index in _PAGE_POSITIONS[key[0]]]
+
+
+def _describe_ingest(
+    conn,
+    *,
+    run: dict[str, Any],
+    submissions: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    before: dict[tuple[str, ...], dict[str, Any]],
+    after: dict[tuple[str, ...], dict[str, Any]],
+    written: dict[str, str],
+    operation_id: str,
+) -> dict[str, Any]:
+    """웹 편입 반영 전·후 공개 상태로 미리보기를 만든다. 미리보기와 적용이 같은 함수로 같은 해시를 낸다."""
+    workspace_id = str(run["workspace_id"])
+    document_id = str(run["document_id"])
+    bodies: dict[str, str] = {}
+
+    def body(row: dict[str, Any] | None) -> str | None:
+        if row is None:
+            return None
+        uri = str(row.get("markdown_uri") or "")
+        if uri not in bodies:
+            text = written[uri] if uri in written else _body({"id": "", "markdown_uri": uri})
+            # 웹 본문은 근거 id에 작업 id를 싣는다. 미리보기(draft id)와 적용(document 작업 id)이 같은 해시를 내게 자리표시로 바꾼다.
+            bodies[uri] = text.replace(operation_id, "{operation_id}")
+        return bodies[uri]
+
+    def text_hash(value: str | None) -> str | None:
+        return None if value is None else "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    changed = []
+    for key in sorted(before.keys() | after.keys()):
+        old, new = before.get(key), after.get(key)
+        if key[0] == "page" and old is not None and new is not None:
+            if all(old[field] == new[field] for field in _PAGE_FIELDS) and (
+                old["markdown_uri"] == new["markdown_uri"] or body(old) == body(new)
+            ):
                 continue
-            key = (
-                page_id,
-                str(link.get("target") or "").removeprefix("concept:"),
-                str(link.get("entry_id") or ""),
-                str(link.get("parent_entry_id") or ""),
-            )
-            desired_references[key] = {
-                "page_id": page_id,
-                "target_slug": key[1],
-                "entry_id": key[2],
-                "parent_entry_id": link.get("parent_entry_id"),
-                "name": str(link.get("name") or ""),
-            }
-    for key in sorted(set(current_references) | set(desired_references)):
-        before, after = current_references.get(key), desired_references.get(key)
-        if before == after:
+        elif old == new:
             continue
-        action = "ADD" if before is None else "REMOVE" if after is None else "UPDATE"
+        changed.append(key)
+
+    new_ids = {
+        key[1]: f"new:{row['page_type']}:{row['slug']}"
+        for key, row in after.items() if key[0] == "page" and key not in before
+    }
+
+    def public_key(key: tuple[str, ...]) -> list[str]:
+        positions = _PAGE_POSITIONS[key[0]]
+        return [new_ids.get(part, part) if index in positions else part for index, part in enumerate(key)]
+
+    def content(key: tuple[str, ...], row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        if key[0] == "page":
+            return {**{field: row[field] for field in _PAGE_FIELDS}, "content_hash": text_hash(body(row))}
+        return _jsonable(row)
+
+    # 새 페이지 id는 실행마다 달라 정렬도 slug로 바꾼 key로 한다.
+    effect = sorted([public_key(key), content(key, after.get(key))] for key in changed)
+    scope = {page_id for key in changed for page_id in _key_pages(key) if ("page", page_id) in before}
+    public_rows = []
+    for key, row in sorted(before.items()):
+        pages = _key_pages(key)
+        if pages and not set(pages) & scope:
+            continue
+        if key[0] == "page":
+            row = {**_page_snapshot({**row, "id": key[1]}), "title": row["title"], "summary": row["summary"]}
+            row.pop("body")
+        public_rows.append([list(key), _jsonable(row)])
+    public_state = {"rows": public_rows}
+    public_state_hash = _hash(public_state)
+    target_pages = [
+        {"page_id": key[1], "version": _version(row["updated_at"]), "content_hash": text_hash(body(row))}
+        for key, row in sorted(before.items())
+        if key[0] == "page" and key[1] in scope and row["status"] == "active"
+    ]
+
+    changes: list[dict[str, Any]] = []
+    for key in changed:
+        old, new = before.get(key), after.get(key)
+        page_key = public_key(key)
+        if key[0] == "page":
+            row = new or old
+            if row["page_type"] == "source":
+                changes.append(_change(
+                    "SOURCE_PAGE", "UPDATE" if old is not None else "ADD", page_key[1], document_id, body(old), body(new),
+                ))
+            elif old is not None and old["status"] == "active" and (new is None or new["status"] != "active"):
+                changes.append(_change("PAGE_DELETE", "DELETE", page_key[1], page_key[1], old["title"], None))
+            elif old is not None and old["status"] != "active" and new is not None and new["status"] == "active":
+                for manual_key, manual in sorted(after.items()):
+                    if manual_key[0] == "manual" and key[1] in manual_key[1:] and manual["present"]:
+                        changes.append(_change(
+                            "REVIVAL_LINK", "REVIVE", page_key[1], ":".join(public_key(manual_key)[1:]), None,
+                            _canonical_text({"from_page_id": public_key(manual_key)[1], "to_page_id": public_key(manual_key)[2], **manual}),
+                        ))
+        elif key[0] in {"entry", "link", "reference"}:
+            kind = {"entry": "ENTRY", "link": "LINK", "reference": "REFERENCE"}[key[0]]
+            action = "ADD" if old is None else "REMOVE" if new is None else "UPDATE"
+            changes.append(_change(
+                kind, action, page_key[1], ":".join(page_key[2:]),
+                _canonical_text(_jsonable(old)) if old is not None else None,
+                _canonical_text(_jsonable(new)) if new is not None else None,
+            ))
+
+    # 제출 문장마다 반영된 페이지. 정규화한 근거는 제출 문장 순서와 같다(build_ingest_manifest가 확인한다).
+    statements = [statement for concept in _combined_concepts(submissions) for statement in concept["statements"]]
+    concept_page = {
+        str(row["slug"]): key[1] for key, row in after.items()
+        if key[0] == "page" and row["page_type"] == "concept" and row["status"] == "active"
+    }
+    for statement, evidence in zip(statements, manifest["normalized"]["evidence_units"], strict=True):
+        slugs = evidence.get("related_concept_slugs") or []
+        if not slugs or str(slugs[0]) not in concept_page:
+            raise PreviewCalculationError("submitted statement did not land on a concept page")
+        page_id = new_ids.get(concept_page[str(slugs[0])], concept_page[str(slugs[0])])
         changes.append(_change(
-            "REFERENCE", action, key[0], f"{key[1]}:{key[2]}:{key[3]}",
-            _canonical_text(before) if before else None,
-            _canonical_text(after) if after else None,
+            "CONCEPT_STATEMENT", "ADD", page_id, statement["statement_id"], None, statement["text"], statement["evidence"],
         ))
 
-    for value in allocated.values():
-        if value["prior_status"] != "deleted":
-            continue
-        for link in structures["manual_links"]:
-            if value["page_id"] in {str(link["from_page_id"]), str(link["to_page_id"])} and link["present"]:
-                changes.append(_change("REVIVAL_LINK", "REVIVE", value["page_id"], f"{link['from_page_id']}:{link['to_page_id']}", None, _canonical_text(link)))
+    # 이번 편입이 남긴 개념 기여. 기존 페이지는 원장 재생으로 빠지는 문장을 보이고, 원장이 없으면 막는다.
+    contributions: dict[str, dict[str, Any]] = {}
+    suffix = f"/ops/{operation_id}.json"
+    for uri, text in written.items():
+        if uri.endswith(suffix):
+            page_id = uri.split("/pages/", 1)[1].split("/", 1)[0]
+            contributions[page_id] = json.loads(text)
+    invalidated = list(manifest["source_block_changes"]["invalidated_block_ids"])
+    existing = sorted(
+        page_id for page_id in contributions
+        if before.get(("page", page_id), {}).get("status") == "active"
+        and before[("page", page_id)]["page_type"] == "concept"
+    )
+    # 원장은 이번 반영 전 상태로 읽는다. 이 트랜잭션이 남긴 대기 기여가 보이지 않는 다른 연결을 쓴다.
+    with connect_ai() as committed:
+        ledger = _load_reconciled(committed, workspace_id, existing)
+    for page_id in existing:
+        kept = sorted(
+            (item for item in ledger if str(item.get("page_id")) == page_id and item.get("active")),
+            key=lambda item: int(item.get("sequence_revision") or 0),
+        )
+        if not kept:
+            raise PreviewCalculationError("active concept contribution ledger is missing")
+        try:
+            loaded = load_concept_contributions(
+                workspace_id=workspace_id, page_id=page_id,
+                keep_contributions=[
+                    {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]} for item in kept
+                ],
+                read_text=read_text_object,
+            )
+        except ConceptContributionError as exc:
+            raise PreviewCalculationError("concept contribution replay failed") from exc
+        changes.extend(_removed_statement_changes(page_id, loaded, contributions[page_id]))
+    for page_id in sorted(contributions):
+        for block_id in invalidated:
+            changes.append(_change(
+                "EVIDENCE_INVALIDATION", "REMOVE", new_ids.get(page_id, page_id), block_id, f"{document_id}:{block_id}", None,
+            ))
 
     changes = sorted({item["change_id"]: item for item in changes}.values(), key=lambda item: item["change_id"])
-    state_pages = [_page_snapshot(row) for row in page_rows.values()]
-    public_pages = [item for item in state_pages if item["status"] == "active"]
-    target_pages = [
-        {key: item[key] for key in ("page_id", "version", "content_hash")}
-        for item in sorted(public_pages, key=lambda value: value["page_id"])
-    ]
-    public_state = {
-        "pages": [{key: item[key] for key in ("page_id", "page_type", "slug", "status", "version", "content_hash", "markdown_uri")} for item in state_pages],
-        **_jsonable(structures),
-    }
-    public_state_hash = _hash(public_state)
     source_snapshots = [{
         "snapshot_id": str(run["snapshot_id"]),
         "document_id": document_id,
@@ -803,10 +744,12 @@ def calculate_ingest_preview(
         "normalized_submissions": submissions,
         "changes": changes,
         "public_state_hash": public_state_hash,
+        # 보이지 않는 반영(개념 본문·문서 연결·별칭·블록)도 승인에 묶는다.
+        "effect": effect,
     })
     preview = {
         "schema_version": "mcp.wiki-preview.v1",
-        "draft_id": draft_id,
+        "draft_id": str(run["draft_id"]),
         "draft_kind": "INGEST",
         "draft_version": 1,
         "draft_hash": draft_hash,
@@ -816,72 +759,99 @@ def calculate_ingest_preview(
         "changes": changes,
         "complete": True,
     }
-    publication_pages = []
-    for page_id, page in sorted(rebuilt.items()):
-        current = page_rows.get(page_id, {})
-        deleted = getattr(page, "deleted", page.get("deleted") if isinstance(page, dict) else False)
-        entries = page.entries if hasattr(page, "entries") else page["entries"]
-        supported_links = page.supported_links if hasattr(page, "supported_links") else page["supported_links"]
-        publication_pages.append({
-            "page_id": page_id,
-            "slug": slug_by_id.get(page_id, str(current.get("slug") or "")),
-            "title": getattr(page, "title", None) or current.get("title"),
-            "summary": getattr(page, "summary", None) or current.get("summary"),
-            "page_type": "concept",
-            "status": "deleted" if deleted else "active",
-            "markdown": "" if deleted else str(getattr(page, "markdown", page.get("markdown") if isinstance(page, dict) else "")),
-            "entries": sorted(_jsonable(entries), key=lambda item: str(item.get("entry_id"))),
-            "supported_links": sorted(_jsonable(supported_links), key=_canonical_text),
-            "identity_aliases": sorted(_jsonable(getattr(page, "identity_aliases", ()))),
-            "source_document_ids": sorted(_jsonable(getattr(page, "source_document_ids", ()))),
-        })
-    desired_document_links = [{
-        "document_id": document_id,
-        "wiki_page_id": source_page_id,
-        "relation_type": "source_of",
-        "confidence": 1.0,
-    }]
-    for page in publication_pages:
-        if page["status"] == "active":
-            desired_document_links.extend({
-                "document_id": source_document_id,
-                "wiki_page_id": page["page_id"],
-                "relation_type": "extracted_concept",
-                "confidence": None,
-            } for source_document_id in page["source_document_ids"])
-    publication_plan = {
-        "source_page": {
-            "page_id": source_page_id,
-            "slug": str(source_row["slug"]) if source_row else document_id,
-            "title": normalized["document"]["title"],
-            "summary": "",
-            "page_type": "source",
-            "status": "active",
-            "markdown": source_after,
-            "entries": [],
-            "supported_links": [],
-            "identity_aliases": [],
-            "source_document_id": document_id,
-        },
-        "pages": publication_pages,
-        "contributions": [
-            {"page_id": page_id, "contribution": _jsonable(contribution)}
-            for page_id, contribution in sorted(planned_contributions.items())
-        ],
-        "document_links": sorted(_jsonable(desired_document_links), key=_canonical_text),
-        "wiki_links": sorted(_jsonable(desired_links.values()), key=_canonical_text),
-        "entry_references": sorted(_jsonable(desired_references.values()), key=_canonical_text),
-        "deleted_page_ids": sorted(deleted_ids),
-    }
     return {
         "preview": preview,
-        "publication_plan": publication_plan,
         "normalized_submissions": submissions,
         "calculation_inputs": {
-            "identity_decisions": sorted(allocated.values(), key=lambda item: item["page_id"]),
-            "contributions": contributions,
-            "reconciled_ledger": sorted(_jsonable(ledger), key=lambda item: (str(item.get("page_id")), int(item.get("sequence_revision") or 0))),
-            "invalidated_block_ids": invalidated,
             "public_state": public_state,
+            "effect": effect,
+            "invalidated_block_ids": invalidated,
         },
     }
+
+
+def publish_ingest(
+    conn,
+    *,
+    run: dict[str, Any],
+    submissions: list[dict[str, Any]],
+    source_blocks: list[dict[str, Any]],
+    operation_id: str,
+    artifact_writer: Callable[[str, str, str], str],
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    """웹 편입 반영(`apply_ingest_outputs`)을 그대로 실행하고 전·후 공개 상태로 미리보기를 계산한다.
+
+    호출자가 개념 잠금과 트랜잭션을 잡는다. finalize는 savepoint 안에서 실행한 뒤 되돌리고(`preview_ingest`),
+    승인 적용은 실제로 반영한 뒤 같은 계산의 해시를 승인값과 맞춘다.
+    돌려주는 값: 계산 결과, 임베딩할 페이지 id, manifest.
+    """
+    workspace_id = str(run["workspace_id"])
+    document_id = str(run["document_id"])
+    try:
+        current_blocks = [dict(row) for row in conn.execute(
+            "SELECT block_id,text FROM source_blocks WHERE document_id=%s ORDER BY position NULLS LAST,block_id",
+            (document_id,),
+        ).fetchall()]
+        manifest = build_ingest_manifest(
+            run=run,
+            submissions=submissions,
+            source_blocks=source_blocks,
+            current_source_blocks=current_blocks,
+            concept_index=list_active_concept_index(workspace_id, use_cache=False, include_deleted=True),
+            operation_id=operation_id,
+        )
+        manual_source_markdown = active_manual_source_markdown(document_id, manifest)
+        before = _public_rows(conn, workspace_id, document_id)
+        written: dict[str, str] = {}
+
+        def writer(key: str, text: str, content_type: str) -> str:
+            uri = artifact_writer(key, text, content_type)
+            written[storage_uri(key)] = text
+            return uri
+
+        page_ids = apply_ingest_outputs(
+            conn,
+            document_id=document_id,
+            workspace_id=workspace_id,
+            ingest_run_id=None,
+            manifest=manifest,
+            manual_source_markdown=manual_source_markdown,
+            artifact_writer=writer,
+        )
+        after = _public_rows(conn, workspace_id, document_id)
+        calculation = _describe_ingest(
+            conn, run=run, submissions=submissions, manifest=manifest,
+            before=before, after=after, written=written, operation_id=operation_id,
+        )
+    except (PreviewCalculationError, McpWikiDraftError, ImmutableObjectConflict, PublicationConflict):
+        # 발행 객체 충돌은 대사 실패가 아니다. 그대로 올려 적용이 미확정(APPLYING)으로 남게 한다.
+        raise
+    except (RuntimeError, ConceptContributionError) as exc:
+        # 원장·대기 기여 대사 실패(document-svc 조회, 대기 기여 모순). 웹 반영이 막힌 상태라 미리보기를 만들지 않는다.
+        raise PreviewCalculationError("contribution ledger could not be reconciled") from exc
+    return calculation, page_ids, manifest
+
+
+class _DryRun(Exception):
+    def __init__(self, calculation: dict[str, Any]) -> None:
+        self.calculation = calculation
+
+
+def preview_ingest(
+    conn,
+    *,
+    run: dict[str, Any],
+    submissions: list[dict[str, Any]],
+    source_blocks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """finalize 미리보기. 웹 편입 반영을 savepoint 안에서 실행해 본 뒤 되돌린다. 객체 저장소에는 쓰지 않는다."""
+    try:
+        with conn.transaction():
+            calculation, _page_ids, _manifest = publish_ingest(
+                conn, run=run, submissions=submissions, source_blocks=source_blocks,
+                operation_id=str(run["draft_id"]),
+                artifact_writer=lambda key, _text, _content_type: storage_uri(key),
+            )
+            raise _DryRun(calculation)
+    except _DryRun as dry_run:
+        return dry_run.calculation

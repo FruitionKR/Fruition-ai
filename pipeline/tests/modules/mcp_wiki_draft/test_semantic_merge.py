@@ -1,5 +1,3 @@
-from uuid import uuid4
-
 import pytest
 from pydantic import ValidationError
 
@@ -18,36 +16,40 @@ def contribution(name, target=None):
     return value
 
 
-def test_name_match_precedes_client_target_and_target_preserves_canonical_title(monkeypatch):
+def manifest(submissions, index):
+    """웹 편입의 AI 뒤 단계로 만든 manifest. 개념 목록은 웹 `list_active_concept_index` 모양이다."""
+    return calculation.build_ingest_manifest(
+        run={"document_id": "doc", "source_display_name": "Doc", "source_content_hash": "sha256:" + "0" * 64,
+             "user_id": "user", "workspace_id": "workspace"},
+        submissions=submissions,
+        source_blocks=[{"block_id": "B1", "ordinal": 1, "text": "Evidence"}],
+        current_source_blocks=[],
+        concept_index=[{"page_id": item["id"], "identity_aliases": [], **item} for item in index],
+        operation_id="operation",
+    )
+
+
+def ledger(result):
+    return {(item["slug"], item["title"]) for item in result["normalized"]["concept_ledger"]}
+
+
+def test_name_match_precedes_client_target_and_target_preserves_canonical_title():
     index = [
         {"id": "canonical", "title": "Authentication", "slug": "authentication", "status": "active"},
         {"id": "homonym", "title": "Login", "slug": "login", "status": "active"},
     ]
-    def load(_conn, workspace, **_kwargs):
-        assert workspace == "workspace"
-        return index
-    monkeypatch.setattr(calculation, "load_concept_identity_index", load)
-    concepts = calculation._combined_concepts([
+    result = manifest([
         {"window_ordinal": 1, "contributions": [contribution("Login", "canonical")]},
         {"window_ordinal": 2, "contributions": [contribution("Sign in", "canonical")]},
-    ])
-    allocated, _ = calculation._allocate_identities(
-        None, draft_id=str(uuid4()), workspace_id="workspace", concepts=concepts,
-    )
+    ], index)
     # 웹 편입과 같이 코드 이름 일치가 먼저다. 이름이 맞지 않는 개념에만 외부 AI 대상을 쓴다.
-    assert allocated[calculation.name_key("Login")]["page_id"] == "homonym"
-    assert allocated[calculation.name_key("Sign in")] == {
-        "page_id": "canonical", "slug": "authentication", "prior_status": "active", "title": "Authentication",
-    }
+    assert ledger(result) == {("login", "Login"), ("authentication", "Authentication")}
 
 
 @pytest.mark.parametrize("index", [[], [{"id": "target", "title": "Target", "slug": "target", "status": "deleted"}]])
-def test_unavailable_target_never_falls_back_to_a_new_page(monkeypatch, index):
-    monkeypatch.setattr(calculation, "load_concept_identity_index", lambda *_args, **_kwargs: index)
+def test_unavailable_target_never_falls_back_to_a_new_page(index):
     with pytest.raises(calculation.SemanticMergeError):
-        calculation._allocate_identities(
-            None, draft_id=str(uuid4()), workspace_id="workspace", concepts=[contribution("Other name", "target")],
-        )
+        manifest([{"window_ordinal": 1, "contributions": [contribution("Other name", "target")]}], index)
 
 
 def test_cross_window_decision_is_preserved_and_conflicting_targets_are_rejected():
@@ -98,10 +100,7 @@ def test_jev_decision_is_frozen_once_and_outranks_client_target(monkeypatch):
     assert by_name["Sign in"]["server_merge_target_page_id"] == "auth"
     assert by_name["Totally new"]["server_merge_target_page_id"] is None, "asked and judged new: client target unused"
     # 적용 단계는 고정된 제출로 계산하며 판정기를 다시 부르지 않는다(판정기 인자가 없다).
-    allocated, _ = calculation._allocate_identities(
-        None, draft_id=str(uuid4()), workspace_id="w", concepts=calculation._combined_concepts(frozen))
-    assert allocated[calculation.name_key("Sign in")]["page_id"] == "auth"
-    assert allocated[calculation.name_key("Totally new")]["prior_status"] == "new"
+    assert ledger(manifest(frozen, index)) == {("authentication", "Authentication"), ("totally-new", "Totally new")}
 
 
 @pytest.mark.parametrize("judge", [None, FakeJudge(error=calculation.JevUnavailable("402"))])

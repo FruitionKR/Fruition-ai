@@ -45,7 +45,7 @@ def test_frozen_moves_apply_and_contributions_replay(selected, monkeypatch):
     assert len(judge.calls) == 1
     with h._connect() as conn:
         draft = dict(conn.execute('SELECT * FROM mcp_wiki_drafts').fetchone())
-        recalculated, _ = h.apply_repository_module._recalculate(conn, draft)
+        recalculated = h.apply_repository_module._recalculate_lint(conn, draft)
         assert recalculated['preview'] == draft['preview']
         assert draft['calculation_inputs']['server_effects']['deleted_page_ids'] == ['child']
         assert conn.execute("SELECT status FROM wiki_pages WHERE id='child'").fetchone()['status'] == 'active'

@@ -321,6 +321,27 @@ CREATE INDEX IF NOT EXISTS idx_wiki_pages_workspace
 
 ALTER TABLE wiki_pages ALTER COLUMN title TYPE text;
 
+-- 예전 MCP 편입은 소스 페이지 slug를 문서 ID 그대로(`doc_...`) 썼다. 웹 편입과 같은 slug(slugify)로 바꿔
+-- 재편입이 같은 소스 페이지를 쓰게 한다. 웹 slug(slugify)는 소문자·숫자·한글·`-`만 쓰므로 그 밖의 글자가 있는 소스 slug만 고친다.
+-- 같은 문서의 웹 소스 페이지가 이미 있으면 고유 키가 겹치므로 그대로 둔다.
+UPDATE wiki_pages page
+SET slug = fixed.slug
+FROM (
+    SELECT id, workspace_id, slug, count(*) OVER (PARTITION BY workspace_id, slug) AS twins
+    FROM (
+        SELECT id, workspace_id, trim(both '-' FROM regexp_replace(lower(slug), '[^a-z0-9가-힣]+', '-', 'g')) AS slug
+        FROM wiki_pages
+        WHERE page_type = 'source' AND slug ~ '[^a-z0-9가-힣-]'
+    ) renamed
+) fixed
+WHERE page.id = fixed.id
+  AND fixed.slug <> ''
+  AND fixed.twins = 1
+  AND NOT EXISTS (
+      SELECT 1 FROM wiki_pages other
+      WHERE other.workspace_id = fixed.workspace_id AND other.page_type = 'source' AND other.slug = fixed.slug
+  );
+
 -- 자동 동일성에 쓸 수 있다고 확인된 별칭만 둔다. 기존 Markdown 별칭은 출처 불명이라 이 표로 역채우지 않는다.
 CREATE TABLE IF NOT EXISTS wiki_concept_identity_aliases (
     page_id varchar(255) NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
