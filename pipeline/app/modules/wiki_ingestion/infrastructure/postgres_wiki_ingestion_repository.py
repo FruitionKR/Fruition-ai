@@ -364,6 +364,18 @@ def apply_restored_wiki_state_and_cleanup(
                         pending_deltas,
                         publication_id=publication_id(operation_id),
                     )
+                if publication["kind"] == "MANUAL_EDIT":
+                    # 직접 편집은 API에서 임베딩하지 않는다. 웹 lint처럼 미완료로 예약해 maintenance worker 복구가 고르게 한다.
+                    from app.modules.wiki_embedding.infrastructure.bge_m3_embedding_model import BgeM3EmbeddingModel
+                    from app.modules.wiki_embedding.infrastructure.postgres_wiki_page_embedding_repository import (
+                        reserve_page_embeddings,
+                    )
+
+                    reserve_page_embeddings(
+                        conn,
+                        [str(page["page_id"]) for page in changed_pages if str(page["page_id"]) not in skipped_page_ids],
+                        BgeM3EmbeddingModel().model_name,
+                    )
                 publication["event"] = finalize_publication(
                     conn,
                     operation_id=operation_id,

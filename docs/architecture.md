@@ -31,7 +31,7 @@ Query·Agent·maintenance worker는 `AI_TASK_CONCURRENCY`(기본 1)건을 한 �
 
 ## 위키 페이지 임베딩 위치
 
-발행한 위키 페이지의 임베딩은 maintenance worker가 프로세스 안의 BGE-M3로 만든다. 웹 편입은 ingest worker가 발행만 하고 `post_ingest` command로, MCP 위키 승인 적용은 pipeline-api가 발행만 하고 Document의 `mcp_publication_index` command로 이 worker를 깨운다([docs/api/mcp-wiki.md](api/mcp-wiki.md)). pipeline-api(메모리 한도 2Gi)는 이 경로에서 BGE-M3를 올리지 않는다. 질의 임베딩과 Jev 후보 임베딩은 `EMBEDDING_SERVICE_URL`의 embedding-server를 쓴다([ADR-0026](adr/0026-embedding-server.md)).
+발행한 위키 페이지의 임베딩은 maintenance worker가 프로세스 안의 BGE-M3로 만든다. 웹 편입은 ingest worker가 발행만 하고 `post_ingest` command로, MCP 위키 승인 적용과 웹 위키 직접 편집(`PUT /wiki/pages/{page_id}/manual-edit`)은 pipeline-api가 발행만 하고 Document의 `embedding_recovery` command로 이 worker를 깨운다([docs/api/mcp-wiki.md](api/mcp-wiki.md)). 직접 편집은 웹 lint처럼 페이지 임베딩을 미완료로 예약해 worker 복구가 고르게 한다. pipeline-api(메모리 한도 2Gi)는 이 경로에서 BGE-M3를 올리지 않는다. 질의 임베딩과 Jev 후보 임베딩은 `EMBEDDING_SERVICE_URL`의 embedding-server를 쓴다([ADR-0026](adr/0026-embedding-server.md)).
 
 ## 선택적 Jev 판단
 
