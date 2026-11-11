@@ -31,6 +31,7 @@ from app.modules.mcp_wiki_draft.calculation import (
     preview_ingest,
 )
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
+from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import last_ingested_source_hash
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
     FinalizeIngestRequest,
     McpWikiActorRequest,
@@ -108,6 +109,13 @@ class PostgresMcpWikiDraftRepository:
                 if replay is not None:
                     return replay
                 reject_other_active_ingest(conn, payload.document_id, run_id)
+                if last_ingested_source_hash(conn, payload.document_id, payload.actor.workspace_id) == str(
+                    source["source_content_hash"]
+                ).removeprefix("sha256:"):
+                    # 같은 내용을 다시 편입하면 같은 위키를 다시 써 비용만 든다. 문서를 고친 뒤에는 다시 편입할 수 있다.
+                    raise McpWikiDraftError(
+                        409, "ALREADY_INGESTED", "The current document content is already ingested; edit it before ingesting again.",
+                    )
                 _check_active_limits(conn, payload.actor, limits, source_bytes)
                 conn.execute(
                     "INSERT INTO mcp_wiki_ingest_runs "

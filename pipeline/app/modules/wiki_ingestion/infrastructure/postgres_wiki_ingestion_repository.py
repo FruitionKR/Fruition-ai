@@ -1164,19 +1164,31 @@ def get_document_wiki_context(
             """,
             (document_id, workspace_id),
         ).fetchall()
-        snapshot = (
-            conn.execute(
-                "SELECT source_content_hash FROM source_block_snapshots WHERE document_id = %s",
-                (document_id,),
-            ).fetchone()
-            if blocks
-            else None
-        )
+        source_content_hash = last_ingested_source_hash(conn, document_id, workspace_id) if blocks else None
     return {
         "pages": [dict(page) for page in pages],
-        "source_content_hash": snapshot["source_content_hash"] if snapshot else None,
+        "source_content_hash": source_content_hash,
         "source_blocks": [dict(block) for block in blocks],
     }
+
+
+def last_ingested_source_hash(conn: psycopg.Connection, document_id: str, workspace_id: str) -> str | None:
+    """마지막으로 성공한 편입(웹·MCP)의 입력 Markdown SHA-256. 블록 스냅샷은 발행과 같은 트랜잭션에서 쓰이고
+    휴지통 이동이 지운다. document-svc 블록 stale 판정과 MCP 같은 내용 재편입 거절이 같은 값을 쓴다."""
+    row = conn.execute(
+        """
+        SELECT snapshot.source_content_hash
+        FROM source_block_snapshots snapshot
+        WHERE snapshot.document_id = %s
+          AND EXISTS (SELECT 1 FROM source_blocks block WHERE block.document_id = snapshot.document_id)
+          AND EXISTS (
+              SELECT 1 FROM document_wiki_links link
+              WHERE link.document_id = snapshot.document_id AND link.workspace_id = %s
+          )
+        """,
+        (document_id, workspace_id),
+    ).fetchone()
+    return str(row["source_content_hash"]) if row else None
 
 
 def delete_document_wiki_data(workspace_id: str, document_id: str) -> None:

@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from app.core.pipeline_control import task_run_id
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError
 from app.modules.mcp_wiki_draft.apply_application import ApplyClaim
-from app.modules.mcp_wiki_draft.calculation import PreviewCalculationError, publish_ingest
+from app.modules.mcp_wiki_draft.calculation import PreviewCalculationError, preview_ingest, publish_ingest
 from app.modules.mcp_wiki_draft.infrastructure.postgres_repository import connect
 from app.modules.mcp_wiki_draft.interfaces.http.apply_schemas import ApplyWikiDraftRequest
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
@@ -34,6 +34,7 @@ from app.modules.wiki_ingestion.infrastructure.wiki_maintenance import (
     finalize_lint_publication,
 )
 from app.modules.wiki_ingestion.infrastructure.wiki_publication import (
+    finalize_publication,
     object_key,
     prepare_publication,
     write_publication_text,
@@ -454,6 +455,9 @@ def _publish_ingest(
         "WHERE snapshot_id=%s ORDER BY ordinal",
         (draft["snapshot_id"],),
     ).fetchall()]
+    inputs = draft["calculation_inputs"]
+    if "effect" in inputs and not inputs["effect"]:
+        return _publish_ingest_no_change(conn, payload, draft, source_blocks), []
     prepare_publication(payload.operation_id, actor.workspace_id, actor.user_id, "INGEST", database_connect=connect)
     try:
         calculation, page_ids, manifest = publish_ingest(
@@ -476,6 +480,48 @@ def _publish_ingest(
         page_ids=page_ids,
     )
     return event, page_ids
+
+
+def _publish_ingest_no_change(
+    conn, payload: ApplyWikiDraftRequest, draft: dict[str, Any], source_blocks: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """승인한 미리보기가 공개 상태를 바꾸지 않으면 NO_CHANGE다(ADR 0046: changed=false, 무료).
+
+    finalize와 같은 계산을 savepoint 안에서 다시 해 공개 상태가 그대로인지 확인하고, 페이지·불변 객체·대기 기여·
+    임베딩을 남기지 않는다. 발행 기록은 변경 없는 결과로만 확정한다.
+    """
+    actor = payload.actor
+    try:
+        calculation = preview_ingest(
+            conn, run=draft, submissions=list(draft["normalized_submissions"]), source_blocks=source_blocks,
+        )
+    except PreviewCalculationError:
+        raise _PublicationConflict("PUBLIC_STATE_CHANGED") from None
+    _require_approved(calculation["preview"], payload, draft)
+    prepare_publication(payload.operation_id, actor.workspace_id, actor.user_id, "INGEST", database_connect=connect)
+    return finalize_publication(
+        conn,
+        operation_id=payload.operation_id,
+        workspace_id=actor.workspace_id,
+        user_id=actor.user_id,
+        kind="INGEST",
+        outcome="NO_CHANGE",
+        result={
+            "operation_id": payload.operation_id,
+            "operation_type": "ingest",
+            "status": "succeeded",
+            "workspace_id": actor.workspace_id,
+            "user_id": actor.user_id,
+            "target_document_id": str(draft["document_id"]),
+            "summary": "Wiki ingest를 완료했습니다.",
+            "changed_pages": [],
+            "failed_pages": [],
+            "deleted_pages": [],
+            "link_changes": None,
+            "failed_actions": None,
+            "ledger_contributions": [],
+        },
+    )
 
 
 def _recalculate_lint(conn, draft: dict[str, Any]) -> dict[str, Any]:
