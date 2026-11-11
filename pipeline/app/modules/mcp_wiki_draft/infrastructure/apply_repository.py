@@ -366,7 +366,7 @@ def _load_draft(conn, payload: ApplyWikiDraftRequest, *, lock: bool) -> dict[str
         for key in (
             "snapshot_id", "document_id", "grant_id", "client_id", "policy_generation",
             "origin", "spec_version", "source_version", "source_content_hash",
-            "expires_at", "source_block_count",
+            "source_display_name", "expires_at", "source_block_count",
         ):
             row[key] = run[key]
         row["lifecycle_state"] = run["state"]

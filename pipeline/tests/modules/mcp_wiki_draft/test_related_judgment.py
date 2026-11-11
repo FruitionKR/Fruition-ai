@@ -47,7 +47,7 @@ def test_exact_cutoff_provenance_across_windows(index, length, expected, monkeyp
     combined = c._combined_concepts(frozen)
     assert {link["source_statement_id"] for link in combined[0]["links"]} == {f"{i}:Incoming" for i in expected}
     allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=combined)
-    _, links = c._normalized({"document_id": "doc"}, combined, allocated, index)
+    _, links = c._normalized({"document_id": "doc", "source_display_name": "Doc"}, combined, allocated, index)
     assert links == [{"source": "concept:incoming", "target": "concept:target", "relation": "concept_related_to"}]
     assert len(model.calls) == 1
     assert all(not w["contributions"][0]["links"] for w in submissions)
@@ -59,7 +59,7 @@ def test_three_statement_limit_and_post_allocation_self_link(index):
     assert [bool(w["contributions"][0]["links"]) for w in frozen] == [True, True, True, False]
     concepts = c._combined_concepts(frozen)
     allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=concepts)
-    assert c._normalized({"document_id": "doc"}, concepts, allocated, index)[1] == []
+    assert c._normalized({"document_id": "doc", "source_display_name": "Doc"}, concepts, allocated, index)[1] == []
 
 
 def test_foreign_and_stale_targets_fail_closed(index):
@@ -71,7 +71,7 @@ def test_foreign_and_stale_targets_fail_closed(index):
     allocated, _ = c._allocate_identities(None, draft_id=str(uuid4()), workspace_id="w", concepts=concepts)
     index[0]["id"] = "replacement-with-same-name"
     with pytest.raises(c.SemanticMergeError):
-        c._normalized({"document_id": "doc"}, concepts, allocated, index)
+        c._normalized({"document_id": "doc", "source_display_name": "Doc"}, concepts, allocated, index)
 
 
 def test_server_links_obey_existing_window_bound(index, monkeypatch):

@@ -57,6 +57,8 @@ ALTER TABLE mcp_wiki_ingest_runs DROP CONSTRAINT IF EXISTS mcp_wiki_ingest_runs_
 ALTER TABLE mcp_wiki_ingest_runs ADD CONSTRAINT mcp_wiki_ingest_runs_state_check CHECK (
     state IN ('ACTIVE_WINDOWING','READY_TO_FINALIZE','AWAITING_WEB_APPROVAL','APPLYING','PUBLISHED','NO_CHANGE','CONFLICTED','HALTED','UNKNOWN','EXPIRED','CANCELLED','INVALIDATED')
 );
+-- Document source callback의 display_name. 소스 페이지 제목으로 쓴다. 이 컬럼 추가 이전에 만든 run만 NULL이다.
+ALTER TABLE mcp_wiki_ingest_runs ADD COLUMN IF NOT EXISTS source_display_name varchar(255);
 DROP INDEX IF EXISTS uq_mcp_wiki_active_document;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_mcp_wiki_active_document
     ON mcp_wiki_ingest_runs(document_id)

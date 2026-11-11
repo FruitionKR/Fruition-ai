@@ -36,7 +36,8 @@ def test_title_and_official_alias_keep_both_contributions(monkeypatch):
     result = calculation.calculate_ingest_preview(
         Connection(),
         run={"workspace_id": "ws", "document_id": "doc1", "draft_id": str(uuid4()),
-             "snapshot_id": snapshot_id, "source_version": 1, "source_content_hash": "sha256:" + "a" * 64},
+             "snapshot_id": snapshot_id, "source_version": 1, "source_content_hash": "sha256:" + "a" * 64,
+             "source_display_name": "Doc1"},
         submissions=[{"window_ordinal": 1, "contributions": concepts}],
         source_blocks=[{"block_id": "B1", "text": "First fact"}, {"block_id": "B2", "text": "Second fact"}],
     )

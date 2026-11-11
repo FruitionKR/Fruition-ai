@@ -17,7 +17,7 @@ _HASH = re.compile(r"sha256:[0-9a-f]{64}")
 _BLOCK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}")
 _MIME_TYPES = {"text/markdown", "text/x-markdown", "text/plain"}
 _RESPONSE_KEYS = {
-    "schema_version", "document_id", "workspace_id", "source_version",
+    "schema_version", "document_id", "display_name", "workspace_id", "source_version",
     "source_content_hash", "mime_type", "blocks",
 }
 _BLOCK_KEYS = {"block_id", "ordinal", "text", "content_hash"}
@@ -85,6 +85,11 @@ def _validate(value, actor, document_id, limits) -> dict:
         or set(value) != _RESPONSE_KEYS
         or value.get("schema_version") != "mcp.wiki-source.v1"
         or value.get("document_id") != document_id
+        # 표시 이름은 소스 페이지 제목·frontmatter에 그대로 들어가는 신뢰할 수 없는 텍스트다. 줄바꿈·제어 문자를 막는다.
+        or not isinstance(value.get("display_name"), str)
+        or not value["display_name"].strip()
+        or len(value["display_name"]) > 255
+        or not value["display_name"].isprintable()
         or value.get("workspace_id") != actor.workspace_id
         or type(value.get("source_version")) is not int
         or value["source_version"] < 1
