@@ -435,7 +435,7 @@ I4는 아래 canonical UTF-8 preimage를 golden vector `instruction-v1`로 고�
 
 document가 반환하는 external tool result는 `run_id`, 승인 화면으로 가는 자사 HTTPS URL, `status=awaiting_approval`만 포함한다. 승인 URL은 인증 수단이 아니며 웹에서 사용자·workspace와 현재 정책을 다시 확인한다.
 
-명시적 웹 승인에서 document가 `approval_id`를 만들고 가격 snapshot과 전액 예약을 먼저 커밋한 뒤 ai에 보낸다.
+명시적 웹 승인에서 document가 `approval_id`를 만들고 가격 snapshot과 전액 예약을 먼저 커밋한 뒤 ai에 보낸다. (2026-11-11 변경) 예약은 아래 [수수료 소유권](#수수료-소유권)의 웹 공통 사전 승인을 따른다.
 
 `POST /agent/runs/{run_id}/approve`
 
@@ -520,6 +520,7 @@ wiki 공개 상태·불변 본문 참조·기여·링크·outbox를 같은 ai DB
 - document가 가격, 전액 예약, 수수료 원장, 차감·해제·조정, receipt/event 대사를 소유한다.
 - ai `/usage`는 provider/model/token 원장 그대로 유지한다.
 - 기존 `CreditService.admit`의 부분 예약과 `releaseStale`은 MCP reservation에 적용하지 않는다. reservation type을 분리한다.
+- (2026-11-11 변경) MCP 승인 크레딧은 웹 Agent 승인과 같은 `CreditService` 공통 경로를 쓴다. `app.billing.enforce`가 꺼져 있으면 잔액을 보지 않고 예약하지 않는다. 켜져 있으면 최대 청구액을 예상 상한으로 삼아 `admit`(면제 계정 통과, 최저 비용 미만 402, 아니면 `min(최대 청구액, 가용 잔액)` 부분 예약)을 적용하고 실제 예약액을 승인 행에 고정한다. 확정 성공분 차감은 enforce와 무관하다(웹과 같다). 가격 산식(단가 × 변경 수, 상한, ingest 분량·lint 고정가), 누적 청구 멱등, receipt/event 대사, `PENDING_RECONCILIATION`, 무환불, `MCP_APPROVAL` reservation type과 `releaseStale` 제외는 그대로다. 위 "전액 예약"은 이 규칙으로 대체한다([Fruition-document#261](https://github.com/FruitionKR/Fruition-document/pull/261)).
 - 실제 성공한 승인 변경 수와 approval별 상한으로 청구한다. 부분 실패·취소·`halted` 뒤에도 확정 성공분은 청구한다. 이후 복구는 환불 사유가 아니며 오청구는 append-only adjustment로 정정한다.
 - 읽기 tool은 변경 건별 수수료 대상이 아니고 호출 한도 대상이다. 요금제 포함 여부와 한도 값은 미결이다.
 
@@ -565,7 +566,7 @@ OAuth endpoint는 RFC OAuth error를 쓴다. MCP HTTP/tool adapter와 내부 MCP
 |---|---|---|
 | 400 | `INVALID_INPUT`, `INVALID_HANDLE_FORMAT`, `UNSUPPORTED_TOOL`, `OBVIOUS_NO_OP` | schema/형식/닫힌 tool 목록 오류; no-op은 offending operation 포함, 제출 전체 미생성 |
 | 401 | `INVALID_TOKEN` | 서명·issuer·audience·만료·필수 claim 오류; `WWW-Authenticate`에 `resource_metadata` 포함 |
-| 402 | `INSUFFICIENT_CREDIT` | 최대 청구액 전액 예약 불가 |
+| 402 | `INSUFFICIENT_CREDIT` | enforce에서 가용 잔액이 최저 비용 미만(2026-11-11 변경, 이전: 최대 청구액 전액 예약 불가) |
 | 403 | `INSUFFICIENT_SCOPE` | `WWW-Authenticate`에 `error`, 필요한 `scope`, `resource_metadata` 포함 |
 | 403 | `MCP_POLICY_DISABLED`, `GRANT_REVOKED`, `PERMISSION_REVOKED` | 현재 access 판정 거절 |
 | 404 | `HANDLE_NOT_FOUND`, `RESOURCE_NOT_FOUND` | 없음과 다른 owner를 구분하지 않음 |
