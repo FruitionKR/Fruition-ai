@@ -7,8 +7,8 @@ import pytest
 
 from app.core.jev_client import JevUnavailable
 from app.modules.mcp_read.application.wiki_search import SearchWikiUseCase, WikiSearchError
-from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.mcp_read.infrastructure.jev_wiki_search_evidence import JevWikiSearchEvidence
+from app.modules.query.infrastructure.jev_evidence_selector import EvidenceCandidate
 from tests.modules.mcp_read.test_wiki_search import Repository, Search, candidate, limits, service
 from tests.modules.mcp_read.test_wiki_search import request as plain_request
 
@@ -19,11 +19,14 @@ def request(**kwargs):
 
 
 def unit_candidate(page_id: str, text: str, block_id: str = "B0001", document_id: str = "doc-a"):
-    return replace(
-        candidate(page_id, text=text, block_id=block_id, document_id=document_id),
-        unit_id=f"unit-{page_id}",
-        unit_type="evidence",
-    )
+    return candidate(page_id, text=text, block_id=block_id, document_id=document_id)
+
+
+def shared_candidate(page_ids: tuple[str, ...], text: str, block_id: str = "B0001"):
+    """본문·블록·문서가 같은 unit 묶음. 웹 후보처럼 여러 page를 가리킨다."""
+    first, _ = candidate(page_ids[0], text=text, block_id=block_id)
+    shared = EvidenceCandidate(unit=first.unit, source_titles=first.source_titles, page_ids=page_ids)
+    return [(shared, candidate(page_id, text=text, block_id=block_id)[1]) for page_id in page_ids]
 
 
 class Jev:
@@ -53,7 +56,6 @@ def with_selector(repository: Repository, selector) -> SearchWikiUseCase:
     return SearchWikiUseCase(
         repository=repository,
         embedding_search=Search(),
-        text_search=Bm25Searcher(),
         limits=limits(),
         cursor_key=b"cursor-test-key-that-is-at-least-32-bytes",
         query_embedding_model="test-embedding",
@@ -91,11 +93,11 @@ def test_selected_first_then_hybrid_and_continuation_uses_frozen_order_without_j
 
     ordered = pages(use_case)
 
-    assert ordered[:2] == ["page-d", "page-c"]
-    assert ordered[2:] == [page_id for page_id in hybrid if page_id not in {"page-c", "page-d"}]
+    assert hybrid == ["page-a", "page-b", "page-c", "page-d"]
+    assert ordered == ["page-d", "page-c", "page-a", "page-b"]
     # 네 페이지를 넘기는 동안 Jev는 첫 요청에서 한 번만 불렸다.
     assert len(jev.states) == 1
-    assert sorted(item["id"] for item in jev.states[0]["candidates"]) == [f"unit-{c.page_id}" for c in CANDIDATES]
+    assert sorted(item["id"] for item in jev.states[0]["candidates"]) == [f"unit-{page.page_id}" for _, page in CANDIDATES]
 
 
 @pytest.mark.parametrize(
@@ -103,7 +105,7 @@ def test_selected_first_then_hybrid_and_continuation_uses_frozen_order_without_j
     [
         {"version": 2},
         {"content_hash": "sha256:" + "b" * 64},
-        {"block_refs": ("B0009",)},
+        {"block_id": "B0009"},
     ],
 )
 def test_continuation_rejects_changed_version_hash_or_evidence(change: dict) -> None:
@@ -111,7 +113,7 @@ def test_continuation_rejects_changed_version_hash_or_evidence(change: dict) -> 
     jev = Jev()
     use_case = with_jev(repository, jev)
     cursor = use_case.execute(request())["next_cursor"]
-    repository.candidates[1] = replace(repository.candidates[1], **change)
+    repository.candidates[1] = candidate("page-b", text="query beta", **{"block_id": "B0002", **change})
 
     with pytest.raises(WikiSearchError) as exc:
         use_case.execute(request(cursor=cursor))
@@ -138,15 +140,13 @@ def test_unavailable_or_disabled_jev_keeps_hybrid_order() -> None:
     assert pages(with_jev(Repository(list(CANDIDATES)), Jev(fail=True))) == hybrid
 
 
-def test_jev_sees_only_bounded_candidates_with_real_evidence_and_limits_apply() -> None:
+def test_jev_sees_web_candidates_and_shared_evidence_moves_its_pages_together() -> None:
     repository = Repository([
-        unit_candidate("page-a", "refund policy", block_id="B0001"),
-        # 같은 본문·블록·문서는 하나로 묶여 함께 앞으로 간다.
-        unit_candidate("page-b", "refund policy", block_id="B0001"),
+        unit_candidate("page-x", "query unrelated", block_id="B0009"),
+        # 같은 본문·블록·문서는 웹 후보에서 하나로 묶여 있고, 고르면 묶인 page가 함께 앞으로 간다.
+        *shared_candidate(("page-a", "page-b"), "refund policy", block_id="B0001"),
         # 이미 고른 블록만 가리키면 건너뛴다.
         unit_candidate("page-c", "refund again", block_id="B0001"),
-        # unit이나 근거 블록이 없으면 판정 후보가 아니다.
-        replace(candidate("page-d", text="refund no unit"), unit_id=None),
     ])
     jev = Jev()
     use_case = with_jev(repository, jev, max_selected=1)
@@ -154,19 +154,44 @@ def test_jev_sees_only_bounded_candidates_with_real_evidence_and_limits_apply() 
     response = use_case.execute(request(page_size=2))
 
     assert [item["page_id"] for item in response["results"]] == ["page-a", "page-b"]
+    assert response["results"][1]["snippet"] == "refund policy"
     [state] = jev.states
     assert [(item["id"], item["page_ids"]) for item in sorted(state["candidates"], key=lambda item: item["id"])] == [
         ("unit-page-a", ["page-a", "page-b"]),
         ("unit-page-c", ["page-c"]),
+        ("unit-page-x", ["page-x"]),
     ]
     call = repository.calls[0]
     assert (call["candidate_limit"], call["scan_page_limit"], call["scan_unit_limit"]) == (4, 20, 100)
 
 
+def test_jev_selected_unit_becomes_the_page_snippet_and_survives_continuation() -> None:
+    first, page_a = candidate("page-a", text="query alpha", block_id="B0001")
+    second, _ = candidate("page-b", text="query beta", block_id="B0002")
+    # page-a의 두 번째 unit이 Jev에 뽑힌다. 하이브리드 대표 unit은 첫 번째 unit이다.
+    selected = EvidenceCandidate(
+        unit=replace(first.unit, id="unit-page-a-refund", text="refund for page a", source_block_ids=["B0003"]),
+        source_titles=first.source_titles,
+        page_ids=("page-a",),
+    )
+    repository = Repository([(second, candidate("page-b")[1]), (first, page_a), (selected, page_a)])
+    jev = Jev()
+    use_case = with_jev(repository, jev)
+
+    head = use_case.execute(request())
+    tail = use_case.execute(request(cursor=head["next_cursor"]))
+
+    assert head["results"][0]["page_id"] == "page-a"
+    assert head["results"][0]["snippet"] == "refund for page a"
+    assert head["results"][0]["evidence"] == [{"document_id": "doc-a", "block_id": "B0003"}]
+    assert tail["results"][0]["page_id"] == "page-b"
+    assert len(jev.states) == 1
+
+
 def test_selector_ids_outside_candidates_are_ignored() -> None:
     class Inventing:
         def select(self, _actor, _query, _candidates):
-            return ["page-unknown", "page-b", "page-b"]
+            return ["unit-unknown", "unit-page-b", "unit-page-b"]
 
     use_case = with_selector(Repository([candidate("page-a"), candidate("page-b")]), Inventing())
 

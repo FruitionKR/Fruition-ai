@@ -18,7 +18,6 @@ from app.modules.mcp_read.application.wiki_search import (
     WikiSearchRequest,
 )
 from app.modules.mcp_read.interfaces.http import routes
-from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 from app.modules.wiki_embedding.infrastructure.remote_embedding_model import RemoteEmbeddingModel
 
@@ -82,7 +81,6 @@ def test_remote_embedding_consumes_remaining_deadline_and_fails_closed() -> None
     use_case = SearchWikiUseCase(
         repository=_UnusedRepository(),
         embedding_search=StoredWikiPageEmbeddingSearch(model).without_live_embedding(),
-        text_search=Bm25Searcher(),
         limits=_limits(),
         cursor_key=b"cursor-test-key-that-is-at-least-32-bytes",
         query_embedding_model="test-model",

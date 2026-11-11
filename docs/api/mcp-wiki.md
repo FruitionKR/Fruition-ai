@@ -57,28 +57,29 @@ document-svc가 현재 MCP grant와 workspace 권한을 확인한 뒤 service au
 }
 ```
 
-`page_type`은 `SOURCE | CONCEPT`다. page ID는 기존 varchar 도메인 ID를 그대로 쓰며 UUID로 바꾸지 않는다. `version`은 published page의 `updated_at` microsecond 값이고, `content_hash`는 그 변경 이후 완료된 현재 embedding model의 stored page representation hash다. 결과에는 raw Markdown/object URI/internal payload가 없고 title/snippet/evidence만 있으며 모든 workspace text는 `UNTRUSTED_WORKSPACE_CONTENT` 데이터다. link/image 객체는 반환하지 않는다.
+`page_type`은 `SOURCE | CONCEPT`다. page ID는 기존 varchar 도메인 ID를 그대로 쓰며 UUID로 바꾸지 않는다. `version`은 published page의 `updated_at` microsecond 값이고, `content_hash`는 page 제목과 그 page의 현재 embedding unit ID 목록(unit ID는 page·종류·block·본문의 해시)을 묶은 SHA-256이다. page embedding 완료 여부와 무관하며, 제목이나 검색 unit이 바뀌면 달라진다. 결과에는 raw Markdown/object URI/internal payload가 없고 title/snippet/evidence만 있으며 모든 workspace text는 `UNTRUSTED_WORKSPACE_CONTENT` 데이터다. link/image 객체는 반환하지 않는다.
 
 `snippet`은 별도 page read로 이어지는 의도적으로 길이를 제한한 검색 excerpt다. snippet 상한에서 잘릴 수 있지만 이는 결과 pagination을 뜻하지 않으므로 top-level `truncated`는 `next_cursor` 유무만 나타낸다.
 
 ## 4. 검색 경계
 
-- active page와 요청 actor의 exact `workspace_id`만 SQL 후보에 포함한다.
-- 완전한 workspace 검색 scope가 명시적 page/unit/text-byte/vector-dimension cap 안인지 cap+1 metadata probe로 먼저 판정한다. 초과하면 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`로 거부하고 unit text rank/vector unnest를 실행하지 않는다.
-- admission에 성공한 scope는 전체 page metadata와 unit text의 lexical score, 전체 current page vector의 semantic score를 계산한 후에만 candidate limit을 적용한다. evidence 배열과 statement timeout도 응답 slicing 전에 적용한다.
-- 현재 page update 뒤 완료된 stored page vector만 후보 publication identity에 쓴다. relevant unit의 완료 stored vector가 있으면 semantic rerank에 쓰고, 없으면 semantic score 0으로 두며 본문을 즉석 임베딩하지 않는다. 질문은 한 번만 임베딩한다.
-- 기존 `Bm25Searcher`, stored dense score, 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
-- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 이미 bounded된 검색 후보의 snippet unit(본문·document-qualified block ref·unit 종류·가중치)뿐이며 workspace 전체 unit을 다시 읽지 않는다. 본문·블록·문서가 같은 후보는 하나로 묶고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 후보를 고른 순서로 앞에 두고 나머지는 하이브리드 순서를 유지한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
+MCP 검색은 웹 질의의 근거 선택과 같은 코드를 쓴다. MCP 전용 코드는 외부 경계(범위 상한, 결과 projection, cursor, `UNTRUSTED_WORKSPACE_CONTENT` 표시)뿐이다.
+
+- 후보: 웹 `JevEvidenceSelector`와 같이 `PostgresWikiRepository.list_workspace_embedding_units`로 요청 actor의 exact `workspace_id`에 있는 active source·concept page의 embedding unit을 읽고, `rank_candidates`로 (본문, document-qualified block ref, 문서)가 같은 unit을 하나로 묶은 뒤 BGE-M3 0.75 + BM25 0.25 점수로 정렬한다. 웹과 같은 `StoredWikiPageEmbeddingSearch.without_live_embedding()`·`Bm25Searcher`를 쓰므로 완료된 unit vector가 있으면 dense 점수에 쓰고, 없으면 dense 0으로 두며 본문을 즉석 임베딩하지 않는다. page embedding(`wiki_page_embeddings`)이 없거나 page 변경 뒤 아직 다시 계산되지 않아도 unit만 있으면 찾는다. 질문은 한 번만 임베딩한다.
+- 범위 상한: unit을 `MAX_SCAN_UNITS + 1`행까지만 읽고, unit 수·page 수(`MAX_SCAN_PAGES`)·unit 본문과 page 제목 UTF-8 byte 합(`MAX_CANDIDATE_BYTES`) 중 하나라도 넘으면 정렬 전에 재시도할 수 없는 `503 DEPENDENCY_UNAVAILABLE`로 거부한다. 임의 일부만 검색해 recall을 버리지 않는다.
+- 정렬 상위 `MAX_CANDIDATES`개 unit 후보를 page 결과로 바꾼다. 후보 순서대로 처음 나온 page를 결과로 두고, 그 page를 처음 가리킨 unit이 snippet과 evidence가 된다. 묶인 후보가 여러 page를 가리키면 각 page가 같은 snippet을 가진다. page 결과도 `MAX_CANDIDATES`개까지다. 그 사이 삭제된 page는 결과에서 뺀다.
+- 기존 document-qualified source reference parser를 쓴다. 답변 생성기, evaluator, summarizer, Agent 경로는 만들거나 호출하지 않는다.
+- 새 검색(cursor 없음)에서는 웹 질의와 같은 `JEV_EVIDENCE_ENABLED`·`TYPESAFE_API_KEY`·응답 예산·묶음 규칙(`select_evidence`)으로 Jev 근거 판정을 한 번 부른다. 판정 후보는 위의 unit 후보 그대로이고, 이미 고른 블록만 가리키는 후보는 건너뛰며, 최대 `QUERY_EVIDENCE_LIMIT`(기본 8)개를 고른다. 고른 unit이 가리키는 page를 고른 순서로 앞에 두고 그 unit을 snippet으로 쓰며, 나머지는 하이브리드 순서를 유지한다. 웹은 상위 200개를 판정하지만 MCP는 `MAX_CANDIDATES`개를 판정한다. Jev가 꺼져 있거나 쓸 수 없으면 하이브리드 순서만 쓰며 서버 생성형 LLM을 부르지 않는다. 요청의 `jev_allowed`가 `true`일 때만 부른다. 호출은 model usage ledger의 `kind=mcp_wiki_search_jev_evidence`로 기록하며 읽기 요금은 바꾸지 않는다.
 - query embedding 호출은 model usage ledger의 `kind=mcp_wiki_search_query_embedding`으로 answer generation과 분리해 기록한다.
 - 검색 실행은 API event loop 밖의 worker thread에서 수행하고, deadline-aware remote embedding transport만 허용한다. 로컬 model fallback은 이 endpoint에서 지원하지 않는다.
 
-Candidate retrieval은 admission에 성공한 작은 scope에서 lexical match와 semantic-only page를 모두 유지한다. 현재 array vector schema에는 index-supported nearest-neighbor 연산이 없으므로 cap을 넘는 workspace는 임의 prefix 검색으로 recall을 버리지 않고 명시적 capacity error로 거부한다. 대규모 workspace 지원은 실제 vector index/schema·deployment 결정 후에 별도로 해결해야 한다.
+현재 array vector schema에는 index-supported nearest-neighbor 연산이 없어 dense 점수는 웹과 같이 Python에서 계산한다. cap을 넘는 workspace는 명시적 capacity error로 거부하며, 대규모 workspace 지원은 실제 vector index/schema·deployment 결정 후에 별도로 해결해야 한다.
 
 ## 5. Cursor
 
-Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant/client/policy/spec/tool, query hash, page size, 정렬 버전, offset, 전체 bounded 후보의 ordered page ID/version/content hash/document-qualified evidence locator를 묶는다. durable snapshot/cache는 만들지 않는다.
+Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant/client/policy/spec/tool, query hash, page size, 정렬 버전(`mcp-wiki-web-evidence-v2`), offset, 전체 bounded 후보의 ordered page ID/version/content hash/snippet unit ID/document-qualified evidence locator를 묶는다. 이전 정렬 버전의 cursor는 `HANDLE_NOT_FOUND`다. durable snapshot/cache는 만들지 않는다.
 
-다음 페이지마다 같은 bounded 검색을 다시 실행하되 Jev와 하이브리드 정렬은 다시 하지 않는다. 현재 후보의 page ID/version/hash/evidence가 cursor에 고정한 후보 집합과 같으면 cursor의 순서를 그대로 쓴다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, 후보 집합이나 page version/hash/evidence가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
+다음 페이지마다 같은 bounded 검색을 다시 실행하되 Jev는 다시 부르지 않는다. 현재 하이브리드 page 집합과 각 page의 version/hash, snippet unit, evidence가 cursor에 고정한 값과 같으면 cursor의 순서를 그대로 쓴다. 서명·소유권·반복 인자가 다르면 `HANDLE_NOT_FOUND`, 후보 집합이나 page version/hash/evidence가 바뀌면 `STALE_CURSOR`다. TTL은 이 slice에서 임의로 만들지 않았다.
 
 ## 6. 설정과 비활성 상태
 
@@ -97,11 +98,11 @@ Cursor는 HMAC-SHA256으로 서명한 stateless payload다. user/workspace/grant
 
 `MCP_WIKI_SEARCH_CURSOR_HMAC_KEY`는 UTF-8 32 bytes 이상이어야 한다. 하나라도 없거나 잘못되면 API는 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다. 테스트 값은 focused test가 직접 주입하며 제품 상한이나 TTL을 뜻하지 않는다.
 
-`MAX_CANDIDATE_BYTES`는 candidate response만이 아니라 admission에서 검사하는 전체 title/slug/summary/unit text UTF-8 byte 합의 상한이다. page/unit/vector cap을 넘는 workspace는 같은 상태에서 재시도해도 성공하지 않는 capacity error를 반환한다.
+`MAX_CANDIDATE_BYTES`는 candidate response만이 아니라 범위 검사에서 보는 workspace 전체 unit 본문과 page 제목 UTF-8 byte 합의 상한이다. `MAX_VECTOR_DIMENSIONS`는 질문 vector 차원의 상한이며, 차원이 다른 저장 vector는 dense 0이다. page/unit/byte cap을 넘는 workspace는 같은 상태에서 재시도해도 성공하지 않는 capacity error를 반환한다.
 
 Query embedding에는 `EMBEDDING_SERVICE_URL`, `INTERNAL_CALLBACK_TOKEN`, `EMBEDDING_MODEL_NAME`이 필요하다. Remote transport는 남은 MCP deadline보다 오래 기다리지 않으며, service URL이 없으면 local inference로 fallback하지 않고 fail-closed `503 DEPENDENCY_UNAVAILABLE`이다.
 
-Embedding/provider, bounded SQL statement, BM25 검색의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. 다만 model-usage ledger/DB connection 수립과 이미 시작한 Python BM25 함수는 강제 중단되지 않으며, 입력 cap과 전·후 deadline check로 제한한다.
+Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서 수행되어 API event loop를 막지 않는다. 웹 저장소를 그대로 쓰므로 DB statement timeout은 따로 걸지 않는다. model-usage ledger/DB connection 수립, 이미 시작한 SQL과 Python 점수 계산은 강제 중단되지 않으며, unit 행 상한과 전·후 deadline check로 제한한다.
 
 ## 7. 오류
 
@@ -122,7 +123,8 @@ AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki
 ## 11. 구현 파일
 
 - application/cursor: `pipeline/app/modules/mcp_read/application/wiki_search.py`
-- bounded PostgreSQL candidate adapter: `pipeline/app/modules/mcp_read/infrastructure/postgres_wiki_search_repository.py`
+- 웹 근거 후보 adapter(범위 상한·page version/hash): `pipeline/app/modules/mcp_read/infrastructure/web_wiki_search_candidates.py`, 공유 후보 정렬 `pipeline/app/modules/query/infrastructure/jev_evidence_selector.py`의 `rank_candidates`
+- Jev 근거 판정 adapter: `pipeline/app/modules/mcp_read/infrastructure/jev_wiki_search_evidence.py`
 - exact DTO/route: `pipeline/app/modules/mcp_read/interfaces/http/{schemas,routes}.py`
 - composition root: `pipeline/api.py`
 

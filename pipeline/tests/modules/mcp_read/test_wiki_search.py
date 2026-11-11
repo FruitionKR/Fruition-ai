@@ -10,13 +10,16 @@ import pytest
 from app.modules.mcp_read.application.wiki_search import (
     SearchWikiUseCase,
     WikiSearchActor,
-    WikiSearchCandidate,
+    WikiSearchCandidates,
     WikiSearchError,
     WikiSearchLimits,
+    WikiSearchPage,
     WikiSearchRequest,
 )
-from app.modules.query.domain.entities import SemanticQueryEmbedding
+from app.modules.mcp_read.infrastructure.web_wiki_search_candidates import WebWikiSearchCandidates
+from app.modules.query.domain.entities import SemanticQueryEmbedding, WikiEmbeddingUnit
 from app.modules.query.infrastructure.bm25_searcher import Bm25Searcher
+from app.modules.query.infrastructure.jev_evidence_selector import EvidenceCandidate
 from app.modules.query.infrastructure.stored_wiki_page_embedding_search import StoredWikiPageEmbeddingSearch
 
 
@@ -59,52 +62,53 @@ def candidate(
     version: int = 1,
     text: str = "query evidence",
     page_type: str = "concept",
-) -> WikiSearchCandidate:
-    return WikiSearchCandidate(
+    title: str | None = None,
+    content_hash: str = HASH,
+) -> tuple[EvidenceCandidate, WikiSearchPage]:
+    """웹 근거 후보 하나와 그 page metadata."""
+    unit = WikiEmbeddingUnit(
+        id=f"unit-{page_id}",
+        page_id=page_id,
+        source_document_id=document_id,
+        unit_type="evidence",
+        source_block_ids=[block_id],
+        text=text,
+    )
+    page = WikiSearchPage(
         page_id=page_id,
         page_type=page_type,
-        title=f"Title {page_id}",
-        summary="summary",
+        title=title if title is not None else f"Title {page_id}",
         version=version,
-        content_hash=HASH,
-        embedding_text=text,
-        source_document_id=document_id,
-        block_refs=(block_id,),
-        evidence_count=1,
-        materialized_bytes=len(text.encode()),
+        content_hash=content_hash,
     )
+    return EvidenceCandidate(unit=unit, source_titles=(page.title,), page_ids=(page_id,)), page
 
 
 class Repository:
-    def __init__(self, candidates: list[WikiSearchCandidate]) -> None:
+    """후보를 받은 순서(웹 후보 순위) 그대로 돌려준다."""
+
+    def __init__(self, candidates: list[tuple[EvidenceCandidate, WikiSearchPage]]) -> None:
         self.candidates = candidates
         self.calls: list[dict] = []
 
-    def list_candidates(self, **kwargs):
+    def list_candidates(self, **kwargs) -> WikiSearchCandidates:
         self.calls.append(kwargs)
-        return list(self.candidates)
+        return WikiSearchCandidates(
+            # 같은 묶음 후보를 여러 page가 공유하면 한 번만 둔다.
+            ranked=list({id(item): item for item, _ in self.candidates}.values()),
+            pages={page.page_id: page for _, page in self.candidates},
+        )
 
 
 class Search:
-    def __init__(self, scores: dict[str, float] | None = None) -> None:
-        self.scores = scores or {}
-        self.queries: list[str] = []
-        self.documents: list[list[str]] = []
-
     def embed_query(self, query: str) -> SemanticQueryEmbedding:
-        self.queries.append(query)
         return SemanticQueryEmbedding(model_name="test-embedding", vector=[1.0, 0.0])
 
-    def score(self, query: str, documents: list[str]) -> list[float]:
-        self.documents.append(documents)
-        return [self.scores.get(document, 0.0) for document in documents]
 
-
-def service(repository: Repository, embedding=None, *, search_limits=None, tracker=None) -> SearchWikiUseCase:
+def service(repository, embedding=None, *, search_limits=None, tracker=None) -> SearchWikiUseCase:
     return SearchWikiUseCase(
         repository=repository,
         embedding_search=embedding or Search(),
-        text_search=Bm25Searcher(),
         limits=search_limits or limits(),
         cursor_key=b"cursor-test-key-that-is-at-least-32-bytes",
         query_embedding_model="test-embedding",
@@ -134,8 +138,11 @@ def test_paginates_with_document_qualified_collision_safe_evidence() -> None:
     assert first["results"][0]["evidence"] == [{"document_id": "doc-a", "block_id": "B0001"}]
     assert second["results"][0]["evidence"] == [{"document_id": "doc-b", "block_id": "B0001"}]
     assert repository.calls[0]["workspace_id"] == "workspace-1"
+    assert repository.calls[0]["query"] == "query"
     assert all(call["candidate_limit"] == 4 for call in repository.calls)
     assert all(call["scan_page_limit"] == 20 for call in repository.calls)
+    assert all(call["scan_unit_limit"] == 100 for call in repository.calls)
+    assert all(call["materialized_bytes_limit"] == 4096 for call in repository.calls)
 
 
 @pytest.mark.parametrize(
@@ -169,7 +176,7 @@ def test_cursor_revalidates_page_versions_hashes_and_order() -> None:
     repository = Repository([candidate("page-a"), candidate("page-b")])
     use_case = service(repository)
     cursor = use_case.execute(request())["next_cursor"]
-    repository.candidates[1] = replace(repository.candidates[1], version=2)
+    repository.candidates[1] = candidate("page-b", version=2)
 
     with pytest.raises(WikiSearchError) as exc:
         use_case.execute(request(cursor=cursor))
@@ -187,10 +194,13 @@ def test_rejects_invalid_sizes_and_repository_bound_violations() -> None:
         use_case.execute(request())
     assert rows.value.code == "DEPENDENCY_UNAVAILABLE"
 
-    oversized = replace(candidate("page-a"), materialized_bytes=5000)
-    with pytest.raises(WikiSearchError) as byte_limit:
-        service(Repository([oversized])).execute(request())
-    assert byte_limit.value.code == "DEPENDENCY_UNAVAILABLE"
+    with pytest.raises(WikiSearchError) as page_type:
+        service(Repository([candidate("page-a", page_type="web")])).execute(request())
+    assert page_type.value.code == "DEPENDENCY_UNAVAILABLE"
+
+    with pytest.raises(WikiSearchError) as content_hash:
+        service(Repository([candidate("page-a", content_hash="sha256:bad")])).execute(request())
+    assert content_hash.value.code == "DEPENDENCY_UNAVAILABLE"
 
 
 @pytest.mark.parametrize("vector", [[], [1.0, 2.0, 3.0], [1.0, float("nan")]])
@@ -212,7 +222,7 @@ def test_rejects_invalid_remote_query_vectors_before_database(vector: list[float
 
 
 def test_response_bytes_and_strings_are_bounded() -> None:
-    long_title = replace(candidate("page-a"), title="x" * 513)
+    long_title = candidate("page-a", title="x" * 513)
     with pytest.raises(WikiSearchError) as title:
         service(Repository([long_title])).execute(request())
     assert title.value.code == "RESPONSE_LIMIT_EXCEEDED"
@@ -259,9 +269,12 @@ def test_only_query_is_embedded_and_usage_scope_is_separate() -> None:
             self.texts.extend(texts)
             return [[1.0, 0.0] for _ in texts]
 
-    class EmptyRows:
+    class Rows:
+        def __init__(self, rows) -> None:
+            self._rows = rows
+
         def fetchall(self):
-            return []
+            return self._rows
 
     class Connection:
         def __enter__(self):
@@ -270,8 +283,16 @@ def test_only_query_is_embedded_and_usage_scope_is_separate() -> None:
         def __exit__(self, *_args):
             return None
 
-        def execute(self, _sql, _params):
-            return EmptyRows()
+        def execute(self, sql, _params):
+            # 저장 벡터는 없고 page metadata만 있다.
+            if "FROM wiki_pages" in sql:
+                return Rows([{"id": "page-a", "page_type": "concept", "title": "Title page-a", "version": 1}])
+            return Rows([])
+
+    class Units:
+        def list_workspace_embedding_units(self, workspace_id, limit=None):
+            item, _page = candidate("page-a", text="body without stored vector")
+            return [(item.unit, "Title page-a")]
 
     tracked: list[tuple[str, str, str]] = []
 
@@ -282,12 +303,14 @@ def test_only_query_is_embedded_and_usage_scope_is_separate() -> None:
 
     model = Model()
     embedding = StoredWikiPageEmbeddingSearch(model).without_live_embedding()
+    repository = WebWikiSearchCandidates(embedding, Bm25Searcher(), wiki_repository=Units())
     with patch(
-        "app.modules.query.infrastructure.stored_wiki_page_embedding_search.database.connect",
+        "app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository.connect",
         return_value=Connection(),
     ):
-        service(Repository([candidate("page-a", text="body without stored vector")]), embedding, tracker=tracker).execute(request())
+        response = service(repository, embedding, tracker=tracker).execute(request())
 
+    assert [item["page_id"] for item in response["results"]] == ["page-a"]
     assert model.texts == ["query"]
     assert tracked == [(ACTOR.invocation_id, "test-embedding", "query")]
 

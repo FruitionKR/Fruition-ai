@@ -398,8 +398,10 @@ class PostgresWikiRepository(WikiRepositoryPort):
             units_by_page_id.setdefault(unit.page_id, []).append(unit)
         return units_by_page_id
 
-    def list_workspace_embedding_units(self, workspace_id: str) -> list[tuple[WikiEmbeddingUnit, str]]:
-        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다."""
+    def list_workspace_embedding_units(
+        self, workspace_id: str, limit: int | None = None
+    ) -> list[tuple[WikiEmbeddingUnit, str]]:
+        """workspace의 활성 source·concept 페이지 unit과 그 페이지 제목을 돌려준다. limit이 None이면 전부다."""
         with database.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -412,8 +414,9 @@ class PostgresWikiRepository(WikiRepositoryPort):
                   AND p.workspace_id = %s
                   AND p.page_type IN ('source', 'concept')
                 ORDER BY eu.id
+                LIMIT %s
                 """,
-                (workspace_id,),
+                (workspace_id, limit),
             ).fetchall()
         return [(_embedding_unit(row), row["page_title"] or "") for row in rows]
 
