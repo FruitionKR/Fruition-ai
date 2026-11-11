@@ -113,7 +113,7 @@ Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서
 
 ## 10. `get_wiki_page`
 
-AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki_page`는 웹 상세 조회(`WikiService.findById`)를 그대로 쓰고, 그 조회가 부르는 기존 `GET /wiki/pages/{page_id}?workspace_id=...`만 AI에 닿는다. 본문은 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 고른다. 크기 제한·sanitize·`mcp.wiki-page.v1` 응답·hash는 document-svc의 MCP 경계가 맡는다(Fruition-document `docs/api/mcp-read.md`).
+AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki_page`는 웹 상세 조회(`WikiService.read`)를 그대로 쓰고, 그 조회가 부르는 기존 `GET /wiki/pages/{page_id}?workspace_id=...`와 읽기 뒤 변경 확인용 `POST /wiki/pages/lookup`만 AI에 닿는다. 본문은 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 고른다. 빈 본문 정상 반환·`PAGE_CHANGED`·읽기 deadline·크기 제한·sanitize·`mcp.wiki-page.v1` 응답·hash는 document-svc의 MCP 경계가 맡는다(Fruition-document `docs/api/mcp-read.md`).
 
 ## 11. 구현 파일
 

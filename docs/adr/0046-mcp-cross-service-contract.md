@@ -266,7 +266,7 @@ External input은 `{ "query": "<nonblank bounded text>", "cursor": null, "page_s
 
 ### `get_wiki_page`
 
-External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<existing wiki page id>" }`뿐이다. client가 workspace/user/cursor를 보내지 않으며 document가 현재 authorization을 검증해 workspace context를 만든다. document는 service authentication으로 기존 AI route `GET /wiki/pages/{page_id}?workspace_id=<validated context>&mcp_read=true`를 호출한다. `mcp_read` 없는 legacy GET 계약은 바꾸지 않는다.
+External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<existing wiki page id>" }`뿐이다. client가 workspace/user/cursor를 보내지 않으며 document가 현재 authorization을 검증해 workspace context를 만든다. document는 웹 상세 조회(`WikiService.read`, 기존 AI route `GET /wiki/pages/{page_id}?workspace_id=<validated context>`)를 그대로 써서 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 본문을 고른다. MCP 전용 AI route는 두지 않는다(2026-11 `mcp_read` 분기 제거).
 
 ```json
 {
@@ -282,7 +282,7 @@ External input은 기존 bounded page ID grammar를 통과한 `{ "page_id": "<ex
 
 응답은 정확히 `schema_version`, `page_id`, `page_type`, `title`, `body`, `content_hash`, `data_boundary`의 일곱 text field다. `version`, `evidence`, `quote`, `next_cursor`, `truncated`, chunk 또는 raw-hash field는 없다. body는 한 번에 반환되며 비어 있을 수 있다. body·metadata·전체 response 중 어느 하나가 bounded limit을 넘으면 조용히 자르지 않고 `RESPONSE_LIMIT_EXCEEDED`로 거절한다.
 
-AI는 active page의 현재 metadata/body가 read 중 바뀌지 않았는지 확인한 뒤, raw UTF-8 body의 SHA-256을 internal `content_hash`로 반환한다. document는 이 raw hash를 먼저 검증한 뒤 기존 Markdown sanitizer로 title/body를 neutralize하고, public `content_hash`를 **반환한 sanitized body의 exact UTF-8 SHA-256**으로 다시 계산한다. 따라서 세 identity를 섞지 않는다: AI raw body/storage identity, MCP public returned-representation identity, 그리고 검색의 version/hash/evidence identity는 각각 별개다. 이 read는 immutable publication, approval/apply identity 또는 I8 publication identity를 주장하지 않으며 I8을 기다리지 않는다.
+document는 본문을 고른 뒤 page metadata(`page_type`, `title`, `markdown_uri`, `status`, `updated_at`)와 최신 revision을 다시 읽어 read 중 바뀌었거나 active가 아니면 retryable `PAGE_CHANGED`로 거절한다. 전체 읽기는 `MCP_WIKI_PAGE_DEADLINE_MS` 안에 끝나야 하고 넘으면 `DEPENDENCY_UNAVAILABLE`이다. 저장 객체를 읽었는데 비어 있는 본문은 빈 `body`로 정상 반환하고, 끝내 본문을 구하지 못하면 `DEPENDENCY_UNAVAILABLE`이다. document는 기존 Markdown sanitizer로 title/body를 neutralize하고, public `content_hash`를 **반환한 sanitized body의 exact UTF-8 SHA-256**으로 계산한다. 따라서 identity를 섞지 않는다: 저장 본문 identity, MCP public returned-representation identity, 그리고 검색의 version/hash/evidence identity는 각각 별개다. 이 read는 immutable publication, approval/apply identity 또는 I8 publication identity를 주장하지 않으며 I8을 기다리지 않는다.
 
 ### `find_documents`
 
@@ -402,7 +402,10 @@ operation top-level shape와 argument key 집합은 기존 `AgentPlanOperation`/
 | `move_document` | existing document, positive base | `document_id`, `folder_id`(folder ID/null/result ref), `position`(null 또는 0 이상 integer), `base_version` |
 | `rename_document` | existing document, positive base | `document_id`, `display_name`(nonblank bounded text), `base_version` |
 | `create_document` | `target_type=document`, target/base null | `display_name`, `folder_id`(folder ID/null/result ref), `content_artifact_id`, `content_hash` |
+| `create_document`(MCP PDF 변환본) | `target_type=document`, target/base null | `display_name`, `folder_id`(folder ID/null/result ref), `content_result_key`(`tmp/mcp-convert/{workspace_id}/{conversion_id}/final.json`), `content_hash`, `source_document_id`, `source_content_hash`. artifact를 싣지 않는다 |
 | `apply_document_edit` | existing document, positive base | `document_id`, `base_version`, `target`, `content_artifact_id`, `content_hash` |
+
+PDF 변환본 `create_document`는 Fruition-document `finalize_pdf_conversion`의 MCP proposal에서만 받고 내부 Agent planning(LLM) 계획은 받지 않는다. 본문은 artifact가 아니라 같은 workspace·user의 MCP PDF 변환 세션이 finalize한 결과 key와 그 `content_hash`다. document가 승인·실행 때 원본 PDF 권한과 `source_content_hash`를 다시 확인하고, 실행 때 key에서 결과를 읽어 hash를 확인한 뒤 웹 변환과 같은 코드로 저장한다(`docs/api/agent.md`). 아래 artifact 참조 규칙(모든 문서 mutation이 artifact 하나를 참조)은 이 변형에 적용하지 않는다.
 
 result reference는 다른 object 모양을 허용하지 않는다. destination folder는 `{ "$operation_result": "<earlier create_folder operation id>", "field": "id" }`, version은 `{ "$operation_result": "<earlier same-target operation id>", "field": "current_version" }`만 허용한다. reference한 operation은 `depends_on`에 있어야 한다. direct scalar target/base/parent는 대응 top-level 값과 같아야 하고 result ref는 위 null/dependency 규칙을 따라야 한다. hierarchy snapshot에 없는 target/destination, 자기 하위 folder 이동, target folder 자체의 이동/rename, folder 범위 이탈도 거절한다.
 
