@@ -19,6 +19,7 @@ from app.modules.wiki_ingestion.infrastructure.pending_contributions import with
 from app.modules.wiki_ingestion.domain.concept_entries import (
     ENTRY_REFERENCE,
     render_entry_index,
+    replay_concept_entries,
 )
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
@@ -138,14 +139,18 @@ def persist_wiki_outputs(
         markdown=manual_source_markdown,
         operation_id=operation_id,
     )
+    # Generated pages already include their same_concept evidence in the merged contribution.
+    generated_slugs = {str(page_payload(page)["slug"]) for page in manifest.get("concept_pages", [])}
+    generated_slugs.intersection_update(str(concept["slug"]) for concept in normalized.get("concept_ledger", []))
+    update_decisions = (manifest.get("meaning_clusters") or {}).get("concept_update_decisions", [])
+    if isinstance(update_decisions, list):
+        update_decisions = [decision for decision in update_decisions
+                            if isinstance(decision, dict) and decision.get("concept_slug") not in generated_slugs]
     if operation_id:
         prepared_concept_updates = _prepare_concept_update_decisions(
             conn,
             workspace_id,
-            (manifest.get("meaning_clusters") or {}).get(
-                "concept_update_decisions",
-                [],
-            ),
+            update_decisions,
             document_id,
             operation_id,
         )
@@ -166,7 +171,7 @@ def persist_wiki_outputs(
         document_id,
         workspace_id,
         operation_id,
-        (manifest.get("meaning_clusters") or {}).get("concept_update_decisions", []),
+        update_decisions,
     )
     # 기존 개념 갱신(same_concept)도 이 문서의 직접 개념 기여로 기록된다. 재생과 같게 문서 연결을 둔다(ADR 0042 결정 5).
     for page in updated_concept_pages:
@@ -890,13 +895,21 @@ def _prepare_concept_update_decisions(
         updated_markdown = sanitize_ai_markdown(
             append_concept_evidence(markdown, updates), keep_urls=external_urls(markdown),
         )
-        if updated_markdown == markdown:
+        entry_adds = contribution.get("entry_changes", [])
+        if entry_adds:
+            entries, references = stored_entry_index(conn, str(row["id"]))
+            entries = replay_concept_entries([
+                {"entry_changes": [{"op": "add", **entry} for entry in entries]}, contribution,
+            ])
+            updated_markdown = render_entry_index(updated_markdown, entries, references)
+        if updated_markdown == markdown and not entry_adds:
             continue
         changed_pages.append(
             {
                 "page_id": str(row["id"]),
                 "slug": concept_slug,
                 "markdown": updated_markdown,
+                **({"entry_changes": entry_adds} if entry_adds else {}),
             }
         )
     return changed_pages
@@ -910,6 +923,7 @@ def _persist_prepared_concept_updates(
     changed_pages: list[dict[str, Any]],
 ) -> None:
     for page in changed_pages:
+        upsert_page_entries(conn, workspace_id, str(page["page_id"]), page.get("entry_changes", []))
         current_markdown_key = publication_object_key(
             workspace_id, str(page["page_id"]), operation_id
         )

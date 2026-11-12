@@ -1,5 +1,6 @@
 """위키 공유 저장(ADR 0033)을 실제 PostgreSQL 고유 키로 확인한다. CI는 격리 DB를 준다."""
 import os
+import json
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -12,6 +13,7 @@ from psycopg.rows import dict_row
 from app.modules.wiki_ingestion.infrastructure import (
     postgres_wiki_output_persistence as persistence,
 )
+from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
 
 DSN = os.environ.get("TEST_AGENT_DATABASE_URL") or os.environ.get("CONCEPT_LOCK_TEST_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="격리 PostgreSQL 테스트 URL이 지정되지 않았습니다.")
@@ -103,6 +105,62 @@ def test_ingest_links_each_document_to_its_ledger_concepts_including_existing_on
             """
         ).fetchall()
     assert [(row["source"], row["concept"]) for row in rows] == [("doc-1", "shared"), ("doc-2", "shared")]
+
+
+@pytest.mark.parametrize("overlapping_page", [False, True])
+@pytest.mark.parametrize("entry_update", [False, True])
+def test_same_concept_and_generated_page_preserve_all_published_evidence(scoped_dsn, monkeypatch, overlapping_page, entry_update):
+    stored = {}
+    monkeypatch.setattr(persistence, "storage_uri", lambda key: key)
+    monkeypatch.setattr(persistence, "write_publication_text", lambda _op, _page, key, text, _type: stored.setdefault(key, text) and key)
+    monkeypatch.setattr(persistence, "read_optional_text_object", lambda key: stored.get(key, ""))
+
+    seed = _manifest("member-a", "Original evidence")
+    seed["normalized"]["document"]["document_id"] = "doc-1"
+    entry = {"entry_id": "detail", "name": "Detail", "parent_entry_id": None}
+    if entry_update:
+        seed["normalized"]["entry_changes"] = {"shared": [{
+            **entry, "op": "add", "anchor_reference_ids": ["doc-1:B0"],
+        }]}
+    seed["concept_contributions"] = build_concept_contributions(
+        operation_id=seed["operation_id"], normalized=seed["normalized"], source_blocks=[], links=[],
+    )
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-1", seed)
+
+    incoming = _manifest("member-a", "New page evidence")
+    slug = "shared" if overlapping_page else "other"
+    normalized = incoming["normalized"]
+    normalized["document"]["document_id"] = "doc-2"
+    normalized["concept_ledger"][0].update(slug=slug, title=slug.title(), evidence_claim_ids=["new"])
+    normalized["evidence_units"] = [{"evidence_id": "new", "claim": "New page evidence",
+                                    "anchor_reference_ids": ["B1"], "related_concept_slugs": [slug]}]
+    incoming["concept_pages"][0].update(slug=slug, title=slug.title())
+    decisions = [{"decision": "same_concept", "concept_slug": "shared", "claim_id": "update",
+                  "claim": "Additional decision evidence", "refs": ["B2"]}]
+    if entry_update:
+        decisions[0]["entry"] = entry
+    incoming["meaning_clusters"] = {"concept_update_decisions": decisions}
+    incoming["concept_contributions"] = build_concept_contributions(
+        operation_id=incoming["operation_id"], normalized=normalized, source_blocks=[], links=[],
+        concept_update_decisions=decisions,
+    )
+    with psycopg.connect(scoped_dsn, row_factory=dict_row) as conn:
+        persistence.persist_wiki_outputs(conn, "doc-2", incoming)
+        pages = conn.execute("SELECT slug, markdown_uri FROM wiki_pages WHERE page_type='concept'").fetchall()
+        if entry_update:
+            refs = conn.execute("SELECT block_refs FROM wiki_page_entries WHERE entry_id='detail'").fetchone()["block_refs"]
+            assert set(refs) == {"doc-1:B0", "doc-2:B2"}
+    bodies = {page["slug"]: stored[page["markdown_uri"]] for page in pages}
+    assert "Original evidence" in bodies["shared"]
+    assert "Additional decision evidence" in bodies["shared"]
+    assert "New page evidence" in bodies[slug]
+    for artifact in incoming["operation_artifacts"]:
+        if artifact["page_type"] != "concept":
+            continue
+        contribution = json.loads(stored[artifact["contribution_key"]])
+        for unit in contribution["evidence_units"]:
+            assert unit["claim"] in stored[artifact["markdown_key"]]
 
 
 def _legacy_wiki_pages(conn: psycopg.Connection) -> None:
