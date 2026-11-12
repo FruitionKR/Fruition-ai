@@ -41,6 +41,45 @@ def _text_hash(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def statement_text_hash(unit: dict[str, Any]) -> str:
+    """REMOVE_STATEMENT의 `expected_text_hash` 기준. 남은 근거 단위의 claim 원문 그대로의 SHA-256이다."""
+    return _text_hash(str(unit.get("claim") or ""))
+
+
+def load_target_contributions(
+    ledger: list[dict[str, Any]], workspace_id: str, page_id: str
+) -> list[PageContribution]:
+    """lint 대상 페이지의 활성 기여를 원장 순서대로 읽는다. lint 검증과 MCP 페이지 조회가 같이 쓴다."""
+    kept = sorted(
+        (
+            item for item in ledger
+            if str(item.get("page_id")) == page_id and item.get("active")
+        ),
+        key=lambda item: int(item.get("sequence_revision") or 0),
+    )
+    if not kept or any(not isinstance(item.get("sequence_revision"), int) or item["sequence_revision"] <= 0 for item in kept):
+        raise PreviewCalculationError("active contribution ledger is missing or unresolved")
+    return load_concept_contributions(
+        workspace_id=workspace_id,
+        page_id=page_id,
+        keep_contributions=[
+            {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]}
+            for item in kept
+        ],
+        read_text=read_text_object,
+    )
+
+
+def surviving_statements(conn, workspace_id: str, page_id: str) -> list[dict[str, str]]:
+    """lint가 받는 문장 식별자. `statement_id`는 lint 검증의 `evidence_by_page` 키(전역 id) 그대로다."""
+    ledger = _load_reconciled(conn, workspace_id, [page_id])
+    units = surviving_evidence_units(load_target_contributions(ledger, workspace_id, page_id))
+    return [
+        {"statement_id": statement_id, "text": str(unit.get("claim") or ""), "text_hash": statement_text_hash(unit)}
+        for statement_id, unit in units.items()
+    ]
+
+
 def _change_record(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "page_id": str(row["id"]),
@@ -218,24 +257,7 @@ def calculate_lint_preview(
     current: dict[str, Any] = {}
     evidence_by_page: dict[str, dict[str, dict[str, Any]]] = {}
     for page_id in target_ids:
-        kept = sorted(
-            (
-                item for item in ledger
-                if str(item.get("page_id")) == page_id and item.get("active")
-            ),
-            key=lambda item: int(item.get("sequence_revision") or 0),
-        )
-        if not kept or any(not isinstance(item.get("sequence_revision"), int) or item["sequence_revision"] <= 0 for item in kept):
-            raise PreviewCalculationError("active contribution ledger is missing or unresolved")
-        loaded = load_concept_contributions(
-            workspace_id=workspace_id,
-            page_id=page_id,
-            keep_contributions=[
-                {"operation_id": item["ingest_operation_id"], "sequence": item["sequence_revision"]}
-                for item in kept
-            ],
-            read_text=read_text_object,
-        )
+        loaded = load_target_contributions(ledger, workspace_id, page_id)
         rebuilt = rebuild_concept_page(loaded)
         if rebuilt.deleted:
             raise PreviewCalculationError("public page contradicts its contribution ledger")
@@ -305,7 +327,7 @@ def calculate_lint_preview(
                 unit = evidence_by_page[page_id].get(str(statement_id))
                 if unit is None:
                     raise PreviewCalculationError("statement identity is not a surviving target statement")
-                if kind == "REMOVE_STATEMENT" and _text_hash(str(unit.get("claim") or "")) != arguments["expected_text_hash"]:
+                if kind == "REMOVE_STATEMENT" and statement_text_hash(unit) != arguments["expected_text_hash"]:
                     raise PreviewCalculationError("statement text hash changed")
                 change["invalidated_evidence_ids"].append(str(statement_id))
                 evidence_by_page[page_id].pop(str(statement_id))
@@ -318,6 +340,8 @@ def calculate_lint_preview(
             if kind == "UPSERT_STATEMENT":
                 if change["content_action"] == "none":
                     change["content_action"] = "append_evidence"
+                # block_id는 document가 웹 분할·source_blocks 레지스트리로 받은 영구 ID다. 마지막 편입 뒤에 새로 생긴
+                # 블록은 다음 번호를 잠정으로 받는다(그 사이 다른 편입이 없으면 다음 편입이 같은 번호를 준다).
                 refs = [
                     f"{source_by_snapshot[item['snapshot_id']]['document_id']}:{item['block_id']}"
                     for item in arguments["evidence"]
@@ -343,14 +367,18 @@ def calculate_lint_preview(
                 "target": arguments["target_ref"],
                 "relation": arguments["relation"],
             }
-            present = link in links_by_page[page_id]
+            # 웹 편입 링크는 confidence·decided_by·entry_id 같은 키를 더 싣는다. 재생·DB 간선과 같이 (source, target,
+            # relation)으로 비교한다. 이미 있는 키의 ADD_LINK는 중복이라 막고, REMOVE_LINK는 그 키의 링크를 모두 지운다
+            # (entry_id 없는 삭제 기록은 재생에서도 그 키를 모두 지운다).
+            key = _page_link_key(link)
+            present = any(_page_link_key(item) == key for item in links_by_page[page_id])
             if present != (kind == "REMOVE_LINK"):
                 raise PreviewCalculationError("link precondition does not match public state")
             change["added_links" if kind == "ADD_LINK" else "removed_links"].append(link)
             if kind == "ADD_LINK":
                 links_by_page[page_id].append(link)
             else:
-                links_by_page[page_id].remove(link)
+                links_by_page[page_id] = [item for item in links_by_page[page_id] if _page_link_key(item) != key]
         elif kind == "MERGE_CONCEPTS":
             intermediate = {
                 candidate: _replay_page(

@@ -32,6 +32,7 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
 from app.modules.wiki_schema.interfaces.http.routes import router as wiki_schema_router
 from app.modules.mcp_read.interfaces.http.routes import router as mcp_wiki_read_router
 from app.modules.mcp_wiki_draft.interfaces.http.routes import router as mcp_wiki_draft_router
+from app.modules.mcp_wiki_draft.interfaces.http.routes import source_blocks_router as mcp_source_blocks_router
 from app.modules.mcp_wiki_draft.interfaces.http.apply_routes import router as mcp_wiki_apply_router
 from app.modules.mcp_pdf_conversion.routes import router as mcp_pdf_conversion_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
@@ -133,6 +134,7 @@ agent_service_dependencies = [Depends(require_agent_service_token)]
 app.include_router(agent_mcp_proposal_router, dependencies=agent_service_dependencies)
 app.include_router(agent_approval_router, dependencies=agent_service_dependencies)
 app.include_router(mcp_wiki_draft_router, dependencies=agent_service_dependencies)
+app.include_router(mcp_source_blocks_router, dependencies=agent_service_dependencies)
 app.include_router(mcp_wiki_apply_router, dependencies=agent_service_dependencies)
 app.include_router(mcp_pdf_conversion_router, dependencies=agent_service_dependencies)
 if AGENT_SKILLS_ENABLED:
