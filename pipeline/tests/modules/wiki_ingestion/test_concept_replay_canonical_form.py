@@ -79,3 +79,12 @@ def test_related_concepts_come_from_surviving_concept_links() -> None:
     # 제목을 찾지 못한 대상은 그리지 않고, 남은 링크가 없으면 비었다고 쓴다.
     assert "## Related Concepts\n- 관련 개념 없음\n" in _replay(seed, unlink, titles=lambda slugs: {}).markdown
     assert "## Related Concepts\n- 관련 개념 없음\n" in _replay(SEED).markdown
+
+
+def test_mention_count_keeps_recorded_count_when_no_contribution_lists_mention_references() -> None:
+    legacy = _contribution("legacy", {
+        "definition": "Alpha 정의", "mention_reference_ids": [], "mention_count": 4, "importance_score": 2.0,
+        "source_document_ids": ["doc-a"],
+    })
+
+    assert "mention_count: 4\n" in _replay(legacy).markdown

@@ -184,7 +184,7 @@ if TYPE_CHECKING:
 def concept_titles_for_workspace(workspace_id: str, slugs: list[str]) -> dict[str, str]:
     """복구 재생이 Related Concepts 대상 제목을 읽는다."""
     with connect() as conn:
-        return dict(concept_title_lookup(conn, workspace_id)(slugs))
+        return dict(concept_title_lookup(conn, workspace_id, include_inactive=True)(slugs))
 
 
 def connect() -> psycopg.Connection:

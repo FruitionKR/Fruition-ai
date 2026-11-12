@@ -38,11 +38,11 @@ CONCEPT_RELATION = "concept_related_to"
 ConceptTitles = Callable[[list[str]], Mapping[str, str]]
 
 
-def concept_title_lookup(conn: Any, workspace_id: str) -> ConceptTitles:
+def concept_title_lookup(conn: Any, workspace_id: str, *, include_inactive: bool = False) -> ConceptTitles:
     """재생 본문 Related Concepts의 대상 제목을 wiki_pages에서 읽는다. 같은 트랜잭션의 상태를 본다.
 
-    복구는 함께 되살릴 페이지가 아직 활성이 되기 전에 본문을 그리므로 상태와 관계없이 찾는다(활성 행 우선).
-    링크가 남은 대상만 그리므로 지운 페이지로 가는 링크는 lint가 링크를 지울 때 함께 빠진다.
+    기본은 활성 페이지만 그린다. 보관·삭제된 페이지로 남은 링크가 공개 본문에 깨진 위키링크로 나오지 않게 한다.
+    복구만 include_inactive=True로, 함께 되살릴 페이지가 아직 활성이 되기 전에도 찾는다(활성 행 우선).
     """
 
     def lookup(slugs: list[str]) -> dict[str, str]:
@@ -51,8 +51,9 @@ def concept_title_lookup(conn: Any, workspace_id: str) -> ConceptTitles:
         rows = conn.execute(
             "SELECT DISTINCT ON (slug) slug, title FROM wiki_pages "
             "WHERE workspace_id = %s AND page_type = 'concept' AND slug = ANY(%s) "
+            "AND (%s OR status = 'active') "
             "ORDER BY slug, (status = 'active') DESC, updated_at DESC, id",
-            (workspace_id, list(slugs)),
+            (workspace_id, list(slugs), include_inactive),
         ).fetchall()
         return {str(row["slug"]): str(row["title"] or row["slug"]) for row in rows}
 
@@ -689,7 +690,14 @@ def _merge_contributions(
         )
     # 편입 개념 병합(concept_resolution.merge_concept_ledger)과 같은 규칙이다. 기존 페이지를 하위 항목 집으로 쓴 기여는
     # 집계값이 없거나 0이라, 덮어쓰면 원래 값이 사라진다. 중요도는 기여 중 가장 큰 값을 쓴다.
-    merged_concept["mention_count"] = len(merged_concept["mention_reference_ids"])
+    # 언급 근거 목록이 없는 옛 기여(승격 페이지 등)는 기록된 개수 중 가장 큰 값을 둔다.
+    counts = [
+        int(concept["mention_count"]) for concept in concepts
+        if isinstance(concept.get("mention_count"), int) and not isinstance(concept.get("mention_count"), bool)
+    ]
+    merged_concept["mention_count"] = (
+        len(merged_concept["mention_reference_ids"]) if merged_concept["mention_reference_ids"] else max(counts, default=0)
+    )
     scores = [
         float(concept["importance_score"])
         for concept in concepts

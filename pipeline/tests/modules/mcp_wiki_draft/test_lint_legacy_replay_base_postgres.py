@@ -247,3 +247,20 @@ def test_lint_contradiction_is_not_reported_as_retryable_pending(monkeypatch):
 
     assert contradiction.value.code == "LEDGER_CONTRADICTION"
     assert contradiction.value.retryable is False
+
+
+def test_related_concept_titles_skip_deleted_pages_except_for_restore():
+    from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import concept_title_lookup
+
+    with h._connect() as conn:
+        for page_id, slug, status in (("live-page", "live", "active"), ("gone-page", "gone", "deleted")):
+            conn.execute(
+                "INSERT INTO wiki_pages(id,page_type,title,slug,summary,markdown_uri,user_id,workspace_id,status,created_at,updated_at) "
+                "VALUES (%s,'concept',%s,%s,'','','user-1','workspace-1',%s,now(),now())",
+                (page_id, slug.title(), slug, status),
+            )
+        # 공개 본문은 지운 페이지로 가는 깨진 위키링크를 그리지 않는다. 복구만 함께 되살릴 페이지를 찾는다.
+        assert concept_title_lookup(conn, "workspace-1")({"live", "gone"}) == {"live": "Live"}
+        assert concept_title_lookup(conn, "workspace-1", include_inactive=True)({"live", "gone"}) == {
+            "live": "Live", "gone": "Gone",
+        }

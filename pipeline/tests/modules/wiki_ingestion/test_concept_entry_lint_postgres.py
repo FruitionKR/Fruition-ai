@@ -152,7 +152,8 @@ class World:
 
     def concept_titles(self, workspace_id: str, slugs: list[str]) -> dict[str, str]:
         with self.connect() as conn:
-            return dict(concept_title_lookup(conn, workspace_id)(slugs))
+            # 운영의 concept_titles_for_workspace와 같다. 복구는 함께 되살릴 비활성 페이지도 찾는다.
+            return dict(concept_title_lookup(conn, workspace_id, include_inactive=True)(slugs))
 
     @staticmethod
     def _key(key: str) -> str:
