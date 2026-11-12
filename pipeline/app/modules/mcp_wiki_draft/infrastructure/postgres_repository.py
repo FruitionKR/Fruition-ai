@@ -32,6 +32,7 @@ from app.modules.mcp_wiki_draft.calculation import (
     preview_ingest,
 )
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
+from app.modules.mcp_wiki_draft.preview_summary import preview_item_count
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import last_ingested_source_hash
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
     FinalizeIngestRequest,
@@ -248,7 +249,7 @@ class PostgresMcpWikiDraftRepository:
                 raise McpWikiDraftError(409, "INVALID_LINT_OPERATION", "Lint operation preconditions are not satisfied.") from exc
             preview = calculation["preview"]
             preview_bytes = len(json.dumps(preview, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-            if len(preview["changes"]) > preview_limits.max_items or preview_bytes > preview_limits.max_bytes:
+            if preview_item_count(preview) > preview_limits.max_items or preview_bytes > preview_limits.max_bytes:
                 raise McpWikiDraftError(413, "PREVIEW_TOO_LARGE", "Complete lint preview exceeds the configured bound.")
             conn.execute(
                 "INSERT INTO mcp_wiki_drafts "
@@ -571,7 +572,7 @@ class PostgresMcpWikiDraftRepository:
                 ) from exc
             preview = calculation["preview"]
             preview_bytes = len(json.dumps(preview, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-            if len(preview["changes"]) > limits.max_items or preview_bytes > limits.max_bytes:
+            if preview_item_count(preview) > limits.max_items or preview_bytes > limits.max_bytes:
                 raise McpWikiDraftError(413, "PREVIEW_TOO_LARGE", "Complete preview exceeds the configured bound.")
             conn.execute(
                 "INSERT INTO mcp_wiki_drafts "
