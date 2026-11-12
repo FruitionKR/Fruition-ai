@@ -14,6 +14,19 @@ def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# 페이지 본문이 문장 뒤에 붙이는 근거 표시 묶음(`[doc_x:B0003, doc_y:B0001]`, ref_format.cite_refs).
+_CITATION_REF = r"[\w.\-]+:[A-Za-z][\w.\-]*"
+_CITATION_GROUP = re.compile(rf"\s*\[{_CITATION_REF}(?:\s*,\s*{_CITATION_REF})*\](?!\()")
+
+
+def strip_citation_groups(text: str) -> str:
+    """본문에서 읽은 문장의 인라인 근거 표시 묶음을 뺀다.
+
+    본문 Markdown을 다시 개념 값(정의 등)으로 쓰면 조립기가 근거 표시를 또 붙여 같은 근거가 두 번 보인다.
+    """
+    return _CITATION_GROUP.sub("", str(text or "")).strip()
+
+
 def slugify(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).strip().lower()
     text = re.sub(r"[`'\"()\[\]{}]", "", text)

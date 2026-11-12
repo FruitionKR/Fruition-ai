@@ -304,7 +304,9 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
 
     monkeypatch.setattr(lint, 'read_text_object', read_markdown)
     conn = SimpleNamespace(execute=lambda sql, params: SimpleNamespace(
-        fetchall=lambda: [row] if sql.startswith('SELECT * FROM wiki_pages') else []))
+        fetchall=lambda: [row] if sql.startswith('SELECT * FROM wiki_pages') else [],
+        # 게시 기록(wiki_publication_objects)이 없는 옛 객체다.
+        fetchone=lambda: None))
     kwargs = dict(
         draft_id='lint-append', workspace_id='workspace', target_snapshot=[snapshot],
         source_snapshots=[{'snapshot_id': 'snapshot', 'document_id': 'doc-third',
@@ -317,7 +319,12 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
                      }}],
         policy_version='test', max_structural_changes=100, max_deletes=0,
     )
-    if publication != 'exact':
+    # 수동·lint·무효화 기여가 새로 쓴 본문(기준 본문)은 다시 그려 비교하지 않고 원장이 가리키는 저장 본문을 믿는다.
+    # 재생 렌더러가 바뀌어도 그 전에 게시한 페이지를 lint할 수 있어야 한다. 그 뒤 덧붙임이 공개 본문을 재현하는지는 계속 본다.
+    trusted_base = publication == 'invalidation' or (
+        publication == 'missing_history' and history in ('lint', 'invalidation')
+    )
+    if publication != 'exact' and not trusted_base:
         with pytest.raises(lint.PreviewCalculationError, match='contribution'):
             lint.calculate_lint_preview(conn, **kwargs)
     else:

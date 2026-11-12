@@ -329,6 +329,14 @@ ingest 작업의 Wiki 변경을 복원합니다.
   document-svc는 원장을 바꾸지 않고 복원을 실패로 표시한다. 뒤 작업부터 되돌려야 한다. lint 복원도 같다.
 - `keep_contributions`에 수동 기여가 있으면 concept 페이지는 마지막 수동 본문을 기준으로 삼고, 그 뒤 AI 기여의 근거만 덧붙인다. 이름·요약은 덮어쓰지 않는다. 링크는 수동 기여의 추가·삭제까지 적용 순서대로 재생한다([ADR 0031](../adr/0031-manual-wiki-contributions.md)).
 - source 페이지를 수동 기여 스냅샷으로 되돌릴 때도 이름·요약을 본문에서 다시 읽지 않는다.
+- **기여 재생 결과가 개념 페이지의 정식 형태다.** 복원·재편입 무효화 재생·lint(웹 maintenance, MCP)는 모두 같은 재생
+  (`rebuild_concept_page`)으로 본문 전체를 다시 그린다. 재생 본문은 Key Points를 남은 모든 기여의 핵심 내용으로 다시 만들고,
+  Evidence에는 내부 근거 id를 싣지 않으며, frontmatter `sources`를 남은 기여의 개념 문서로 다시 쓴다. 정의 근거 표시는 한 번만 붙이고
+  (본문에서 읽어 기여에 들어간 정의의 표시는 뺀다), `mention_count`는 합친 `mention_reference_ids` 수, `importance_score`는 기여 중
+  가장 큰 값이다. `## Related Concepts`는 남은 개념 관계 링크(`supported_links`의 `concept_related_to`)를 편입과 같은
+  `[[slug|title]]` 줄로 그린다. 제목은 `wiki_pages`에서 읽고(복원처럼 대상이 아직 활성이 아니어도 그 행의 제목), 페이지 행이 없는
+  대상은 그리지 않는다. 남은 링크가 없을 때만 "관련 개념 없음"이다. 편입은 기존 페이지 본문에 근거만 덧붙이므로(append) 다음 재생
+  전까지는 재생 결과와 다를 수 있다. 이 차이는 오류가 아니며, 다음 재생에서 정식 형태로 바뀐다.
 
 #### 3. Auth 필요 여부
 
