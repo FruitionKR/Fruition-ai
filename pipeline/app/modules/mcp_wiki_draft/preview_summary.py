@@ -27,6 +27,9 @@ def plain_text(value: object) -> str:
     return _REFERENCE.sub("", str(value or "")).strip()
 
 
+UNTITLED_PAGE_TITLE = "(제목 없음)"
+
+
 def summary_item(
     kind: str,
     page_id: str | None,
@@ -42,7 +45,8 @@ def summary_item(
     return {
         "kind": kind,
         "page_id": page_id,
-        "page_title": str(page_title),
+        # document는 빈 제목을 거절해 초안 전체가 막힌다. 표시명이 공백인 문서도 승인할 수 있게 대체 제목을 둔다.
+        "page_title": str(page_title or "").strip() or UNTITLED_PAGE_TITLE,
         "text": None if text is None else plain_text(text),
         "before_text": None if before_text is None else plain_text(before_text),
         "related_page_title": related_page_title,
