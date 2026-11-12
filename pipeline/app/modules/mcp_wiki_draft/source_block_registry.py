@@ -28,7 +28,13 @@ def split_source_markdown(document_id: str, markdown: str) -> list[tuple[SourceB
     """
     extractor = MarkdownBlockExtractor()
     _document, blocks = extractor.extract_text(markdown, source_path=document_id)
-    raws = [raw for _type, raw, _start, _end in extractor._split_blocks(markdown)]
+    # raw_text는 줄 범위 그대로 자른다. `_split_blocks`의 조각은 끝 빈 줄을 잘라 내 닫히지 않은 코드 블록에서
+    # line_start..line_end 원문과 달라지고, document는 둘이 같은지 검사한다. 정규화 텍스트(레지스트리)는 같다.
+    lines = markdown.split("\n")
+    raws = [
+        "\n".join(lines[start - 1:end])
+        for _type, _raw, start, end in extractor._split_blocks(markdown)
+    ]
     if len(raws) != len(blocks):
         raise RuntimeError("markdown block split is not deterministic")
     return [(_with_document(block, document_id), raw) for block, raw in zip(blocks, raws, strict=True)]
