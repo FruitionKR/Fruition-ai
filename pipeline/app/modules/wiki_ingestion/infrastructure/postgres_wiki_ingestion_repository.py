@@ -2119,18 +2119,23 @@ def list_sub_entry_vectors(workspace_id: str, embedding_model: str) -> dict[str,
 
 def latest_source_extraction_artifact(document_id: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT manifest
-            FROM pipeline_runs
-            WHERE document_id = %s
-              AND status = 'succeeded'
-              AND manifest ? 'source_extraction_artifact'
-            ORDER BY finished_at DESC NULLS LAST, created_at DESC
-            LIMIT 1
-            """,
-            (document_id,),
-        ).fetchone()
+        return latest_source_extraction_artifact_in(conn, document_id)
+
+
+def latest_source_extraction_artifact_in(conn: psycopg.Connection, document_id: str) -> dict[str, Any] | None:
+    """웹 재편입이 `max_block_number`(이전 최대 블록 번호)를 읽는 마지막 성공 추출 기록."""
+    row = conn.execute(
+        """
+        SELECT manifest
+        FROM pipeline_runs
+        WHERE document_id = %s
+          AND status = 'succeeded'
+          AND manifest ? 'source_extraction_artifact'
+        ORDER BY finished_at DESC NULLS LAST, created_at DESC
+        LIMIT 1
+        """,
+        (document_id,),
+    ).fetchone()
     if not row:
         return None
     manifest = row.get("manifest") or {}

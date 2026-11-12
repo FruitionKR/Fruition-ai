@@ -65,10 +65,17 @@ def lookup_wiki_pages(payload: WikiPageLookupIn) -> list[dict[str, Any]]:
 
 
 @router.get("/wiki/pages/{page_id}", tags=["wiki"])
-def get_wiki_page(page_id: str, workspace_id: str) -> Any:
+def get_wiki_page(page_id: str, workspace_id: str, mcp_read: bool = False) -> Any:
     page = database.get_wiki_page(workspace_id, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Wiki page not found")
+    if mcp_read:
+        # MCP get_wiki_page(document가 mcp_read=true로 부른다)에만 lint 준비 정보를 붙인다. 웹 상세 응답은 그대로다.
+        # 문장 목록은 기여 원장(document)을 읽어 웹 화면 조회마다 부르지 않는다.
+        from app.modules.mcp_wiki_draft.lint_context import concept_lint_context
+
+        with database.connect() as conn:
+            page = {**page, **concept_lint_context(conn, workspace_id, page)}
     return page
 
 

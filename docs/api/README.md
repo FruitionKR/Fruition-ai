@@ -76,6 +76,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
 | `POST /internal/ai/purge/workspaces`, `POST /internal/ai/purge/users` | **호출자 없음** | Document 파기 API 구현 전 |
 | `POST /internal/mcp/wiki/search` | **호출자 없음** | Document MCP transport/page-read I2 연결 전 |
+| `POST /internal/mcp/source-blocks/resolve` | document-svc MCP 원문 스냅샷·`get_document` | `X-Agent-Service-Token`; 웹 편입과 같은 분할·영구 블록 ID 계산(저장 없음). [MCP 위키](mcp-wiki.md) §13 |
 | `POST /internal/mcp/wiki/ingest-runs`, `.../{run_id}/resume`, `.../{run_id}/windows/read`, `.../{run_id}/windows/{window_id}/submissions`, `.../{run_id}/finalize`, `/internal/mcp/wiki/lint-drafts`; `GET /internal/mcp/wiki/drafts/{draft_id}/preview` | document-svc MCP wiki draft boundary | `X-Agent-Service-Token`; immutable INGEST intake와 closed structured LINT, owner-bound complete preview. public registration/LINT apply는 꺼짐 |
 | `POST /agent/runs/mcp-proposals` | document-svc MCP proposal boundary | `X-Agent-Service-Token`; I4 단일 편집과 I6 1~20 operation 계획, 공개 write catalog는 아직 꺼짐 |
 | `POST /agent/runs/{run_id}/approve`, `GET /agent/runs/mcp-owned` | document-svc MCP approval·web owner bridge | 안정된 Document approval identity와 저장된 MCP provenance를 사용 |

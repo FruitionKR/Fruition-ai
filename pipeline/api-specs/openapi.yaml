@@ -3689,6 +3689,34 @@ paths:
       summary: Submit
       tags:
       - mcp-pdf-conversion
+  /internal/mcp/source-blocks/resolve:
+    post:
+      description: 웹 편입과 같은 분할·영구 블록 ID. document의 MCP 원문 스냅샷과 get_document가 쓴다.
+      operationId: resolve_document_source_blocks_internal_mcp_source_blocks_resolve_post
+      parameters:
+      - in: header
+        name: X-Agent-Service-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Agent-Service-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Resolve Document Source Blocks
+      tags:
+      - mcp-wiki-draft
   /internal/mcp/wiki/drafts/{draft_id}/apply:
     post:
       operationId: apply_draft_internal_mcp_wiki_drafts__draft_id__apply_post
@@ -5250,6 +5278,13 @@ paths:
         schema:
           title: Workspace Id
           type: string
+      - in: query
+        name: mcp_read
+        required: false
+        schema:
+          default: false
+          title: Mcp Read
+          type: boolean
       - in: header
         name: X-Internal-Token
         required: false
