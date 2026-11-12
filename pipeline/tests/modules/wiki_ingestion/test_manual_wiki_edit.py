@@ -166,6 +166,11 @@ def test_rebuild_keeps_manual_body_and_appends_later_evidence(monkeypatch, publi
     conn = MagicMock()
     conn.execute.return_value.fetchone.return_value = {'id': 'C1', 'markdown_uri': 'manual.md'}
     monkeypatch.setattr(persistence, 'read_optional_text_object', lambda _: manual_body)
+    manifest = {
+        'source_page': {'markdown': '# Source'},
+        'concept_pages': [], 'concept_contributions': {'cache': contribution},
+    }
+    pages = []
     if publication_path == 'same_concept':
         pages = persistence._prepare_concept_update_decisions(conn, 'ws', [{
             'decision': 'same_concept', 'concept_slug': 'cache',
@@ -178,13 +183,18 @@ def test_rebuild_keeps_manual_body_and_appends_later_evidence(monkeypatch, publi
         saved = []
         monkeypatch.setattr(persistence, 'persist_embedding_units', lambda *args: saved.append(args[-1]))
         monkeypatch.setenv('S3_BUCKET', 'test')
-        persistence._persist_concept_pages(conn, 'doc-B', {
-            'concept_pages': [{'slug': 'cache', 'markdown': 'unused'}],
-            'concept_contributions': {'cache': contribution},
-        }, {'concept_ledger': [contribution['concept']]}, 'user', 'ws',
+        manifest['concept_pages'] = [{'slug': 'cache', 'markdown': 'unused'}]
+        persistence._persist_concept_pages(conn, 'doc-B', manifest,
+            {'concept_ledger': [contribution['concept']]}, 'user', 'ws',
             concept_id_by_slug={'cache': 'C1'}, operation_id='B')
         published = saved[0]
     assert published == rebuilt.markdown
+    stored = {}
+    persistence._persist_ingest_operation_artifacts(
+        manifest, 'B', 'ws', 'source-B', {'cache': 'C1'}, pages, None, {}, [], [],
+        lambda key, text, _content_type: stored.setdefault(key, text),
+    )
+    assert stored['wiki/ws/pages/C1/ops/B.md'] == rebuilt.markdown
 
 
 def test_rebuild_without_manual_contribution_regenerates_from_json() -> None:

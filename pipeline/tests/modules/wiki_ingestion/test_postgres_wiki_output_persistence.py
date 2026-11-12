@@ -558,6 +558,7 @@ def test_persist_wiki_outputs_connects_operation_artifacts(monkeypatch) -> None:
     assert captured["operation_id"] == "op-1"
     assert captured["workspace_id"] == "workspace-1"
     assert captured["source_page_id"] == "source-page-1"
+    assert captured["concept_contributions"]["concept-a"]["initial_markdown"] == "# 개념 A\n"
     # 공개 참조를 먼저 준비하고, 마지막에 불변 객체를 업로드한 뒤 호출자가 커밋한다.
     assert events[-1] == "artifact"
     assert markdown_uploads == []

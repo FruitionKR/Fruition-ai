@@ -17,12 +17,14 @@ from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
 
 
 @pytest.mark.parametrize('with_append', [False, True])
-@pytest.mark.parametrize('related_concepts', [False, True])
-def test_append_publication_lint_preview_and_apply_preserve_both_sources(monkeypatch, with_append, related_concepts):
+@pytest.mark.parametrize('publication_mode', ['skeleton', 'siblings', 'llm'])
+@pytest.mark.parametrize('with_entries', [False, True])
+def test_append_publication_lint_preview_and_apply_preserve_both_sources(monkeypatch, with_append, publication_mode, with_entries):
     first, _, _ = h._seed_lint_page('alpha-page', 'alpha')
     base = h.read_text_object('baseline/alpha-page.md')
-    if related_concepts:
-        original = json.loads(h.read_text_object(first['object_key']))
+    original = json.loads(h.read_text_object(first['object_key']))
+    saved = original
+    if publication_mode == 'siblings':
         normalized = {
             'document': {'document_id': 'doc_seed'},
             'concept_ledger': [original['concept'], {
@@ -41,6 +43,32 @@ def test_append_publication_lint_preview_and_apply_preserve_both_sources(monkeyp
         )['alpha']
         h.write_text_object(first['object_key'], json.dumps({**saved, 'page_id': 'alpha-page'}))
         assert '[[beta|Beta]]' in base
+    if publication_mode == 'llm':
+        from app.modules.wiki_generation.infrastructure.generated_concept_page_assembler import GeneratedConceptPageAssembler
+
+        base = GeneratedConceptPageAssembler().build_pages([{
+            'slug': 'alpha', 'title': 'Alpha', 'definition': {'text': 'Generated explanation'},
+            'evidence': [{'text': 'Seed evidence', 'anchor_reference_ids': ['B1']}],
+            'source_document_ids': ['doc_seed'],
+        }])[0]['markdown']
+    if with_entries:
+        saved['entry_changes'] = [{
+            'op': 'add', 'entry_id': 'detail', 'name': 'Detail', 'parent_entry_id': None,
+            'anchor_reference_ids': ['doc_seed:B1'],
+            'evidence_claim_ids': saved['concept']['evidence_claim_ids'],
+        }]
+    manifest = {'concept_pages': [{'slug': 'alpha', 'markdown': base}],
+                'concept_contributions': {'alpha': saved}}
+    with h._connect() as conn:
+        conn.execute("UPDATE wiki_pages SET status='deleted' WHERE id='alpha-page'")
+        h.output_persistence._persist_concept_pages(
+            conn, 'doc_seed', manifest, {'concept_ledger': [saved['concept']]},
+            'user-1', 'workspace-1', concept_id_by_slug={'alpha': 'alpha-page'},
+            operation_id='seed-alpha',
+        )
+    base = manifest['concept_pages'][0]['markdown']
+    assert saved['initial_markdown'] == base
+    h.write_text_object(first['object_key'], json.dumps({**saved, 'page_id': 'alpha-page'}))
     base_uri = h.write_text_object('wiki/workspace-1/pages/alpha-page/ops/seed-alpha.md', base)
     second = h._stored_contribution(
         'alpha-page', 'alpha', 'second', 'doc_second', 'doc_second:B1',

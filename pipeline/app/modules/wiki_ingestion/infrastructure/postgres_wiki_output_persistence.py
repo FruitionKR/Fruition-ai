@@ -253,7 +253,8 @@ def _persist_ingest_operation_artifacts(
     }
     operation_concept_pages_by_slug = {}
     for page_value in manifest.get("concept_pages", []):
-        page = page_payload(page_value)
+        # These are final publication bytes; sanitizing again would strip preserved manual links.
+        page = page_value
         slug = str(page["slug"])
         page_id = concept_id_by_slug.get(slug)
         if page_id and slug in concept_contributions:
@@ -322,7 +323,7 @@ def _rebuild_invalidated_pages(
     contributions = manifest.get("concept_contributions") or {}
     touched = {
         concept_id_by_slug[slug]: slug
-        for slug in (str(page_payload(page)["slug"]) for page in manifest.get("concept_pages", []))
+        for slug in (str(page["slug"]) for page in manifest.get("concept_pages", []))
         if slug in contributions and slug in concept_id_by_slug
     }
     touched.update({str(page["page_id"]): str(page["slug"]) for page in updated_concept_pages})
@@ -604,6 +605,7 @@ def _persist_concept_pages(
     concept_pages = [
         page_payload(page) for page in manifest.get("concept_pages", [])
     ]
+    manifest["concept_pages"] = concept_pages
     concept_pages_by_slug = {page["slug"]: page for page in concept_pages}
     generated_concept_slugs = set(concept_pages_by_slug)
     persisted_page_ids: list[str] = []
@@ -651,6 +653,9 @@ def _persist_concept_pages(
             stored_entries, stored_references = stored_entry_index(conn, page_id)
             concept_markdown = render_entry_index(concept_markdown, stored_entries, stored_references)
             concept_page["markdown"] = concept_markdown
+        if not existing and contribution:
+            # LLM output and sibling context cannot be recovered from page-local semantic inputs.
+            contribution["initial_markdown"] = concept_markdown
         concept_key = publication_object_key(workspace_id, page_id, operation_id)
         concept_markdown_uri = storage_uri(concept_key)
         upsert_wiki_page(

@@ -5,7 +5,8 @@ import logging
 import re
 from typing import Any
 
-from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
+from app.modules.wiki_ingestion.domain.concept_entries import render_entry_index
 from app.modules.mcp_wiki_draft.calculation import (
     PreviewCalculationError,
     _canonical_text,
@@ -239,28 +240,42 @@ def calculate_lint_preview(
         if rebuilt.deleted:
             raise PreviewCalculationError("public page contradicts its contribution ledger")
         if rebuilt.markdown != snapshots[page_id]["body"]:
-            # Older ingest appends evidence instead of rendering the aggregate. Replay that path too.
-            if any(
-                (item.contribution or {}).get("artifact_type") not in (None, "ingest", "document")
-                or any((item.contribution or {}).get(field) for field in (
-                    "invalidated_reference_ids", "invalidated_evidence_ids", "entry_changes",
-                ))
-                for item in loaded
-            ):
+            # Ingest appends to the last publication; manual/lint/invalidation establish a new base.
+            if any((item.contribution or {}).get("artifact_type") not in (
+                None, "ingest", "document", "manual", "lint", "invalidation",
+            ) for item in loaded):
                 raise PreviewCalculationError("public page contradicts its contribution ledger")
-            baseline = rebuild_concept_page(loaded[:1]).markdown
-            try:
-                appended = read_text_object(loaded[0].markdown_key)
-            except Exception as exc:
-                raise PreviewCalculationError("failed to read initial contribution publication markdown") from exc
-            # Initial publication renders related concepts with sibling context absent from the page ledger.
-            related_section = r"(?ms)^## Related Concepts\n.*?(?=^## |\Z)"
-            if re.sub(related_section, "", appended, count=1) != re.sub(related_section, "", baseline, count=1):
-                raise PreviewCalculationError("initial publication contradicts its contribution ledger")
-            for item in loaded[1:]:
-                appended = sanitize_ai_markdown(append_concept_evidence(
-                    appended, concept_evidence_updates(item.contribution or {}),
+            base_index = max((index for index, item in enumerate(loaded) if (
+                (item.contribution or {}).get("artifact_type") in ("manual", "lint", "invalidation")
+                or any((item.contribution or {}).get(field) for field in (
+                    "invalidated_reference_ids", "invalidated_evidence_ids",
                 ))
+                or any(change.get("op") != "add" for change in (item.contribution or {}).get("entry_changes", []))
+            )), default=0)
+            baseline = rebuild_concept_page(loaded[:base_index + 1]).markdown
+            initial = (loaded[0].contribution or {}).get("initial_markdown") if base_index == 0 else None
+            try:
+                appended = read_text_object(loaded[base_index].markdown_key)
+            except Exception as exc:
+                raise PreviewCalculationError("failed to read base contribution publication markdown") from exc
+            # Legacy skeleton publications lack the recorded initial presentation (including sibling context).
+            related_section = r"(?ms)^## Related Concepts\n.*?(?=^## |\Z)"
+            matches = appended == (initial if initial is not None else baseline)
+            if not matches and base_index == 0 and initial is None:
+                matches = re.sub(related_section, "", appended, count=1) == re.sub(related_section, "", baseline, count=1)
+            if not matches:
+                raise PreviewCalculationError("initial publication contradicts its contribution ledger")
+            for index, item in enumerate(loaded[base_index + 1:], start=base_index + 1):
+                contribution = item.contribution or {}
+                appended = sanitize_ai_markdown(
+                    append_concept_evidence(appended, concept_evidence_updates(contribution)),
+                    keep_urls=external_urls(appended),
+                )
+                if contribution.get("entry_changes") or any(
+                    link.get("relation") == "entry_reference" for link in contribution.get("links", [])
+                ):
+                    state = rebuild_concept_page(loaded[:index + 1])
+                    appended = render_entry_index(appended, list(state.entries), list(state.supported_links))
             if appended != snapshots[page_id]["body"]:
                 raise PreviewCalculationError("public page contradicts its contribution ledger")
             try:

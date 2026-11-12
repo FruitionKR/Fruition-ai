@@ -5,6 +5,8 @@ from copy import deepcopy
 import pytest
 
 from app.core.jev_client import JevUnavailable
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
+from app.modules.wiki_ingestion.domain.concept_entries import render_entry_index
 from app.modules.mcp_wiki_draft import lint_calculation as lint
 from app.modules.wiki_generation.infrastructure import jev_concept_resolver as jev
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as production
@@ -187,7 +189,8 @@ def test_lint_source_link_does_not_require_source_target(world, monkeypatch, rel
 
 @pytest.mark.parametrize('publication', ['exact', 'different', 'missing', 'missing_base', 'changed_base', 'missing_history', 'untracked_text', 'changed_related', 'invalidation'])
 @pytest.mark.parametrize('related_concepts', [False, True])
-def test_lint_accepts_append_publication_only_with_immutable_evidence(world, monkeypatch, publication, related_concepts):
+@pytest.mark.parametrize('history', ['ingest', 'entries', 'recorded_llm', 'lint', 'invalidation'])
+def test_lint_accepts_append_publication_only_with_immutable_evidence(world, monkeypatch, publication, related_concepts, history):
     from types import SimpleNamespace
 
     from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
@@ -217,16 +220,49 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
         first = PageContribution('parent', 'concept', first.operation_id, 1, 'first.md', contribution)
         assert '[[referrer|Referrer]]' in baseline
         assert baseline != lint.rebuild_concept_page([first]).markdown
+    if history == 'entries':
+        first.contribution['entry_changes'] = [{
+            'op': 'add', 'entry_id': 'detail', 'name': 'Detail', 'parent_entry_id': None,
+            'anchor_reference_ids': ['B1'], 'evidence_claim_ids': ['claim'],
+        }]
+        initial_state = lint.rebuild_concept_page([first])
+        baseline = render_entry_index(baseline, list(initial_state.entries), list(initial_state.supported_links))
+    if history == 'recorded_llm':
+        from app.modules.wiki_generation.infrastructure.generated_concept_page_assembler import GeneratedConceptPageAssembler
+
+        baseline = GeneratedConceptPageAssembler().build_pages([{
+            'slug': 'parent', 'title': 'Parent', 'definition': {'text': 'Generated explanation'},
+            'evidence': [{'text': 'parent evidence', 'anchor_reference_ids': ['B1']}],
+            'source_document_ids': ['doc-parent'],
+        }])[0]['markdown']
+        first.contribution['initial_markdown'] = baseline
+    contributions = [first]
+    checkpoint_body = None
+    if history in ('lint', 'invalidation'):
+        checkpoint = lint.lint_contribution('checkpoint', {
+            'page_id': 'parent', 'slug': 'parent', 'title': 'Parent',
+            'content_action': 'append_evidence',
+            'claims': [{'id': 'checkpoint-claim', 'text': 'Checkpoint evidence', 'refs': ['doc-checkpoint:B1']}],
+        })
+        if history == 'invalidation':
+            # Reingest invalidates the old block while adding replacement evidence.
+            checkpoint['artifact_type'] = 'ingest'
+            checkpoint['invalidated_reference_ids'] = ['doc-parent:B1']
+        contributions.append(PageContribution('parent', 'concept', 'checkpoint', 2, 'checkpoint.md', checkpoint))
+        checkpoint_body = lint.rebuild_concept_page(contributions).markdown
     second = deepcopy(first.contribution)
+    second.pop('initial_markdown', None)
     second.update(operation_id='second', document_id='doc-second')
     second['evidence_units'][0]['claim'] = 'Additional parent evidence.'
     second['concept']['definition'] = ''
     key = 'wiki/workspace/pages/parent/ops/second.md'
-    contributions = [first, PageContribution('parent', 'concept', 'second', 2, key, second)]
-    published = append_concept_evidence(
-        baseline, concept_evidence_updates(second),
+    contributions.append(PageContribution('parent', 'concept', 'second', len(contributions) + 1, key, second))
+    published = sanitize_ai_markdown(
+        append_concept_evidence(checkpoint_body or baseline, concept_evidence_updates(second)),
+        keep_urls=external_urls(checkpoint_body or baseline),
     )
-    assert published != lint.rebuild_concept_page(contributions).markdown
+    state = lint.rebuild_concept_page(contributions)
+    published = render_entry_index(published, list(state.entries), list(state.supported_links))
     if publication == 'missing_history':
         contributions = contributions[1:]
     if publication == 'untracked_text':
@@ -253,6 +289,10 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
 
     def read_markdown(path):
         reads.append(path)
+        if path == 'checkpoint.md':
+            if publication == 'missing_base':
+                raise OSError('unavailable')
+            return checkpoint_body + '\nUntracked initial content.\n' if publication == 'changed_base' else checkpoint_body
         if path == 'first.md':
             if publication == 'missing_base':
                 raise OSError('unavailable')
@@ -288,7 +328,3 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
         assert 'Third evidence.' in change['after_text']
         # Approval replay must reproduce the complete preview, including normalization of the old body.
         assert lint.calculate_lint_preview(conn, **kwargs)['preview'] == result['preview']
-    if publication == 'invalidation':
-        assert not reads
-    else:
-        assert reads
