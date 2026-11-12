@@ -7,17 +7,19 @@ from typing import Any
 
 import psycopg
 
-from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_generation.domain.concept_identity import (
     remap_concept_markdown_slugs,
     remap_normalized_concept_slugs,
 )
 from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_order
+from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
 from app.modules.wiki_ingestion.infrastructure.pending_contributions import with_pending_contributions
 from app.modules.wiki_ingestion.domain.concept_entries import (
     ENTRY_REFERENCE,
     render_entry_index,
+    replay_concept_entries,
 )
 from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
     merge_active_cluster_markdown,
@@ -137,14 +139,20 @@ def persist_wiki_outputs(
         markdown=manual_source_markdown,
         operation_id=operation_id,
     )
+    # Generated pages already include their same_concept evidence in the merged contribution.
+    generated_slugs = {str(page_payload(page)["slug"]) for page in manifest.get("concept_pages", [])}
+    generated_slugs.intersection_update(str(concept["slug"]) for concept in normalized.get("concept_ledger", []))
+    update_decisions = (manifest.get("meaning_clusters") or {}).get("concept_update_decisions", [])
+    if isinstance(update_decisions, list):
+        update_decisions = [decision for decision in update_decisions
+                            if isinstance(decision, dict) and decision.get("concept_slug") not in generated_slugs]
     if operation_id:
         prepared_concept_updates = _prepare_concept_update_decisions(
             conn,
             workspace_id,
-            (manifest.get("meaning_clusters") or {}).get(
-                "concept_update_decisions",
-                [],
-            ),
+            update_decisions,
+            document_id,
+            operation_id,
         )
     concept_page_ids, concept_id_by_slug = _persist_concept_pages(
         conn,
@@ -163,7 +171,7 @@ def persist_wiki_outputs(
         document_id,
         workspace_id,
         operation_id,
-        (manifest.get("meaning_clusters") or {}).get("concept_update_decisions", []),
+        update_decisions,
     )
     # 기존 개념 갱신(same_concept)도 이 문서의 직접 개념 기여로 기록된다. 재생과 같게 문서 연결을 둔다(ADR 0042 결정 5).
     for page in updated_concept_pages:
@@ -250,7 +258,8 @@ def _persist_ingest_operation_artifacts(
     }
     operation_concept_pages_by_slug = {}
     for page_value in manifest.get("concept_pages", []):
-        page = page_payload(page_value)
+        # These are final publication bytes; sanitizing again would strip preserved manual links.
+        page = page_value
         slug = str(page["slug"])
         page_id = concept_id_by_slug.get(slug)
         if page_id and slug in concept_contributions:
@@ -319,7 +328,7 @@ def _rebuild_invalidated_pages(
     contributions = manifest.get("concept_contributions") or {}
     touched = {
         concept_id_by_slug[slug]: slug
-        for slug in (str(page_payload(page)["slug"]) for page in manifest.get("concept_pages", []))
+        for slug in (str(page["slug"]) for page in manifest.get("concept_pages", []))
         if slug in contributions and slug in concept_id_by_slug
     }
     touched.update({str(page["page_id"]): str(page["slug"]) for page in updated_concept_pages})
@@ -601,6 +610,7 @@ def _persist_concept_pages(
     concept_pages = [
         page_payload(page) for page in manifest.get("concept_pages", [])
     ]
+    manifest["concept_pages"] = concept_pages
     concept_pages_by_slug = {page["slug"]: page for page in concept_pages}
     generated_concept_slugs = set(concept_pages_by_slug)
     persisted_page_ids: list[str] = []
@@ -630,7 +640,9 @@ def _persist_concept_pages(
             current_markdown = read_optional_text_object(existing["markdown_uri"])
             updates = concept_evidence_updates(contribution)
             concept_markdown = (
-                sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
+                sanitize_ai_markdown(
+                    append_concept_evidence(current_markdown, updates), keep_urls=external_urls(current_markdown),
+                )
                 if current_markdown else concept_markdown
             )
             concept_page["markdown"] = concept_markdown
@@ -646,6 +658,9 @@ def _persist_concept_pages(
             stored_entries, stored_references = stored_entry_index(conn, page_id)
             concept_markdown = render_entry_index(concept_markdown, stored_entries, stored_references)
             concept_page["markdown"] = concept_markdown
+        if not existing and contribution:
+            # LLM output and sibling context cannot be recovered from page-local semantic inputs.
+            contribution["initial_markdown"] = concept_markdown
         concept_key = publication_object_key(workspace_id, page_id, operation_id)
         concept_markdown_uri = storage_uri(concept_key)
         upsert_wiki_page(
@@ -832,6 +847,8 @@ def _apply_concept_update_decisions(
         conn,
         workspace_id,
         decisions,
+        document_id,
+        operation_id,
     )
     _persist_prepared_concept_updates(
         conn,
@@ -847,30 +864,18 @@ def _prepare_concept_update_decisions(
     conn: psycopg.Connection,
     workspace_id: str,
     decisions: Any,
+    document_id: str,
+    operation_id: str,
 ) -> list[dict[str, Any]]:
     if not isinstance(decisions, list):
         return []
-    by_concept: dict[str, list[dict[str, Any]]] = {}
-    for decision in decisions:
-        if (
-            not isinstance(decision, dict)
-            or decision.get("decision") != "same_concept"
-        ):
-            continue
-        concept_slug = str(decision.get("concept_slug") or "").strip()
-        claim = str(decision.get("claim") or "").strip()
-        refs = [str(ref) for ref in decision.get("refs", []) if ref]
-        if not concept_slug or not claim:
-            continue
-        by_concept.setdefault(concept_slug, []).append(
-            {
-                "claim_id": decision.get("claim_id"),
-                "claim": claim,
-                "refs": refs,
-            }
-        )
+    contributions = build_concept_contributions(
+        operation_id=operation_id, normalized={"document": {"document_id": document_id}},
+        source_blocks=[], links=[], concept_update_decisions=decisions,
+    )
     changed_pages: list[dict[str, Any]] = []
-    for concept_slug, updates in by_concept.items():
+    for concept_slug, contribution in contributions.items():
+        updates = concept_evidence_updates(contribution)
         row = conn.execute(
             """
             SELECT id, markdown_uri
@@ -887,14 +892,24 @@ def _prepare_concept_update_decisions(
         markdown = read_optional_text_object(row["markdown_uri"])
         if not markdown:
             continue
-        updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
-        if updated_markdown == markdown:
+        updated_markdown = sanitize_ai_markdown(
+            append_concept_evidence(markdown, updates), keep_urls=external_urls(markdown),
+        )
+        entry_adds = contribution.get("entry_changes", [])
+        if entry_adds:
+            entries, references = stored_entry_index(conn, str(row["id"]))
+            entries = replay_concept_entries([
+                {"entry_changes": [{"op": "add", **entry} for entry in entries]}, contribution,
+            ])
+            updated_markdown = render_entry_index(updated_markdown, entries, references)
+        if updated_markdown == markdown and not entry_adds:
             continue
         changed_pages.append(
             {
                 "page_id": str(row["id"]),
                 "slug": concept_slug,
                 "markdown": updated_markdown,
+                **({"entry_changes": entry_adds} if entry_adds else {}),
             }
         )
     return changed_pages
@@ -908,6 +923,7 @@ def _persist_prepared_concept_updates(
     changed_pages: list[dict[str, Any]],
 ) -> None:
     for page in changed_pages:
+        upsert_page_entries(conn, workspace_id, str(page["page_id"]), page.get("entry_changes", []))
         current_markdown_key = publication_object_key(
             workspace_id, str(page["page_id"]), operation_id
         )
