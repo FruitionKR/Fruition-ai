@@ -174,6 +174,19 @@ Full preview는 웹 편입 반영 코드를 그대로 실행해 만든다. MCP�
 
 `public_state_hash`는 반영이 바꾸는 기존 페이지의 committed body URI/version/hash와 그 페이지의 entry/link/reference/manual/document-link/alias 행, 문서의 source block·휴지통 표시의 반영 전 상태를 묶는다. `draft_hash`는 INGEST kind, source/target snapshots, normalized submissions, 전체 ordered changes, public-state hash에 더해 보이지 않는 반영(개념 본문 해시, 문서 연결, 별칭, 블록)을 effect로 묶는다. 웹 본문은 근거 id에 작업 ID를 싣으므로 본문 해시는 작업 ID를 자리표시로 바꿔 계산해 미리보기(draft ID)와 적용(document 작업 ID)이 같은 값을 낸다. draft에는 이 immutable 계산 입력과 preview만 저장하며 별도 historical wiki store를 만들지 않는다. 계산은 savepoint를 되돌리므로 public page/body/contribution/outbox/journal/cache/callback을 남기지 않고 object storage는 기존 committed body/contribution을 읽기만 한다.
 
+### 승인 요약 (`preview.summary`)
+
+웹 앱은 위키 본문을 사용자에게 보이지 않으므로 승인 화면은 `changes`(Markdown diff·해시·ID) 대신 `summary`를 보인다. INGEST와 LINT preview 모두 `summary` 배열을 싣고, 각 항목은 정확히 `{kind,page_id,page_title,text,before_text,related_page_title,evidence}`다.
+
+- `kind`: `CONCEPT_CREATE`, `SOURCE_PAGE`, `STATEMENT_ADD`, `STATEMENT_UPDATE`, `STATEMENT_REMOVE`, `EVIDENCE_INVALIDATION`, `LINK_ADD`, `LINK_REMOVE`, `CONCEPT_MERGE`, `CONCEPT_DELETE`.
+- `page_id`: 기존 페이지 ID. 이번 편입이 새로 만드는 페이지(새 개념과 첫 편입의 source page)는 실행마다 ID가 달라 `null`이다. `page_title`은 사람이 읽는 개념·source 제목(새 개념은 확정 제목)이다.
+- `text`: 반영 뒤 문장(REMOVE·INVALIDATION은 사라지는 문장), 문장이 없는 kind는 `null`. `before_text`는 `STATEMENT_UPDATE`의 이전 문장만. 문장은 frontmatter·`[doc:Bn]` 참조 없는 평문이다.
+- `related_page_title`: `LINK_*`의 상대 개념, `CONCEPT_MERGE`의 합쳐지는 대상 개념. `evidence`: `STATEMENT_ADD/UPDATE`를 뒷받침하는 `{snapshot_id,block_id,quote}`, 그 밖에는 `[]`.
+- LINT 순서: 페이지가 처음 나온 순서로 묶고 페이지 안에서는 operation 순서다. `UPSERT_STATEMENT`는 `statement_id`가 없으면 ADD, 있으면 UPDATE, `MERGE_CONCEPTS`는 source 개념마다 `CONCEPT_MERGE`, `DELETE_ORPHAN_PAGE`는 `CONCEPT_DELETE`다. 서버가 추론한 페이지 이동(페이지를 지우고 대상 개념의 항목으로 옮김)도 `CONCEPT_MERGE`로 보인다.
+- INGEST 순서: `SOURCE_PAGE` 하나 → 개념 페이지별로 (새 개념이거나 지워졌다 다시 보이는 개념이면 `CONCEPT_CREATE`) 제출 문장마다 `STATEMENT_ADD` → 원문 블록 변경으로 사라지는 기존 문장의 `EVIDENCE_INVALIDATION`(개념 제목 순). 무효화 항목은 최대 20개이며 넘으면 20개 뒤에 `text:null`인 `EVIDENCE_INVALIDATION` 하나를 붙여 "더 있음"을 표시한다(그 항목의 페이지는 생략된 첫 문장의 페이지).
+- 요약은 이미 `draft_hash`에 묶인 operation·submission·공개 상태에서 파생하므로 `draft_hash` 입력이 아니고 적용 시 비교하지도 않는다. 요약 항목도 `MCP_WIKI_DRAFT_PREVIEW_MAX_ITEMS`에 세며(`changes` + `summary`), byte 상한은 요약을 포함한 preview 전체로 잰다. 넘으면 잘라 싣지 않고 `PREVIEW_TOO_LARGE`다.
+- 이 필드가 생기기 전에 만든 draft의 저장 preview에는 `summary`가 없다.
+
 `pipeline_runs`와 MCP run은 같은 document advisory fence를 사용해 수동/자동/upload-conversion ingest와 동시 active ownership을 만들지 않는다. 인간 window 처리 동안 workspace concept lock은 잡지 않는다. task journal cancel은 unpublished run을 `CANCELLED`로 닫고 maintenance worker는 stored configured inactivity expiry를 `EXPIRED`로 닫는다. user/workspace purge fence 뒤 run/block/window/submission/idempotency를 지우며 delayed command는 되살리지 않는다.
 
 다음 값은 제품 기본값 없이 양수로 명시해야 start/read가 열린다: request/source-response/source-block/source-text/window-block/window-text bounds, user/workspace active counts, active storage bytes, run TTL, source timeout. Submission은 contribution/statement/evidence/link/name/text/quote bounds 외에 `MCP_WIKI_DRAFT_LEXICAL_OVERLAP_THRESHOLD`, nonempty `MCP_WIKI_DRAFT_INSTRUCTION_PATTERNS_JSON`, validation policy version과 evalset ID까지 명시하지 않으면 `503 DEPENDENCY_UNAVAILABLE`로 fail closed 한다. Finalize는 `MCP_WIKI_DRAFT_PREVIEW_MAX_ITEMS`, `MCP_WIKI_DRAFT_PREVIEW_MAX_BYTES`, `MCP_WIKI_DRAFT_PREVIEW_MAX_SOURCE_BYTES`를 모두 요구하고 하나라도 넘으면 truncated preview 없이 `PREVIEW_TOO_LARGE`로 전부 거절한다. 정확한 env 이름은 `application.py`의 config map이 source of truth다.

@@ -10,6 +10,7 @@ from uuid import UUID
 from app.core.ai_database import connect_ai
 from app.core.jev_client import JevUnavailable
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError, load_submission_policy
+from app.modules.mcp_wiki_draft.preview_summary import cap_invalidations, group_by_page, summary_item
 from app.modules.mcp_wiki_draft.source_block_registry import (
     SourceBlocksChangedError,
     load_source_block_registry,
@@ -17,7 +18,7 @@ from app.modules.mcp_wiki_draft.source_block_registry import (
 )
 from app.modules.wiki_generation.domain.concept_identity import concept_name_keys
 from app.modules.wiki_generation.domain.entities import SourceDocument
-from app.modules.wiki_generation.domain.text_utils import name_key
+from app.modules.wiki_generation.domain.text_utils import name_key, slugify
 from app.modules.wiki_generation.infrastructure.assemble import (
     ConceptPageAssembler,
     LinkBuilder,
@@ -694,10 +695,12 @@ def _describe_ingest(
         str(row["slug"]): key[1] for key, row in after.items()
         if key[0] == "page" and row["page_type"] == "concept" and row["status"] == "active"
     }
+    landed: list[tuple[dict[str, Any], str]] = []
     for statement, evidence in zip(statements, manifest["normalized"]["evidence_units"], strict=True):
         slugs = evidence.get("related_concept_slugs") or []
         if not slugs or str(slugs[0]) not in concept_page:
             raise PreviewCalculationError("submitted statement did not land on a concept page")
+        landed.append((statement, concept_page[str(slugs[0])]))
         page_id = new_ids.get(concept_page[str(slugs[0])], concept_page[str(slugs[0])])
         changes.append(_change(
             "CONCEPT_STATEMENT", "ADD", page_id, statement["statement_id"], None, statement["text"], statement["evidence"],
@@ -719,6 +722,7 @@ def _describe_ingest(
     # 원장은 이번 반영 전 상태로 읽는다. 이 트랜잭션이 남긴 대기 기여가 보이지 않는 다른 연결을 쓴다.
     with connect_ai() as committed:
         ledger = _load_reconciled(committed, workspace_id, existing)
+    invalidated_statements: list[tuple[str, str]] = []
     for page_id in existing:
         kept = sorted(
             (item for item in ledger if str(item.get("page_id")) == page_id and item.get("active")),
@@ -736,7 +740,9 @@ def _describe_ingest(
             )
         except ConceptContributionError as exc:
             raise PreviewCalculationError("concept contribution replay failed") from exc
-        changes.extend(_removed_statement_changes(page_id, loaded, contributions[page_id]))
+        removed = _removed_statement_changes(page_id, loaded, contributions[page_id])
+        changes.extend(removed)
+        invalidated_statements.extend((page_id, item["before_text"]) for item in removed)
     for page_id in sorted(contributions):
         for block_id in invalidated:
             changes.append(_change(
@@ -771,6 +777,11 @@ def _describe_ingest(
         "public_state_hash": public_state_hash,
         "changes": changes,
         "complete": True,
+        # 승인 화면용 사람이 읽는 요약. 해시에 묶인 제출·공개 상태에서 파생하므로 draft_hash 입력이 아니다.
+        "summary": _ingest_summary(
+            document_id=document_id, display_name=str(manifest["display_name"]),
+            before=before, after=after, landed=landed, invalidated_statements=invalidated_statements,
+        ),
     }
     return {
         "preview": preview,
@@ -781,6 +792,48 @@ def _describe_ingest(
             "invalidated_block_ids": invalidated,
         },
     }
+
+
+def _ingest_summary(
+    *,
+    document_id: str,
+    display_name: str,
+    before: dict[tuple[str, ...], dict[str, Any]],
+    after: dict[tuple[str, ...], dict[str, Any]],
+    landed: list[tuple[dict[str, Any], str]],
+    invalidated_statements: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """소스 페이지 → 개념별(새 개념이면 CONCEPT_CREATE, 이어서 제출 문장) → 원문 변경으로 무효화된 문장 순서다.
+
+    아직 없는 페이지(이번 편입이 만드는 페이지)는 실행마다 id가 달라 `page_id`를 null로 둔다.
+    """
+    def public_id(page_id: str) -> str | None:
+        return page_id if ("page", page_id) in before else None
+
+    def title(page_id: str) -> str:
+        return str((after.get(("page", page_id)) or before[("page", page_id)])["title"])
+
+    source = next((
+        key[1] for key, row in after.items()
+        if key[0] == "page" and row["page_type"] == "source" and row["slug"] == slugify(document_id)
+    ), None)
+    items = [summary_item(
+        "SOURCE_PAGE", public_id(source) if source else None, title(source) if source else display_name,
+    )]
+    concept_items: list[tuple[str, dict[str, Any]]] = []
+    for statement, page_id in landed:
+        if all(key != page_id for key, _item in concept_items) and before.get(("page", page_id), {}).get("status") != "active":
+            # 새 개념이거나 지워졌던 개념이 다시 보이게 된다.
+            concept_items.append((page_id, summary_item("CONCEPT_CREATE", public_id(page_id), title(page_id))))
+        concept_items.append((page_id, summary_item(
+            "STATEMENT_ADD", public_id(page_id), title(page_id),
+            text=statement["text"], evidence=list(statement["evidence"]),
+        )))
+    invalidations = [
+        summary_item("EVIDENCE_INVALIDATION", page_id, title(page_id), text=text)
+        for page_id, text in sorted(invalidated_statements, key=lambda item: (title(item[0]), item[0]))
+    ]
+    return [*items, *group_by_page(concept_items), *cap_invalidations(invalidations)]
 
 
 def publish_ingest(

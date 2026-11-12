@@ -17,6 +17,7 @@ from app.modules.mcp_wiki_draft.calculation import (
     _page_snapshot,
     _structural_rows,
 )
+from app.modules.mcp_wiki_draft.preview_summary import group_by_page, summary_item
 from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryLintPlan, EntryPage, plan_entry_lint
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
@@ -315,6 +316,11 @@ def calculate_lint_preview(
     linked: list[dict[str, Any]] = []
     explicit_changes: list[dict[str, Any]] = []
     orphan_checks: set[str] = set()
+    summary: list[tuple[str, dict[str, Any]]] = []
+
+    def title(page_id: str) -> str:
+        return str(row_by_id[page_id]["title"])
+
     source_by_snapshot = {str(item["snapshot_id"]): item for item in source_snapshots}
     for operation in operations:
         page_id = str(operation["target_page_id"])
@@ -337,6 +343,12 @@ def calculate_lint_preview(
                     None if kind == "REMOVE_STATEMENT" else str(arguments["text"]),
                     [] if kind == "REMOVE_STATEMENT" else list(arguments["evidence"]),
                 ))
+                summary.append((page_id, summary_item(
+                    "STATEMENT_REMOVE", page_id, title(page_id), text=unit.get("claim"),
+                ) if kind == "REMOVE_STATEMENT" else summary_item(
+                    "STATEMENT_UPDATE", page_id, title(page_id), text=arguments["text"],
+                    before_text=unit.get("claim"), evidence=list(arguments["evidence"]),
+                )))
             if kind == "UPSERT_STATEMENT":
                 if change["content_action"] == "none":
                     change["content_action"] = "append_evidence"
@@ -357,6 +369,10 @@ def calculate_lint_preview(
                         "CONCEPT_STATEMENT", "ADD", page_id, global_id, None,
                         str(arguments["text"]), list(arguments["evidence"]),
                     ))
+                    summary.append((page_id, summary_item(
+                        "STATEMENT_ADD", page_id, title(page_id), text=arguments["text"],
+                        evidence=list(arguments["evidence"]),
+                    )))
         elif kind in {"ADD_LINK", "REMOVE_LINK"}:
             source_slug = str(arguments["source_ref"]).removeprefix("concept:")
             target_slug = str(arguments["target_ref"]).removeprefix("concept:")
@@ -375,6 +391,10 @@ def calculate_lint_preview(
             if present != (kind == "REMOVE_LINK"):
                 raise PreviewCalculationError("link precondition does not match public state")
             change["added_links" if kind == "ADD_LINK" else "removed_links"].append(link)
+            summary.append((page_id, summary_item(
+                "LINK_ADD" if kind == "ADD_LINK" else "LINK_REMOVE", page_id, title(page_id),
+                related_page_title=title(slug_to_id[target_slug]),
+            )))
             if kind == "ADD_LINK":
                 links_by_page[page_id].append(link)
             else:
@@ -408,6 +428,12 @@ def calculate_lint_preview(
                     raise PreviewCalculationError("merge cascade is outside the frozen target set")
                 _merge_change(changes_by_page[changed_id], planned)
             linked.extend(dict(item) for item in plan.linked)
+            summary.extend(
+                (str(source), summary_item(
+                    "CONCEPT_MERGE", str(source), title(str(source)), related_page_title=title(destination),
+                ))
+                for source in arguments["source_page_ids"]
+            )
             for changed_id in target_ids:
                 links_by_page[changed_id] = list(_replay_page(
                     changed_id, draft_id, loaded_by_id[changed_id], changes_by_page[changed_id], linked
@@ -416,6 +442,7 @@ def calculate_lint_preview(
             if arguments["expected_content_hash"] != snapshots[page_id]["content_hash"]:
                 raise PreviewCalculationError("orphan page content hash changed")
             orphan_checks.add(page_id)
+            summary.append((page_id, summary_item("CONCEPT_DELETE", page_id, title(page_id))))
 
     if infer_page_moves:
         pages = {
@@ -439,6 +466,18 @@ def calculate_lint_preview(
         if str(contribution["page_id"]) not in changes_by_page:
             raise PreviewCalculationError("server move contribution is outside the frozen target set")
         linked.append(dict(contribution))
+    # 서버가 추론한 페이지 이동은 그 페이지를 지우고 대상 개념의 항목으로 옮긴다. 사용자에게는 개념 합치기와 같다.
+    moved = set(server_effects.get("deleted_page_ids", []))
+    for decision in server_effects.get("decisions", []):
+        if (
+            decision.get("action") == "move" and not decision.get("skipped_reason")
+            and str(decision.get("page_id")) in moved & set(row_by_id) and str(decision.get("target_page_id")) in row_by_id
+        ):
+            moved_id = str(decision["page_id"])
+            summary.append((moved_id, summary_item(
+                "CONCEPT_MERGE", moved_id, title(moved_id),
+                related_page_title=title(str(decision["target_page_id"])),
+            )))
 
     planned: dict[str, dict[str, Any]] = {}
     rebuilt: dict[str, Any] = dict(current)
@@ -567,6 +606,8 @@ def calculate_lint_preview(
         "draft_version": 1, "draft_hash": draft_hash, "source_snapshots": frozen_sources,
         "target_pages": frozen_targets, "public_state_hash": public_state_hash,
         "changes": changes, "complete": True,
+        # 승인 화면용 사람이 읽는 요약. 해시에 묶인 작업·공개 상태에서 파생하므로 draft_hash 입력이 아니다.
+        "summary": group_by_page(summary),
     }
     # 웹 lint 발행(`persist_lint_operation_result`)의 입력 모양이다. 페이지 변경 기록과 재생 결과 상태를 그대로 넘긴다.
     page_changes = [
