@@ -48,6 +48,10 @@ def test_frozen_moves_apply_and_contributions_replay(selected, monkeypatch):
         recalculated = h.apply_repository_module._recalculate_lint(conn, draft)
         assert recalculated['preview'] == draft['preview']
         assert draft['calculation_inputs']['server_effects']['deleted_page_ids'] == ['child']
+        # 서버가 추론한 이동은 승인 요약에 개념 합치기로 보인다.
+        assert [(item['kind'], item['page_title'], item['related_page_title']) for item in draft['preview']['summary']] == [
+            ('STATEMENT_UPDATE', 'Referrer', None), ('CONCEPT_MERGE', 'Child', 'Parent'),
+        ]
         assert conn.execute("SELECT status FROM wiki_pages WHERE id='child'").fetchone()['status'] == 'active'
     def no_judge(_):
         pytest.fail('apply must not construct Jev')
