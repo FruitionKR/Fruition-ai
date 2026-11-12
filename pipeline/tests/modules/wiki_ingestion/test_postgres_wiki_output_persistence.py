@@ -718,8 +718,10 @@ def test_operation_artifacts_include_existing_concept_evidence_updates(
     ]
 
 
+@pytest.mark.parametrize("claim_id", ["claim-1", "op-new:claim-1", None])
+@pytest.mark.parametrize("reference", ["B0001", "doc-1:B0001"])
 def test_existing_concept_update_prepares_immutable_reference_without_overwriting(
-    monkeypatch,
+    monkeypatch, claim_id, reference,
 ) -> None:
     writes = []
 
@@ -759,9 +761,9 @@ def test_existing_concept_update_prepares_immutable_reference_without_overwritin
             {
                 "decision": "same_concept",
                 "concept_slug": "existing",
-                "claim_id": "claim-1",
+                "claim_id": claim_id,
                 "claim": "새 근거",
-                "refs": ["doc-1:B0001"],
+                "refs": [reference],
             }
         ],
     )
@@ -769,7 +771,7 @@ def test_existing_concept_update_prepares_immutable_reference_without_overwritin
     assert writes == []
     assert all("ops/op-old.md" not in key for key, _text in writes)
     assert changes[0]["page_id"] == "existing-page-1"
-    assert "새 근거" in changes[0]["markdown"]
+    assert "- op-new:claim-1: 새 근거 [doc-1:B0001]" in changes[0]["markdown"]
 
 
 def test_concept_update_neutralizes_external_links_in_claims(monkeypatch) -> None:

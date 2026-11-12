@@ -7,12 +7,13 @@ from typing import Any
 
 import psycopg
 
-from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_generation.domain.concept_identity import (
     remap_concept_markdown_slugs,
     remap_normalized_concept_slugs,
 )
 from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_order
+from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
 from app.modules.wiki_ingestion.infrastructure.backend_document_reader import read_contributions
 from app.modules.wiki_ingestion.infrastructure.pending_contributions import with_pending_contributions
 from app.modules.wiki_ingestion.domain.concept_entries import (
@@ -145,6 +146,8 @@ def persist_wiki_outputs(
                 "concept_update_decisions",
                 [],
             ),
+            document_id,
+            operation_id,
         )
     concept_page_ids, concept_id_by_slug = _persist_concept_pages(
         conn,
@@ -630,7 +633,9 @@ def _persist_concept_pages(
             current_markdown = read_optional_text_object(existing["markdown_uri"])
             updates = concept_evidence_updates(contribution)
             concept_markdown = (
-                sanitize_ai_markdown(append_concept_evidence(current_markdown, updates))
+                sanitize_ai_markdown(
+                    append_concept_evidence(current_markdown, updates), keep_urls=external_urls(current_markdown),
+                )
                 if current_markdown else concept_markdown
             )
             concept_page["markdown"] = concept_markdown
@@ -832,6 +837,8 @@ def _apply_concept_update_decisions(
         conn,
         workspace_id,
         decisions,
+        document_id,
+        operation_id,
     )
     _persist_prepared_concept_updates(
         conn,
@@ -847,30 +854,18 @@ def _prepare_concept_update_decisions(
     conn: psycopg.Connection,
     workspace_id: str,
     decisions: Any,
+    document_id: str,
+    operation_id: str,
 ) -> list[dict[str, Any]]:
     if not isinstance(decisions, list):
         return []
-    by_concept: dict[str, list[dict[str, Any]]] = {}
-    for decision in decisions:
-        if (
-            not isinstance(decision, dict)
-            or decision.get("decision") != "same_concept"
-        ):
-            continue
-        concept_slug = str(decision.get("concept_slug") or "").strip()
-        claim = str(decision.get("claim") or "").strip()
-        refs = [str(ref) for ref in decision.get("refs", []) if ref]
-        if not concept_slug or not claim:
-            continue
-        by_concept.setdefault(concept_slug, []).append(
-            {
-                "claim_id": decision.get("claim_id"),
-                "claim": claim,
-                "refs": refs,
-            }
-        )
+    contributions = build_concept_contributions(
+        operation_id=operation_id, normalized={"document": {"document_id": document_id}},
+        source_blocks=[], links=[], concept_update_decisions=decisions,
+    )
     changed_pages: list[dict[str, Any]] = []
-    for concept_slug, updates in by_concept.items():
+    for concept_slug, contribution in contributions.items():
+        updates = concept_evidence_updates(contribution)
         row = conn.execute(
             """
             SELECT id, markdown_uri
@@ -887,7 +882,9 @@ def _prepare_concept_update_decisions(
         markdown = read_optional_text_object(row["markdown_uri"])
         if not markdown:
             continue
-        updated_markdown = sanitize_ai_markdown(append_concept_evidence(markdown, updates))
+        updated_markdown = sanitize_ai_markdown(
+            append_concept_evidence(markdown, updates), keep_urls=external_urls(markdown),
+        )
         if updated_markdown == markdown:
             continue
         changed_pages.append(

@@ -16,6 +16,7 @@ from app.modules.wiki_ingestion.domain.manual_wiki_edit import (
     wikilink_slugs,
 )
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution, PageRebuildError
+from app.modules.wiki_ingestion.domain.contribution_identity import globalize_contribution_identity
 from app.modules.wiki_ingestion.domain.orphan_link_lint import replay_supported_links
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as repository
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_output_persistence as persistence
@@ -141,12 +142,14 @@ def _objects(**contributions: dict) -> dict[str, str]:
     }
 
 
-def test_rebuild_keeps_manual_body_and_appends_later_evidence() -> None:
+@pytest.mark.parametrize('publication_path', ['existing_concept', 'same_concept'])
+def test_rebuild_keeps_manual_body_and_appends_later_evidence(monkeypatch, publication_path) -> None:
     manual_body = "# 내가 고친 캐시\n\n사람이 쓴 설명 [링크](https://example.com)\n\n## Evidence\n- 사람이 남긴 근거\n"
+    contribution = globalize_contribution_identity(_ingest('B', 'B 근거 [외부](https://attacker.example/x)'))
     objects = _objects(
         A=_ingest("A", "A 근거", [CDN, REDIS]),
         M=_manual("M", removed=[CDN]),
-        B=_ingest("B", "B 근거 [외부](https://attacker.example/x)"),
+        B=contribution,
     )
     objects["wiki/ws/pages/C1/ops/M.md"] = manual_body
 
@@ -154,11 +157,34 @@ def test_rebuild_keeps_manual_body_and_appends_later_evidence() -> None:
 
     assert rebuilt.markdown.startswith("# 내가 고친 캐시\n\n사람이 쓴 설명 [링크](https://example.com)")
     assert "A 근거" not in rebuilt.markdown
-    assert "- ev-B: B 근거" in rebuilt.markdown
+    assert "- B:ev-B: B 근거" in rebuilt.markdown
     assert "https://attacker.example" not in rebuilt.markdown
     assert rebuilt.title is None and rebuilt.summary is None
     assert rebuilt.supported_links == (REDIS,)
     assert rebuilt.source_document_ids == ("doc-A", "doc-B")
+
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = {'id': 'C1', 'markdown_uri': 'manual.md'}
+    monkeypatch.setattr(persistence, 'read_optional_text_object', lambda _: manual_body)
+    if publication_path == 'same_concept':
+        pages = persistence._prepare_concept_update_decisions(conn, 'ws', [{
+            'decision': 'same_concept', 'concept_slug': 'cache',
+            'claim_id': 'ev-B', 'claim': contribution['evidence_units'][0]['claim'], 'refs': [],
+        }], 'doc-B', 'B')
+        published = pages[0]['markdown']
+    else:
+        for name in ('upsert_wiki_page', 'upsert_concept_identity_aliases', 'upsert_document_wiki_link'):
+            monkeypatch.setattr(persistence, name, lambda *args: None)
+        saved = []
+        monkeypatch.setattr(persistence, 'persist_embedding_units', lambda *args: saved.append(args[-1]))
+        monkeypatch.setenv('S3_BUCKET', 'test')
+        persistence._persist_concept_pages(conn, 'doc-B', {
+            'concept_pages': [{'slug': 'cache', 'markdown': 'unused'}],
+            'concept_contributions': {'cache': contribution},
+        }, {'concept_ledger': [contribution['concept']]}, 'user', 'ws',
+            concept_id_by_slug={'cache': 'C1'}, operation_id='B')
+        published = saved[0]
+    assert published == rebuilt.markdown
 
 
 def test_rebuild_without_manual_contribution_regenerates_from_json() -> None:
