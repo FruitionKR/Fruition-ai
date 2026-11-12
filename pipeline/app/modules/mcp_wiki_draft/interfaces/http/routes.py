@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from uuid import UUID
 
@@ -9,11 +10,14 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app.modules.mcp_wiki_draft.application import McpWikiDraftError, McpWikiDraftIntake
+from app.modules.mcp_wiki_draft.application import McpWikiDraftError, McpWikiDraftIntake, load_intake_limits
+from app.modules.mcp_wiki_draft.infrastructure.postgres_repository import connect
+from app.modules.mcp_wiki_draft.source_block_registry import resolve_source_blocks
 from app.modules.mcp_wiki_draft.interfaces.http.dependencies import get_mcp_wiki_draft_intake
 from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
     FinalizeIngestRequest,
     ReadWindowRequest,
+    ResolveSourceBlocksRequest,
     ResumeIngestRequest,
     StartIngestRequest,
     SubmitLintDraftRequest,
@@ -22,6 +26,7 @@ from app.modules.mcp_wiki_draft.interfaces.http.schemas import (
 
 
 router = APIRouter(prefix="/internal/mcp/wiki", tags=["mcp-wiki-draft"])
+source_blocks_router = APIRouter(prefix="/internal/mcp/source-blocks", tags=["mcp-wiki-draft"])
 
 
 def _error(error: McpWikiDraftError) -> JSONResponse:
@@ -167,5 +172,29 @@ async def get_draft_preview(
         return await run_in_threadpool(
             intake.preview, _uuid(draft_id, "Draft"), draft_version, workspace_id, user_id
         )
+    except McpWikiDraftError as exc:
+        return _error(exc)
+
+
+def _resolve_source_blocks(payload: ResolveSourceBlocksRequest) -> dict:
+    if len(payload.markdown.encode("utf-8")) > load_intake_limits().source_text_bytes:
+        raise McpWikiDraftError(413, "SOURCE_LIMIT_EXCEEDED", "Document source exceeds configured storage bounds.")
+    try:
+        with connect() as conn:
+            blocks = resolve_source_blocks(conn, payload.document_id, payload.markdown)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("MCP source block resolution failed")
+        raise McpWikiDraftError(
+            503, "DEPENDENCY_UNAVAILABLE", "Source block registry is unavailable.", retryable=True,
+        ) from exc
+    return {"schema_version": "mcp.source-blocks.v1", "document_id": payload.document_id, "blocks": blocks}
+
+
+@source_blocks_router.post("/resolve")
+async def resolve_document_source_blocks(request: Request):
+    """웹 편입과 같은 분할·영구 블록 ID. document의 MCP 원문 스냅샷과 get_document가 쓴다."""
+    try:
+        payload = await _validated(request, ResolveSourceBlocksRequest)
+        return await run_in_threadpool(_resolve_source_blocks, payload)
     except McpWikiDraftError as exc:
         return _error(exc)

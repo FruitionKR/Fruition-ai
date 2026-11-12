@@ -17,7 +17,12 @@ from psycopg.types.json import Jsonb
 from app.core.pipeline_control import task_run_id
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError
 from app.modules.mcp_wiki_draft.apply_application import ApplyClaim
-from app.modules.mcp_wiki_draft.calculation import PreviewCalculationError, preview_ingest, publish_ingest
+from app.modules.mcp_wiki_draft.calculation import (
+    PreviewCalculationError,
+    SourceChangedError,
+    preview_ingest,
+    publish_ingest,
+)
 from app.modules.mcp_wiki_draft.infrastructure.postgres_repository import connect
 from app.modules.mcp_wiki_draft.interfaces.http.apply_schemas import ApplyWikiDraftRequest
 from app.modules.mcp_wiki_draft.lint_calculation import calculate_lint_preview
@@ -468,6 +473,8 @@ def _publish_ingest(
             operation_id=payload.operation_id,
             artifact_writer=_publication_writer(payload.operation_id),
         )
+    except SourceChangedError:
+        raise _PublicationConflict("SOURCE_CHANGED") from None
     except PreviewCalculationError:
         raise _PublicationConflict("PUBLIC_STATE_CHANGED") from None
     _require_approved(calculation["preview"], payload, draft)
@@ -495,6 +502,8 @@ def _publish_ingest_no_change(
         calculation = preview_ingest(
             conn, run=draft, submissions=list(draft["normalized_submissions"]), source_blocks=source_blocks,
         )
+    except SourceChangedError:
+        raise _PublicationConflict("SOURCE_CHANGED") from None
     except PreviewCalculationError:
         raise _PublicationConflict("PUBLIC_STATE_CHANGED") from None
     _require_approved(calculation["preview"], payload, draft)

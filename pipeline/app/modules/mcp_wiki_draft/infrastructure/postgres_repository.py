@@ -27,6 +27,7 @@ from app.modules.mcp_wiki_draft.application import (
 from app.modules.mcp_wiki_draft.calculation import (
     PreviewCalculationError,
     SemanticMergeError,
+    SourceChangedError,
     freeze_server_concept_merges,
     preview_ingest,
 )
@@ -132,9 +133,14 @@ class PostgresMcpWikiDraftRepository:
                 )
                 with conn.cursor() as cursor:
                     cursor.executemany(
-                        "INSERT INTO mcp_wiki_source_blocks(snapshot_id,block_id,ordinal,text,content_hash,text_bytes) VALUES (%s,%s,%s,%s,%s,%s)",
+                        "INSERT INTO mcp_wiki_source_blocks(snapshot_id,block_id,ordinal,text,content_hash,text_bytes,"
+                        "line_start,line_end,block_type) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         [
-                            (snapshot_id, block["block_id"], block["ordinal"], block["text"], block["content_hash"], len(block["text"].encode("utf-8")))
+                            (
+                                snapshot_id, block["block_id"], block["ordinal"], block["text"], block["content_hash"],
+                                len(block["text"].encode("utf-8")),
+                                block.get("line_start"), block.get("line_end"), block.get("block_type"),
+                            )
                             for block in source["blocks"]
                         ],
                     )
@@ -554,6 +560,10 @@ class PostgresMcpWikiDraftRepository:
                 )
             except SemanticMergeError as exc:
                 raise McpWikiDraftError(409, "MERGE_TARGET_CHANGED", str(exc)) from exc
+            except SourceChangedError as exc:
+                raise McpWikiDraftError(
+                    409, "SOURCE_CHANGED", "Document source blocks changed since start_ingest; start a new ingest.",
+                ) from exc
             except PreviewCalculationError as exc:
                 raise McpWikiDraftError(
                     409, "LEDGER_RECONCILIATION_PENDING",

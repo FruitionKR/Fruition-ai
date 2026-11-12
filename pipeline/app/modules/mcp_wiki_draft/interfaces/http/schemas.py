@@ -357,3 +357,24 @@ class SubmitLintDraftRequest(ExactModel):
         if not _HASH.fullmatch(value):
             raise ValueError("request_hash must be a lowercase sha256 digest")
         return value
+
+
+class ResolveSourceBlocksRequest(ExactModel):
+    """document가 MCP 원문을 웹 편입과 같은 영구 블록 ID로 나눠 달라고 보내는 요청. 저장하지 않는다."""
+
+    schema_version: Literal["mcp.source-blocks.v1"]
+    workspace_id: str
+    document_id: str
+    markdown: str
+
+    @field_validator("workspace_id")
+    @classmethod
+    def workspace(cls, value: str) -> str:
+        return bounded_nonblank(value, "workspace_id", 255)
+
+    @field_validator("document_id")
+    @classmethod
+    def document(cls, value: str) -> str:
+        if not _DOCUMENT_ID.fullmatch(value):
+            raise ValueError("document_id is invalid")
+        return value

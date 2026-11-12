@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS mcp_wiki_source_blocks (
     PRIMARY KEY (snapshot_id,block_id),
     UNIQUE (snapshot_id,ordinal)
 );
+-- 영구 블록 ID(웹 분할·source_blocks 레지스트리)와 함께 받은 줄 범위·블록 종류. 이전에 시작한 run은 NULL이다.
+ALTER TABLE mcp_wiki_source_blocks ADD COLUMN IF NOT EXISTS line_start integer;
+ALTER TABLE mcp_wiki_source_blocks ADD COLUMN IF NOT EXISTS line_end integer;
+ALTER TABLE mcp_wiki_source_blocks ADD COLUMN IF NOT EXISTS block_type varchar(32);
 
 CREATE TABLE IF NOT EXISTS mcp_wiki_windows (
     window_id uuid PRIMARY KEY,

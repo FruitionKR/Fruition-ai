@@ -8,7 +8,7 @@ from app.modules.mcp_wiki_draft.interfaces.http.schemas import ContributionReque
 def contribution(name, target=None):
     value = {
         "concept_name": name,
-        "statements": [{"statement_id": name, "text": "Evidence", "evidence": [{"block_id": "B1"}]}],
+        "statements": [{"statement_id": name, "text": "Evidence", "evidence": [{"block_id": "B0001"}]}],
         "links": [],
     }
     if target is not None:
@@ -22,7 +22,7 @@ def manifest(submissions, index):
         run={"document_id": "doc", "source_display_name": "Doc", "source_content_hash": "sha256:" + "0" * 64,
              "user_id": "user", "workspace_id": "workspace"},
         submissions=submissions,
-        source_blocks=[{"block_id": "B1", "ordinal": 1, "text": "Evidence"}],
+        source_blocks=[{"block_id": "B0001", "ordinal": 1, "text": "Evidence"}],
         current_source_blocks=[],
         concept_index=[{"page_id": item["id"], "identity_aliases": [], **item} for item in index],
         operation_id="operation",

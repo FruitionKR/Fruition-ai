@@ -14,16 +14,16 @@ def test_title_and_official_alias_keep_both_contributions():
             "evidence": [{"snapshot_id": snapshot_id, "block_id": block_id, "quote": text}],
         }], "links": []}
         for name, sid, text, block_id in (
-            ("Alpha", "s1", "First fact", "B1"),
-            ("Official alias", "s2", "Second fact", "B2"),
+            ("Alpha", "s1", "First fact", "B0001"),
+            ("Official alias", "s2", "Second fact", "B0002"),
         )
     ]
     manifest = calculation.build_ingest_manifest(
         run={"workspace_id": "ws", "document_id": "doc1", "user_id": "user",
              "source_content_hash": "sha256:" + "a" * 64, "source_display_name": "Doc1"},
         submissions=[{"window_ordinal": 1, "contributions": concepts}],
-        source_blocks=[{"block_id": "B1", "ordinal": 1, "text": "First fact"},
-                       {"block_id": "B2", "ordinal": 2, "text": "Second fact"}],
+        source_blocks=[{"block_id": "B0001", "ordinal": 1, "text": "First fact"},
+                       {"block_id": "B0002", "ordinal": 2, "text": "Second fact"}],
         current_source_blocks=[],
         concept_index=index,
         operation_id="operation",
@@ -32,4 +32,4 @@ def test_title_and_official_alias_keep_both_contributions():
     assert [item["slug"] for item in manifest["normalized"]["concept_ledger"]] == ["alpha"]
     contribution = manifest["concept_contributions"]["alpha"]
     assert {item["claim"] for item in contribution["evidence_units"]} == {"First fact", "Second fact"}
-    assert {item["block_id"] for item in contribution["source_blocks"]} == {"B1", "B2"}
+    assert {item["block_id"] for item in contribution["source_blocks"]} == {"B0001", "B0002"}

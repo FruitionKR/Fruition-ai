@@ -118,6 +118,14 @@ Embedding/provider, unit 조회, 정렬의 deadline check는 worker thread에서
 
 AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki_page`는 웹 상세 조회(`WikiService.read`)를 그대로 쓰고, 그 조회가 부르는 기존 `GET /wiki/pages/{page_id}?workspace_id=...`와 읽기 뒤 변경 확인용 `POST /wiki/pages/lookup`만 AI에 닿는다. 본문은 웹과 같은 순서(AI 본문 → 최신 `wiki_page_versions.markdown` → 저장 객체)로 고른다. 빈 본문 정상 반환·`PAGE_CHANGED`·읽기 deadline·크기 제한·sanitize·`mcp.wiki-page.v1` 응답·hash는 document-svc의 MCP 경계가 맡는다(Fruition-document `docs/api/mcp-read.md`).
 
+document는 MCP 조회일 때 `mcp_read=true`를 붙인다. 이때만 AI가 응답에 lint 준비 정보를 덧붙인다(웹 상세 응답과 기존 필드는 그대로다). 활성 CONCEPT 페이지가 아니면 모두 빈 값이다.
+
+- `statements[{statement_id,text,text_hash}]`: lint 검증이 쓰는 남은 근거 단위 그대로다. `statement_id`는 `UPSERT_STATEMENT`/`REMOVE_STATEMENT`가 받는 전역 id(`<operation_id>:<local id>`), `text_hash`는 `REMOVE_STATEMENT.expected_text_hash` 기준(`"sha256:"+sha256(text)`)이다. 기여 원장을 읽지 못하면 `statements=[]`, `lint_context_error="STATEMENTS_UNAVAILABLE"`이다(페이지 조회는 실패하지 않는다).
+- `links[{page_id,slug,relation,direction,source_ref,target_ref}]`: 이 페이지가 한쪽 끝인 활성 개념 간 DB 링크(`source_mentions_concept` 제외). `relation`은 `wiki_page_links.link_type`(lint relation 어휘), `direction`은 `outgoing|incoming`, ref는 ADD_LINK/REMOVE_LINK가 받는 `concept:<slug>`다. REMOVE_LINK의 `target_page_id`는 `source_ref` 쪽 페이지다.
+- `lint_target_page_ids`: 이 페이지를 lint 대상으로 낼 때 검증이 `target_snapshot`에 함께 요구하는 페이지 id(자기 포함, 정렬). 링크 양 끝·하위 항목 참조 대상·이 묶음의 slug를 참조하는 활성 페이지를 닫힐 때까지 넓힌다. `MCP_WIKI_DRAFT_LINT_MAX_TARGET_PAGES`를 넘으면 넓히기를 멈추고 `lint_target_truncated=true`다(그 한도 안에서는 lint할 수 없다).
+
+ADD_LINK/REMOVE_LINK는 링크를 `(source, target, relation)` 키로 비교한다. 웹 편입 링크가 `confidence`·`decided_by`·`entry_id` 같은 값을 더 실어도 REMOVE_LINK가 맞고, 이미 있는 키의 ADD_LINK는 중복을 만들지 않고 `INVALID_LINT_OPERATION`으로 막는다.
+
 ## 11. 구현 파일
 
 - application/cursor: `pipeline/app/modules/mcp_read/application/wiki_search.py`
@@ -146,7 +154,7 @@ AI에는 MCP 전용 페이지 읽기 경로가 없다. document-svc의 `get_wiki
 | `POST /internal/mcp/wiki/ingest-runs/{run_id}/finalize` | `{schema_version,actor,idempotency_key,request_hash,snapshot_id,expected_submitted_window_count,jev_allowed?}` | 모든 ordered window를 검증하고 frozen `draft_version=1`과 `AWAITING_WEB_APPROVAL` response를 한 번만 생성 |
 | `GET /internal/mcp/wiki/drafts/{draft_id}/preview?draft_version=1` | body 없음; `X-MCP-Workspace-Id`, `X-MCP-User-Id` | owner-bound exact `mcp.wiki-preview.v1` full preview; missing/wrong owner는 `404` |
 
-Start는 client source/version/hash/bytes/URI를 받지 않는다. AI가 고정 Document origin의 `POST /internal/documents/{document_id}/mcp-wiki-source`를 `X-Agent-Service-Token`으로 한 번 호출한다. callback request는 exact `{schema_version:"mcp.wiki-source.v1",actor}`이고 response는 exact `{schema_version,document_id,display_name,workspace_id,source_version,source_content_hash,mime_type,blocks[{block_id,ordinal,text,content_hash}]}`다. Document는 한 coherent current read에서 현재 표시 이름과 Markdown/txt/기존 converted text의 version/hash/ordered blocks를 만들며 PDF parser나 caller URL/bearer를 추가하지 않는다. AI는 `display_name`을 신뢰할 수 없는 텍스트로 본다. Document 업로드·이름 변경이 받는 이름(비ASCII 공백·서식 문자 포함)은 그대로 받고, 공백만 있거나 255자를 넘거나 줄을 끊는 문자(Unicode Cc·Zl·Zp)를 담으면 거절한다. 통과한 값은 run snapshot(`source_display_name`)에 고정되고, preview·apply가 SOURCE 페이지 제목·본문 제목·`source_file`로 쓴다. frontmatter의 `source_file`은 JSON 문자열(YAML 큰따옴표 스칼라)로 써서 `: `·`#`·앞의 `-`가 frontmatter를 깨지 않는다. 기존 SOURCE 페이지 제목도 이 값으로 바뀐다. 같은 문서의 현재 내용이 이미 편입돼 있으면(마지막 성공 편입의 입력 Markdown SHA-256 = `source_block_snapshots.source_content_hash`가 현재 `source_content_hash`와 같으면, 웹·MCP 편입 공통) run을 만들지 않고 `409 ALREADY_INGESTED`로 거절한다. Document 블록 stale 판정과 같은 값이며, 문서를 고쳐 해시가 바뀌면 다시 편입할 수 있다. 휴지통 이동은 이 스냅샷을 지우므로 복원한 문서는 다시 편입할 수 있다.
+Start는 client source/version/hash/bytes/URI를 받지 않는다. AI가 고정 Document origin의 `POST /internal/documents/{document_id}/mcp-wiki-source`를 `X-Agent-Service-Token`으로 한 번 호출한다. callback request는 exact `{schema_version:"mcp.wiki-source.v1",actor}`이고 response는 exact `{schema_version,document_id,display_name,workspace_id,source_version,source_content_hash,mime_type,blocks[{block_id,ordinal,text,content_hash[,line_start,line_end,block_type]}]}`다. 블록은 아래 "원문 블록 ID"의 resolve 결과다: `block_id`는 문서별 영구 블록 ID, `text`는 원문 조각(`raw_text`, 인용 검사 기준), 줄 범위·블록 종류는 snapshot(`mcp_wiki_source_blocks`)에 함께 저장한다. 세 위치 필드는 함께 보내거나 함께 생략한다(이전 document 호환). Document는 한 coherent current read에서 현재 표시 이름과 Markdown/txt/기존 converted text의 version/hash/ordered blocks를 만들며 PDF parser나 caller URL/bearer를 추가하지 않는다. AI는 `display_name`을 신뢰할 수 없는 텍스트로 본다. Document 업로드·이름 변경이 받는 이름(비ASCII 공백·서식 문자 포함)은 그대로 받고, 공백만 있거나 255자를 넘거나 줄을 끊는 문자(Unicode Cc·Zl·Zp)를 담으면 거절한다. 통과한 값은 run snapshot(`source_display_name`)에 고정되고, preview·apply가 SOURCE 페이지 제목·본문 제목·`source_file`로 쓴다. frontmatter의 `source_file`은 JSON 문자열(YAML 큰따옴표 스칼라)로 써서 `: `·`#`·앞의 `-`가 frontmatter를 깨지 않는다. 기존 SOURCE 페이지 제목도 이 값으로 바뀐다. 같은 문서의 현재 내용이 이미 편입돼 있으면(마지막 성공 편입의 입력 Markdown SHA-256 = `source_block_snapshots.source_content_hash`가 현재 `source_content_hash`와 같으면, 웹·MCP 편입 공통) run을 만들지 않고 `409 ALREADY_INGESTED`로 거절한다. Document 블록 stale 판정과 같은 값이며, 문서를 고쳐 해시가 바뀌면 다시 편입할 수 있다. 휴지통 이동은 이 스냅샷을 지우므로 복원한 문서는 다시 편입할 수 있다.
 
 `submit_window`는 자유 Markdown이 아니라 concept → statement → internal evidence `{snapshot_id,block_id,quote}`와 closed `concept_related_to` link만 받는다. 각 statement는 nonempty evidence가 필요하고 locator가 현재 window에 속하며 quote가 block의 exact nonblank substring인지 검사한다. 외부 URL/image/unsafe markup과 운영에서 정한 instruction regex를 거절하고 sanitizer가 바꾸지 않는 text만 저장한다. configured lexical overlap은 보조 휴리스틱이며 사실성·prompt-injection 부재를 보장하지 않는다.
 
@@ -173,6 +181,17 @@ Full preview는 웹 편입 반영 코드를 그대로 실행해 만든다. MCP�
 `AWAITING_WEB_APPROVAL`도 document active-ingest fence와 TTL/취소/task-journal/purge 대상이다. cancel/expiry/purge는 unpublished preview를 지우며 late finalize/read는 과거 성공을 재생하거나 상태를 되살리지 않는다. Preview/finalize 자체는 web approval, fee/settlement, frontend를 구현하거나 성공으로 응답하지 않는다.
 
 `APPLYING`과 `UNKNOWN`은 TTL이 지나도 문서 점유와 활성 개수·저장량 한도에 포함된다. 미공개 run이 이번 정리에서 `EXPIRED`로 전환되면 private 원문 블록·window·submission을 삭제하되 run metadata와 멱등 기록은 유지한다. 미확정 반영과 확정 결과는 이 정리로 삭제하지 않는다.
+
+### 원문 블록 ID (`POST /internal/mcp/source-blocks/resolve`)
+
+웹 편입과 MCP는 같은 문서별 영구 블록 ID(`source_blocks`)를 쓴다. document는 MCP 원문 스냅샷과 `get_document`를 만들 때 이 endpoint로 블록을 받는다. `X-Agent-Service-Token`, 본문 한도 `MCP_WIKI_DRAFT_MAX_REQUEST_BYTES`, Markdown 한도 `MCP_WIKI_DRAFT_SOURCE_MAX_TEXT_BYTES`(초과 `413 SOURCE_LIMIT_EXCEEDED`)다. 오류 모양은 다른 MCP draft endpoint와 같다.
+
+- request(exact): `{"schema_version":"mcp.source-blocks.v1","workspace_id":str,"document_id":str,"markdown":str}`
+- response: `{"schema_version":"mcp.source-blocks.v1","document_id":...,"blocks":[{"block_id","ordinal","line_start","line_end","block_type","text","raw_text"}]}`(문서 순서)
+
+웹 편입과 같이 `MarkdownBlockExtractor`로 나누고(웹 경로는 저장 Markdown을 전처리 없이 넘기며 이 endpoint도 받은 `markdown`을 그대로 나눈다) 현재 레지스트리(`position NULLS LAST, block_id` 순서)와 웹 재편입의 이전 최대 블록 번호(마지막 성공 `pipeline_runs.manifest.source_extraction_artifact.max_block_number`)로 `compare_source_blocks`를 계산한다. 저장하지 않는다. 같은 레지스트리·같은 Markdown이면 같은 ID이고 웹 재편입 commit이 줄 ID와 같다. `text`는 레지스트리 정규화 텍스트(`normalize_space`), `raw_text`는 분할기가 자른 원문 조각(`line_start..line_end` 줄을 `\n`으로 이은 뒤 앞뒤 빈 줄 제거), 줄 번호는 `\n` 기준 1-based다. 마지막 편입 뒤에 생긴 블록은 다음 번호를 잠정으로 받는다.
+
+발행(finalize 미리보기·승인 적용)은 snapshot 블록(텍스트를 정규화)을 현재 레지스트리와 다시 비교한다. 계산한 ID가 snapshot ID와 다르면(시작 뒤 다른 편입이 레지스트리를 바꿨으면) finalize는 `409 SOURCE_CHANGED`, apply는 `CONFLICTED`/`SOURCE_CHANGED`다. 같으면 정규화 텍스트·위치·줄 범위·블록 종류로 레지스트리를 쓰고, 무효화는 비교 결과의 수정·삭제 블록(`invalidated_block_ids`)만이다. 인용 검사는 그대로 원문 조각의 exact substring이다.
 
 ## 14. I9 explicit-approved INGEST/LINT apply and publication result
 

@@ -22,6 +22,9 @@ _RESPONSE_KEYS = {
     "source_content_hash", "mime_type", "blocks",
 }
 _BLOCK_KEYS = {"block_id", "ordinal", "text", "content_hash"}
+# document가 웹 분할(`/internal/mcp/source-blocks/resolve`)로 받은 줄 범위·블록 종류. 이전 document는 보내지 않는다.
+_LOCATION_KEYS = {"line_start", "line_end", "block_type"}
+_BLOCK_TYPES = {"paragraph", "heading", "list", "code"}
 
 
 class BackendMcpWikiSourceReader:
@@ -107,7 +110,8 @@ def _validate(value, actor, document_id, limits) -> dict:
     for ordinal, block in enumerate(value["blocks"], 1):
         if (
             not isinstance(block, dict)
-            or set(block) != _BLOCK_KEYS
+            or set(block) not in (_BLOCK_KEYS, _BLOCK_KEYS | _LOCATION_KEYS)
+            or not _valid_location(block)
             or not isinstance(block.get("block_id"), str)
             or _BLOCK_ID.fullmatch(block["block_id"]) is None
             or block["block_id"] in seen_ids
@@ -127,6 +131,18 @@ def _validate(value, actor, document_id, limits) -> dict:
     if total > limits.source_text_bytes:
         raise McpWikiDraftError(413, "SOURCE_LIMIT_EXCEEDED", "Authoritative document source exceeds configured storage bounds.")
     return value
+
+
+def _valid_location(block: dict) -> bool:
+    if not _LOCATION_KEYS & set(block):
+        return True
+    start, end, block_type = block["line_start"], block["line_end"], block["block_type"]
+    if start is None and end is None and block_type is None:
+        return True
+    return (
+        type(start) is int and type(end) is int and 1 <= start <= end
+        and block_type in _BLOCK_TYPES
+    )
 
 
 def _error_code(exc: HTTPError) -> str:

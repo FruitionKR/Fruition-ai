@@ -10,8 +10,13 @@ from uuid import UUID
 from app.core.ai_database import connect_ai
 from app.core.jev_client import JevUnavailable
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError, load_submission_policy
+from app.modules.mcp_wiki_draft.source_block_registry import (
+    SourceBlocksChangedError,
+    load_source_block_registry,
+    match_snapshot_to_registry,
+)
 from app.modules.wiki_generation.domain.concept_identity import concept_name_keys
-from app.modules.wiki_generation.domain.entities import SourceBlock, SourceDocument
+from app.modules.wiki_generation.domain.entities import SourceDocument
 from app.modules.wiki_generation.domain.text_utils import name_key
 from app.modules.wiki_generation.infrastructure.assemble import (
     ConceptPageAssembler,
@@ -55,6 +60,10 @@ from run_lab import resolve_judged_concepts
 
 class PreviewCalculationError(RuntimeError):
     pass
+
+
+class SourceChangedError(PreviewCalculationError):
+    """시작 시점 블록 ID가 현재 문서 블록 레지스트리와 맞지 않는다(그 사이 다른 편입이 반영됐다)."""
 
 
 class SemanticMergeError(PreviewCalculationError):
@@ -367,6 +376,7 @@ def build_ingest_manifest(
     current_source_blocks: list[dict[str, Any]],
     concept_index: list[dict[str, Any]],
     operation_id: str,
+    previous_max_block_number: int = 0,
 ) -> dict[str, Any]:
     """제출한 창 기여를 웹 추출 결과(의미 노트)로 바꾼 뒤 웹 편입의 AI 뒤 단계로 manifest를 만든다.
 
@@ -380,6 +390,14 @@ def build_ingest_manifest(
     display_name = str(run["source_display_name"])
     concepts = _combined_concepts(submissions)
     statements = [statement for concept in concepts for statement in concept["statements"]]
+    # 스냅샷 블록 ID는 document가 웹 분할·레지스트리로 받은 영구 ID다. 그 사이 레지스트리가 바뀌었으면 ID가 달라
+    # 다른 블록을 가리키므로 막는다. 같으면 웹 재편입과 같은 비교 결과(무효화 포함)를 쓴다.
+    try:
+        registry = match_snapshot_to_registry(
+            document_id, source_blocks, current_source_blocks, previous_max_block_number,
+        )
+    except SourceBlocksChangedError as exc:
+        raise SourceChangedError(str(exc)) from exc
 
     def refs(statement: dict[str, Any]) -> list[str]:
         return list(dict.fromkeys(str(item["block_id"]) for item in statement["evidence"]))
@@ -408,11 +426,7 @@ def build_ingest_manifest(
         document_id=document_id, title=display_name, source_path=display_name,
         content_sha1=str(run["source_content_hash"]),
     )
-    blocks = [
-        SourceBlock(document_id, str(item["block_id"]), str(item["block_id"]), str(item["text"]), 0, 0)
-        for item in source_blocks
-    ]
-    normalized = SemanticNormalizer(document, blocks).normalize_notes([note])
+    normalized = SemanticNormalizer(document, registry.blocks).normalize_notes([note])
     if [item["claim"] for item in normalized["evidence_units"]] != [item["text"] for item in statements]:
         raise PreviewCalculationError("normalized evidence does not match submitted statements")
     initial_slug = {name_key(item["title"]): str(item["slug"]) for item in normalized["concept_ledger"]}
@@ -456,18 +470,17 @@ def build_ingest_manifest(
             seen.add(edge)
             links.append({"source": f"concept:{source}", "target": f"concept:{target}", "relation": link["relation"]})
 
+    # 웹 편입의 `_source_block_records`와 같은 모양이다. 줄 범위가 없는 스냅샷(이 변경 전에 시작한 run)은 비워 둔다.
     source_block_records = [
         {
-            "document_id": document_id, "block_id": str(item["block_id"]), "text": str(item["text"]),
-            "position": int(item["ordinal"]), "line_start": None, "line_end": None, "block_type": None,
+            "document_id": document_id, "block_id": block.block_id, "text": block.text,
+            "position": int(item["ordinal"]),
+            "line_start": item.get("line_start"), "line_end": item.get("line_end"),
+            "block_type": item.get("block_type"),
         }
-        for item in source_blocks
+        for block, item in zip(registry.blocks, source_blocks, strict=True)
     ]
-    incoming_by_id = {str(item["block_id"]): str(item["text"]) for item in source_blocks}
-    invalidated = [
-        str(item["block_id"]) for item in current_source_blocks
-        if incoming_by_id.get(str(item["block_id"])) != str(item["text"])
-    ]
+    invalidated = registry.invalidated_block_ids
     source_page = SourcePageAssembler().build(resolved)
     key_points = [point for note in resolved.get("semantic_notes", []) for point in note.get("key_points", [])]
     return {
@@ -788,17 +801,15 @@ def publish_ingest(
     workspace_id = str(run["workspace_id"])
     document_id = str(run["document_id"])
     try:
-        current_blocks = [dict(row) for row in conn.execute(
-            "SELECT block_id,text FROM source_blocks WHERE document_id=%s ORDER BY position NULLS LAST,block_id",
-            (document_id,),
-        ).fetchall()]
+        current_blocks, previous_max = load_source_block_registry(conn, document_id)
         manifest = build_ingest_manifest(
             run=run,
             submissions=submissions,
-            source_blocks=source_blocks,
+            source_blocks=_with_snapshot_lines(conn, run, source_blocks),
             current_source_blocks=current_blocks,
             concept_index=list_active_concept_index(workspace_id, use_cache=False, include_deleted=True),
             operation_id=operation_id,
+            previous_max_block_number=previous_max,
         )
         manual_source_markdown = active_manual_source_markdown(document_id, manifest)
         before = _public_rows(conn, workspace_id, document_id)
@@ -830,6 +841,20 @@ def publish_ingest(
         # 원장·대기 기여 대사 실패(document-svc 조회, 대기 기여 모순). 웹 반영이 막힌 상태라 미리보기를 만들지 않는다.
         raise PreviewCalculationError("contribution ledger could not be reconciled") from exc
     return calculation, page_ids, manifest
+
+
+def _with_snapshot_lines(conn, run: dict[str, Any], source_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """창 블록에는 줄 범위가 없다. 시작 시점 스냅샷에 저장한 줄 범위·블록 종류를 붙인다."""
+    lines = {
+        str(row["block_id"]): row for row in conn.execute(
+            "SELECT block_id,line_start,line_end,block_type FROM mcp_wiki_source_blocks WHERE snapshot_id=%s",
+            (str(run["snapshot_id"]),),
+        ).fetchall()
+    }
+    return [
+        {**item, **{key: lines.get(str(item["block_id"]), {}).get(key) for key in ("line_start", "line_end", "block_type")}}
+        for item in source_blocks
+    ]
 
 
 class _DryRun(Exception):
