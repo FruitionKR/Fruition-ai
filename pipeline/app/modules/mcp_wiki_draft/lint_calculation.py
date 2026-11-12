@@ -8,6 +8,7 @@ from typing import Any
 from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
 from app.modules.wiki_ingestion.domain.concept_entries import render_entry_index
 from app.modules.mcp_wiki_draft.calculation import (
+    LedgerContradictionError,
     PreviewCalculationError,
     _canonical_text,
     _change,
@@ -21,6 +22,8 @@ from app.modules.mcp_wiki_draft.preview_summary import group_by_page, summary_it
 from app.modules.wiki_ingestion.domain.concept_entry_lint import EntryLintPlan, EntryPage, plan_entry_lint
 from app.modules.wiki_ingestion.domain.operation_recovery import PageContribution
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    ConceptTitles,
+    concept_title_lookup,
     load_concept_contributions,
     prune_dangling_entry_references,
     rebuild_concept_page,
@@ -132,10 +135,11 @@ def _replay_page(
     loaded: list[PageContribution],
     change: dict[str, Any],
     linked: list[dict[str, Any]],
+    titles: ConceptTitles | None = None,
 ):
     copies = [item for item in linked if str(item.get("page_id")) == page_id]
     if not _has_change(change) and not copies:
-        return rebuild_concept_page(loaded), None
+        return rebuild_concept_page(loaded, concept_titles=titles), None
     contribution = lint_contribution(draft_id, change)
     sequence = max(item.sequence for item in loaded)
     additions = [
@@ -143,7 +147,39 @@ def _replay_page(
         for index, item in enumerate(copies, start=1)
     ]
     additions.append(PageContribution(page_id, "concept", draft_id, sequence + len(additions) + 1, "", contribution))
-    return rebuild_concept_page([*loaded, *additions]), contribution
+    return rebuild_concept_page([*loaded, *additions], concept_titles=titles), contribution
+
+
+def _is_republication(item: PageContribution) -> bool:
+    """본문 전체를 새로 쓴 기여(수동 편집·lint·무효화·항목 이동/삭제). 그 뒤 편입은 이 본문에 근거를 덧붙인다."""
+    contribution = item.contribution or {}
+    return (
+        contribution.get("artifact_type") in ("manual", "lint", "invalidation")
+        or any(contribution.get(field) for field in ("invalidated_reference_ids", "invalidated_evidence_ids"))
+        or any(change.get("op") != "add" for change in contribution.get("entry_changes", []))
+    )
+
+
+def _verified_publication_object(conn, page_id: str, item: PageContribution) -> str:
+    """원장이 가리키는 기여의 저장된 게시 본문. 게시 기록(wiki_publication_objects)이 있으면 그 해시와 맞아야 한다.
+
+    게시 기록이 생기기 전(2026-11-08 이전) 객체는 기록이 없다. 그때는 원장이 정한 키의 객체를 그대로 쓴다.
+    """
+    try:
+        markdown = read_text_object(item.markdown_key)
+    except Exception as exc:
+        raise PreviewCalculationError("failed to read base contribution publication markdown") from exc
+    recorded = conn.execute(
+        "SELECT page_id, content_hash, deleted_at FROM wiki_publication_objects WHERE object_key=%s",
+        (item.markdown_key,),
+    ).fetchone()
+    if recorded is not None and (
+        str(recorded["page_id"]) != page_id
+        or recorded["deleted_at"] is not None
+        or str(recorded["content_hash"]) != _text_hash(markdown)
+    ):
+        raise LedgerContradictionError("base publication object contradicts its publication record")
+    return markdown
 
 
 def _freeze_page_moves(conn, workspace_id, pages, rows, busy, *, jev_allowed):
@@ -254,40 +290,47 @@ def calculate_lint_preview(
         raise PreviewCalculationError("target snapshot omits an inbound reference cascade")
 
     ledger = _load_reconciled(conn, workspace_id, target_ids)
+    titles = concept_title_lookup(conn, workspace_id)
     loaded_by_id: dict[str, list[PageContribution]] = {}
     current: dict[str, Any] = {}
     evidence_by_page: dict[str, dict[str, dict[str, Any]]] = {}
     for page_id in target_ids:
         loaded = load_target_contributions(ledger, workspace_id, page_id)
-        rebuilt = rebuild_concept_page(loaded)
+        rebuilt = rebuild_concept_page(loaded, concept_titles=titles)
         if rebuilt.deleted:
-            raise PreviewCalculationError("public page contradicts its contribution ledger")
+            raise LedgerContradictionError("public page contradicts its contribution ledger")
         if rebuilt.markdown != snapshots[page_id]["body"]:
             # Ingest appends to the last publication; manual/lint/invalidation establish a new base.
             if any((item.contribution or {}).get("artifact_type") not in (
                 None, "ingest", "document", "manual", "lint", "invalidation",
             ) for item in loaded):
-                raise PreviewCalculationError("public page contradicts its contribution ledger")
-            base_index = max((index for index, item in enumerate(loaded) if (
-                (item.contribution or {}).get("artifact_type") in ("manual", "lint", "invalidation")
-                or any((item.contribution or {}).get(field) for field in (
-                    "invalidated_reference_ids", "invalidated_evidence_ids",
-                ))
-                or any(change.get("op") != "add" for change in (item.contribution or {}).get("entry_changes", []))
-            )), default=0)
-            baseline = rebuild_concept_page(loaded[:base_index + 1]).markdown
-            initial = (loaded[0].contribution or {}).get("initial_markdown") if base_index == 0 else None
-            try:
-                appended = read_text_object(loaded[base_index].markdown_key)
-            except Exception as exc:
-                raise PreviewCalculationError("failed to read base contribution publication markdown") from exc
-            # Legacy skeleton publications lack the recorded initial presentation (including sibling context).
-            related_section = r"(?ms)^## Related Concepts\n.*?(?=^## |\Z)"
-            matches = appended == (initial if initial is not None else baseline)
-            if not matches and base_index == 0 and initial is None:
-                matches = re.sub(related_section, "", appended, count=1) == re.sub(related_section, "", baseline, count=1)
-            if not matches:
-                raise PreviewCalculationError("initial publication contradicts its contribution ledger")
+                raise LedgerContradictionError("public page contradicts its contribution ledger")
+            base_index = max(
+                (index for index, item in enumerate(loaded) if _is_republication(item)), default=0,
+            )
+            if _is_republication(loaded[base_index]):
+                # 수동·lint·무효화 기여가 새로 쓴 본문은 그때의 재생 결과이고, 재생 렌더러는 바뀔 수 있다(정식 형태는
+                # 지금의 재생 결과다). 그래서 다시 그려 비교하지 않고 원장이 가리키는 그 기여의 저장 본문을 기준으로 쓴다.
+                # 그 뒤 기여의 덧붙임이 공개 본문을 그대로 재현하는지, 마지막 기여의 게시 본문이 공개 본문인지는 아래에서 본다.
+                appended = _verified_publication_object(conn, page_id, loaded[base_index])
+            else:
+                baseline = rebuild_concept_page(loaded[:base_index + 1], concept_titles=titles).markdown
+                initial = (loaded[0].contribution or {}).get("initial_markdown")
+                try:
+                    appended = read_text_object(loaded[base_index].markdown_key)
+                except Exception as exc:
+                    raise PreviewCalculationError("failed to read base contribution publication markdown") from exc
+                # Legacy skeleton publications lack the recorded initial presentation (including sibling context),
+                # and replay now draws Related Concepts from surviving links, so that section is not compared.
+                related_section = r"(?ms)^## Related Concepts\n.*?(?=^## |\Z)"
+                matches = appended == (initial if initial is not None else baseline)
+                if not matches and initial is None:
+                    matches = (
+                        re.sub(related_section, "", appended, count=1)
+                        == re.sub(related_section, "", baseline, count=1)
+                    )
+                if not matches:
+                    raise LedgerContradictionError("initial publication contradicts its contribution ledger")
             for index, item in enumerate(loaded[base_index + 1:], start=base_index + 1):
                 contribution = item.contribution or {}
                 appended = sanitize_ai_markdown(
@@ -300,13 +343,13 @@ def calculate_lint_preview(
                     state = rebuild_concept_page(loaded[:index + 1])
                     appended = render_entry_index(appended, list(state.entries), list(state.supported_links))
             if appended != snapshots[page_id]["body"]:
-                raise PreviewCalculationError("public page contradicts its contribution ledger")
+                raise LedgerContradictionError("public page contradicts its contribution ledger")
             try:
                 published = read_text_object(loaded[-1].markdown_key)
             except Exception as exc:
                 raise PreviewCalculationError("failed to read contribution publication markdown") from exc
             if published != snapshots[page_id]["body"]:
-                raise PreviewCalculationError("public page contradicts its contribution ledger")
+                raise LedgerContradictionError("public page contradicts its contribution ledger")
         loaded_by_id[page_id] = loaded
         current[page_id] = rebuilt
         evidence_by_page[page_id] = surviving_evidence_units(loaded)
@@ -485,7 +528,7 @@ def calculate_lint_preview(
         if not _has_change(change) and not any(str(item.get("page_id")) == page_id for item in linked):
             continue
         rebuilt[page_id], contribution = _replay_page(
-            page_id, draft_id, loaded_by_id[page_id], change, linked
+            page_id, draft_id, loaded_by_id[page_id], change, linked, titles
         )
         if contribution is not None:
             planned[page_id] = contribution
@@ -508,7 +551,7 @@ def calculate_lint_preview(
             contribution = lint_contribution(draft_id, change)
             planned[page_id] = contribution
             rebuilt[page_id] = _replay_page(
-                page_id, draft_id, loaded_by_id[page_id], change, linked
+                page_id, draft_id, loaded_by_id[page_id], change, linked, titles
             )[0]
 
     desired_entries = {

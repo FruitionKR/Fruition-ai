@@ -41,6 +41,7 @@ from app.modules.wiki_ingestion.infrastructure import (
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from app.modules.wiki_ingestion.infrastructure import wiki_publication
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    concept_title_lookup,
     load_concept_contributions,
     rebuild_concept_page,
 )
@@ -143,10 +144,15 @@ class World:
             lambda key, text, _content_type: self.write(key, text),
             database.apply_restored_wiki_state_and_cleanup,
             lambda *_args: {"written_object_keys": [], "restored_cluster_ids": [], "skipped_cluster_ids": []},
+            concept_titles=self.concept_titles,
         )
 
     def connect(self) -> psycopg.Connection:
         return psycopg.connect(self.dsn, row_factory=dict_row)
+
+    def concept_titles(self, workspace_id: str, slugs: list[str]) -> dict[str, str]:
+        with self.connect() as conn:
+            return dict(concept_title_lookup(conn, workspace_id)(slugs))
 
     @staticmethod
     def _key(key: str) -> str:
@@ -387,12 +393,13 @@ class World:
     def ledger_rebuild(self, slug: str):
         page_id = self.page_id(slug)
         rows = [row for row in self.ledger if row["page_id"] == page_id and row["active"]]
-        return rebuild_concept_page(load_concept_contributions(
-            workspace_id=WS, page_id=page_id,
-            keep_contributions=[{"operation_id": row["ingest_operation_id"], "sequence": index}
-                                for index, row in enumerate(rows, start=1)],
-            read_text=self.read,
-        ))
+        with self.connect() as conn:
+            return rebuild_concept_page(load_concept_contributions(
+                workspace_id=WS, page_id=page_id,
+                keep_contributions=[{"operation_id": row["ingest_operation_id"], "sequence": index}
+                                    for index, row in enumerate(rows, start=1)],
+                read_text=self.read,
+            ), concept_titles=concept_title_lookup(conn, WS))
 
     def contribution(self, slug: str, operation_id: str) -> dict:
         return json.loads(self.read(f"wiki/{WS}/pages/{self.page_id(slug)}/ops/{operation_id}.json"))

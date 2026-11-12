@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from app.modules.mcp_wiki_draft.application import McpWikiDraftError, load_lint_limits
-from app.modules.mcp_wiki_draft.calculation import PreviewCalculationError
+from app.modules.mcp_wiki_draft.calculation import LedgerPendingError, PreviewCalculationError
 from app.modules.mcp_wiki_draft.lint_calculation import surviving_statements
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import ConceptContributionError
 
@@ -37,6 +37,10 @@ def concept_lint_context(conn, workspace_id: str, page: dict[str, Any]) -> dict[
     error = None
     try:
         statements = surviving_statements(conn, workspace_id, page_id)
+    except LedgerPendingError:
+        # 직전 게시가 아직 document 원장에 오르지 않았다. 잠시 뒤 다시 읽으면 된다.
+        logger.info("MCP wiki page statements pending ledger reconciliation", exc_info=True)
+        statements, error = [], "LEDGER_PENDING"
     except (PreviewCalculationError, ConceptContributionError):
         logger.warning("MCP wiki page statements unavailable", exc_info=True)
         statements, error = [], "STATEMENTS_UNAVAILABLE"

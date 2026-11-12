@@ -44,6 +44,8 @@ from app.modules.wiki_ingestion.infrastructure.object_storage import (
     storage_uri,
 )
 from app.modules.wiki_ingestion.infrastructure.pending_contributions import (
+    PendingContributionConflict,
+    PendingContributionUnresolved,
     with_pending_contributions,
 )
 from app.modules.wiki_ingestion.infrastructure.postgres_wiki_ingestion_repository import (
@@ -69,6 +71,14 @@ class SourceChangedError(PreviewCalculationError):
 
 class SemanticMergeError(PreviewCalculationError):
     pass
+
+
+class LedgerPendingError(PreviewCalculationError):
+    """원장 반영을 기다리는 일시 상태다. 직전 게시의 대기 기여가 아직 document 원장 순번을 받지 못했다. 다시 시도하면 된다."""
+
+
+class LedgerContradictionError(PreviewCalculationError):
+    """원장·대기 기여·게시 본문이 서로 어긋난다. 기다려도 풀리지 않는다."""
 
 
 def _hash(value: object) -> str:
@@ -162,6 +172,10 @@ def _load_reconciled(conn, workspace_id: str, page_ids: list[str]) -> list[dict[
         )
     except PreviewCalculationError:
         raise
+    except PendingContributionUnresolved as exc:
+        raise LedgerPendingError("pending contribution sequence is unresolved") from exc
+    except PendingContributionConflict as exc:
+        raise LedgerContradictionError("pending contribution contradicts the contribution ledger") from exc
     except Exception as exc:
         raise PreviewCalculationError("contribution ledger could not be reconciled") from exc
 

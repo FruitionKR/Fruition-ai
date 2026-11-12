@@ -11,6 +11,14 @@ from typing import Any
 import psycopg
 
 
+class PendingContributionConflict(RuntimeError):
+    """대기 기여가 원장 행과 어긋나거나 수신 측이 게시를 거절했다. 기다려도 풀리지 않는다."""
+
+
+class PendingContributionUnresolved(RuntimeError):
+    """대기 기여가 아직 원장에 오르지 않았고 순번도 없다. document가 게시를 반영하면 풀린다."""
+
+
 def record_pending_contributions(
     conn: psycopg.Connection,
     workspace_id: str,
@@ -141,7 +149,7 @@ def with_pending_contributions(
     for row in pending:
         key = (str(row["page_id"]), str(row["operation_id"]))
         if row["receiver_disposition"] == "REJECTED_CONFLICT":
-            raise RuntimeError(
+            raise PendingContributionConflict(
                 f"publication was rejected by receiver: {key[0]}:{key[1]}:"
                 f"{row['receiver_rejection_reason']}"
             )
@@ -168,7 +176,7 @@ def with_pending_contributions(
             )
         )
         if not exact:
-            raise RuntimeError(f"remote contribution contradicts pending state: {key[0]}:{key[1]}")
+            raise PendingContributionConflict(f"remote contribution contradicts pending state: {key[0]}:{key[1]}")
         resolved.append(row)
     if cleanup_resolved:
         for row in resolved:
@@ -183,7 +191,7 @@ def with_pending_contributions(
             continue
         local_sequence = row["sequence_revision"]
         if local_sequence is None:
-            raise RuntimeError(
+            raise PendingContributionUnresolved(
                 f"pending contribution sequence is unresolved: {page_id}:{row['operation_id']}"
             )
         merged.append({

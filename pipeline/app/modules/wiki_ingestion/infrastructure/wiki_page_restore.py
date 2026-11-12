@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from minio.error import S3Error
@@ -44,8 +44,11 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
             dict[str, list[str]],
         ],
         is_source_page_purged: Callable[[str, str], bool] = lambda workspace_id, page_id: False,
+        concept_titles: Callable[[str, list[str]], Mapping[str, str]] | None = None,
     ) -> None:
         self._is_source_page_purged = is_source_page_purged
+        # (workspace_id, slug 목록) → 활성 개념 제목. 재생 본문 Related Concepts에 쓴다.
+        self._concept_titles = concept_titles
         self._read_text = read_text
         self._write_text = write_text
         self._apply_current_state_and_cleanup = apply_current_state_and_cleanup
@@ -94,7 +97,11 @@ class ObjectStorageWikiPageRestore(WikiPageRestorePort):
                 ],
                 read_text=self._read_text,
             )
-            rebuilt = rebuild_concept_page(contributions)
+            titles = self._concept_titles
+            rebuilt = rebuild_concept_page(
+                contributions,
+                concept_titles=None if titles is None else (lambda slugs: titles(workspace_id, slugs)),
+            )
             if rebuilt.deleted:
                 # 재생 결과 페이지가 없다. 복원 결과의 deleted_pages로 보고한다(ADR 0042).
                 return {"page_id": page.page_id, "page_type": "concept", "deleted": True}

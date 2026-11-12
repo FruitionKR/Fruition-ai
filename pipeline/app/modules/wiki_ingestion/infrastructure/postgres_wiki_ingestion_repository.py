@@ -7,6 +7,7 @@ import os
 import re
 from array import array
 from contextlib import nullcontext
+from functools import partial
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -65,6 +66,7 @@ from app.modules.wiki_ingestion.infrastructure.lint_operation_artifacts import (
 )
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
     ConceptContributionError,
+    concept_title_lookup,
     load_concept_contributions,
     rebuild_concept_page,
     prune_dangling_entry_references,
@@ -177,6 +179,12 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.modules.wiki_generation.infrastructure.jev_concept_resolver import JevConceptResolver
+
+
+def concept_titles_for_workspace(workspace_id: str, slugs: list[str]) -> dict[str, str]:
+    """복구 재생이 Related Concepts 대상 제목을 읽는다."""
+    with connect() as conn:
+        return dict(concept_title_lookup(conn, workspace_id)(slugs))
 
 
 def connect() -> psycopg.Connection:
@@ -442,6 +450,7 @@ def _prune_dangling_references(
         """,
         (workspace_id, touched, touched),
     ).fetchall()
+    rebuild_page = partial(rebuild_concept_page, concept_titles=concept_title_lookup(conn, workspace_id))
     for row in others:
         page_id = str(row["page_id"])
         ledger = with_pending_contributions(conn, read_contributions([page_id], workspace_id), [page_id])
@@ -450,13 +459,13 @@ def _prune_dangling_references(
             replay = replay_concept_page_with_operation(
                 workspace_id=workspace_id, page_id=page_id, operation_id=operation_id,
                 ledger=ledger, contribution=pending, read_text=read_text_object,
-                load_contributions=load_concept_contributions, rebuild_page=rebuild_concept_page,
+                load_contributions=load_concept_contributions, rebuild_page=rebuild_page,
             )
         else:
             replay = rebuild_active_concept_page_from_ledger(
                 workspace_id=workspace_id, page_id=page_id, ledger=ledger,
                 read_text=read_text_object, load_contributions=load_concept_contributions,
-                rebuild_page=rebuild_concept_page,
+                rebuild_page=rebuild_page,
             )
         if replay is None:
             continue
@@ -2913,6 +2922,25 @@ def lint_concept_entries(
     if not apply or not plan.page_changes:
         return result
 
+    # Related Concepts 대상 제목. 이번 lint가 쓰는 페이지(분리 자식 등)는 아직 그 제목으로 저장되기 전이라 계획의 제목을
+    # 먼저 쓰고, 합쳐 지울 페이지는 그리지 않는다.
+    stored_titles = concept_title_lookup(conn, workspace_id)
+    planned_titles = {
+        str(change["slug"]): str(change.get("title") or change["slug"])
+        for page_id, change in plan.page_changes.items()
+        if page_id not in plan.deleted_page_ids and change.get("slug")
+    }
+    deleted_slugs = {
+        str(change["slug"]) for page_id, change in plan.page_changes.items()
+        if page_id in plan.deleted_page_ids and change.get("slug")
+    }
+
+    def titles(slugs: list[str]) -> dict[str, str]:
+        found = {
+            slug: title for slug, title in stored_titles(slugs).items() if slug not in deleted_slugs
+        }
+        return {**found, **{slug: planned_titles[slug] for slug in slugs if slug in planned_titles}}
+
     linked_by_page: dict[str, list[dict[str, Any]]] = {}
     for item in plan.linked:
         # 이 lint가 원래 작업 id로 이은 기록이다. lint 복원은 이 표시로 이은 기록을 함께 뺀다.
@@ -2950,9 +2978,9 @@ def lint_concept_entries(
             PageContribution(item.page_id, "concept", item.operation_id, index, item.markdown_key, item.contribution)
             for index, item in enumerate(simulated, start=1)
         ]
-        rebuilt = rebuild_concept_page(simulated)
+        rebuilt = rebuild_concept_page(simulated, concept_titles=titles)
         # 삭제 기록의 본문은 지우기 직전 본문으로 둔다. document-svc가 이 기록을 삭제 변경으로 남긴다.
-        markdown = rebuild_concept_page(before).markdown if rebuilt.deleted else rebuilt.markdown
+        markdown = rebuild_concept_page(before, concept_titles=titles).markdown if rebuilt.deleted else rebuilt.markdown
         page_changes.append({**change, "markdown": markdown, "claims": []})
         if page_id in plan.deleted_page_ids:
             # 합쳐 지울 자식은 기록만 남기고 현재 상태는 지운다. 항목 사본을 다시 쓰면 부모로 옮긴 항목을 빼앗는다.

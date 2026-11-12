@@ -9,7 +9,13 @@ from app.modules.wiki_generation.domain.concept_identity import (
     available_concept_slug,
     concept_name_keys,
 )
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, name_key, slugify, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import (
+    clean_concept_tags,
+    name_key,
+    slugify,
+    strip_citation_groups,
+    unique_keep_order,
+)
 
 
 VALID_DECISIONS = {"merge_into", "link_to", "create_new"}
@@ -295,7 +301,8 @@ def merge_concept_ledger(
                 existing = existing_by_slug[canonical_slug]
                 target["title"] = existing.get("title") or target.get("title")
                 if existing.get("summary") and not target.get("definition"):
-                    target["definition"] = existing["summary"]
+                    # 요약은 페이지 본문에서 온 값일 수 있다. 근거 표시는 조립기가 다시 붙인다.
+                    target["definition"] = strip_citation_groups(existing["summary"])
                 target["identity_aliases"] = unique_keep_order(
                     [*existing.get("identity_aliases", []), *target.get("identity_aliases", [])]
                 )
