@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
@@ -247,7 +248,15 @@ def calculate_lint_preview(
                 for item in loaded
             ):
                 raise PreviewCalculationError("public page contradicts its contribution ledger")
-            appended = rebuild_concept_page(loaded[:1]).markdown
+            baseline = rebuild_concept_page(loaded[:1]).markdown
+            try:
+                appended = read_text_object(loaded[0].markdown_key)
+            except Exception as exc:
+                raise PreviewCalculationError("failed to read initial contribution publication markdown") from exc
+            # Initial publication renders related concepts with sibling context absent from the page ledger.
+            related_section = r"(?ms)^## Related Concepts\n.*?(?=^## |\Z)"
+            if re.sub(related_section, "", appended, count=1) != re.sub(related_section, "", baseline, count=1):
+                raise PreviewCalculationError("initial publication contradicts its contribution ledger")
             for item in loaded[1:]:
                 appended = sanitize_ai_markdown(append_concept_evidence(
                     appended, concept_evidence_updates(item.contribution or {}),

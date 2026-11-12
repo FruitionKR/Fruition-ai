@@ -185,8 +185,9 @@ def test_lint_source_link_does_not_require_source_target(world, monkeypatch, rel
     assert lint.calculate_lint_preview(conn, **kwargs)['preview']['public_state_hash'] != before
 
 
-@pytest.mark.parametrize('publication', ['exact', 'different', 'missing', 'missing_history', 'untracked_text', 'invalidation'])
-def test_lint_accepts_append_publication_only_with_immutable_evidence(world, monkeypatch, publication):
+@pytest.mark.parametrize('publication', ['exact', 'different', 'missing', 'missing_base', 'changed_base', 'missing_history', 'untracked_text', 'changed_related', 'invalidation'])
+@pytest.mark.parametrize('related_concepts', [False, True])
+def test_lint_accepts_append_publication_only_with_immutable_evidence(world, monkeypatch, publication, related_concepts):
     from types import SimpleNamespace
 
     from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
@@ -196,6 +197,26 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
     _, rows, _, loaded = world
     row = {**rows['parent'], 'page_type': 'concept', 'status': 'active'}
     first = loaded['parent'][0]
+    first = PageContribution('parent', 'concept', first.operation_id, 1, 'first.md', first.contribution)
+    baseline = lint.rebuild_concept_page([first]).markdown
+    if related_concepts:
+        from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler, LinkBuilder
+        from app.modules.wiki_ingestion.application.concept_contribution import build_concept_contributions
+
+        normalized = {
+            'document': {'document_id': 'doc-parent'},
+            'concept_ledger': [first.contribution['concept'], loaded['referrer'][0].contribution['concept']],
+            'evidence_units': [{**first.contribution['evidence_units'][0],
+                                'related_concept_slugs': ['parent', 'referrer']}],
+        }
+        baseline = ConceptPageAssembler().build_top(normalized)[0]['markdown']
+        contribution = build_concept_contributions(
+            operation_id=first.operation_id, normalized=normalized,
+            source_blocks=[], links=LinkBuilder().build(normalized),
+        )['parent']
+        first = PageContribution('parent', 'concept', first.operation_id, 1, 'first.md', contribution)
+        assert '[[referrer|Referrer]]' in baseline
+        assert baseline != lint.rebuild_concept_page([first]).markdown
     second = deepcopy(first.contribution)
     second.update(operation_id='second', document_id='doc-second')
     second['evidence_units'][0]['claim'] = 'Additional parent evidence.'
@@ -203,13 +224,15 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
     key = 'wiki/workspace/pages/parent/ops/second.md'
     contributions = [first, PageContribution('parent', 'concept', 'second', 2, key, second)]
     published = append_concept_evidence(
-        lint.rebuild_concept_page([first]).markdown, concept_evidence_updates(second),
+        baseline, concept_evidence_updates(second),
     )
     assert published != lint.rebuild_concept_page(contributions).markdown
     if publication == 'missing_history':
         contributions = contributions[1:]
     if publication == 'untracked_text':
         published += '\nUntracked content.\n'
+    if publication == 'changed_related':
+        published = published.replace('## Related Concepts\n', '## Related Concepts\n- [[untracked|Untracked]]\n')
     if publication == 'invalidation':
         second['invalidated_reference_ids'] = ['doc-parent:B1']
     snapshot = {
@@ -230,6 +253,10 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
 
     def read_markdown(path):
         reads.append(path)
+        if path == 'first.md':
+            if publication == 'missing_base':
+                raise OSError('unavailable')
+            return baseline + '\nUntracked initial content.\n' if publication == 'changed_base' else baseline
         assert path == key
         if publication == 'missing':
             raise OSError('unavailable')
@@ -261,7 +288,7 @@ def test_lint_accepts_append_publication_only_with_immutable_evidence(world, mon
         assert 'Third evidence.' in change['after_text']
         # Approval replay must reproduce the complete preview, including normalization of the old body.
         assert lint.calculate_lint_preview(conn, **kwargs)['preview'] == result['preview']
-    if publication in ('missing_history', 'untracked_text', 'invalidation'):
+    if publication == 'invalidation':
         assert not reads
     else:
         assert reads
