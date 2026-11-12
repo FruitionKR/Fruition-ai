@@ -25,6 +25,8 @@ from app.modules.mcp_wiki_draft.application import (
     request_actor,
 )
 from app.modules.mcp_wiki_draft.calculation import (
+    LedgerContradictionError,
+    LedgerPendingError,
     PreviewCalculationError,
     SemanticMergeError,
     SourceChangedError,
@@ -235,6 +237,18 @@ class PostgresMcpWikiDraftRepository:
                         infer_page_moves=True,
                         jev_allowed=payload.jev_allowed,
                     )
+            except LedgerPendingError as exc:
+                # 직전 게시의 대기 기여가 아직 원장 순번을 받지 못했다. 일시 상태라 다시 시도하면 된다.
+                raise McpWikiDraftError(
+                    409, "LEDGER_RECONCILIATION_PENDING",
+                    "Authoritative contribution inputs are not reconciled.", retryable=True,
+                ) from exc
+            except LedgerContradictionError as exc:
+                # 원장·대기 기여·공개 본문이 어긋난다. 기다려도 풀리지 않으므로 재시도 신호를 주지 않는다.
+                raise McpWikiDraftError(
+                    409, "LEDGER_CONTRADICTION",
+                    "Public page contradicts its contribution ledger.",
+                ) from exc
             except PreviewCalculationError as exc:
                 message = str(exc)
                 if "exceeds" in message:

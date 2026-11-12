@@ -21,7 +21,7 @@ from typing import Any
 
 from app.core.jev_client import JevUnavailable
 from app.modules.wiki_generation.application.judge_candidates import PairJudge, PartOfJudge
-from app.modules.wiki_generation.domain.text_utils import name_key, unique_keep_order
+from app.modules.wiki_generation.domain.text_utils import name_key, strip_citation_groups, unique_keep_order
 from app.modules.wiki_ingestion.domain.concept_entries import ENTRY_REFERENCE, new_entry_id
 
 logger = logging.getLogger(__name__)
@@ -503,18 +503,18 @@ def _term(item: dict[str, Any], kind: str, title: Any) -> dict[str, Any]:
 
 
 def _existing_concept_entry(concept: dict[str, Any], document_id: str) -> dict[str, Any]:
+    # 정의·설명은 기존 페이지 본문에서 읽은 값이라 근거 표시를 뺀다(조립기가 다시 붙인다). 이번 문서는 이 개념을 직접
+    # 언급하지 않았으므로 집계값(mention_count·importance_score)은 싣지 않는다. 0을 실으면 재생이 원래 값을 덮는다.
     return {
         "slug": concept["slug"],
         "title": concept.get("title") or concept["slug"],
         "aliases": list(concept.get("aliases") or []),
         "tags": list(concept.get("tags") or []),
-        "definition": concept.get("definition") or concept.get("summary") or "",
-        "why_page_worthy": concept.get("why_page_worthy") or "",
+        "definition": strip_citation_groups(concept.get("definition") or concept.get("summary") or ""),
+        "why_page_worthy": strip_citation_groups(concept.get("why_page_worthy") or ""),
         "anchor_reference_ids": [],
         "mention_reference_ids": [],
         "display_reference_ids": [],
         "source_document_ids": [document_id] if document_id else [],
         "evidence_claim_ids": [],
-        "mention_count": 0,
-        "importance_score": 0.0,
     }

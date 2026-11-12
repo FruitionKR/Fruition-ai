@@ -54,7 +54,7 @@ def test_prune_replays_pending_contribution_of_this_operation(monkeypatch) -> No
         "entry_id": "entry:gone",
     }
 
-    def rebuild(contributions):
+    def rebuild(contributions, **_kwargs):
         replayed.append(contributions)
         return SimpleNamespace(
             deleted=False, markdown="# B", title="B", summary=None, supported_links=[dangling],
@@ -100,7 +100,7 @@ def test_rebuild_invalidated_pages_passes_this_operation_contributions_to_prune(
     )
     monkeypatch.setattr(
         persistence, "rebuild_concept_page",
-            lambda contributions: SimpleNamespace(
+            lambda contributions, **_kwargs: SimpleNamespace(
                 deleted=False, markdown="# A", supported_links=[], source_document_ids=["doc"], identity_aliases=[], entries=[],
             ),
     )

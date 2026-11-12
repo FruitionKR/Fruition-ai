@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from app.core.ai_markdown_sanitizer import external_urls, sanitize_ai_markdown
-from app.modules.wiki_generation.domain.text_utils import clean_concept_tags
+from app.modules.wiki_generation.domain.text_utils import clean_concept_tags, strip_citation_groups
 from app.modules.wiki_generation.infrastructure.assemble import ConceptPageAssembler
 from app.modules.wiki_ingestion.domain.concept_entries import (
     render_entry_index,
@@ -31,6 +31,33 @@ from app.modules.wiki_ingestion.infrastructure.concept_evidence import (
 
 # 재편입이 무효화한 블록만 기록하는 기여(내용 없음). 이 페이지에 새 근거가 없어도 옛 근거를 재생에서 빼게 한다.
 INVALIDATION = "invalidation"
+# 개념끼리의 관계 링크. 재생 본문 Related Concepts는 이 링크로 그린다.
+CONCEPT_RELATION = "concept_related_to"
+
+# 개념 slug 목록 → 개념 페이지 제목. 찾지 못한 slug는 결과에 없다.
+ConceptTitles = Callable[[list[str]], Mapping[str, str]]
+
+
+def concept_title_lookup(conn: Any, workspace_id: str, *, include_inactive: bool = False) -> ConceptTitles:
+    """재생 본문 Related Concepts의 대상 제목을 wiki_pages에서 읽는다. 같은 트랜잭션의 상태를 본다.
+
+    기본은 활성 페이지만 그린다. 보관·삭제된 페이지로 남은 링크가 공개 본문에 깨진 위키링크로 나오지 않게 한다.
+    복구만 include_inactive=True로, 함께 되살릴 페이지가 아직 활성이 되기 전에도 찾는다(활성 행 우선).
+    """
+
+    def lookup(slugs: list[str]) -> dict[str, str]:
+        if not slugs:
+            return {}
+        rows = conn.execute(
+            "SELECT DISTINCT ON (slug) slug, title FROM wiki_pages "
+            "WHERE workspace_id = %s AND page_type = 'concept' AND slug = ANY(%s) "
+            "AND (%s OR status = 'active') "
+            "ORDER BY slug, (status = 'active') DESC, updated_at DESC, id",
+            (workspace_id, list(slugs), include_inactive),
+        ).fetchall()
+        return {str(row["slug"]): str(row["title"] or row["slug"]) for row in rows}
+
+    return lookup
 
 
 class ConceptContributionError(PageRebuildError):
@@ -262,7 +289,13 @@ def surviving_evidence_units(
 
 def rebuild_concept_page(
     contributions: tuple[PageContribution, ...] | list[PageContribution],
+    *,
+    concept_titles: ConceptTitles | None = None,
 ) -> RebuiltConceptPage:
+    """기여를 재생해 페이지를 다시 그린다. 이 결과가 페이지의 정식 형태다(편입 덧붙임 본문과 다를 수 있다).
+
+    `concept_titles`는 Related Concepts 대상 제목을 찾는다. 없으면 slug를 제목으로 쓴다(DB 없는 계산용).
+    """
     ordered = sorted(contributions, key=lambda item: item.sequence)
     if not ordered or any(
         item.page_type != "concept" or item.contribution is None
@@ -397,6 +430,9 @@ def rebuild_concept_page(
             "concept rebuild requires a contribution with a concept"
         )
     normalized = _merge_contributions(contribution_json)
+    normalized.update(_related_concept_inputs(
+        str(normalized["concept_ledger"][0]["slug"]), supported_links, concept_titles,
+    ))
     pages = ConceptPageAssembler().build_top(
         normalized,
         top_n=None,
@@ -594,6 +630,40 @@ def _is_manual(item: PageContribution) -> bool:
     return (item.contribution or {}).get("artifact_type") == "manual"
 
 
+def _related_concept_inputs(
+    slug: str,
+    supported_links: tuple[dict[str, Any], ...],
+    concept_titles: ConceptTitles | None,
+) -> dict[str, Any]:
+    """남은 개념 관계 링크를 편입 조립기의 연결 판정 입력 모양으로 바꾼다. 조립기가 편입과 같은 줄(`[[slug|title]]`)을 그린다.
+
+    순서는 링크 재생 순서다. 제목을 찾지 못한(페이지 행이 없는) 대상은 그리지 않는다.
+    """
+    targets = [
+        target
+        for target in _unique(
+            str(link.get("target") or "").removeprefix("concept:")
+            for link in supported_links
+            if link.get("relation") == CONCEPT_RELATION and str(link.get("target") or "").startswith("concept:")
+        )
+        if target and target != slug
+    ]
+    if not targets:
+        return {}
+    titles = dict(concept_titles(targets)) if concept_titles is not None else {target: target for target in targets}
+    targets = [target for target in targets if target in titles]
+    if not targets:
+        return {}
+    return {
+        "concept_resolutions": [{"canonical_slug": slug, "link_targets": targets}],
+        "existing_concept_index": [{"slug": target, "title": titles[target]} for target in targets],
+    }
+
+
+# 기여마다 따로 정한 값이라 나중 기여로 덮지 않고 합친 결과로 다시 정한다.
+_AGGREGATE_FIELDS = ("mention_count", "importance_score")
+
+
 def _merge_contributions(
     contributions: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -610,7 +680,7 @@ def _merge_contributions(
     )
     for concept in concepts[1:]:
         for key, value in concept.items():
-            if key not in list_fields and value not in (None, "", []):
+            if key not in list_fields and key not in _AGGREGATE_FIELDS and value not in (None, "", []):
                 merged_concept[key] = value
     for field in list_fields:
         merged_concept[field] = _unique(
@@ -618,6 +688,29 @@ def _merge_contributions(
             for concept in concepts
             for value in concept.get(field, [])
         )
+    # 편입 개념 병합(concept_resolution.merge_concept_ledger)과 같은 규칙이다. 기존 페이지를 하위 항목 집으로 쓴 기여는
+    # 집계값이 없거나 0이라, 덮어쓰면 원래 값이 사라진다. 중요도는 기여 중 가장 큰 값을 쓴다.
+    # 언급 근거 목록이 없는 옛 기여(승격 페이지 등)는 기록된 개수 중 가장 큰 값을 둔다.
+    counts = [
+        int(concept["mention_count"]) for concept in concepts
+        if isinstance(concept.get("mention_count"), int) and not isinstance(concept.get("mention_count"), bool)
+    ]
+    merged_concept["mention_count"] = (
+        len(merged_concept["mention_reference_ids"]) if merged_concept["mention_reference_ids"] else max(counts, default=0)
+    )
+    scores = [
+        float(concept["importance_score"])
+        for concept in concepts
+        if isinstance(concept.get("importance_score"), (int, float))
+        and not isinstance(concept.get("importance_score"), bool)
+    ]
+    if scores:
+        merged_concept["importance_score"] = max(scores)
+    else:
+        merged_concept.pop("importance_score", None)
+    # 조립기는 정의 뒤에 근거 표시를 붙인다. 본문에서 읽은 정의(이전 기록)에 이미 붙은 표시는 뺀다.
+    if merged_concept.get("display_reference_ids"):
+        merged_concept["definition"] = strip_citation_groups(str(merged_concept.get("definition") or ""))
     merged_concept["tags"] = clean_concept_tags(
         (tag for concept in concepts for tag in concept.get("tags", [])),
         merged_concept.get("title"),

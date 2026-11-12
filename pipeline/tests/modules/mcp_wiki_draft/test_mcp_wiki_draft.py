@@ -305,9 +305,10 @@ def _seed_lint_page(page_id: str, slug: str, *, links=(), entries=()):
         page_id, slug, operation_id, "doc_seed", "doc_seed:B1", links=links, entries=entries
     )
     contribution = json.loads(read_text_object(ledger["object_key"]))
+    # 시드 페이지 제목은 slug.title()이다. 재생 본문 Related Concepts도 그 제목으로 그린다.
     rebuilt = rebuild_concept_page([
         PageContribution(page_id, "concept", operation_id, 1, "", contribution)
-    ])
+    ], concept_titles=lambda slugs: {item: item.title() for item in slugs})
     uri = write_text_object(f"baseline/{page_id}.md", rebuilt.markdown)
     with _connect() as conn:
         conn.execute(

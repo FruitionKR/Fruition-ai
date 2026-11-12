@@ -144,6 +144,21 @@ def test_existing_page_is_a_head_and_joins_the_ledger() -> None:
     assert list(_entries(result, "deployment")) == ["Deployment Rollout"]
 
 
+def test_existing_page_home_does_not_feed_page_citations_or_zero_metrics_back() -> None:
+    # 기존 페이지 정의는 본문 `## Definition`에서 읽어 근거 표시가 붙어 있다. 그대로 기여에 실으면 재생이 두 번 붙인다.
+    existing = [{
+        "slug": "deployment", "title": "Deployment", "aliases": [],
+        "definition": "기존 정의 [doc-0:B0003, doc-0:B0004]", "why_page_worthy": "중요 [doc-0:B0003]", "entries": [],
+    }]
+
+    result = _apply(_normalized([DEPLOYMENT[1]], existing))
+
+    home = next(item for item in result["concept_ledger"] if item["slug"] == "deployment")
+    assert (home["definition"], home["why_page_worthy"]) == ("기존 정의", "중요")
+    # 이번 문서는 기존 개념을 직접 언급하지 않았다. 0을 실으면 재생이 원래 집계값을 덮는다.
+    assert "mention_count" not in home and "importance_score" not in home
+
+
 def test_nested_detail_keeps_its_parent_entry() -> None:
     concepts = [*DEPLOYMENT, _concept("deployment-rollout-history", "Deployment Rollout History", "B0005")]
 

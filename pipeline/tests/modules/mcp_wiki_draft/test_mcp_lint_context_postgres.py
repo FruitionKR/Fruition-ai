@@ -161,3 +161,25 @@ def test_lint_evidence_accepts_registry_block_ids(pages):
         ).fetchone()["changes"]
     statement = next(item for item in changes if item["kind"] == "CONCEPT_STATEMENT")
     assert statement["evidence"][0]["block_id"] == "B0007"
+
+
+def test_statements_report_ledger_pending_while_the_last_publication_awaits_its_sequence(pages):
+    # 직전 게시가 남긴 대기 기여는 document가 원장에 올리기 전까지 순번이 없다. 다시 읽으면 풀리는 상태다.
+    with h._connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_pending_contributions(page_id,operation_id,workspace_id,document_id,object_key,active,publication_id) "
+            "VALUES ('alpha-page','just-published','workspace-1',NULL,'wiki/workspace-1/pages/alpha-page/ops/just-published.json',true,'legacy')"
+        )
+
+    context = _context("alpha-page")
+
+    assert context["statements"] == []
+    assert context["lint_context_error"] == "LEDGER_PENDING"
+
+
+def test_statements_report_unavailable_for_other_ledger_failures(pages, monkeypatch):
+    monkeypatch.setattr(h.calculation, "read_contributions", lambda *_args: [])
+
+    context = _context("alpha-page")
+
+    assert context["lint_context_error"] == "STATEMENTS_UNAVAILABLE"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from app.modules.wiki_ingestion.infrastructure.active_cluster_markdown import (
 )
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
     INVALIDATION,
+    concept_title_lookup,
     load_concept_contributions,
     rebuild_concept_page,
     replay_concept_page_with_operation,
@@ -356,6 +358,7 @@ def _rebuild_invalidated_pages(
         "document_id": document_id,
         "invalidated_reference_ids": invalidated,
     }
+    titles = concept_title_lookup(conn, workspace_id)
     for page_id, slug in slugs.items():
         contribution = {
             **(contributions[slug] if page_id in touched else invalidation_contribution),
@@ -369,7 +372,7 @@ def _rebuild_invalidated_pages(
             contribution=contribution,
             read_text=read_text_object,
             load_contributions=load_concept_contributions,
-            rebuild_page=rebuild_concept_page,
+            rebuild_page=partial(rebuild_concept_page, concept_titles=titles),
             required_citations=stale,
         )
         if replay is None:
