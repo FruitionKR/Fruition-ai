@@ -16,6 +16,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [MCP 위키](mcp-wiki.md) | search 1 + ingest/preview 6 | read와 unpublished ingest full-preview 내부 HTTP; public write tool/approval/apply는 아직 꺼짐 |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
 | [Wiki Schema](wiki-schema.md) | 5 | 내부 HTTP |
+| [문서 비용 사전 확인](document-cost.md) | 1 | document-svc 내부 HTTP(PDF 구조 특징) |
 | [임베딩 서버](embedding.md) | 2 | 별도 프로세스의 내부 HTTP, 배포 전 호출자 없음 |
 
 Agent 승인 run 5개와 실행 결과 기반 Skill 초안 API는 `AGENT_SKILLS_ENABLED=true`,
@@ -27,7 +28,7 @@ Agent 승인 run 5개와 실행 결과 기반 Skill 초안 API는 `AGENT_SKILLS_
 각 API 문서는 `#### 10. 구현 파일` 바로 뒤에 `#### 연동` 소절을 두고 **인바운드 호출자 /
 아웃바운드 호출 / 미연동 표시** 세 줄을 같은 형식으로 적는다. 10개 번호 항목은 그대로
 유지하며 연동은 번호 없는 소절이다. 산문 형식인 [음성·회의록](speech.md)과
-[작업 취소·사용량](tasks.md)·[AI 데이터 파기](purge.md)는 문서 끝에 같은 세 항목의 `## 연동` 절을 둔다.
+[작업 취소·사용량](tasks.md)·[AI 데이터 파기](purge.md)·[문서 비용 사전 확인](document-cost.md)은 문서 끝에 같은 세 항목의 `## 연동` 절을 둔다.
 
 읽는 방법: 인바운드 호출자는 ai-svc를 호출하는 document-svc의 Java client(또는 Kafka
 producer), 아웃바운드 호출은 ai-svc가 다시 호출하는 대상이다. **호출자 없음**은 저장소를

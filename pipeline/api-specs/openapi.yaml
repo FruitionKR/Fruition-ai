@@ -1465,6 +1465,16 @@ components:
       - models
       title: ModelUsageResponse
       type: object
+    PdfSource:
+      properties:
+        source_key:
+          pattern: ^sources/documents/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}/original$
+          title: Source Key
+          type: string
+      required:
+      - source_key
+      title: PdfSource
+      type: object
     PurgeResponse:
       properties:
         deleted:
@@ -3524,6 +3534,43 @@ paths:
       summary: Rollback Backend Task
       tags:
       - ai-task-cancellation
+  /internal/documents/pdf-cost-features:
+    post:
+      operationId: inspect_pdf_internal_documents_pdf_cost_features_post
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PdfSource'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: integer
+                title: Response Inspect Pdf Internal Documents Pdf Cost Features Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Inspect Pdf
+      tags:
+      - document-cost
   /internal/mcp/pdf-conversions:
     post:
       operationId: start_internal_mcp_pdf_conversions_post
