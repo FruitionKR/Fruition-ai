@@ -36,6 +36,7 @@ from app.modules.mcp_wiki_draft.interfaces.http.routes import router as mcp_wiki
 from app.modules.mcp_wiki_draft.interfaces.http.routes import source_blocks_router as mcp_source_blocks_router
 from app.modules.mcp_wiki_draft.interfaces.http.apply_routes import router as mcp_wiki_apply_router
 from app.modules.mcp_pdf_conversion.routes import router as mcp_pdf_conversion_router
+from app.modules.document_restoration.interfaces.cost_preflight import router as document_cost_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ async def authenticate_internal_request(request: Request, call_next):
 
 
 internal_token_dependencies = [Depends(require_internal_token)]
+include_internal_router(document_cost_router, internal_token_dependencies)
 include_internal_router(speech_router, internal_token_dependencies)
 include_internal_router(pipeline_router, internal_token_dependencies)
 include_internal_router(task_cancellation_router, internal_token_dependencies)
