@@ -146,6 +146,7 @@ class ProductHelpPort(Protocol):
         conversation_context: ConversationContext | None,
         output_language: OutputLanguage | None,
         response_length: ResponseLength | None,
+        evidence_insufficient: bool = False,
     ) -> str | None:
         """Return guide help/subject clarification, or None to keep the normal query path."""
         ...

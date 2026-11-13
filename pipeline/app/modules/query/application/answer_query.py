@@ -263,24 +263,34 @@ class AnswerQueryUseCase:
         query = Question(question)
         web_search_telemetry = WebSearchTelemetry()
         self._publish(event_publisher, "query_started", "질의 처리를 시작했습니다.", {"question": query.normalized})
-        if self._product_help is not None and not pinned_evidence:
+
+        def product_help_answer(*, evidence_insufficient: bool = False) -> QueryAnswer | None:
+            if self._product_help is None or pinned_evidence:
+                return None
             help_answer = self._product_help.reply(
                 query.normalized,
                 conversation_context=conversation_context,
                 output_language=output_language,
                 response_length=response_length,
+                evidence_insufficient=evidence_insufficient,
             )
-            if help_answer is not None:
-                self._publish(event_publisher, "answer_generated", "답변 생성을 완료했습니다.")
-                return QueryAnswer(
-                    answer=GeneratedAnswer(content=help_answer),
-                    related_pages=[], evidence_snippets=[], graph_context=GraphContext(),
-                    traversal_paths=[],
-                    retrieval_summary=build_retrieval_summary(
-                        related_pages=[], source_candidate_count=0, concept_candidate_count=0,
-                        stop_reason="product_help",
-                    ),
-                )
+            if help_answer is None:
+                return None
+            self._publish(event_publisher, "answer_generated", "답변 생성을 완료했습니다.")
+            return QueryAnswer(
+                answer=GeneratedAnswer(content=help_answer),
+                related_pages=[], evidence_snippets=[], graph_context=GraphContext(),
+                traversal_paths=[],
+                retrieval_summary=build_retrieval_summary(
+                    related_pages=[], source_candidate_count=0, concept_candidate_count=0,
+                    stop_reason="product_help",
+                ),
+            )
+
+        help_answer = product_help_answer()
+        if help_answer is not None:
+            return help_answer
+        help_rechecked = False
         contextual_question = contextualize_question(query.normalized, conversation_context)
         if contextual_question != query.normalized:
             self._publish(
@@ -314,6 +324,10 @@ class AnswerQueryUseCase:
             and self._query_evaluator is None
             and low_internal_relevance
         ):
+            help_answer = product_help_answer(evidence_insufficient=True)
+            help_rechecked = True
+            if help_answer is not None:
+                return help_answer
             self._mark_web_search_requested(web_search_telemetry)
             fallback_answer = self._answer_from_web_search(
                 query.normalized,
@@ -351,6 +365,11 @@ class AnswerQueryUseCase:
             stop_reason=internal_stop_reason,
             event_publisher=event_publisher,
         )
+        if query_evaluation is None and not evidence_snippets and not help_rechecked:
+            help_answer = product_help_answer(evidence_insufficient=True)
+            help_rechecked = True
+            if help_answer is not None:
+                return help_answer
         if query_evaluation is None and low_internal_relevance:
             query_evaluation = QueryEvaluation(
                 route="unsupported",
@@ -362,6 +381,14 @@ class AnswerQueryUseCase:
                 has_internal_evidence=bool(evidence_snippets),
                 web_search_available=web_search_allowed,
             )
+            if (
+                not help_rechecked
+                and query_evaluation.route in {"unsupported", "web_fallback", "revise_answer"}
+                and query_evaluation.unsupported_refusal_accuracy != 1.0
+            ):
+                help_answer = product_help_answer(evidence_insufficient=True)
+                if help_answer is not None:
+                    return help_answer
             if web_search_allowed and query_evaluation.route == "web_fallback":
                 self._mark_web_search_requested(web_search_telemetry)
                 fallback_answer = self._answer_from_web_search(

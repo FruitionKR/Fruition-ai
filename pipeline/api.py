@@ -31,10 +31,12 @@ from app.modules.wiki_ingestion.interfaces.http.schemas import (
 )
 from app.modules.wiki_schema.interfaces.http.routes import router as wiki_schema_router
 from app.modules.mcp_read.interfaces.http.routes import router as mcp_wiki_read_router
+from app.modules.mcp_read.interfaces.http.product_guide import router as mcp_product_guide_router
 from app.modules.mcp_wiki_draft.interfaces.http.routes import router as mcp_wiki_draft_router
 from app.modules.mcp_wiki_draft.interfaces.http.routes import source_blocks_router as mcp_source_blocks_router
 from app.modules.mcp_wiki_draft.interfaces.http.apply_routes import router as mcp_wiki_apply_router
 from app.modules.mcp_pdf_conversion.routes import router as mcp_pdf_conversion_router
+from app.modules.document_restoration.interfaces.cost_preflight import router as document_cost_router
 from app.modules.wiki_ingestion.infrastructure import postgres_wiki_ingestion_repository as database
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,7 @@ async def authenticate_internal_request(request: Request, call_next):
 
 
 internal_token_dependencies = [Depends(require_internal_token)]
+include_internal_router(document_cost_router, internal_token_dependencies)
 include_internal_router(speech_router, internal_token_dependencies)
 include_internal_router(pipeline_router, internal_token_dependencies)
 include_internal_router(task_cancellation_router, internal_token_dependencies)
@@ -129,6 +132,7 @@ include_internal_router(data_purge_router, internal_token_dependencies)
 include_internal_router(wiki_schema_router, internal_token_dependencies)
 include_internal_router(agent_run_status_router, internal_token_dependencies)
 include_internal_router(mcp_wiki_read_router, internal_token_dependencies)
+include_internal_router(mcp_product_guide_router, internal_token_dependencies)
 agent_service_dependencies = [Depends(require_agent_service_token)]
 # MCP proposal creation is a service-only I4 boundary and is not controlled by the web Agent feature flag.
 app.include_router(agent_mcp_proposal_router, dependencies=agent_service_dependencies)
