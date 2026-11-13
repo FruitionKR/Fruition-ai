@@ -8,7 +8,7 @@ from app.modules.agent.application.handle_agent_turn import HandleAgentTurnUseCa
 from app.modules.agent.domain.entities import AgentConversationContext, AgentTurnRequest, AgentTurnRoute
 from app.modules.agent.domain.exceptions import AgentConfigurationError
 from app.modules.agent.infrastructure.chat_completions_conversation_replier import (
-    DEFAULT_CONVERSATION_REPLY_PROMPT, DEFAULT_PRODUCT_HELP_PROMPT,
+    DEFAULT_CONVERSATION_REPLY_PROMPT, DEFAULT_PRODUCT_HELP_PROMPT, load_product_help_prompt,
     ChatCompletionsConversationReplier, build_conversation_replier,
 )
 from app.modules.agent.infrastructure.chat_completions_turn_router import ChatCompletionsTurnRouter, _route_failures
@@ -90,7 +90,7 @@ def test_task_tab_rules_also_apply_to_help():
 def test_help_prompt_preserves_followup_context_and_untrusted_boundary():
     client = Mock()
     client.complete_json.return_value = {"message": "사이드바에서 PDF를 우클릭하세요."}
-    prompt = DEFAULT_PRODUCT_HELP_PROMPT.read_text()
+    prompt = load_product_help_prompt()
     request = AgentTurnRequest(
         message="그 버튼 어디 있어?", output_language="en",
         conversation_context=AgentConversationContext(
@@ -114,7 +114,7 @@ def test_builder_uses_help_prompt_even_with_conversation_prompt_override():
         "os.environ", {"CONVERSATION_REPLY_SYSTEM_PROMPT": "/nonexistent-custom-conversation-prompt"}
     ):
         replier = build_conversation_replier(provider="openai", model="gpt-6-luna", prompt_path=DEFAULT_PRODUCT_HELP_PROMPT)
-    assert replier._system_prompt == DEFAULT_PRODUCT_HELP_PROMPT.read_text()
+    assert replier._system_prompt == load_product_help_prompt()
 
 
 def test_help_eval_cases_have_valid_route_contracts():
@@ -140,7 +140,7 @@ def test_help_language_precedence_keeps_ui_language_separate(screen, output, exp
 
     client = Mock()
     client.complete_json.return_value = {'message': 'Answer'}
-    replier = ChatCompletionsConversationReplier(client, DEFAULT_PRODUCT_HELP_PROMPT.read_text())
+    replier = ChatCompletionsConversationReplier(client, load_product_help_prompt())
     router = Mock()
     router.route.return_value = HELP_ROUTE
     use_case = HandleAgentTurnUseCase(router, Mock(), Mock(), Mock(), product_help_replier=replier)
@@ -171,7 +171,7 @@ def test_worker_passes_screen_language_to_help_and_does_not_leak_between_command
 
     client = Mock()
     client.complete_json.return_value = {'message': 'Answer'}
-    replier = ChatCompletionsConversationReplier(client, DEFAULT_PRODUCT_HELP_PROMPT.read_text())
+    replier = ChatCompletionsConversationReplier(client, load_product_help_prompt())
     router = Mock()
     router.route.return_value = HELP_ROUTE
     publisher = Mock()

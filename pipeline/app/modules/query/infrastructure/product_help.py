@@ -22,6 +22,10 @@ document questions, generic PDF/editing questions, and requests to create/edit/s
 A previous help answer does not override a new request or establish permission to act.
 ambiguous: an unresolved app reference such as "how does this app work?" could mean Fruition or
 the user's app. Ask rather than assume. Words like app, PDF, or help alone do not establish Fruition.
+Distinctive Fruition UI terms such as "위키 편입" (including "위키편입"), "위키 최신화",
+and "Add to wiki" can establish Fruition without its name when asking how or where to use them.
+For example "위키편입 어케하는거임?" is product_help. A request to implement these features
+in the user's own app, or to actually add/edit documents, remains query.
 Being hosted inside Fruition does not establish the subject. If the conversation identifies the user's
 app, use query. If it identifies Fruition, use product_help for explanatory follow-ups.
 """
@@ -35,6 +39,7 @@ class QueryProductHelp:
     def reply(
         self, question: str, *, conversation_context: ConversationContext | None,
         output_language: OutputLanguage | None, response_length: ResponseLength | None,
+        evidence_insufficient: bool = False,
     ) -> str | None:
         context = conversation_context or ConversationContext()
         payload = {
@@ -46,7 +51,15 @@ class QueryProductHelp:
             ],
             "reference_context": context.reference_context,
         }
-        action = self._client.complete_json(ROUTING_PROMPT, json.dumps(payload, ensure_ascii=False)).get("action")
+        system_prompt = ROUTING_PROMPT
+        if evidence_insufficient:
+            system_prompt += (
+                "\nTrusted routing state: retrieval/evaluation found insufficient evidence. "
+                "Reconsider whether the original question asks how to use Fruition's UI. "
+                "Only product usage questions should use the official guide; lack of evidence alone "
+                "does not make a general knowledge, document, or implementation question product_help."
+            )
+        action = self._client.complete_json(system_prompt, json.dumps(payload, ensure_ascii=False)).get("action")
         if action == "query":
             return None
         if action not in {"product_help", "ambiguous"}:

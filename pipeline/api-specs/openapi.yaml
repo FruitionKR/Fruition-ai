@@ -1475,6 +1475,24 @@ components:
       - source_key
       title: PdfSource
       type: object
+    ProductGuideResponse:
+      properties:
+        markdown:
+          title: Markdown
+          type: string
+        schema_version:
+          const: mcp.product-guide.v1
+          default: mcp.product-guide.v1
+          title: Schema Version
+          type: string
+        title:
+          default: Fruition 사용 방법 / Product guide
+          title: Title
+          type: string
+      required:
+      - markdown
+      title: ProductGuideResponse
+      type: object
     PurgeResponse:
       properties:
         deleted:
@@ -3736,6 +3754,34 @@ paths:
       summary: Submit
       tags:
       - mcp-pdf-conversion
+  /internal/mcp/product-guide:
+    get:
+      operationId: product_guide_internal_mcp_product_guide_get
+      parameters:
+      - in: header
+        name: X-Internal-Token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Internal-Token
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductGuideResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Product Guide
+      tags:
+      - mcp-product-guide
   /internal/mcp/source-blocks/resolve:
     post:
       description: 웹 편입과 같은 분할·영구 블록 ID. document의 MCP 원문 스냅샷과 get_document가 쓴다.

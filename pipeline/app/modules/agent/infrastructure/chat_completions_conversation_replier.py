@@ -5,6 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.core.ai_markdown_sanitizer import sanitize_ai_markdown
+from app.core.product_guide import load_product_guide
 from app.core.llm_env import (
     api_key_from_env,
     int_env,
@@ -29,6 +30,10 @@ DEFAULT_CONVERSATION_REPLY_PROMPT = (
 DEFAULT_PRODUCT_HELP_PROMPT = DEFAULT_CONVERSATION_REPLY_PROMPT.with_name("product_help.system.md")
 JSON_OBJECT_CONTRACT_FAILURE = "conversation reply output must be a JSON object"
 PRODUCT_TIMEZONE = ZoneInfo("Asia/Seoul")
+
+
+def load_product_help_prompt() -> str:
+    return DEFAULT_PRODUCT_HELP_PROMPT.read_text(encoding="utf-8") + "\n" + load_product_guide()
 
 
 class ChatCompletionsConversationReplier(ConversationReplierPort):
@@ -121,7 +126,8 @@ def build_conversation_replier(
                 provider=resolved_provider,
             )
         ),
-        system_prompt=prompt_path.read_text(encoding="utf-8"),
+        system_prompt=(load_product_help_prompt() if prompt_path.resolve() == DEFAULT_PRODUCT_HELP_PROMPT.resolve()
+                       else prompt_path.read_text(encoding="utf-8")),
     )
 
 

@@ -3,6 +3,14 @@ from pathlib import Path
 from app.modules.query.infrastructure.product_help import build_query_product_help, ROUTING_PROMPT
 port=build_query_product_help(provider='openai',model='gpt-6-luna')
 cases=[
+ ('fruition_mcp','Fruition MCP 연결은 어떻게 해?',[], 'product_help'),
+ ('mcp_tutorial','Fruition MCP에서 튜토리얼은 어떻게 봐?',[], 'product_help'),
+ ('ko_wiki_colloquial','위키편입 어케하는거임?',[], 'product_help'),
+ ('ko_wiki_refresh','위키 최신화는 어디서 해?',[], 'product_help'),
+ ('en_add_wiki','Where is Add to wiki?',[], 'product_help'),
+ ('wiki_implementation','내 앱에 위키 편입 기능을 구현하려면?',[], 'query'),
+ ('wiki_action','이 문서를 위키에 편입해줘',[], 'query'),
+ ('generic_mcp','MCP 프로토콜이 뭐야?',[], 'query'),
  ('ko_help','Fruition 사용법 알려줘',[], 'product_help'),
  ('en_help','How do I enable web search by default in Fruition?',[], 'product_help'),
  ('ko_ambiguous','이 앱은 어떻게 작동해?',[], 'ambiguous'),

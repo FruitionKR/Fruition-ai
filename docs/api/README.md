@@ -13,7 +13,7 @@ Query·Agent·Wiki·Skill pipeline의 서비스 간·운영 API다. 로컬 base 
 | [Skills](skills.md) | 9 | 작업 실행·테스트 실행·조회·설정은 내부 HTTP, draft·preview는 ai-svc 내부 기능 |
 | [작업 취소·사용량](tasks.md) | 6 | 취소·상태·역순 복구와 모델 사용량 조회를 내부 HTTP로 연결, 호출 단위 조회는 호출자 없음 |
 | [AI 데이터 파기](purge.md) | 2 | 내부 HTTP, Document 쪽 호출 연결 전 |
-| [MCP 위키](mcp-wiki.md) | search 1 + ingest/preview 6 | read와 unpublished ingest full-preview 내부 HTTP; public write tool/approval/apply는 아직 꺼짐 |
+| [MCP 위키·제품 가이드](mcp-wiki.md) | search 1 + guide 1 + ingest/preview 6 | 위키 검색·공식 제품 가이드·편입 초안 내부 HTTP |
 | [Wiki](wiki.md) | 10 | 조회·페이지 관리는 내부 HTTP, lint·복구는 Kafka |
 | [Wiki Schema](wiki-schema.md) | 5 | 내부 HTTP |
 | [문서 비용 사전 확인](document-cost.md) | 1 | document-svc 내부 HTTP(PDF 구조 특징) |
@@ -77,6 +77,7 @@ Java 경로는 Fruition-document `src/main/java/fruition/` 기준이다.
 | `GET /internal/model-usage/calls` | **호출자 없음** | Document 크레딧 과금 구현 전 |
 | `POST /internal/ai/purge/workspaces`, `POST /internal/ai/purge/users` | **호출자 없음** | Document 파기 API 구현 전 |
 | `POST /internal/mcp/wiki/search` | **호출자 없음** | Document MCP transport/page-read I2 연결 전 |
+| `GET /internal/mcp/product-guide` | document-svc MCP `get_product_guide` | `X-Internal-Token`; 웹 AI와 공유하는 정적 공개 가이드. 모델·과금 없음 |
 | `POST /internal/mcp/source-blocks/resolve` | document-svc MCP 원문 스냅샷·`get_document` | `X-Agent-Service-Token`; 웹 편입과 같은 분할·영구 블록 ID 계산(저장 없음). [MCP 위키](mcp-wiki.md) §13 |
 | `POST /internal/mcp/wiki/ingest-runs`, `.../{run_id}/resume`, `.../{run_id}/windows/read`, `.../{run_id}/windows/{window_id}/submissions`, `.../{run_id}/finalize`, `/internal/mcp/wiki/lint-drafts`; `GET /internal/mcp/wiki/drafts/{draft_id}/preview` | document-svc MCP wiki draft boundary | `X-Agent-Service-Token`; immutable INGEST intake와 closed structured LINT, owner-bound complete preview. public registration/LINT apply는 꺼짐 |
 | `POST /agent/runs/mcp-proposals` | document-svc MCP proposal boundary | `X-Agent-Service-Token`; I4 단일 편집과 I6 1~20 operation 계획, 공개 write catalog는 아직 꺼짐 |

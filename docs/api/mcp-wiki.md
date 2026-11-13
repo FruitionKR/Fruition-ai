@@ -242,3 +242,11 @@ Production 결정6(split-parent 관계 재판정)은 이번 lint에서 **새로 
 Lint 전용 필수 설정은 `MCP_WIKI_DRAFT_LINT_MAX_OPERATIONS`, `MCP_WIKI_DRAFT_LINT_MAX_TARGET_PAGES`, `MCP_WIKI_DRAFT_LINT_MAX_SOURCE_SNAPSHOTS`, `MCP_WIKI_DRAFT_LINT_MAX_TOTAL_SOURCE_BYTES`, `MCP_WIKI_DRAFT_LINT_MAX_STRUCTURAL_CHANGES`, `MCP_WIKI_DRAFT_LINT_MAX_DELETES`, `MCP_WIKI_DRAFT_LINT_TTL_SECONDS`, nonempty `MCP_WIKI_DRAFT_LINT_RELATIONS_JSON`, `MCP_WIKI_DRAFT_LINT_POLICY_VERSION`다. 기존 source/submission/preview 필수 설정도 함께 적용되며 business default는 없다.
 
 LINT draft는 ingest run/window/task를 가장하지 않고 shared `mcp_wiki_drafts`에 nullable run identity와 자체 actor/state/TTL로 저장한다. `mcp_wiki_lint` task journal cancellation, expiry, user/workspace purge가 unpublished preview와 private source blocks를 삭제하며 terminal row를 되살리지 않는다. Explicit apply는 fresh LINT replay/target closure를 다시 검증한 뒤 INGEST와 같은 immutable writer/result/outbox/recovery를 사용한다. Public tool registration, web approval UI와 frontend는 별도 release gate이고, Document의 approval/receipt/fee producer가 실제 cross-service authority와 settlement를 소유한다.
+
+## 공식 제품 가이드 조회
+
+`GET /internal/mcp/product-guide`는 `X-Internal-Token`으로 보호한 정적 읽기다. document-svc의 `get_product_guide` 도구가 기존 MCP 사용자·연결·read scope 검증 뒤 호출한다. 사용자 입력이나 식별자를 AI로 전달하지 않는다.
+
+응답은 `schema_version: "mcp.product-guide.v1"`, `title`, `markdown`이다. `markdown`은 `pipeline/prompts/product_guide.md`의 공개 가이드 원문이며, 웹 채팅과 Agent의 product_help도 같은 파일을 읽는다. 모델 호출·위키 조회·usage ledger·크레딧 변경은 없다. 시스템 프롬프트의 행동 지침과 사용자 문서는 공개 가이드에 포함하지 않는다. 내용에는 MCP 연결, 권한, 검색 범위, 위키 편입, 웹 승인/직접 업로드 구분, 비용, 연결 해제와 오류 대응을 포함한다.
+
+AI endpoint를 document 도구보다 먼저 배포한다. 가이드 조회 실패는 document에서 `DEPENDENCY_UNAVAILABLE`로 반환하며 다른 버전의 복사본이나 생성 답변으로 대체하지 않는다.
