@@ -2526,20 +2526,29 @@ def _scan_concept_sources(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """개념 페이지를 원문 출처로 가른다. 결과는 (지울 페이지, 원문과 다시 이을 페이지)다.
 
-    출처는 재생 결과의 문서 중 소스 페이지가 살아 있고 삭제 표시가 없는 문서다. 문서 id가 없는 lint 기록은 문서를 지워도
+    출처는 재생 결과의 문서 중 소스 페이지가 살아 있고 로컬·문서 서비스 모두에서 삭제되지 않은 문서다. 문서 id가 없는 lint 기록은 문서를 지워도
     꺼지지 않으므로 재생 결과만으로 판단하지 않는다. 소스 → 개념 링크가 있고 꺼진 기여도 없는 페이지는 재생하지 않는다.
     이번 lint가 승격한 페이지의 근거는 아직 원장에 없다. 승격이 맞춘 소스 → 개념 링크가 있으면 출처가 있는 것으로 본다.
     """
     rows = conn.execute(
         """
         SELECT page.id, page.slug, page.title, page.summary, page.markdown_uri,
-               EXISTS (
-                   SELECT 1 FROM wiki_page_links link
+               ARRAY (
+                   SELECT document.document_id FROM wiki_page_links link
                    JOIN wiki_pages source ON source.id = link.from_page_id
+                   JOIN document_wiki_links document ON document.wiki_page_id = source.id
+                     AND document.workspace_id = page.workspace_id
+                     AND document.relation_type = 'source_of'
                    WHERE link.to_page_id = page.id
                      AND link.link_type = 'source_mentions_concept'
-                     AND source.status = 'active'
-               ) AS has_source_link
+                     AND source.page_type = 'source' AND source.status = 'active'
+                     AND source.workspace_id = page.workspace_id
+                     AND NOT EXISTS (
+                         SELECT 1 FROM wiki_source_tombstones tombstone
+                         WHERE tombstone.workspace_id = document.workspace_id
+                           AND tombstone.document_id = document.document_id
+                     )
+               ) AS source_document_ids
         FROM wiki_pages page
         WHERE page.workspace_id = %s AND page.page_type = 'concept' AND page.status = 'active'
         ORDER BY page.id
@@ -2550,6 +2559,11 @@ def _scan_concept_sources(
     ledger: dict[str, list[dict[str, Any]]] = {}
     for item in with_pending_contributions(conn, read_contributions(page_ids, workspace_id), page_ids):
         ledger.setdefault(str(item.get("page_id")), []).append(item)
+    deleted_documents = {
+        str(item["source_document_id"])
+        for contributions in ledger.values() for item in contributions
+        if item.get("source_document_id") and item.get("source_document_deleted") is True
+    }
     # 지난 lint 결과가 원장에 아직 오르지 않은 페이지는 근거를 다 알 수 없다. 다음 lint가 본다.
     unapplied = {
         str(item["page_id"]) for item in previous_ledger
@@ -2572,11 +2586,13 @@ def _scan_concept_sources(
             (workspace_id,),
         ).fetchall()
     }
+    live_documents.difference_update(deleted_documents)
     unsourced: dict[str, dict[str, Any]] = {}
     relink: dict[str, dict[str, Any]] = {}
     for row in rows:
         page_id = str(row["id"])
         contributions = ledger.get(page_id, [])
+        row["has_source_link"] = bool(live_documents.intersection(row["source_document_ids"]))
         # 원장 행이 없어도 소스 → 개념 링크가 살아 있으면 출처가 있다. 재생할 기록이 없어 지우면 복원으로 돌아오지 않는다.
         healthy = row["has_source_link"] and (
             page_id in promoted_page_ids or all(item.get("active") for item in contributions)
@@ -2599,10 +2615,10 @@ def _scan_concept_sources(
                     ],
                     read_text=read_text_object,
                 ))
-            except ConceptContributionError:
-                # 깨진 기록은 근거 없음이 아니다. 지우지 않고 남긴다.
-                logger.warning("[lint 출처 판정 생략] 기록을 재생할 수 없음 page_id=%s", page_id, exc_info=True)
-                continue
+            except ConceptContributionError as exc:
+                raise ConceptContributionError(
+                    f"개념 출처 기록을 재생할 수 없습니다: page_id={page_id}: {exc}"
+                ) from exc
         if rebuilt:
             documents = sorted(live_documents.intersection(rebuilt.source_document_ids))
         elif contributions or page_id in promoted_page_ids:
