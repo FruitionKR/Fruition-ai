@@ -165,9 +165,13 @@ def with_pending_contributions(
             raise RuntimeError(
                 f"remote contribution has invalid sequence: {key[0]}:{key[1]}"
             )
+        # 문서 서비스의 휴지통 반영이 AI 삭제 이벤트보다 먼저 도착할 수 있다.
         exact = (
             actual.get("source_document_id") == row["document_id"]
-            and bool(actual.get("active")) == bool(row["active"] and not row["trashed"])
+            and bool(actual.get("active")) == bool(
+                row["active"] and not row["trashed"]
+                and not (row["document_id"] and actual.get("source_document_deleted") is True)
+            )
             and str(actual.get("object_key") or "") == str(row["object_key"])
             and actual.get("lint_operation_id") == row["linked_by_operation_id"]
             and (
