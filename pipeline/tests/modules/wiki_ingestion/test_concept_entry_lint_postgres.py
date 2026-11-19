@@ -41,6 +41,7 @@ from app.modules.wiki_ingestion.infrastructure import (
 from app.modules.wiki_ingestion.infrastructure import wiki_maintenance
 from app.modules.wiki_ingestion.infrastructure import wiki_publication
 from app.modules.wiki_ingestion.infrastructure.concept_contribution_rebuild import (
+    ConceptContributionError,
     concept_title_lookup,
     load_concept_contributions,
     rebuild_concept_page,
@@ -1287,6 +1288,63 @@ def test_lint_deletes_concept_whose_source_document_is_gone(world: World) -> Non
     assert world.read(f"wiki/{WS}/pages/{alpha}/ops/lint-prune.md") == body_before
 
 
+@pytest.mark.parametrize("has_ledger", [False, True])
+def test_source_scan_does_not_trust_link_to_tombstoned_document(world: World, has_ledger: bool) -> None:
+    world.ingest("op-source", "doc-source", {"alpha": {"evidence": ["A1"]}})
+    if not has_ledger:
+        world.ledger.clear()
+    # 삭제 표시 커밋 뒤 소스 페이지 정리가 실패하면 활성 페이지와 링크가 남는다.
+    with world.connect() as conn:
+        conn.execute(
+            "INSERT INTO wiki_source_tombstones (workspace_id, document_id) VALUES (%s, %s)",
+            (WS, "doc-source"),
+        )
+    with world.connect() as conn:
+        unsourced, relink = database._scan_concept_sources(conn, WS, [], set())
+    assert set(unsourced) == {world.page_id("alpha")}
+    assert relink == {}
+
+
+@pytest.mark.parametrize("keep_live_evidence", [False, True])
+@pytest.mark.parametrize("delete_event_delayed", [False, True])
+def test_lint_prunes_unsourced_cycle_and_can_run_again(
+    world: World, keep_live_evidence: bool, delete_event_delayed: bool,
+) -> None:
+    world.ingest("op-cycle", "doc-cycle", {
+        "alpha": {"evidence": ["A1"], "links": [_related("alpha", "beta")]},
+        "beta": {"evidence": ["B1"], "links": [_related("beta", "gamma")]},
+        "gamma": {"evidence": ["C1"], "links": [_related("gamma", "alpha")]},
+    })
+    if keep_live_evidence:
+        world.ingest("op-live", "doc-live", {"beta": {"evidence": ["D1"]}})
+    world.mark_linted()
+    if delete_event_delayed:
+        from app.modules.wiki_ingestion.infrastructure.pending_contributions import record_pending_contributions
+
+        with world.connect() as conn:
+            record_pending_contributions(conn, WS, "op-cycle", "doc-cycle", [
+                {"page_id": row["page_id"], "contribution_key": row["object_key"]}
+                for row in world.ledger if row["document_id"] == "doc-cycle"
+            ])
+        for row in world.ledger:
+            if row["document_id"] == "doc-cycle":
+                row.update(active=False, source_document_deleted=True)
+    else:
+        world.trash("doc-cycle")
+
+    first = world.lint("lint-cycle")
+    expected_deleted = {world.page_id(slug) for slug in ("alpha", "gamma")}
+    if not keep_live_evidence:
+        expected_deleted.add(world.page_id("beta"))
+    assert set(first["deleted_pages"]) == expected_deleted
+    assert set(world.state()["pages"]) == ({"beta"} if keep_live_evidence else set())
+    assert world.state()["links"] == []
+
+    second = world.lint("lint-cycle-again")
+    assert second["deleted_pages"] == []
+    assert set(world.state()["pages"]) == ({"beta"} if keep_live_evidence else set())
+
+
 def test_lint_deletes_concept_and_its_outgoing_link_in_the_same_run(world: World) -> None:
     # 고아 간선 판정이 먼저 A → C를 지우고, 같은 lint가 A를 지운다. 두 변경이 한 기록에 합쳐져야 한다.
     world.ingest("op-c", "doc-c", {"gamma": {"evidence": ["C1"]}})
@@ -1451,16 +1509,16 @@ def test_lint_waits_for_ledger_rows_of_the_previous_lint(world: World) -> None:
     assert result["deleted_pages"] == []
 
 
-def test_lint_keeps_page_whose_contribution_is_broken(world: World) -> None:
+def test_lint_reports_broken_contribution_without_deleting_page(world: World) -> None:
     world.ingest("op-a", "doc-a", {"alpha": {"evidence": ["A1"]}})
     world.mark_linted()
     alpha = _drop_source_link(world, "alpha")
     world.write(f"wiki/{WS}/pages/{alpha}/ops/op-a.json", "{깨진 기록")
 
-    result = world.lint("lint-broken")
+    with pytest.raises(ConceptContributionError, match=f"page_id={alpha}"):
+        world.lint("lint-broken")
 
     assert "alpha" in world.state()["pages"]
-    assert result["deleted_pages"] == []
 
 
 def test_dry_run_reports_prune_and_repair_without_writing(world: World) -> None:

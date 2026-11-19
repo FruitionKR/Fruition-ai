@@ -123,7 +123,7 @@ def with_pending_contributions(
     pending = conn.execute(
         """
         SELECT pending.page_id, pending.operation_id, pending.document_id, pending.object_key,
-               pending.publication_id,
+               pending.publication_id, publication.kind AS publication_kind,
                pending.active, pending.sequence_revision, pending.linked_by_operation_id,
                outbox.receiver_disposition, outbox.receiver_rejection_reason,
                EXISTS (
@@ -134,6 +134,7 @@ def with_pending_contributions(
                ) AS trashed
         FROM wiki_pending_contributions pending
         LEFT JOIN wiki_publication_outbox outbox USING (publication_id)
+        LEFT JOIN wiki_publications publication USING (publication_id)
         WHERE pending.page_id = ANY(%s) AND pending.superseded_at IS NULL
         ORDER BY pending.created_at, pending.operation_id
         """,
@@ -165,11 +166,24 @@ def with_pending_contributions(
             raise RuntimeError(
                 f"remote contribution has invalid sequence: {key[0]}:{key[1]}"
             )
+        # 문서 서비스의 휴지통 반영이 AI 삭제 이벤트보다 먼저 도착할 수 있다. 휴지통에서 바로 복구하면 문서는
+        # 살아 있어도 휴지통 이동이 끈 기여는 꺼진 채라, 그 끈 이유(deactivated_by_source_deletion)로 대조한다.
+        source_removed = row["document_id"] and (
+            actual.get("source_document_deleted") is True
+            or actual.get("deactivated_by_source_deletion") is True
+        )
+        # 복원 대기 행의 linked_by는 순번과 함께 document 응답을 옮긴 값이다. 연결 lint ID는 행을 만들거나
+        # 다시 이을 때만 바뀌고 그때 순번도 새로 받으므로, 순번이 같으면 같은 값이다. 예전 API는 이 필드가 없어
+        # 배포 전에 만든 복원 대기 행에는 null로 남았다.
+        lint_matches = actual.get("lint_operation_id") == row["linked_by_operation_id"] or (
+            row.get("publication_kind") == "RESTORE"
+            and row["linked_by_operation_id"] is None and row["sequence_revision"] is not None
+        )
         exact = (
             actual.get("source_document_id") == row["document_id"]
-            and bool(actual.get("active")) == bool(row["active"] and not row["trashed"])
+            and bool(actual.get("active")) == bool(row["active"] and not row["trashed"] and not source_removed)
             and str(actual.get("object_key") or "") == str(row["object_key"])
-            and actual.get("lint_operation_id") == row["linked_by_operation_id"]
+            and lint_matches
             and (
                 row["sequence_revision"] is None
                 or actual_sequence == int(row["sequence_revision"])
